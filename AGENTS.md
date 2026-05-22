@@ -188,3 +188,32 @@ Shared utilities live in backend/utils/
   clean_json_response() -> backend/utils/json_helpers.py
   safe_parse_json() -> backend/utils/json_helpers.py
   Import from there in every module that calls Claude
+
+
+## Data Privacy — What Gets Sent to Gemini API
+
+Explicitly approved on: 2026-05-22
+
+What IS sent to Gemini:
+  - Hard facts from memory store (manually added by founder)
+  - File contents from target repo (max 200 lines per file)
+  - Only files listed in PlannerHandoff (files_to_read, files_to_modify)
+  - The feature description typed by the user
+
+What is NEVER sent to Gemini:
+  - .env file or API keys
+  - Git history
+  - Entire codebase
+  - Any file not listed in the plan
+  - Anything outside target_repo_path
+
+Why this is acceptable now:
+  - ai-workflow-platform is a personal sandbox repo
+  - Not customer data, not sensitive business data
+  - Google does not train on API data by default
+  - Path traversal protection prevents accidental leaks
+
+Long term (Phase 3+):
+  - Add local Ollama model option for privacy-sensitive users
+  - Add on-premise deployment option for enterprise
+  - Add data residency controls
