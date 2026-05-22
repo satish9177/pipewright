@@ -16,7 +16,7 @@ from backend.pipeline.patch_applier import apply_patch, rollback_patch
 pytestmark = pytest.mark.unit
 
 # Use local folder instead of Windows system temp
-LOCAL_TMP = Path(__file__).parent.parent.parent / ".pytest_tmp"
+LOCAL_TMP = Path(__file__).parent.parent / ".pytest_tmp"
 
 
 @pytest.fixture()
