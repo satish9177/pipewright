@@ -96,7 +96,7 @@ For planner tests (requires GEMINI_API_KEY):
 8. patch_applier always rolls back if tests fail
 
 ## Current Status
-Day 1 — Project setup in progress
+Day 5 — approval_gate complete
 
 ## Completed Modules
 None yet
@@ -119,6 +119,10 @@ TEST_COMMAND=
 - backend/models/handoff.py     -- PlannerHandoff, CoderHandoff, PatchResult, TestResult, ApprovalRequest
 - backend/main.py               -- FastAPI app, /health endpoint
 - backend/config/keys.py        -- Pydantic settings, .env loader
+- backend/pipeline/approval_gate.py
+  request_approval, approve_gate,
+  reject_gate, get_pending_gates
+- backend/tests/test_approval_gate.py
 
 ## Additional Rules (added after Day 1 review)
 

@@ -67,9 +67,27 @@ class TestResult(BaseModel):
 
 
 class ApprovalRequest(BaseModel):
+    gate_id: Optional[str] = None
     run_id: str
     diff: str
     test_results: TestResult
     ai_summary: str
     plain_english_summary: str
+    risk_level: str = "medium"
+    approved: Optional[bool] = None
+    rejection_reason: Optional[str] = None
+
+
+class RejectRequest(BaseModel):
+    reason: str
+
+
+class GateStatus(BaseModel):
+    gate_id: str
+    run_id: str
+    status: str
+    created_at: str
+    diff: Optional[str] = None
+    test_results: Optional[str] = None
+    ai_summary: Optional[str] = None
     risk_level: str = "medium"

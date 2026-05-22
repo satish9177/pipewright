@@ -6,6 +6,25 @@ Never delete entries. Add new ones at the top.
 
 ---
 
+## 2026-05-22 — Approval Gate is CLI-based for MVP
+
+Decision: MVP approval gate is CLI + REST API only.
+          No UI. Human approves via curl or Postman
+          or a second terminal hitting FastAPI.
+
+Reason: Building a full approval UI before the
+        pipeline loop works is premature.
+        CLI approval proves the concept.
+        React UI comes in Phase 2.
+
+How it works:
+  Pipeline prints gate details to terminal.
+  Human calls POST /gates/{gate_id}/approve
+  Pipeline detects approval via DB polling.
+  Nothing merges without this step.
+
+---
+
 ## 2026-05-22 — Switch from Anthropic to Gemini API
 
 Decision: Use Google Gemini (gemini-2.5-flash) as primary
