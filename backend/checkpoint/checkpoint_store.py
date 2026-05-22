@@ -7,7 +7,7 @@ Every checkpoint stores the git hash at time of save.
 
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import text
 from backend.db.database import engine
 
@@ -32,7 +32,7 @@ def save_checkpoint(
         )
 
     checkpoint_id = str(uuid.uuid4())
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
 
     try:
         with engine.connect() as conn:

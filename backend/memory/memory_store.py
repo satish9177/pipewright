@@ -7,7 +7,7 @@ Never auto-saves anything without human confirmation.
 """
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import text
 from backend.db.database import engine
 
@@ -43,7 +43,7 @@ def add_fact(content: str, source: str, added_by: str) -> dict:
         raise ValueError("memory_store.py: content cannot be empty")
 
     fact_id = str(uuid.uuid4())
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
 
     try:
         with engine.connect() as conn:
@@ -71,7 +71,7 @@ def flag_stale_memories(days: int = 90) -> int:
     Call this at the start of every pipeline run.
     """
     try:
-        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         with engine.connect() as conn:
             result = conn.execute(text("""
                 UPDATE memory_facts
