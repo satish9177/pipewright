@@ -13,6 +13,7 @@ from backend.memory.memory_store import add_fact
 from backend.models.handoff import PlannerHandoff
 from backend.pipeline.coder import run_coder
 
+pytestmark = pytest.mark.api
 
 def make_test_plan(run_id: str) -> PlannerHandoff:
     return PlannerHandoff(

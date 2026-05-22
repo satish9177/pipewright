@@ -4,12 +4,12 @@ Tests for planner.py pipeline stage.
 Requires GEMINI_API_KEY in .env to run.
 These tests make real API calls.
 """
-
 import uuid
 import pytest
 from backend.memory.memory_store import add_fact
 from backend.pipeline.planner import run_planner
 
+pytestmark = pytest.mark.api
 
 @pytest.mark.asyncio
 async def test_planner_returns_valid_handoff():

@@ -20,6 +20,7 @@ from backend.checkpoint.checkpoint_store import (
     load_step_checkpoint
 )
 
+pytestmark = pytest.mark.unit
 
 def test_add_and_load_facts():
     add_fact("Tech stack: Python FastAPI", "test", "founder")

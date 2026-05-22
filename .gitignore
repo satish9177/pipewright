@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+.pytest_tmp/
+backend/backups/
 *.db
 *.sqlite
 .venv/

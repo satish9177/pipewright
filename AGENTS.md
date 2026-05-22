@@ -217,3 +217,19 @@ Long term (Phase 3+):
   - Add local Ollama model option for privacy-sensitive users
   - Add on-premise deployment option for enterprise
   - Add data residency controls
+
+
+  ## Test Commands
+
+Run unit tests only (no API calls, run anytime):
+  venv\Scripts\python.exe -m pytest backend/tests/ -v -m unit
+
+Run API tests only (calls Gemini, rate limited):
+  venv\Scripts\python.exe -m pytest backend/tests/ -v -m api -s
+
+Run all tests (careful — Gemini free tier = 20 req/min):
+  venv\Scripts\python.exe -m pytest backend/tests/ -v -s
+
+Markers:
+  unit = no external API calls, fast, safe to run anytime
+  api  = calls Gemini, slow, subject to rate limits
