@@ -6,6 +6,18 @@ Never delete entries. Add new ones at the top.
 
 ---
 
+## 2026-05-22 — MVP Phase 1 Complete
+
+All 5 pipeline stages built and unit tested:
+  planner, coder, patch_applier, tester, approval_gate
+Orchestrator wires them together.
+First real end-to-end run happens after this commit.
+
+Next milestone: Run pipeline on real feature
+in ai-workflow-platform and verify it saves time.
+
+---
+
 ## 2026-05-22 — Approval Gate is CLI-based for MVP
 
 Decision: MVP approval gate is CLI + REST API only.

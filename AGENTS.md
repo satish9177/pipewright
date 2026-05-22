@@ -96,7 +96,7 @@ For planner tests (requires GEMINI_API_KEY):
 8. patch_applier always rolls back if tests fail
 
 ## Current Status
-Day 5 — approval_gate complete
+MVP Phase 1 complete — all modules built
 
 ## Completed Modules
 None yet
@@ -123,6 +123,18 @@ TEST_COMMAND=
   request_approval, approve_gate,
   reject_gate, get_pending_gates
 - backend/tests/test_approval_gate.py
+- backend/pipeline/orchestrator.py
+  run_pipeline — wires all 5 stages
+- backend/tests/test_orchestrator.py
+
+## FastAPI Routes
+POST /run           start pipeline run
+GET  /runs          list all runs
+GET  /runs/{id}     get run status
+GET  /gates         list pending approvals
+GET  /gates/{id}    get single gate
+POST /gates/{id}/approve
+POST /gates/{id}/reject
 
 ## Additional Rules (added after Day 1 review)
 

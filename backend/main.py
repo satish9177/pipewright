@@ -4,8 +4,12 @@ FastAPI application entry point.
 Initializes database on startup.
 """
 
-from fastapi import FastAPI, HTTPException
+import uuid
+from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from sqlalchemy import text
 from backend.db.database import init_db
+from backend.db.database import engine
 from backend.models.handoff import RejectRequest
 from backend.pipeline.approval_gate import (
     approve_gate,
@@ -13,6 +17,11 @@ from backend.pipeline.approval_gate import (
     get_pending_gates,
     get_gate,
 )
+from backend.pipeline.orchestrator import _run_pipeline_with_id
+
+
+class RunRequest(BaseModel):
+    feature_description: str
 
 app = FastAPI(
     title="Pipewright",
@@ -30,6 +39,57 @@ def startup():
 @app.get("/health")
 def health():
     return {"status": "ok", "version": "0.1.0"}
+
+
+@app.post("/run")
+async def start_pipeline(request: RunRequest, background_tasks: BackgroundTasks):
+    """
+    Start a new pipeline run.
+    Runs in background so HTTP response
+    returns immediately with run_id.
+    Pipeline continues in background.
+    """
+    run_id = str(uuid.uuid4())
+
+    async def pipeline_task():
+        await _run_pipeline_with_id(request.feature_description, run_id)
+
+    background_tasks.add_task(pipeline_task)
+
+    return {
+        "run_id": run_id,
+        "status": "started",
+        "message": "Pipeline started. Watch terminal for progress."
+    }
+
+
+@app.get("/runs/{run_id}")
+def get_run_status(run_id: str):
+    """
+    Get current status of a pipeline run.
+    """
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT * FROM pipeline_runs WHERE id = :id"
+        ), {"id": run_id}).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    return dict(row._mapping)
+
+
+@app.get("/runs")
+def list_runs():
+    """
+    List all pipeline runs ordered by most recent.
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT * FROM pipeline_runs ORDER BY created_at DESC LIMIT 20"
+        )).fetchall()
+
+    return [dict(row._mapping) for row in rows]
 
 
 @app.get("/gates")
