@@ -359,7 +359,24 @@ def _retry_after_parse_failure(
             f"after 2 attempts. run_id={run_id} | error={second_error}"
         )
     except Exception as unexpected:
-        raise RuntimeError(
-            f"coder.py: Unexpected error during retry. "
-            f"run_id={run_id} | error={unexpected}"
-        )
+        error_str = str(unexpected)
+        if "429" in error_str:
+            print(f"[CODER] Rate limited by Gemini. Waiting 60 seconds...")
+            time.sleep(60)
+            print(f"[CODER] Retrying after rate limit wait...")
+            try:
+                response = model.generate_content(user_prompt)
+                raw_text = response.text
+                _log_token_usage(response, run_id)
+                handoff = _parse_handoff(raw_text, run_id)
+                print(f"[CODER] Plan validated after rate limit retry")
+            except Exception as retry_error:
+                raise RuntimeError(
+                    f"coder.py: Failed after rate limit retry. "
+                    f"run_id={run_id} | error={retry_error}"
+                )
+        else:
+            raise RuntimeError(
+                f"coder.py: Unexpected error during planning. "
+                f"run_id={run_id} | error={unexpected}"
+            )
