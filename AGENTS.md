@@ -205,6 +205,23 @@ Shared utilities live in backend/utils/
   safe_parse_json() -> backend/utils/json_helpers.py
   Import from there in every module that calls Claude
 
+Never use time.sleep() in any async context
+  Always use await asyncio.sleep() instead
+  request_approval() is async
+  All sleep calls inside it must be awaited
+  Synchronous functions like approve_gate()
+  and reject_gate() do not need this change
+
+Never run uvicorn with --reload during pipeline runs
+  --reload watches filesystem and kills background
+  tasks when backup files are written
+  Development command: uvicorn backend.main:app --reload
+  Pipeline command: uvicorn backend.main:app --host 0.0.0.0 --port 8001
+
+Always run pipeline on port 8001
+  Port 8000 may conflict with other services
+  like target repo Docker containers
+
 
 ## Data Privacy — What Gets Sent to Gemini API
 

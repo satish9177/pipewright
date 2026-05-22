@@ -6,6 +6,35 @@ Never delete entries. Add new ones at the top.
 
 ---
 
+## 2026-05-23 — Approval gate must be async
+
+Issue: time.sleep() in request_approval() blocked
+       the FastAPI event loop during pipeline execution.
+       The approve endpoint returned no response
+       while the pipeline was waiting for human decision.
+       Server appeared completely frozen.
+
+Fix: Changed request_approval() to async function.
+     Replaced all time.sleep() with await asyncio.sleep().
+     FastAPI event loop now free during the polling wait.
+     Approve and reject endpoints respond instantly.
+
+Rule: Never use time.sleep() in any async context.
+      Always use await asyncio.sleep() instead.
+
+## 2026-05-23 — Pipeline runs on port 8001
+
+Issue: ai-workflow-platform Docker container runs
+       on port 8000. Pipewright also defaulted to 8000.
+       Both cannot use the same port simultaneously.
+       Swagger showed wrong app when both running.
+
+Fix: Always run Pipewright on port 8001.
+     uvicorn backend.main:app --host 0.0.0.0 --port 8001
+     Swagger at http://localhost:8001/docs
+
+---
+
 ## 2026-05-22 — MVP Phase 1 Complete
 
 All 5 pipeline stages built and unit tested:
@@ -135,3 +164,36 @@ Examples:
   feature/tester
   feature/approval-gate
   feature/orchestrator
+
+
+## 2026-05-22 — Gemini Free Tier Rate Limit
+
+Issue: Gemini free tier = 20 requests per day.
+       Running full test suite consumes daily quota.
+       Pipeline cannot run same day as full test suite.
+
+Decision: Add 60-second retry on 429 errors in
+          planner.py and coder.py.
+
+Long term: Get paid Gemini API key before launch.
+           ~$0.003 per pipeline run on paid tier.
+           $5 credit = ~1600 runs.
+
+Rule added to AGENTS.md:
+  Never run API test suite and pipeline on same day.
+  Run unit tests freely. API tests sparingly.
+
+
+  ## 2026-05-22 — Never run uvicorn with --reload during pipeline execution
+
+Issue: uvicorn --reload watches filesystem changes.
+       patch_applier writes backup files to backend/backups/
+       uvicorn detects backup writes and reloads server.
+       Reload kills the background pipeline task mid-execution.
+
+Decision: Use --reload only during code editing.
+          Use plain uvicorn (no --reload) when running pipeline.
+
+Commands:
+  Development: uvicorn backend.main:app --reload
+  Pipeline:    uvicorn backend.main:app --host 0.0.0.0 --port 8000

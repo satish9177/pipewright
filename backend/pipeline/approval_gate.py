@@ -6,7 +6,7 @@ The pipeline pauses here until a human approves, rejects, or times out.
 
 import uuid
 import json
-import time
+import asyncio
 from datetime import datetime, timezone
 from sqlalchemy import text
 from backend.db.database import engine
@@ -176,7 +176,7 @@ def _build_approval_request(
     )
 
 
-def request_approval(
+async def request_approval(
     test_result: TestResult,
     run_id: str,
     diff: str,
@@ -194,7 +194,8 @@ def request_approval(
         gate_id, run_id, test_result, diff, ai_summary, risk_level
     )
 
-    started = time.time()
+    loop = asyncio.get_running_loop()
+    started = loop.time()
     last_waiting_log = started
 
     try:
@@ -246,7 +247,7 @@ def request_approval(
                     risk_level=risk_level,
                 )
 
-            elapsed = time.time() - started
+            elapsed = loop.time() - started
             if elapsed >= TIMEOUT_SECONDS:
                 _update_gate_timeout(gate_id)
                 print("[APPROVAL] Timeout - no decision after 30 minutes")
@@ -262,13 +263,13 @@ def request_approval(
                     risk_level=risk_level,
                 )
 
-            if time.time() - last_waiting_log >= WAITING_LOG_INTERVAL_SECONDS:
+            if loop.time() - last_waiting_log >= WAITING_LOG_INTERVAL_SECONDS:
                 minutes = int(elapsed // 60)
                 print("[APPROVAL] Still waiting for decision...")
                 print(f"[APPROVAL] {minutes} minutes elapsed")
-                last_waiting_log = time.time()
+                last_waiting_log = loop.time()
 
-            time.sleep(POLL_INTERVAL_SECONDS)
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
     except RuntimeError:
         raise
     except Exception as error:

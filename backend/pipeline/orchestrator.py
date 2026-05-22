@@ -153,7 +153,7 @@ async def _run_pipeline_with_id(feature_description: str, run_id: str) -> dict:
     try:
         _update_run_status(run_id, "paused", "approval")
         ai_summary = _build_summary(plan, coder_output, test_result)
-        approval = request_approval(
+        approval = await request_approval(
             test_result=test_result,
             run_id=run_id,
             diff=patch_result.diff,
