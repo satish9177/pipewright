@@ -71,3 +71,17 @@ None yet
 ANTHROPIC_API_KEY=
 TARGET_REPO_PATH=
 TEST_COMMAND=
+
+## Windows Compatibility
+- Never use special unicode characters in print() statements
+- Windows default shell encoding crashes on checkmarks and arrows
+- Use plain text only: [OK], [DONE], [FAIL], [ERROR]
+
+## Completed Modules
+- backend/db/database.py        -- SQLite init, engine, session
+- backend/db/schema.sql         -- 4 tables: memory_facts, pipeline_runs, checkpoints, approval_gates
+- backend/memory/memory_store.py -- load_hard_facts, add_fact, flag_stale_memories, list_all_facts
+- backend/checkpoint/checkpoint_store.py -- save_checkpoint, load_last_checkpoint, load_step_checkpoint
+- backend/models/handoff.py     -- PlannerHandoff, CoderHandoff, PatchResult, TestResult, ApprovalRequest
+- backend/main.py               -- FastAPI app, /health endpoint
+- backend/config/keys.py        -- Pydantic settings, .env loader
