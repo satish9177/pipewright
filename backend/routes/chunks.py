@@ -17,6 +17,7 @@ from backend.pipeline.chunk_store import (
     get_chunk_plan_status,
     reject_chunk_plan,
 )
+from backend.pipeline.chunked_orchestrator import execute_approved_chunks
 from backend.pipeline.triage import run_triage
 from backend.projects.project_store import get_project
 
@@ -81,6 +82,16 @@ def approve_chunk_plan_route(run_id: str):
 def reject_chunk_plan_route(run_id: str, request: RejectChunkPlanRequest):
     try:
         return reject_chunk_plan(run_id, request.reason)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@router.post("/runs/{run_id}/chunks/execute")
+async def execute_chunks_route(run_id: str):
+    try:
+        return await execute_approved_chunks(run_id)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:
