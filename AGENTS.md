@@ -101,7 +101,21 @@ pipewright/                          <- repo root
       keys.py
     backups/                         <- gitignored, runtime only
   frontend/                          <- Phase 2 React app
-    .gitkeep                         <- placeholder until Phase 2
+    src/
+      api/
+        client.ts             <- axios client + all types
+      components/
+        Layout.tsx            <- sidebar nav + outlet
+        RunStatusBadge.tsx    <- colored status pill
+        ui/                   <- shadcn components
+      pages/
+        ProjectsPage.tsx      <- list all projects
+        NewProjectPage.tsx    <- create project form
+        ProjectDashboard.tsx  <- submit + list runs
+        RunDetailPage.tsx     <- progress + approval
+    tailwind.config.js
+    vite.config.ts
+    package.json
   venv/                              <- gitignored, stays at root
   AGENTS.md                          <- project context for Codex
   DECISIONS.md                       <- all major decisions logged
@@ -169,8 +183,7 @@ GitHub PR creation is non-fatal
 If PR fails pipeline still completes
 
 ## Current Status
-Phase 2 -- feature/github-pr in progress
-Phase 2 -- feature/github-pr in progress
+Phase 2 -- React UI complete
 
 ## Completed Modules
 None yet
@@ -321,6 +334,19 @@ Always run pipeline on port 8001
   Port 8000 may conflict with other services
   like target repo Docker containers
 
+
+Tests share the app SQLite database
+  Never use real repo paths in test fixtures
+  Always use tmp_repo fixture for test projects
+  Test projects are identified by .pytest_tmp in path
+  conftest.py cleans all test projects after session
+  Running tests will NOT pollute the UI after this fix
+
+Never name Pydantic models starting with Test*
+  Pytest tries to collect classes named Test*
+  Use Pipeline prefix instead
+  TestResult -> PipelineTestResult
+  Any future test-related model: use Pipeline prefix
 
 ## Data Privacy — What Gets Sent to Gemini API
 

@@ -5,8 +5,10 @@ Initializes database on startup.
 """
 
 import uuid
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from backend.db.database import init_db
 from backend.db.database import engine
@@ -31,17 +33,30 @@ class RunRequest(BaseModel):
     feature_description: str
 
 
+@asynccontextmanager
+async def lifespan(app):
+    init_db()
+    print("Pipewright started.")
+    yield
+
+
 app = FastAPI(
     title="Pipewright",
     description="AI pipeline that orchestrates multiple models with human approval.",
-    version="0.1.0"
+    version="0.1.0",
+    lifespan=lifespan
 )
 
-
-@app.on_event("startup")
-def startup():
-    init_db()
-    print("Pipewright started.")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")

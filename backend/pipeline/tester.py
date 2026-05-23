@@ -8,7 +8,7 @@ import re
 import sys
 import time
 import subprocess
-from backend.models.handoff import PatchResult, TestResult
+from backend.models.handoff import PatchResult, PipelineTestResult
 from backend.checkpoint.checkpoint_store import save_checkpoint
 from backend.pipeline.patch_applier import rollback_patch
 from backend.projects.project_context import get_target_repo_path, get_test_command
@@ -88,7 +88,7 @@ def _warn_if_failure_strings(output: str) -> None:
 def run_tests(
     patch_result: PatchResult,
     run_id: str
-) -> TestResult:
+) -> PipelineTestResult:
     """
     Synchronous. No AI calls. Pure subprocess.
     Runs test command, captures output,
@@ -128,7 +128,7 @@ def run_tests(
                 f"{passed_tests} passed {failed_tests} failed"
             )
 
-            test_result = TestResult(
+            test_result = PipelineTestResult(
                 run_id=run_id,
                 passed=True,
                 total_tests=total_tests,
@@ -159,7 +159,7 @@ def run_tests(
             print("[TESTER] Rollback not available.")
 
         print(f"[TESTER] Complete | run_id={run_id}")
-        return TestResult(
+        return PipelineTestResult(
             run_id=run_id,
             passed=False,
             total_tests=total_tests,
@@ -181,7 +181,7 @@ def run_tests(
         else:
             print("[TESTER] Rollback not available.")
 
-        return TestResult(
+        return PipelineTestResult(
             run_id=run_id,
             passed=False,
             total_tests=0,

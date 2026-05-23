@@ -54,7 +54,7 @@ class PatchResult(BaseModel):
     rollback_available: bool = True
 
 
-class TestResult(BaseModel):
+class PipelineTestResult(BaseModel):
     handoff_from: str = "tester"
     handoff_to: str = "approval"
     run_id: str
@@ -70,7 +70,7 @@ class ApprovalRequest(BaseModel):
     gate_id: Optional[str] = None
     run_id: str
     diff: str
-    test_results: TestResult
+    test_results: PipelineTestResult
     ai_summary: str
     plain_english_summary: str
     risk_level: str = "medium"

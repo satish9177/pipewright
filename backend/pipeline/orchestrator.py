@@ -12,7 +12,7 @@ from backend.models.handoff import (
     PlannerHandoff,
     CoderHandoff,
     PatchResult,
-    TestResult,
+    PipelineTestResult,
     ApprovalRequest
 )
 from backend.pipeline.planner import run_planner
@@ -88,7 +88,7 @@ def _fail(run_id: str, stage: str, error) -> dict:
 def _build_summary(
     plan: PlannerHandoff,
     coder_output: CoderHandoff,
-    test_result: TestResult
+    test_result: PipelineTestResult
 ) -> str:
     files = [f.path for f in coder_output.files_changed]
     return (

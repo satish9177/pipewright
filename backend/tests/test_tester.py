@@ -8,7 +8,7 @@ Mocks patch_result with pre-built PatchResult objects.
 
 import uuid
 import pytest
-from backend.models.handoff import PatchResult, TestResult
+from backend.models.handoff import PatchResult, PipelineTestResult
 from backend.pipeline.tester import run_tests
 
 pytestmark = pytest.mark.unit
@@ -48,7 +48,7 @@ def test_passing_command_returns_passed(monkeypatch):
 
     result = run_tests(patch, run_id)
 
-    assert isinstance(result, TestResult)
+    assert isinstance(result, PipelineTestResult)
     assert result.passed is True
     assert result.run_id == run_id
     assert result.output is not None
@@ -76,7 +76,7 @@ def test_failing_command_returns_failed(monkeypatch):
 
     result = run_tests(patch, run_id)
 
-    assert isinstance(result, TestResult)
+    assert isinstance(result, PipelineTestResult)
     assert result.passed is False
     assert result.run_id == run_id
 

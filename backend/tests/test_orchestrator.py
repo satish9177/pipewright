@@ -53,7 +53,7 @@ async def test_pipeline_creates_run_record():
 async def test_pipeline_fails_on_test_failure(monkeypatch):
     from backend.models.handoff import (
         PlannerHandoff, CoderHandoff,
-        PatchResult, TestResult
+        PatchResult, PipelineTestResult
     )
 
     mock_plan = PlannerHandoff(
@@ -74,7 +74,7 @@ async def test_pipeline_fails_on_test_failure(monkeypatch):
         post_patch_git_hash="def",
         files_applied=[]
     )
-    mock_test = TestResult(
+    mock_test = PipelineTestResult(
         run_id="x", passed=False,
         output="2 failed", failed_tests=2
     )

@@ -10,7 +10,7 @@ import asyncio
 from datetime import datetime, timezone
 from sqlalchemy import text
 from backend.db.database import engine
-from backend.models.handoff import TestResult, ApprovalRequest
+from backend.models.handoff import PipelineTestResult, ApprovalRequest
 from backend.checkpoint.checkpoint_store import save_checkpoint
 
 POLL_INTERVAL_SECONDS = 2
@@ -50,7 +50,7 @@ def get_gate(gate_id: str) -> dict | None:
 def _create_gate(
     run_id: str,
     diff: str,
-    test_result: TestResult,
+    test_result: PipelineTestResult,
     ai_summary: str,
     risk_level: str
 ) -> str:
@@ -87,7 +87,7 @@ def _create_gate(
 def _display_approval_request(
     gate_id: str,
     run_id: str,
-    test_result: TestResult,
+    test_result: PipelineTestResult,
     diff: str,
     ai_summary: str,
     risk_level: str
@@ -156,7 +156,7 @@ def _update_gate_timeout(gate_id: str) -> None:
 def _build_approval_request(
     gate_id: str,
     run_id: str,
-    test_result: TestResult,
+    test_result: PipelineTestResult,
     diff: str,
     ai_summary: str,
     approved: bool,
@@ -177,7 +177,7 @@ def _build_approval_request(
 
 
 async def request_approval(
-    test_result: TestResult,
+    test_result: PipelineTestResult,
     run_id: str,
     diff: str,
     ai_summary: str

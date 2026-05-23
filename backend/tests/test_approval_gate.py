@@ -10,7 +10,7 @@ Does not test the polling loop
 import uuid
 import pytest
 from backend.db.database import init_db
-from backend.models.handoff import TestResult, PatchResult
+from backend.models.handoff import PipelineTestResult, PatchResult
 from backend.pipeline.approval_gate import (
     approve_gate,
     reject_gate,

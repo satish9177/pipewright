@@ -1,5 +1,18 @@
 # Pipewright — Decision Log
 
+## 2026-05-23 -- React UI replaces Swagger
+
+Stack: Vite + React 18 + TypeScript +
+       Tailwind v3 + shadcn/ui Nova preset
+
+CORS enabled on backend for localhost:5173
+
+React Query polls every 3s for run status.
+Approval page polls every 2s when paused.
+No WebSocket yet -- polling is sufficient for MVP.
+
+---
+
 ## 2026-05-23 -- GitHub credentials stored per project
 
 Decision: GitHub token, owner, repo stored
