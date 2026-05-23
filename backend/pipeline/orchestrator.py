@@ -20,18 +20,21 @@ from backend.pipeline.coder import run_coder
 from backend.pipeline.patch_applier import apply_patch
 from backend.pipeline.tester import run_tests
 from backend.pipeline.approval_gate import request_approval
+from backend.projects.project_context import ProjectRuntimeConfig, active_project
+from backend.projects.project_store import require_project
 
 
-def _create_run(run_id: str, feature: str) -> None:
+def _create_run(run_id: str, feature: str, project_id: str | None = None) -> None:
     try:
         init_db()
         with engine.connect() as conn:
             conn.execute(text("""
                 INSERT INTO pipeline_runs
-                (id, feature_description, status, current_step, created_at)
-                VALUES (:id, :feature, 'running', 'created', :created_at)
+                (id, project_id, feature_description, status, current_step, created_at)
+                VALUES (:id, :project_id, :feature, 'running', 'created', :created_at)
             """), {
                 "id": run_id,
+                "project_id": project_id,
                 "feature": feature,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             })
@@ -110,8 +113,30 @@ def _surface_memory_suggestions(
     print("[PIPELINE] Review these and add to memory manually if relevant.")
 
 
-async def _run_pipeline_with_id(feature_description: str, run_id: str) -> dict:
-    _create_run(run_id, feature_description)
+def _load_project_runtime(project_id: str | None) -> ProjectRuntimeConfig | None:
+    if project_id is None:
+        return None
+
+    try:
+        project = require_project(project_id)
+        return ProjectRuntimeConfig(
+            project_id=project["id"],
+            repo_path=project["repo_path"],
+            test_command=project["test_command"],
+        )
+    except ValueError:
+        raise
+    except Exception as error:
+        raise RuntimeError(
+            f"orchestrator.py: failed to load project. "
+            f"project_id={project_id} | error={error}"
+        )
+
+
+async def _run_pipeline_steps(
+    feature_description: str,
+    run_id: str
+) -> dict:
     print(f"[PIPELINE] Started | run_id={run_id}")
 
     try:
@@ -163,13 +188,19 @@ async def _run_pipeline_with_id(feature_description: str, run_id: str) -> dict:
             f"[PIPELINE] Stage 5 complete: approval | "
             f"approved={approval.approved}"
         )
-
         if not approval.approved:
             _update_run_status(run_id, "rejected", "approval")
+            print(f"[PIPELINE] Rejected by human. Rolling back | run_id={run_id}")
+            try:
+                from backend.pipeline.patch_applier import rollback_patch
+                rollback_patch(run_id)
+                print(f"[PIPELINE] Rollback complete | run_id={run_id}")
+            except Exception as rb_error:
+                print(f"[PIPELINE] Rollback failed | error={rb_error}")
             return {
                 "run_id": run_id,
                 "status": "rejected",
-                "reason": "Human rejected the changes."
+                "reason": "Human rejected the changes. Files rolled back."
             }
 
     except Exception as error:
@@ -190,8 +221,28 @@ async def _run_pipeline_with_id(feature_description: str, run_id: str) -> dict:
     }
 
 
+async def _run_pipeline_with_id(
+    feature_description: str,
+    run_id: str,
+    project_id: str | None = None
+) -> dict:
+    project_runtime = _load_project_runtime(project_id)
+    _create_run(run_id, feature_description, project_id)
+
+    if project_runtime is None:
+        return await _run_pipeline_steps(feature_description, run_id)
+
+    with active_project(project_runtime):
+        print(
+            f"[PIPELINE] Project selected | "
+            f"project_id={project_runtime.project_id}"
+        )
+        return await _run_pipeline_steps(feature_description, run_id)
+
+
 async def run_pipeline(
-    feature_description: str
+    feature_description: str,
+    project_id: str | None = None
 ) -> dict:
     """
     Main pipeline entry point.
@@ -200,4 +251,4 @@ async def run_pipeline(
     status, and what happened.
     """
     run_id = str(uuid.uuid4())
-    return await _run_pipeline_with_id(feature_description, run_id)
+    return await _run_pipeline_with_id(feature_description, run_id, project_id)

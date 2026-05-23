@@ -1,5 +1,27 @@
 # Pipewright — Decision Log
 
+## 2026-05-23 -- Project configuration moved to SQLite
+
+Decision: Pipewright supports multiple projects through
+          persisted project records instead of TARGET_REPO_PATH
+          and TEST_COMMAND environment edits.
+
+Reason: Phase 2 needs a React project selector.
+        Editing .env for every target repo does not scale,
+        blocks multi-project workflows, and is easy to forget.
+
+How it works:
+  Human creates a project with POST /projects.
+  Project stores name, repo_path, and test_command.
+  POST /run now receives project_id plus feature_description.
+  Pipeline stages resolve repo path and test command from
+  the selected project runtime context.
+
+Rule: .env stores secrets only.
+      Project-specific runtime config belongs in SQLite.
+
+---
+
 All significant architectural, security, and product
 decisions are logged here with date and reason.
 Never delete entries. Add new ones at the top.
@@ -197,3 +219,15 @@ Decision: Use --reload only during code editing.
 Commands:
   Development: uvicorn backend.main:app --reload
   Pipeline:    uvicorn backend.main:app --host 0.0.0.0 --port 8000
+
+## 2026-05-23 — Rollback on human rejection
+
+Issue: patch_applier only rolled back when tests failed.
+       When human rejected at approval gate,
+       files stayed on disk with no cleanup.
+
+Fix: orchestrator calls rollback_patch() immediately
+     after human rejection before returning.
+
+Rule: Any pipeline exit that is not 'complete'
+      must trigger rollback if patch was applied.

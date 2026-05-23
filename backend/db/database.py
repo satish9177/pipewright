@@ -30,6 +30,28 @@ class Base(DeclarativeBase):
     pass
 
 
+def _column_exists(conn, table_name: str, column_name: str) -> bool:
+    try:
+        rows = conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+        return any(row._mapping["name"] == column_name for row in rows)
+    except Exception as error:
+        raise RuntimeError(
+            f"database.py: Failed to inspect table {table_name}: {error}"
+        )
+
+
+def _run_migrations(conn) -> None:
+    """
+    Apply small SQLite migrations for existing local databases.
+    Safe to call multiple times.
+    """
+    try:
+        if not _column_exists(conn, "pipeline_runs", "project_id"):
+            conn.execute(text("ALTER TABLE pipeline_runs ADD COLUMN project_id TEXT"))
+    except Exception as error:
+        raise RuntimeError(f"database.py: Failed to run migrations: {error}")
+
+
 def init_db() -> None:
     """
     Read schema.sql and execute it.
@@ -43,6 +65,7 @@ def init_db() -> None:
                 statement = statement.strip()
                 if statement:
                     conn.execute(text(statement))
+            _run_migrations(conn)
             conn.commit()
         print("Database initialized successfully.")
         print(f"Database path: {DB_PATH}")

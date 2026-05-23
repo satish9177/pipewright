@@ -8,10 +8,10 @@ import re
 import sys
 import time
 import subprocess
-from backend.config.keys import settings
 from backend.models.handoff import PatchResult, TestResult
 from backend.checkpoint.checkpoint_store import save_checkpoint
 from backend.pipeline.patch_applier import rollback_patch
+from backend.projects.project_context import get_target_repo_path, get_test_command
 
 TESTER_TIMEOUT_SECONDS = 300
 MAX_OUTPUT_CHARS = 10000
@@ -97,17 +97,18 @@ def run_tests(
     print(f"[TESTER] Starting | run_id={run_id}")
 
     start = time.perf_counter()
-    command = settings.test_command
+    command = get_test_command()
     resolved_command = _resolve_command(command)
+    target_repo_path = get_target_repo_path()
 
     print(f"[TESTER] Command: {command}")
-    print(f"[TESTER] Working directory: {settings.target_repo_path}")
+    print(f"[TESTER] Working directory: {target_repo_path}")
     print("[TESTER] Running tests...")
 
     try:
         completed = subprocess.run(
             resolved_command,
-            cwd=settings.target_repo_path,
+            cwd=target_repo_path,
             shell=True,
             capture_output=True,
             text=True,

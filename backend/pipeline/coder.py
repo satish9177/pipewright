@@ -26,6 +26,7 @@ from backend.models.handoff import PlannerHandoff, CoderHandoff
 from backend.memory.memory_store import load_hard_facts
 from backend.checkpoint.checkpoint_store import save_checkpoint
 from backend.utils.json_helpers import clean_json_response
+from backend.projects.project_context import get_target_repo_path
 
 CODER_MODEL = "gemini-2.5-flash"
 CODER_TEMPERATURE = 0.2
@@ -234,7 +235,7 @@ async def run_coder(
         fact_count = len(hard_facts.splitlines()) if hard_facts else 0
         print(f"[CODER] Loaded {fact_count} memory facts")
 
-        target_repo = settings.target_repo_path
+        target_repo = get_target_repo_path()
         print(f"[CODER] Reading target repo files from {target_repo}")
         file_contents_block = _build_file_contents_block(
             plan.files_to_read,

@@ -11,9 +11,9 @@ import shutil
 import difflib
 import subprocess
 from pathlib import Path
-from backend.config.keys import settings
 from backend.models.handoff import CoderHandoff, PatchResult, FileChange
 from backend.checkpoint.checkpoint_store import save_checkpoint
+from backend.projects.project_context import get_target_repo_path
 
 BACKUP_DIR = Path(__file__).parent.parent / "backups"
 
@@ -231,7 +231,7 @@ def _apply_file_change(change: FileChange, full_path: Path) -> None:
 
 def _rollback_from_manifest(run_id: str, manifest: list[dict]) -> bool:
     try:
-        target_repo = settings.target_repo_path
+        target_repo = get_target_repo_path()
         root = Path(target_repo).resolve()
 
         for entry in reversed(manifest):
@@ -278,7 +278,7 @@ def apply_patch(
     """
     print(f"[PATCH] Starting | run_id={run_id}")
 
-    target_repo = settings.target_repo_path
+    target_repo = get_target_repo_path()
     pre_patch_git_hash = _get_git_hash(target_repo)
     print(f"[PATCH] Pre-patch hash: {pre_patch_git_hash}")
 

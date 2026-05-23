@@ -35,16 +35,22 @@ NOT in Phase 1:
 
 ## Project Structure
 
-pipewright/                     <- repo root
-  backend/
-    requirements.txt            <- Python deps only
-    pytest.ini                  <- pytest config
-    main.py                     <- FastAPI entry point
+pipewright/                          <- repo root
+  backend/                           <- all Python code
+    requirements.txt                 <- Python deps only
+    pytest.ini                       <- pytest config
+    main.py                          <- FastAPI entry point
     tests/
       __init__.py
-      conftest.py               <- session-level fixtures
-      test_foundation.py        <- memory + checkpoint tests
-      test_planner.py           <- planner API tests
+      conftest.py
+      test_foundation.py
+      test_planner.py
+      test_coder.py
+      test_patch_applier.py
+      test_tester.py
+      test_approval_gate.py
+      test_orchestrator.py
+      test_projects.py
     pipeline/
       orchestrator.py
       planner.py
@@ -59,21 +65,35 @@ pipewright/                     <- repo root
       approval_gate.py
     models/
       handoff.py
+    projects/
+      project_context.py
+      project_store.py
     utils/
       json_helpers.py
     db/
       database.py
       schema.sql
+      pipewright.db                  <- gitignored
     config/
       keys.py
-  frontend/                     <- Phase 2
-    package.json                <- JS deps only
-    src/
-  AGENTS.md
-  .env                          <- never committed
-  .env.example
+    backups/                         <- gitignored, runtime only
+  frontend/                          <- Phase 2 React app
+    .gitkeep                         <- placeholder until Phase 2
+  venv/                              <- gitignored, stays at root
+  AGENTS.md                          <- project context for Codex
+  DECISIONS.md                       <- all major decisions logged
+  .env                               <- gitignored, never committed
+  .env.example                       <- committed, no real values
   .gitignore
   README.md
+
+## Separation Rules
+  All Python code lives in backend/
+  All JS/React code lives in frontend/
+  venv/ always stays at repo root
+  Never mix frontend and backend deps
+  backend/requirements.txt = Python only
+  frontend/package.json = JS only
 
 ## How to Run Tests
 Always run from pipewright/ root:
@@ -102,9 +122,10 @@ MVP Phase 1 complete — all modules built
 None yet
 
 ## Environment Variables Required
-ANTHROPIC_API_KEY=
-TARGET_REPO_PATH=
-TEST_COMMAND=
+GEMINI_API_KEY=
+
+Project repo paths and test commands are stored in SQLite
+through POST /projects. Do not edit .env to switch projects.
 
 ## Windows Compatibility
 - Never use special unicode characters in print() statements
@@ -119,6 +140,8 @@ TEST_COMMAND=
 - backend/models/handoff.py     -- PlannerHandoff, CoderHandoff, PatchResult, TestResult, ApprovalRequest
 - backend/main.py               -- FastAPI app, /health endpoint
 - backend/config/keys.py        -- Pydantic settings, .env loader
+- backend/projects/project_store.py -- create_project, get_project, list_projects
+- backend/projects/project_context.py -- selected project runtime config
 - backend/pipeline/approval_gate.py
   request_approval, approve_gate,
   reject_gate, get_pending_gates
@@ -128,6 +151,9 @@ TEST_COMMAND=
 - backend/tests/test_orchestrator.py
 
 ## FastAPI Routes
+POST /projects      create project with repo_path and test_command
+GET  /projects      list projects for selector
+GET  /projects/{id} get project details
 POST /run           start pipeline run
 GET  /runs          list all runs
 GET  /runs/{id}     get run status

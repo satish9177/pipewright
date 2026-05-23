@@ -11,8 +11,8 @@ from pydantic import Field
 
 class Settings(BaseSettings):
     gemini_api_key: str
-    target_repo_path: str
-    test_command: str
+    target_repo_path: str | None = None
+    test_command: str | None = None
 
     model_config = {
         "env_file": ".env",
