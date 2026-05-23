@@ -17,7 +17,8 @@ from backend.memory.memory_store import (
 from backend.checkpoint.checkpoint_store import (
     save_checkpoint,
     load_last_checkpoint,
-    load_step_checkpoint
+    load_step_checkpoint,
+    load_chunk_step_checkpoint
 )
 
 pytestmark = pytest.mark.unit
@@ -61,6 +62,7 @@ def test_save_and_load_checkpoint():
     assert loaded is not None
     assert loaded["step"] == "plan"
     assert loaded["git_commit_hash"] == "abc123"
+    assert loaded["chunk_number"] == 0
 
 
 def test_checkpoint_fails_without_tests_passed():
@@ -94,3 +96,43 @@ def test_load_step_checkpoint():
 def test_missing_checkpoint_returns_none():
     result = load_last_checkpoint("nonexistent-run-id")
     assert result is None
+
+
+def test_checkpoint_chunk_number_persistence():
+    run_id = str(uuid.uuid4())
+    cp = save_checkpoint(
+        run_id=run_id,
+        step="test",
+        output={"result": "passed"},
+        handoff_contract={"handoff_from": "tester"},
+        git_hash="chunk123",
+        tests_passed=True,
+        chunk_number=2
+    )
+    assert cp["chunk_number"] == 2
+
+    loaded = load_chunk_step_checkpoint(run_id, 2, "test")
+    assert loaded is not None
+    assert loaded["chunk_number"] == 2
+    assert loaded["step"] == "test"
+    assert loaded["output"]["result"] == "passed"
+
+    wrong_chunk = load_chunk_step_checkpoint(run_id, 1, "test")
+    assert wrong_chunk is None
+
+
+def test_legacy_chunk_checkpoint_still_loads():
+    run_id = str(uuid.uuid4())
+    save_checkpoint(
+        run_id=run_id,
+        step="plan",
+        output={"goal": "legacy"},
+        handoff_contract={"handoff_from": "planner"},
+        git_hash="legacy123",
+        tests_passed=True
+    )
+
+    loaded = load_chunk_step_checkpoint(run_id, 0, "plan")
+    assert loaded is not None
+    assert loaded["chunk_number"] == 0
+    assert loaded["output"]["goal"] == "legacy"

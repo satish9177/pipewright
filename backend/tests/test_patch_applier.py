@@ -11,7 +11,7 @@ import shutil
 import pytest
 from pathlib import Path
 from backend.models.handoff import CoderHandoff, FileChange
-from backend.pipeline.patch_applier import apply_patch, rollback_patch
+from backend.pipeline.patch_applier import BACKUP_DIR, apply_patch, rollback_patch
 
 pytestmark = pytest.mark.unit
 
@@ -147,3 +147,58 @@ def test_path_traversal_rejected(tmp_repo, monkeypatch):
 
     with pytest.raises(RuntimeError):
         apply_patch(output, run_id)
+
+
+def test_legacy_manifest_path_unchanged(tmp_repo, monkeypatch):
+    from backend.config import keys
+    monkeypatch.setattr(keys.settings, "target_repo_path", str(tmp_repo))
+
+    run_id = str(uuid.uuid4())
+    apply_patch(make_coder_output(run_id), run_id, chunk_number=0)
+
+    assert (BACKUP_DIR / run_id / "manifest.json").exists()
+
+
+def test_chunk_manifest_path_is_scoped(tmp_repo, monkeypatch):
+    from backend.config import keys
+    monkeypatch.setattr(keys.settings, "target_repo_path", str(tmp_repo))
+
+    run_id = str(uuid.uuid4())
+    output_one = CoderHandoff(
+        run_id=run_id,
+        feature_description="Create chunk one file",
+        files_changed=[
+            FileChange(
+                path="chunk_one.py",
+                action="create",
+                content="x = 1\n",
+                reason="chunk one"
+            )
+        ],
+        summary="Created chunk one"
+    )
+    output_two = CoderHandoff(
+        run_id=run_id,
+        feature_description="Create chunk two file",
+        files_changed=[
+            FileChange(
+                path="chunk_two.py",
+                action="create",
+                content="x = 2\n",
+                reason="chunk two"
+            )
+        ],
+        summary="Created chunk two"
+    )
+
+    apply_patch(output_one, run_id, chunk_number=1)
+    apply_patch(output_two, run_id, chunk_number=2)
+
+    chunk_one_manifest = BACKUP_DIR / run_id / "chunk_1" / "manifest.json"
+    chunk_two_manifest = BACKUP_DIR / run_id / "chunk_2" / "manifest.json"
+
+    assert chunk_one_manifest.exists()
+    assert chunk_two_manifest.exists()
+    assert "chunk_one.py" in chunk_one_manifest.read_text(encoding="utf-8")
+    assert "chunk_two.py" in chunk_two_manifest.read_text(encoding="utf-8")
+    assert "chunk_two.py" not in chunk_one_manifest.read_text(encoding="utf-8")

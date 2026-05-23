@@ -87,7 +87,8 @@ def _warn_if_failure_strings(output: str) -> None:
 
 def run_tests(
     patch_result: PatchResult,
-    run_id: str
+    run_id: str,
+    chunk_number: int = 0
 ) -> PipelineTestResult:
     """
     Synchronous. No AI calls. Pure subprocess.
@@ -144,7 +145,8 @@ def run_tests(
                 output=test_result.model_dump(),
                 handoff_contract=test_result.model_dump(),
                 git_hash=patch_result.post_patch_git_hash,
-                tests_passed=True
+                tests_passed=True,
+                chunk_number=chunk_number
             )
             print(f"[TESTER] Checkpoint saved | run_id={run_id}")
             print(f"[TESTER] Complete | run_id={run_id}")
@@ -152,7 +154,7 @@ def run_tests(
 
         print(f"[TESTER] Result: FAILED | {failed_tests} failed")
         print("[TESTER] Tests failed. Triggering rollback.")
-        rollback_result = rollback_patch(run_id)
+        rollback_result = rollback_patch(run_id, chunk_number)
         if rollback_result:
             print("[TESTER] Rollback complete.")
         else:
@@ -175,7 +177,7 @@ def run_tests(
         print(f"[TESTER] Duration: {duration:.2f} seconds")
         print("[TESTER] Result: FAILED | command timed out")
         print("[TESTER] Tests failed. Triggering rollback.")
-        rollback_result = rollback_patch(run_id)
+        rollback_result = rollback_patch(run_id, chunk_number)
         if rollback_result:
             print("[TESTER] Rollback complete.")
         else:
@@ -196,7 +198,7 @@ def run_tests(
         print("[TESTER] Result: FAILED | unexpected error")
         print("[TESTER] Tests failed. Triggering rollback.")
         try:
-            rollback_result = rollback_patch(run_id)
+            rollback_result = rollback_patch(run_id, chunk_number)
             if rollback_result:
                 print("[TESTER] Rollback complete.")
             else:

@@ -88,11 +88,23 @@ def _validate_path(relative_path: str, target_repo: str) -> Path:
         print(f"[PATCH] Validating path: {relative_path}")
 
         if not relative_path or not relative_path.strip():
-            raise RuntimeError("patch_applier.py: empty path rejected")
+            raise RuntimeError("patch_applier.py: [SECURITY] empty path rejected")
+
+        normalized_input = relative_path.replace("\\", "/")
+        if (
+            ".." in normalized_input.split("/")
+            or normalized_input.startswith("/")
+            or Path(relative_path).is_absolute()
+        ):
+            raise RuntimeError(
+                f"patch_applier.py: [SECURITY] unsafe path rejected: "
+                f"{relative_path}"
+            )
 
         if _is_forbidden_path(relative_path):
             raise RuntimeError(
-                f"patch_applier.py: forbidden path rejected: {relative_path}"
+                f"patch_applier.py: [SECURITY] forbidden path rejected: "
+                f"{relative_path}"
             )
 
         root = Path(target_repo).resolve()
@@ -102,7 +114,8 @@ def _validate_path(relative_path: str, target_repo: str) -> Path:
             full_path.relative_to(root)
         except ValueError:
             raise RuntimeError(
-                f"patch_applier.py: path traversal detected: {relative_path}"
+                f"patch_applier.py: [SECURITY] path traversal detected: "
+                f"{relative_path}"
             )
 
         return full_path
@@ -114,7 +127,30 @@ def _validate_path(relative_path: str, target_repo: str) -> Path:
         )
 
 
-def _backup_file(relative_path: str, full_path: Path, run_id: str) -> None:
+def _backup_root(run_id: str, chunk_number: int = 0) -> Path:
+    if chunk_number == 0:
+        return BACKUP_DIR / run_id
+    return BACKUP_DIR / run_id / f"chunk_{chunk_number}"
+
+
+def _manifest_path(run_id: str, chunk_number: int = 0) -> Path:
+    return _backup_root(run_id, chunk_number) / "manifest.json"
+
+
+def _original_backup_path(
+    run_id: str,
+    relative_path: str,
+    chunk_number: int = 0
+) -> Path:
+    return _backup_root(run_id, chunk_number) / "original" / relative_path
+
+
+def _backup_file(
+    relative_path: str,
+    full_path: Path,
+    run_id: str,
+    chunk_number: int = 0
+) -> None:
     try:
         print(f"[PATCH] Backing up: {relative_path}")
 
@@ -123,7 +159,7 @@ def _backup_file(relative_path: str, full_path: Path, run_id: str) -> None:
                 f"patch_applier.py: cannot backup missing file: {relative_path}"
             )
 
-        backup_path = BACKUP_DIR / run_id / "original" / relative_path
+        backup_path = _original_backup_path(run_id, relative_path, chunk_number)
         backup_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(full_path, backup_path)
     except RuntimeError:
@@ -164,9 +200,13 @@ def _generate_file_diff(
         )
 
 
-def _write_manifest(run_id: str, manifest: list[dict]) -> None:
+def _write_manifest(
+    run_id: str,
+    manifest: list[dict],
+    chunk_number: int = 0
+) -> None:
     try:
-        manifest_path = BACKUP_DIR / run_id / "manifest.json"
+        manifest_path = _manifest_path(run_id, chunk_number)
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(
             json.dumps(manifest, indent=2),
@@ -178,9 +218,9 @@ def _write_manifest(run_id: str, manifest: list[dict]) -> None:
         )
 
 
-def _load_manifest(run_id: str) -> list[dict] | None:
+def _load_manifest(run_id: str, chunk_number: int = 0) -> list[dict] | None:
     try:
-        manifest_path = BACKUP_DIR / run_id / "manifest.json"
+        manifest_path = _manifest_path(run_id, chunk_number)
         if not manifest_path.exists():
             return None
         return json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -229,7 +269,11 @@ def _apply_file_change(change: FileChange, full_path: Path) -> None:
         )
 
 
-def _rollback_from_manifest(run_id: str, manifest: list[dict]) -> bool:
+def _rollback_from_manifest(
+    run_id: str,
+    manifest: list[dict],
+    chunk_number: int = 0
+) -> bool:
     try:
         target_repo = get_target_repo_path()
         root = Path(target_repo).resolve()
@@ -237,14 +281,25 @@ def _rollback_from_manifest(run_id: str, manifest: list[dict]) -> bool:
         for entry in reversed(manifest):
             relative_path = entry["path"]
             action = entry["action"]
+            normalized_input = relative_path.replace("\\", "/")
+            if (
+                ".." in normalized_input.split("/")
+                or normalized_input.startswith("/")
+                or Path(relative_path).is_absolute()
+            ):
+                raise RuntimeError(
+                    f"patch_applier.py: [SECURITY] rollback unsafe path "
+                    f"rejected: {relative_path}"
+                )
+
             full_path = (root / relative_path).resolve()
 
             try:
                 full_path.relative_to(root)
             except ValueError:
                 raise RuntimeError(
-                    f"patch_applier.py: rollback path traversal detected: "
-                    f"{relative_path}"
+                    f"patch_applier.py: [SECURITY] rollback path traversal "
+                    f"detected: {relative_path}"
                 )
 
             if action == "create":
@@ -252,7 +307,7 @@ def _rollback_from_manifest(run_id: str, manifest: list[dict]) -> bool:
                     full_path.unlink()
                 continue
 
-            backup_path = BACKUP_DIR / run_id / "original" / relative_path
+            backup_path = _original_backup_path(run_id, relative_path, chunk_number)
             if not backup_path.exists():
                 raise RuntimeError(
                     f"patch_applier.py: rollback backup missing: {relative_path}"
@@ -270,7 +325,8 @@ def _rollback_from_manifest(run_id: str, manifest: list[dict]) -> bool:
 
 def apply_patch(
     coder_output: CoderHandoff,
-    run_id: str
+    run_id: str,
+    chunk_number: int = 0
 ) -> PatchResult:
     """
     Synchronous. No AI calls. Pure file operations.
@@ -318,13 +374,13 @@ def apply_patch(
 
         for change, full_path, _original_content, _new_content in validated_changes:
             if change.action in ["modify", "delete"]:
-                _backup_file(change.path, full_path, run_id)
+                _backup_file(change.path, full_path, run_id, chunk_number)
 
             manifest.append({
                 "path": change.path,
                 "action": change.action
             })
-            _write_manifest(run_id, manifest)
+            _write_manifest(run_id, manifest, chunk_number)
             _apply_file_change(change, full_path)
 
         diffs = []
@@ -355,7 +411,8 @@ def apply_patch(
             output=patch_result.model_dump(),
             handoff_contract=patch_result.model_dump(),
             git_hash=post_patch_git_hash,
-            tests_passed=True
+            tests_passed=True,
+            chunk_number=chunk_number
         )
         print(f"[PATCH] Checkpoint saved | run_id={run_id}")
         print(f"[PATCH] Complete | run_id={run_id}")
@@ -364,7 +421,7 @@ def apply_patch(
     except RuntimeError as error:
         if manifest:
             try:
-                _rollback_from_manifest(run_id, manifest)
+                _rollback_from_manifest(run_id, manifest, chunk_number)
             except Exception as rollback_error:
                 raise RuntimeError(
                     f"patch_applier.py: application failed and rollback failed. "
@@ -378,7 +435,7 @@ def apply_patch(
     except Exception as error:
         if manifest:
             try:
-                _rollback_from_manifest(run_id, manifest)
+                _rollback_from_manifest(run_id, manifest, chunk_number)
             except Exception as rollback_error:
                 raise RuntimeError(
                     f"patch_applier.py: application failed and rollback failed. "
@@ -391,7 +448,7 @@ def apply_patch(
         )
 
 
-def rollback_patch(run_id: str) -> bool:
+def rollback_patch(run_id: str, chunk_number: int = 0) -> bool:
     """
     Restore all backed up files for this run.
     Returns True if rollback succeeded.
@@ -399,13 +456,13 @@ def rollback_patch(run_id: str) -> bool:
     Called by tester.py if tests fail.
     """
     try:
-        manifest = _load_manifest(run_id)
+        manifest = _load_manifest(run_id, chunk_number)
         if manifest is None:
             print(f"[PATCH] No backup found | run_id={run_id}")
             return False
 
         print(f"[PATCH] Rolling back | run_id={run_id}")
-        result = _rollback_from_manifest(run_id, manifest)
+        result = _rollback_from_manifest(run_id, manifest, chunk_number)
         print(f"[PATCH] Rollback complete | run_id={run_id}")
         return result
     except Exception as error:

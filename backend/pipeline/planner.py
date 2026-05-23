@@ -106,7 +106,8 @@ def _parse_handoff(raw_text: str, run_id: str) -> PlannerHandoff:
 
 async def run_planner(
     feature_description: str,
-    run_id: str
+    run_id: str,
+    chunk_number: int = 0
 ) -> PlannerHandoff:
     """
     Run the planning stage of the pipeline.
@@ -213,7 +214,8 @@ async def run_planner(
             output=handoff.model_dump(),
             handoff_contract=handoff.model_dump(),
             git_hash="pre-code",
-            tests_passed=True
+            tests_passed=True,
+            chunk_number=chunk_number
         )
         print(f"[PLANNER] Checkpoint saved | run_id={run_id}")
     except Exception as cp_error:

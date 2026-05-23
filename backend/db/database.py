@@ -99,6 +99,11 @@ def _migrate_db(conn) -> None:
                 "ALTER TABLE projects ADD COLUMN github_base_branch TEXT "
                 "DEFAULT 'pipewright-staging'",
             ),
+            (
+                "checkpoints",
+                "chunk_number",
+                "ALTER TABLE checkpoints ADD COLUMN chunk_number INTEGER DEFAULT 0",
+            ),
         ]
 
         for table_name, column_name, migration_sql in migrations:
