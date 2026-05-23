@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     handoff_contract TEXT,
     git_commit_hash TEXT,
     tests_passed INTEGER DEFAULT 0,
+    chunk_number INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
 );

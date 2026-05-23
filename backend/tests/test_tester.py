@@ -128,3 +128,34 @@ def test_duration_is_recorded(monkeypatch):
     result = run_tests(patch, run_id)
 
     assert result.duration_seconds > 0
+
+
+def test_failing_command_rolls_back_chunk(monkeypatch):
+    from backend.config import keys
+    import backend.pipeline.tester as tester
+
+    monkeypatch.setattr(
+        keys.settings,
+        "test_command",
+        "python -c \"import sys; sys.exit(1)\""
+    )
+    monkeypatch.setattr(
+        keys.settings,
+        "target_repo_path",
+        "C:\\Users\\Hp\\pipewright"
+    )
+
+    calls = []
+
+    def fake_rollback(run_id: str, chunk_number: int = 0) -> bool:
+        calls.append((run_id, chunk_number))
+        return True
+
+    monkeypatch.setattr(tester, "rollback_patch", fake_rollback)
+
+    run_id = str(uuid.uuid4())
+    patch = make_patch_result(run_id)
+    result = run_tests(patch, run_id, chunk_number=2)
+
+    assert result.passed is False
+    assert calls == [(run_id, 2)]
