@@ -64,3 +64,48 @@ def test_list_projects_returns_list():
 def test_create_project_requires_name(tmp_repo):
     with pytest.raises(ValueError):
         create_project("", str(tmp_repo), "python --version")
+
+
+def test_create_project_stores_branch_and_description(tmp_repo):
+    project = create_project(
+        name=f"Branch Project {uuid.uuid4()}",
+        repo_path=str(tmp_repo),
+        test_command="python --version",
+        branch="develop",
+        description="Test description",
+    )
+
+    assert project["branch"] == "develop"
+    assert project["description"] == "Test description"
+
+
+def test_create_project_defaults_github_base_branch(tmp_repo):
+    project = create_project(
+        name=f"Default Base {uuid.uuid4()}",
+        repo_path=str(tmp_repo),
+        test_command="python --version",
+    )
+
+    assert project["github_base_branch"] == "pipewright-staging"
+
+
+def test_create_project_stores_github_fields(tmp_repo):
+    project = create_project(
+        name=f"GitHub Project {uuid.uuid4()}",
+        repo_path=str(tmp_repo),
+        test_command="python --version",
+        github_token="secret-token",
+        github_owner="owner",
+        github_repo="repo",
+        github_base_branch="pipewright-staging",
+    )
+
+    assert project["github_token"] == "secret-token"
+    assert project["github_owner"] == "owner"
+    assert project["github_repo"] == "repo"
+    assert project["github_base_branch"] == "pipewright-staging"
+
+
+def test_create_project_requires_test_command(tmp_repo):
+    with pytest.raises(ValueError):
+        create_project(f"Missing Command {uuid.uuid4()}", str(tmp_repo), "")

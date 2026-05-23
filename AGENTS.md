@@ -74,6 +74,8 @@ pipewright/                          <- repo root
     projects/
       project_context.py
       project_store.py
+    github/
+      github_client.py
     utils/
       json_helpers.py
     db/
@@ -138,8 +140,15 @@ For planner tests (requires GEMINI_API_KEY):
 7. patch_applier always backs up before applying
 8. patch_applier always rolls back if tests fail
 
+## Important Rules
+Pipeline never pushes to main directly
+Always targets pipewright-staging branch
+Branch names: pipewright/description-timestamp
+GitHub PR creation is non-fatal
+If PR fails pipeline still completes
+
 ## Current Status
-MVP Phase 1 complete — all modules built
+Phase 2 -- feature/github-pr in progress
 
 ## Completed Modules
 None yet
@@ -165,6 +174,9 @@ through POST /projects. Do not edit .env to switch projects.
 - backend/config/keys.py        -- Pydantic settings, .env loader
 - backend/projects/project_store.py -- create_project, get_project, list_projects
 - backend/projects/project_context.py -- selected project runtime config
+- backend/github/github_client.py
+  create_pull_request -- creates branch and PR
+- backend/tests/test_github_client.py
 - backend/pipeline/approval_gate.py
   request_approval, approve_gate,
   reject_gate, get_pending_gates
@@ -174,9 +186,11 @@ through POST /projects. Do not edit .env to switch projects.
 - backend/tests/test_orchestrator.py
 
 ## FastAPI Routes
-POST /projects      create project with repo_path and test_command
-GET  /projects      list projects for selector
-GET  /projects/{id} get project details
+POST   /projects              register new project
+GET    /projects              list all projects
+GET    /projects/{id}         get single project
+PATCH  /projects/{id}         update project + GitHub credentials
+DELETE /projects/{id}         soft delete project
 POST /run           start pipeline run
 GET  /runs          list all runs
 GET  /runs/{id}     get run status

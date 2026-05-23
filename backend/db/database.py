@@ -40,14 +40,69 @@ def _column_exists(conn, table_name: str, column_name: str) -> bool:
         )
 
 
-def _run_migrations(conn) -> None:
+def _add_column_if_missing(
+    conn,
+    table_name: str,
+    column_name: str,
+    migration_sql: str
+) -> None:
+    try:
+        if not _column_exists(conn, table_name, column_name):
+            conn.execute(text(migration_sql))
+    except Exception as error:
+        raise RuntimeError(
+            f"database.py: Failed to add column {table_name}.{column_name}: "
+            f"{error}"
+        )
+
+
+def _migrate_db(conn) -> None:
     """
     Apply small SQLite migrations for existing local databases.
     Safe to call multiple times.
     """
     try:
-        if not _column_exists(conn, "pipeline_runs", "project_id"):
-            conn.execute(text("ALTER TABLE pipeline_runs ADD COLUMN project_id TEXT"))
+        migrations = [
+            (
+                "pipeline_runs",
+                "project_id",
+                "ALTER TABLE pipeline_runs ADD COLUMN project_id TEXT",
+            ),
+            (
+                "projects",
+                "branch",
+                "ALTER TABLE projects ADD COLUMN branch TEXT DEFAULT 'main'",
+            ),
+            (
+                "projects",
+                "description",
+                "ALTER TABLE projects ADD COLUMN description TEXT DEFAULT ''",
+            ),
+            (
+                "projects",
+                "github_token",
+                "ALTER TABLE projects ADD COLUMN github_token TEXT",
+            ),
+            (
+                "projects",
+                "github_owner",
+                "ALTER TABLE projects ADD COLUMN github_owner TEXT",
+            ),
+            (
+                "projects",
+                "github_repo",
+                "ALTER TABLE projects ADD COLUMN github_repo TEXT",
+            ),
+            (
+                "projects",
+                "github_base_branch",
+                "ALTER TABLE projects ADD COLUMN github_base_branch TEXT "
+                "DEFAULT 'pipewright-staging'",
+            ),
+        ]
+
+        for table_name, column_name, migration_sql in migrations:
+            _add_column_if_missing(conn, table_name, column_name, migration_sql)
     except Exception as error:
         raise RuntimeError(f"database.py: Failed to run migrations: {error}")
 
@@ -65,7 +120,7 @@ def init_db() -> None:
                 statement = statement.strip()
                 if statement:
                     conn.execute(text(statement))
-            _run_migrations(conn)
+            _migrate_db(conn)
             conn.commit()
         print("Database initialized successfully.")
         print(f"Database path: {DB_PATH}")

@@ -136,9 +136,24 @@ def _load_project_runtime(project_id: str | None) -> ProjectRuntimeConfig | None
         )
 
 
+def _load_project(project_id: str | None) -> dict | None:
+    if project_id is None:
+        return None
+    try:
+        return require_project(project_id)
+    except ValueError:
+        raise
+    except Exception as error:
+        raise RuntimeError(
+            f"orchestrator.py: failed to load project. "
+            f"project_id={project_id} | error={error}"
+        )
+
+
 async def _run_pipeline_steps(
     feature_description: str,
-    run_id: str
+    run_id: str,
+    project: dict | None = None
 ) -> dict:
     print(f"[PIPELINE] Started | run_id={run_id}")
 
@@ -210,11 +225,47 @@ async def _run_pipeline_steps(
         _update_run_status(run_id, "failed", "approval")
         return _fail(run_id, "approval", error)
 
+    pr_result = None
+    if (
+        project
+        and project.get("github_token")
+        and project.get("github_owner")
+        and project.get("github_repo")
+    ):
+        try:
+            _update_run_status(run_id, "running", "github_pr")
+            from backend.github.github_client import create_pull_request
+
+            pr_result = create_pull_request(
+                github_token=project["github_token"],
+                github_owner=project["github_owner"],
+                github_repo=project["github_repo"],
+                github_base_branch=project.get(
+                    "github_base_branch",
+                    "pipewright-staging"
+                ),
+                feature_description=feature_description,
+                coder_output=coder_output,
+                patch_result=patch_result,
+                diff=patch_result.diff,
+                run_id=run_id,
+                repo_path=project["repo_path"]
+            )
+            print("[PIPELINE] Stage 6 complete: github_pr")
+            print(f"[PIPELINE] PR URL: {pr_result['pr_url']}")
+        except Exception as error:
+            print(f"[PIPELINE] GitHub PR failed (non-fatal): {error}")
+            print("[PIPELINE] Files are approved and on disk.")
+            print("[PIPELINE] Create PR manually if needed.")
+    else:
+        print("[PIPELINE] GitHub not configured for this project.")
+        print("[PIPELINE] Skipping PR creation.")
+
     _update_run_status(run_id, "complete", "done")
     _surface_memory_suggestions(plan, coder_output)
 
     print("[PIPELINE] Complete | run_id=" + run_id)
-    return {
+    result = {
         "run_id": run_id,
         "status": "complete",
         "feature": feature_description,
@@ -223,24 +274,32 @@ async def _run_pipeline_steps(
         "approved": True
     }
 
+    if pr_result:
+        result["pr_url"] = pr_result["pr_url"]
+        result["pr_number"] = pr_result["pr_number"]
+        result["branch_name"] = pr_result["branch_name"]
+
+    return result
+
 
 async def _run_pipeline_with_id(
     feature_description: str,
     run_id: str,
     project_id: str | None = None
 ) -> dict:
+    project = _load_project(project_id)
     project_runtime = _load_project_runtime(project_id)
     _create_run(run_id, feature_description, project_id)
 
     if project_runtime is None:
-        return await _run_pipeline_steps(feature_description, run_id)
+        return await _run_pipeline_steps(feature_description, run_id, project)
 
     with active_project(project_runtime):
         print(
             f"[PIPELINE] Project selected | "
             f"project_id={project_runtime.project_id}"
         )
-        return await _run_pipeline_steps(feature_description, run_id)
+        return await _run_pipeline_steps(feature_description, run_id, project)
 
 
 async def run_pipeline(

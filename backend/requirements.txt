@@ -8,3 +8,4 @@ pytest==8.2.1
 pytest-asyncio==0.23.7
 ruff==0.4.5
 google-generativeai==0.7.2
+PyGithub==2.3.0
