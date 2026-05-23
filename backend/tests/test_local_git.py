@@ -67,6 +67,14 @@ def test_ensure_git_repo_fails_for_non_git_directory(tmp_path):
         ensure_git_repo(str(tmp_path))
 
 
+def test_ensure_git_repo_rejects_subdirectory_inside_git_repo(git_repo):
+    nested = git_repo / "nested"
+    nested.mkdir()
+
+    with pytest.raises(RuntimeError, match=r"\[GIT\]"):
+        ensure_git_repo(str(nested))
+
+
 def test_get_current_hash_returns_hash_after_initial_commit(git_repo):
     expected = initial_commit(git_repo)
 

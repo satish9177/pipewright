@@ -85,11 +85,27 @@ def run_git(
 
 
 def ensure_git_repo(repo_path: str) -> None:
+    repo = _validate_repo_path(repo_path)
+
     result = run_git(["rev-parse", "--is-inside-work-tree"], repo_path)
     if result.returncode != 0 or result.stdout.strip() != "true":
         raise RuntimeError(
             f"[GIT] repo_path is not a git repository: {repo_path} "
             f"{result.stderr.strip()}"
+        )
+
+    top_level = run_git(["rev-parse", "--show-toplevel"], repo_path)
+    if top_level.returncode != 0:
+        raise RuntimeError(
+            f"[GIT] failed to resolve git repository root: "
+            f"{top_level.stderr.strip()}"
+        )
+
+    git_root = Path(top_level.stdout.strip()).resolve()
+    if git_root != repo:
+        raise RuntimeError(
+            f"[GIT] repo_path is inside a Git worktree but is not the repo root: "
+            f"repo_path={repo} git_root={git_root}"
         )
 
 
