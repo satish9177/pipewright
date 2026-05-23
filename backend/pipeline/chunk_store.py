@@ -410,7 +410,7 @@ def get_previous_chunks_context(run_id: str, before_chunk_number: int) -> str:
                 SELECT * FROM chunks
                 WHERE run_id = :run_id
                   AND chunk_number < :before_chunk_number
-                  AND status = 'complete'
+                  AND status IN ('complete', 'completed')
                 ORDER BY chunk_number ASC
             """), {
                 "run_id": run_id,
