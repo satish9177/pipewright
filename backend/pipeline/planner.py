@@ -26,7 +26,7 @@ from backend.memory.memory_store import load_hard_facts
 from backend.checkpoint.checkpoint_store import save_checkpoint
 from backend.utils.json_helpers import clean_json_response
 
-PLANNER_MODEL = "gemini-2.5-flash"
+PLANNER_MODEL = "gemini-2.5-flash-lite"
 PLANNER_TEMPERATURE = 0.2
 PLANNER_MAX_TOKENS = 2000
 

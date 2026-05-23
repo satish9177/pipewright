@@ -21,6 +21,9 @@ from backend.pipeline.patch_applier import apply_patch
 from backend.pipeline.tester import run_tests
 from backend.pipeline.approval_gate import request_approval
 
+# Safety limit — max tokens per pipeline run
+MAX_INPUT_TOKENS_PER_RUN = 50000
+MAX_OUTPUT_TOKENS_PER_RUN = 20000
 
 def _create_run(run_id: str, feature: str) -> None:
     try:
