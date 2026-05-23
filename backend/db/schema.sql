@@ -64,3 +64,18 @@ CREATE TABLE IF NOT EXISTS approval_gates (
     decided_at DATETIME,
     FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
 );
+
+CREATE TABLE IF NOT EXISTS file_index (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    file_type TEXT NOT NULL,
+    summary TEXT,
+    key_imports TEXT,
+    last_modified DATETIME,
+    token_estimate INTEGER DEFAULT 0,
+    line_count INTEGER DEFAULT 0,
+    size_bytes INTEGER DEFAULT 0,
+    indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(project_id, path)
+);

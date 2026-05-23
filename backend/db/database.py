@@ -103,8 +103,75 @@ def _migrate_db(conn) -> None:
 
         for table_name, column_name, migration_sql in migrations:
             _add_column_if_missing(conn, table_name, column_name, migration_sql)
+        _ensure_file_index_shape(conn)
     except Exception as error:
         raise RuntimeError(f"database.py: Failed to run migrations: {error}")
+
+
+def _table_exists(conn, table_name: str) -> bool:
+    try:
+        row = conn.execute(text("""
+            SELECT name FROM sqlite_master
+            WHERE type = 'table' AND name = :table_name
+        """), {"table_name": table_name}).fetchone()
+        return row is not None
+    except Exception as error:
+        raise RuntimeError(
+            f"database.py: Failed to inspect table {table_name}: {error}"
+        )
+
+
+def _ensure_file_index_shape(conn) -> None:
+    """
+    Ensure file_index supports project-scoped indexing.
+
+    file_index is disposable cache data, so an older incompatible version can
+    be rebuilt safely instead of attempting fragile SQLite constraint changes.
+    """
+    try:
+        if not _table_exists(conn, "file_index"):
+            return
+
+        rows = conn.execute(text("PRAGMA table_info(file_index)")).fetchall()
+        columns = {row._mapping["name"] for row in rows}
+        required_columns = {
+            "id",
+            "project_id",
+            "path",
+            "file_type",
+            "summary",
+            "key_imports",
+            "last_modified",
+            "token_estimate",
+            "line_count",
+            "size_bytes",
+            "indexed_at",
+        }
+
+        if required_columns.issubset(columns):
+            return
+
+        conn.execute(text("DROP TABLE file_index"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS file_index (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                file_type TEXT NOT NULL,
+                summary TEXT,
+                key_imports TEXT,
+                last_modified DATETIME,
+                token_estimate INTEGER DEFAULT 0,
+                line_count INTEGER DEFAULT 0,
+                size_bytes INTEGER DEFAULT 0,
+                indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(project_id, path)
+            )
+        """))
+    except Exception as error:
+        raise RuntimeError(
+            f"database.py: Failed to ensure file_index shape: {error}"
+        )
 
 
 def init_db() -> None:
