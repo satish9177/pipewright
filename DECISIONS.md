@@ -261,3 +261,17 @@ Fix: orchestrator calls rollback_patch() immediately
 
 Rule: Any pipeline exit that is not 'complete'
       must trigger rollback if patch was applied.
+
+## 2026-05-23 — Local disk changes are temporary
+
+Pipeline writes files to local disk for testing.
+After approval and PR creation these local
+changes should be discarded.
+The GitHub PR is the real deliverable.
+
+After every pipeline run:
+  1. Review PR on GitHub
+  2. Merge if satisfied
+  3. git pull to get changes locally
+  4. Discard local pipeline working copy:
+     git checkout <changed-files>
