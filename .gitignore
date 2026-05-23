@@ -1,15 +1,31 @@
-.env
+# Python
 __pycache__/
 *.pyc
 *.pyo
-
-# Runtime generated folders - never commit
-.pytest_cache/
-.pytest_tmp/
-backend/backups/
-*.db
-*.sqlite
 .venv/
 venv/
+
+# Environment
+.env
+
+# Testing
+.pytest_cache/
+.pytest_tmp/
+backend/.pytest_cache/
+
+# Runtime generated
+backend/backups/
+
+# Database
+*.db
+*.sqlite
+
+# Distribution
 dist/
 build/
+*.egg-info/
+
+# Frontend (Phase 2)
+frontend/node_modules/
+frontend/.next/
+frontend/dist/

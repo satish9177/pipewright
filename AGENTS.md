@@ -35,27 +35,33 @@ NOT in Phase 1:
 
 ## Project Structure
 
-pipewright/                     <- repo root
-  backend/
-    requirements.txt            <- Python deps only
-    pytest.ini                  <- pytest config
-    main.py                     <- FastAPI entry point
+pipewright/                          <- repo root
+  backend/                           <- all Python code
+    requirements.txt                 <- Python deps only
+    pytest.ini                       <- pytest config
+    main.py                          <- FastAPI entry point
     tests/
       __init__.py
-      conftest.py               <- session-level fixtures
-      test_foundation.py        <- memory + checkpoint tests
-      test_planner.py           <- planner API tests
+      conftest.py
+      test_foundation.py
+      test_planner.py
+      test_coder.py
+      test_patch_applier.py
+      test_tester.py
+      test_approval_gate.py
+      test_orchestrator.py
     pipeline/
       orchestrator.py
       planner.py
       coder.py
       patch_applier.py
       tester.py
+      approval_gate.py
     memory/
       memory_store.py
     checkpoint/
       checkpoint_store.py
-    human/
+    human/                           <- renamed to approval in Phase 2
       approval_gate.py
     models/
       handoff.py
@@ -64,16 +70,27 @@ pipewright/                     <- repo root
     db/
       database.py
       schema.sql
+      pipewright.db                  <- gitignored
     config/
       keys.py
-  frontend/                     <- Phase 2
-    package.json                <- JS deps only
-    src/
-  AGENTS.md
-  .env                          <- never committed
-  .env.example
+    backups/                         <- gitignored, runtime only
+  frontend/                          <- Phase 2 React app
+    .gitkeep                         <- placeholder until Phase 2
+  venv/                              <- gitignored, stays at root
+  AGENTS.md                          <- project context for Codex
+  DECISIONS.md                       <- all major decisions logged
+  .env                               <- gitignored, never committed
+  .env.example                       <- committed, no real values
   .gitignore
   README.md
+
+## Separation Rules
+  All Python code lives in backend/
+  All JS/React code lives in frontend/
+  venv/ always stays at repo root
+  Never mix frontend and backend deps
+  backend/requirements.txt = Python only
+  frontend/package.json = JS only
 
 ## How to Run Tests
 Always run from pipewright/ root:
