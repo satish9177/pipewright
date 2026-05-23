@@ -1,0 +1,282 @@
+/* ============================================================
+   PIPEWRIGHT DESIGN SYSTEM — colors & type
+   ============================================================
+   Tone: engineered ledger. Industrial blueprint + dev terminal.
+   Use mono for status tags, diffs, code, and run IDs.
+   Use sans for UI labels, headings, and prose.
+   ============================================================ */
+
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+
+:root {
+  /* ---------- COLOR ---------- */
+
+  /* Ink — primary surfaces & text on light bg */
+  --pw-ink-900: #0E1116;   /* near-black, primary text & dark surface */
+  --pw-ink-800: #1A1F26;
+  --pw-ink-700: #2A3038;
+  --pw-ink-600: #3D4550;
+
+  /* Steel — neutral gray scale */
+  --pw-steel-500: #6B7480;
+  --pw-steel-400: #8A929C;
+  --pw-steel-300: #B5BAC2;
+  --pw-steel-200: #D6D9DE;
+  --pw-steel-150: #E4E6EA;
+  --pw-steel-100: #EDEEF1;
+  --pw-steel-50:  #F4F5F7;
+
+  /* Paper — warm off-white. The blueprint base. */
+  --pw-paper:     #F6F4EE;
+  --pw-paper-2:   #EFEBE0;   /* slightly darker — secondary surface */
+  --pw-paper-3:   #E6E0D0;   /* divider on paper bg */
+
+  /* Solder copper — the single warm accent. The "wright" mark. */
+  --pw-copper-700: #8A3F12;
+  --pw-copper-600: #B7531C;  /* primary accent */
+  --pw-copper-500: #C76A36;
+  --pw-copper-400: #D88B5F;
+  --pw-copper-100: #F1DDCC;
+  --pw-copper-50:  #FAEFE5;
+
+  /* Status — pipeline run / gate states */
+  --pw-pass-700:   #14502C;
+  --pw-pass-600:   #1F6E3D;  /* approved / passed */
+  --pw-pass-100:   #D5E8DC;
+  --pw-pass-50:    #EAF3EE;
+
+  --pw-wait-700:   #6B5410;
+  --pw-wait-600:   #8A6D1A;  /* pending / running */
+  --pw-wait-100:   #EBE0BC;
+  --pw-wait-50:    #F5EFD7;
+
+  --pw-fail-700:   #7A1F1F;
+  --pw-fail-600:   #9B2C2C;  /* rejected / failed */
+  --pw-fail-100:   #F1D4D4;
+  --pw-fail-50:    #FAE8E8;
+
+  --pw-info-700:   #163A6F;
+  --pw-info-600:   #1F4A8A;  /* blueprint blue / informational */
+  --pw-info-100:   #D5DFEF;
+  --pw-info-50:    #EAF0F7;
+
+  /* Risk levels — referenced by ApprovalRequest.risk_level */
+  --pw-risk-low:    var(--pw-pass-600);
+  --pw-risk-med:    var(--pw-wait-600);
+  --pw-risk-high:   var(--pw-fail-600);
+
+  /* ---------- SEMANTIC SURFACE / TEXT ---------- */
+  --pw-bg:          var(--pw-paper);
+  --pw-bg-elev:    #FFFFFF;
+  --pw-bg-sunken:  var(--pw-paper-2);
+  --pw-bg-inverse: var(--pw-ink-900);
+
+  --pw-fg:          var(--pw-ink-900);
+  --pw-fg-muted:   var(--pw-ink-700);
+  --pw-fg-subtle:  var(--pw-steel-500);
+  --pw-fg-inverse: var(--pw-paper);
+
+  --pw-border:        var(--pw-steel-200);
+  --pw-border-strong: var(--pw-ink-900);
+  --pw-border-dashed: var(--pw-steel-300);
+
+  --pw-accent:        var(--pw-copper-600);
+  --pw-accent-hover:  var(--pw-copper-700);
+  --pw-accent-soft:   var(--pw-copper-50);
+
+  /* Dev terminal surface (used for diff / log views) */
+  --pw-term-bg:    #0E1116;
+  --pw-term-fg:    #E6E0D0;
+  --pw-term-muted: #6B7480;
+  --pw-term-add:   #5FB37A;   /* diff +line */
+  --pw-term-sub:   #E08F8F;   /* diff -line */
+  --pw-term-meta:  #C5A24A;   /* @@ headers */
+
+  /* ---------- SPACING ---------- */
+  --pw-space-1:  4px;
+  --pw-space-2:  8px;
+  --pw-space-3:  12px;
+  --pw-space-4:  16px;
+  --pw-space-5:  20px;
+  --pw-space-6:  24px;
+  --pw-space-8:  32px;
+  --pw-space-10: 40px;
+  --pw-space-12: 48px;
+  --pw-space-16: 64px;
+
+  /* ---------- RADII ---------- */
+  /* Engineering, not consumer. Square or near-square. */
+  --pw-radius-0: 0px;
+  --pw-radius-1: 2px;   /* default for buttons, inputs */
+  --pw-radius-2: 4px;   /* cards */
+  --pw-radius-pill: 999px; /* status tags only */
+
+  /* ---------- BORDERS ---------- */
+  --pw-border-hairline: 1px solid var(--pw-border);
+  --pw-border-strong-rule: 1px solid var(--pw-border-strong);
+  --pw-border-rule: 1px solid var(--pw-border);
+
+  /* ---------- ELEVATION ---------- */
+  /* Pipewright avoids drop shadows. Lift via hairline + tone. */
+  --pw-shadow-none:  none;
+  --pw-shadow-press: inset 0 1px 0 rgba(14,17,22,0.08);
+  --pw-shadow-overlay: 0 1px 0 var(--pw-border), 0 8px 24px -12px rgba(14,17,22,0.18);
+
+  /* ---------- TYPE — families ---------- */
+  --pw-font-sans: "IBM Plex Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --pw-font-mono: "IBM Plex Mono", ui-monospace, "JetBrains Mono", "Consolas", monospace;
+
+  /* ---------- TYPE — scale (base = 14px UI) ---------- */
+  --pw-text-2xs: 10px;
+  --pw-text-xs:  11px;
+  --pw-text-sm:  12px;
+  --pw-text-md:  14px;
+  --pw-text-lg:  16px;
+  --pw-text-xl:  20px;
+  --pw-text-2xl: 24px;
+  --pw-text-3xl: 32px;
+  --pw-text-4xl: 44px;
+  --pw-text-5xl: 60px;
+
+  --pw-leading-tight: 1.15;
+  --pw-leading-normal: 1.45;
+  --pw-leading-loose: 1.65;
+
+  --pw-tracking-tight: -0.01em;
+  --pw-tracking-normal: 0;
+  --pw-tracking-wide: 0.04em;
+  --pw-tracking-mono: 0;
+  --pw-tracking-tag: 0.08em;     /* for [BRACKETED] tags */
+}
+
+/* ============================================================
+   BASE
+   ============================================================ */
+html, body {
+  background: var(--pw-bg);
+  color: var(--pw-fg);
+  font-family: var(--pw-font-sans);
+  font-size: var(--pw-text-md);
+  line-height: var(--pw-leading-normal);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ============================================================
+   SEMANTIC TYPE — apply via class
+   ============================================================ */
+
+/* Display — for marketing / hero / section openers */
+.pw-display {
+  font-family: var(--pw-font-sans);
+  font-weight: 600;
+  font-size: var(--pw-text-5xl);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: var(--pw-ink-900);
+}
+
+/* H1 — page title */
+.pw-h1 {
+  font-family: var(--pw-font-sans);
+  font-weight: 600;
+  font-size: var(--pw-text-3xl);
+  line-height: var(--pw-leading-tight);
+  letter-spacing: var(--pw-tracking-tight);
+}
+
+/* H2 — section header */
+.pw-h2 {
+  font-family: var(--pw-font-sans);
+  font-weight: 600;
+  font-size: var(--pw-text-2xl);
+  line-height: var(--pw-leading-tight);
+  letter-spacing: var(--pw-tracking-tight);
+}
+
+/* H3 — subsection */
+.pw-h3 {
+  font-family: var(--pw-font-sans);
+  font-weight: 600;
+  font-size: var(--pw-text-lg);
+  line-height: 1.3;
+}
+
+/* Eyebrow — small all-caps label above a heading.
+   This is the brand's signature "section starter" voice. */
+.pw-eyebrow {
+  font-family: var(--pw-font-mono);
+  font-weight: 500;
+  font-size: var(--pw-text-xs);
+  letter-spacing: var(--pw-tracking-tag);
+  text-transform: uppercase;
+  color: var(--pw-fg-subtle);
+}
+
+/* Body */
+.pw-p {
+  font-family: var(--pw-font-sans);
+  font-weight: 400;
+  font-size: var(--pw-text-md);
+  line-height: var(--pw-leading-normal);
+  color: var(--pw-fg-muted);
+}
+
+.pw-p-lead {
+  font-family: var(--pw-font-sans);
+  font-weight: 400;
+  font-size: var(--pw-text-lg);
+  line-height: 1.5;
+  color: var(--pw-fg);
+}
+
+/* UI label — form / table headers */
+.pw-label {
+  font-family: var(--pw-font-sans);
+  font-weight: 500;
+  font-size: var(--pw-text-sm);
+  color: var(--pw-fg);
+}
+
+/* Caption / metadata */
+.pw-caption {
+  font-family: var(--pw-font-mono);
+  font-size: var(--pw-text-xs);
+  color: var(--pw-fg-subtle);
+  letter-spacing: var(--pw-tracking-mono);
+}
+
+/* Inline code & run IDs */
+.pw-code {
+  font-family: var(--pw-font-mono);
+  font-size: 0.92em;
+  background: var(--pw-steel-100);
+  color: var(--pw-ink-900);
+  padding: 1px 5px;
+  border-radius: var(--pw-radius-1);
+  border: 1px solid var(--pw-steel-150);
+}
+
+/* Code block */
+.pw-pre {
+  font-family: var(--pw-font-mono);
+  font-size: var(--pw-text-sm);
+  line-height: 1.55;
+  background: var(--pw-term-bg);
+  color: var(--pw-term-fg);
+  padding: var(--pw-space-4);
+  border-radius: var(--pw-radius-2);
+  overflow-x: auto;
+}
+
+/* Tag — the brand's signature [BRACKETED] form */
+.pw-tag {
+  font-family: var(--pw-font-mono);
+  font-weight: 500;
+  font-size: var(--pw-text-xs);
+  letter-spacing: var(--pw-tracking-tag);
+  text-transform: uppercase;
+  color: var(--pw-fg);
+}
+.pw-tag::before { content: "["; opacity: 0.6; }
+.pw-tag::after  { content: "]"; opacity: 0.6; }

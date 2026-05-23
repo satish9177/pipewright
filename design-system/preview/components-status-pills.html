@@ -1,0 +1,33 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  .pill { font-family: var(--pw-font-mono); font-size: 11px; letter-spacing: 0.08em; padding: 3px 9px; border-radius: 999px; line-height: 1.4; display: inline-flex; align-items: center; gap: 6px; }
+  .pill .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .pass { background: #D5E8DC; color: #14502C; } .pass .dot { background: #1F6E3D; }
+  .wait { background: #EBE0BC; color: #6B5410; } .wait .dot { background: #8A6D1A; animation: pulse 1.2s ease-in-out infinite; }
+  .fail { background: #F1D4D4; color: #7A1F1F; } .fail .dot { background: #9B2C2C; }
+  .info { background: #D5DFEF; color: #163A6F; } .info .dot { background: #1F4A8A; }
+  .copper { background: #F1DDCC; color: #8A3F12; } .copper .dot { background: #B7531C; }
+  .ink { background: #0E1116; color: #F6F4EE; } .ink .dot { background: #F6F4EE; }
+  @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.4 } }
+</style>
+</head>
+<body style="padding: 28px;">
+  <div style="display:flex; gap:6px; flex-wrap:wrap;">
+    <span class="pill pass"><span class="dot"></span>PASS</span>
+    <span class="pill pass"><span class="dot"></span>APPROVED</span>
+    <span class="pill pass"><span class="dot"></span>COMPLETE</span>
+    <span class="pill wait"><span class="dot"></span>PENDING</span>
+    <span class="pill wait"><span class="dot"></span>RUNNING</span>
+    <span class="pill wait"><span class="dot"></span>PAUSED</span>
+    <span class="pill fail"><span class="dot"></span>FAIL</span>
+    <span class="pill fail"><span class="dot"></span>REJECTED</span>
+    <span class="pill fail"><span class="dot"></span>TIMEOUT</span>
+    <span class="pill info"><span class="dot"></span>INFO</span>
+    <span class="pill copper"><span class="dot"></span>ROLLBACK</span>
+    <span class="pill ink"><span class="dot"></span>QUEUED</span>
+  </div>
+  <div style="margin-top: 16px; font-family: var(--pw-font-mono); font-size: 11px; color: var(--pw-fg-subtle); letter-spacing: 0.04em;">
+    Pills are the only place radius:999 appears. Mono, 11/0.08em tracking. Dot pulses on running/pending states.
+  </div>
+</body></html>

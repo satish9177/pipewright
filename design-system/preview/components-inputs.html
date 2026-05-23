@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  .field { display:flex; flex-direction:column; gap:6px; }
+  .label { font-family: var(--pw-font-sans); font-size: 12px; font-weight: 500; color: var(--pw-fg); }
+  .input, .textarea {
+    font-family: var(--pw-font-sans);
+    font-size: 13px;
+    color: var(--pw-fg);
+    background: #fff;
+    border: 1px solid var(--pw-border);
+    border-radius: 2px;
+    padding: 7px 10px;
+    outline: none;
+  }
+  .input:focus, .textarea:focus { border-color: var(--pw-ink-900); box-shadow: 0 0 0 1px var(--pw-ink-900); }
+  .input-mono { font-family: var(--pw-font-mono); font-size: 12px; }
+  .hint { font-family: var(--pw-font-mono); font-size: 10px; color: var(--pw-fg-subtle); letter-spacing: 0.04em; }
+  .error { font-family: var(--pw-font-mono); font-size: 10px; color: var(--pw-fail-600); letter-spacing: 0.04em; }
+</style>
+</head>
+<body style="padding: 28px;">
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 18px;">
+    <div class="field">
+      <label class="label">Feature description</label>
+      <textarea class="textarea" rows="3" placeholder="Describe the change you want the pipeline to make...">Add retry logic to the planner when Gemini rate-limits us.</textarea>
+      <div class="hint">PLAIN ENGLISH · 1 SENTENCE PREFERRED</div>
+    </div>
+    <div class="field">
+      <label class="label">Rejection reason</label>
+      <input class="input" placeholder="Why are you rejecting this?" value="Risk too high — touches checkpoint logic">
+      <div class="error">[ERROR] reason required for reject</div>
+    </div>
+    <div class="field">
+      <label class="label">Target repo path</label>
+      <input class="input input-mono" value="/Users/sat/code/ai-workflow-platform">
+      <div class="hint">.env · TARGET_REPO_PATH</div>
+    </div>
+    <div class="field">
+      <label class="label">Search runs</label>
+      <input class="input" placeholder="Filter by feature, status, run_id…">
+      <div class="hint">SUPPORTS run_id PREFIX MATCH</div>
+    </div>
+  </div>
+</body></html>
