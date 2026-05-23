@@ -10,13 +10,25 @@ CREATE TABLE IF NOT EXISTS memory_facts (
     archived_reason TEXT
 );
 
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    repo_path TEXT NOT NULL,
+    test_command TEXT NOT NULL,
+    status TEXT DEFAULT 'active',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME
+);
+
 CREATE TABLE IF NOT EXISTS pipeline_runs (
     id TEXT PRIMARY KEY,
+    project_id TEXT,
     feature_description TEXT NOT NULL,
     plain_english_summary TEXT,
     status TEXT DEFAULT 'running',
     current_step TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(id)
 );
 
 CREATE TABLE IF NOT EXISTS checkpoints (
