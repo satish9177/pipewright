@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     plain_english_summary TEXT,
     status TEXT DEFAULT 'running',
     current_step TEXT,
+    chunk_plan_status TEXT DEFAULT 'none',
+    chunk_plan TEXT,
+    total_chunks INTEGER DEFAULT 0,
+    current_chunk_number INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id)
 );
@@ -79,4 +83,27 @@ CREATE TABLE IF NOT EXISTS file_index (
     size_bytes INTEGER DEFAULT 0,
     indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(project_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS chunks (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    chunk_number INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    files_expected TEXT,
+    depends_on TEXT,
+    risk_level TEXT DEFAULT 'medium',
+    token_estimate INTEGER DEFAULT 0,
+    requires_human_review INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'pending',
+    previous_chunks_context TEXT,
+    completion_summary TEXT,
+    error_message TEXT,
+    started_at DATETIME,
+    completed_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES pipeline_runs(id),
+    UNIQUE(run_id, chunk_number)
 );

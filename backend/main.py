@@ -26,6 +26,7 @@ from backend.projects.project_store import (
     list_projects as list_stored_projects,
     update_project,
 )
+from backend.routes.chunks import router as chunks_router
 
 
 class RunRequest(BaseModel):
@@ -65,6 +66,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(chunks_router)
 
 
 @app.get("/health")
