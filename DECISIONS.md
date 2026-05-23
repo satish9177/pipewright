@@ -1,5 +1,35 @@
 # Pipewright — Decision Log
 
+## 2026-05-23 -- GitHub credentials stored per project
+
+Decision: GitHub token, owner, repo stored
+          in projects table per project.
+          Not in .env globally.
+
+Reason: Different projects may have different
+        GitHub accounts or repos.
+        Per-project credentials enable
+        multi-tenant support later.
+
+Security note: Tokens stored in SQLite.
+        Phase 3: encrypt with Fernet before storing.
+        Phase 4: replace with GitHub OAuth flow.
+
+## 2026-05-23 -- GitHub PR is non-fatal
+
+Decision: If GitHub PR creation fails the
+          pipeline run still completes.
+          Error is logged clearly.
+          Files are already on disk and approved.
+          Human can create PR manually.
+
+Reason: GitHub API can be unavailable.
+        Token can expire.
+        These should not invalidate
+        an already-approved pipeline run.
+
+---
+
 ## 2026-05-23 -- Project configuration moved to SQLite
 
 Decision: Pipewright supports multiple projects through

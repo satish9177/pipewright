@@ -91,3 +91,42 @@ class GateStatus(BaseModel):
     test_results: Optional[str] = None
     ai_summary: Optional[str] = None
     risk_level: str = "medium"
+
+
+class ProjectCreate(BaseModel):
+    name: str
+    repo_path: str
+    test_command: str
+    branch: str = "main"
+    description: str = ""
+    github_token: Optional[str] = None
+    github_owner: Optional[str] = None
+    github_repo: Optional[str] = None
+    github_base_branch: str = "pipewright-staging"
+
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    test_command: Optional[str] = None
+    branch: Optional[str] = None
+    description: Optional[str] = None
+    github_token: Optional[str] = None
+    github_owner: Optional[str] = None
+    github_repo: Optional[str] = None
+    github_base_branch: Optional[str] = None
+
+
+class ProjectResponse(BaseModel):
+    id: str
+    name: str
+    repo_path: str
+    test_command: str
+    branch: str = "main"
+    description: str = ""
+    github_token: Optional[str] = None
+    github_owner: Optional[str] = None
+    github_repo: Optional[str] = None
+    github_base_branch: str = "pipewright-staging"
+    status: str = "active"
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None

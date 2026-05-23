@@ -15,6 +15,12 @@ CREATE TABLE IF NOT EXISTS projects (
     name TEXT NOT NULL,
     repo_path TEXT NOT NULL,
     test_command TEXT NOT NULL,
+    branch TEXT DEFAULT 'main',
+    description TEXT DEFAULT '',
+    github_token TEXT,
+    github_owner TEXT,
+    github_repo TEXT,
+    github_base_branch TEXT DEFAULT 'pipewright-staging',
     status TEXT DEFAULT 'active',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME
