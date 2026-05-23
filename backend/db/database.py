@@ -69,6 +69,28 @@ def _migrate_db(conn) -> None:
                 "ALTER TABLE pipeline_runs ADD COLUMN project_id TEXT",
             ),
             (
+                "pipeline_runs",
+                "chunk_plan_status",
+                "ALTER TABLE pipeline_runs ADD COLUMN chunk_plan_status TEXT "
+                "DEFAULT 'none'",
+            ),
+            (
+                "pipeline_runs",
+                "chunk_plan",
+                "ALTER TABLE pipeline_runs ADD COLUMN chunk_plan TEXT",
+            ),
+            (
+                "pipeline_runs",
+                "total_chunks",
+                "ALTER TABLE pipeline_runs ADD COLUMN total_chunks INTEGER DEFAULT 0",
+            ),
+            (
+                "pipeline_runs",
+                "current_chunk_number",
+                "ALTER TABLE pipeline_runs ADD COLUMN current_chunk_number "
+                "INTEGER DEFAULT 0",
+            ),
+            (
                 "projects",
                 "branch",
                 "ALTER TABLE projects ADD COLUMN branch TEXT DEFAULT 'main'",
