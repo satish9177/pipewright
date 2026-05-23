@@ -1,28 +1,39 @@
-import { Badge } from '@/components/ui/badge'
-
 interface Props {
   status: string
 }
 
-const statusConfig: Record<string, {
+const statusStyles: Record<string, {
+  bg: string
+  color: string
   label: string
-  className: string
 }> = {
-  running:  { label: 'Running',  className: 'bg-blue-500 text-white' },
-  paused:   { label: 'Waiting',  className: 'bg-yellow-500 text-white' },
-  complete: { label: 'Complete', className: 'bg-green-500 text-white' },
-  failed:   { label: 'Failed',   className: 'bg-red-500 text-white' },
-  rejected: { label: 'Rejected', className: 'bg-gray-500 text-white' },
+  running: { bg: '#DBEAFE', color: '#1D4ED8', label: 'RUNNING' },
+  paused: { bg: '#FEF3C7', color: '#92400E', label: 'PAUSED' },
+  complete: { bg: '#D1FAE5', color: '#065F46', label: 'COMPLETE' },
+  failed: { bg: '#FEE2E2', color: '#991B1B', label: 'FAILED' },
+  rejected: { bg: '#F3F4F6', color: '#374151', label: 'REJECTED' },
 }
 
 export default function RunStatusBadge({ status }: Props) {
-  const config = statusConfig[status] ?? {
-    label: status,
-    className: 'bg-gray-400 text-white'
+  const style = statusStyles[status] ?? {
+    bg: '#F3F4F6',
+    color: '#374151',
+    label: status.toUpperCase()
   }
+
   return (
-    <Badge className={config.className}>
-      {config.label}
-    </Badge>
+    <span style={{
+      backgroundColor: style.bg,
+      color: style.color,
+      fontSize: 10,
+      fontFamily: 'IBM Plex Mono, monospace',
+      fontWeight: 500,
+      padding: '2px 8px',
+      borderRadius: 999,
+      letterSpacing: '0.05em',
+      whiteSpace: 'nowrap',
+    }}>
+      {style.label}
+    </span>
   )
 }

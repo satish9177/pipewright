@@ -184,6 +184,11 @@ If PR fails pipeline still completes
 
 ## Current Status
 Phase 2 -- React UI complete
+Phase 2 — Claude Design system applied to frontend
+Colors: Paper #F6F4EE, Ink #0E1116, Copper #B7531C
+Fonts: IBM Plex Sans + IBM Plex Mono
+New page: ApprovalQueuePage at /approval
+New page: Memory placeholder at /memory
 
 ## Completed Modules
 None yet

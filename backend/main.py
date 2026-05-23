@@ -32,10 +32,18 @@ class RunRequest(BaseModel):
     project_id: str
     feature_description: str
 
-
 @asynccontextmanager
 async def lifespan(app):
     init_db()
+    # Clean up stale gates from crashed sessions
+    with engine.connect() as conn:
+        conn.execute(text("""
+            UPDATE approval_gates
+            SET status = 'timeout'
+            WHERE status = 'pending'
+            AND created_at < datetime('now', '-2 hours')
+        """))
+        conn.commit()
     print("Pipewright started.")
     yield
 
