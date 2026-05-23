@@ -56,6 +56,15 @@ pipewright/                          <- repo root
       test_approval_gate.py
       test_orchestrator.py
       test_projects.py
+      conftest.py
+      test_foundation.py
+      test_planner.py
+      test_coder.py
+      test_patch_applier.py
+      test_tester.py
+      test_approval_gate.py
+      test_orchestrator.py
+      test_projects.py
     pipeline/
       orchestrator.py
       planner.py
@@ -71,6 +80,11 @@ pipewright/                          <- repo root
       approval_gate.py
     models/
       handoff.py
+    projects/
+      project_context.py
+      project_store.py
+    github/
+      github_client.py
     projects/
       project_context.py
       project_store.py
@@ -147,13 +161,25 @@ Branch names: pipewright/description-timestamp
 GitHub PR creation is non-fatal
 If PR fails pipeline still completes
 
+## Important Rules
+Pipeline never pushes to main directly
+Always targets pipewright-staging branch
+Branch names: pipewright/description-timestamp
+GitHub PR creation is non-fatal
+If PR fails pipeline still completes
+
 ## Current Status
+Phase 2 -- feature/github-pr in progress
 Phase 2 -- feature/github-pr in progress
 
 ## Completed Modules
 None yet
 
 ## Environment Variables Required
+GEMINI_API_KEY=
+
+Project repo paths and test commands are stored in SQLite
+through POST /projects. Do not edit .env to switch projects.
 GEMINI_API_KEY=
 
 Project repo paths and test commands are stored in SQLite
@@ -177,6 +203,11 @@ through POST /projects. Do not edit .env to switch projects.
 - backend/github/github_client.py
   create_pull_request -- creates branch and PR
 - backend/tests/test_github_client.py
+- backend/projects/project_store.py -- create_project, get_project, list_projects
+- backend/projects/project_context.py -- selected project runtime config
+- backend/github/github_client.py
+  create_pull_request -- creates branch and PR
+- backend/tests/test_github_client.py
 - backend/pipeline/approval_gate.py
   request_approval, approve_gate,
   reject_gate, get_pending_gates
@@ -186,6 +217,11 @@ through POST /projects. Do not edit .env to switch projects.
 - backend/tests/test_orchestrator.py
 
 ## FastAPI Routes
+POST   /projects              register new project
+GET    /projects              list all projects
+GET    /projects/{id}         get single project
+PATCH  /projects/{id}         update project + GitHub credentials
+DELETE /projects/{id}         soft delete project
 POST   /projects              register new project
 GET    /projects              list all projects
 GET    /projects/{id}         get single project
