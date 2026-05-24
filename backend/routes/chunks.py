@@ -24,6 +24,7 @@ from backend.pipeline.chunked_orchestrator import (
     reject_chunk_and_rollback,
     resume_chunked_pipeline,
 )
+from backend.pipeline.pr_orchestrator import push_and_create_pr
 from backend.pipeline.triage import run_triage
 from backend.projects.project_store import get_project
 
@@ -254,6 +255,16 @@ def reject_final_approval_route(
         )
     except HTTPException:
         raise
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@router.post("/runs/{run_id}/push-pr")
+def push_pr_route(run_id: str):
+    try:
+        return push_and_create_pr(run_id)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:
