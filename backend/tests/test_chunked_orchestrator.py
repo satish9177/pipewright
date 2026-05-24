@@ -59,18 +59,25 @@ def make_project(tmp_repo):
     )
 
 
-def make_triage(run_id: str, project_id: str, chunks: int = 1) -> TriageResult:
+def make_triage(
+    run_id: str,
+    project_id: str,
+    chunks: int = 1,
+    review_chunks: set[int] | None = None,
+) -> TriageResult:
+    review_chunks = review_chunks or set()
     definitions = []
     for number in range(1, chunks + 1):
+        needs_review = number in review_chunks
         definitions.append(ChunkDefinition(
             chunk_number=number,
             title=f"Chunk {number}",
             description=f"Do chunk {number}",
             files_expected=[f"file_{number}.py"],
             depends_on=[] if number == 1 else [number - 1],
-            risk_level="low",
+            risk_level="high" if needs_review else "low",
             token_estimate=100,
-            requires_human_review=False,
+            requires_human_review=needs_review,
             rationale="Sequential work",
         ))
     return TriageResult(
@@ -84,7 +91,13 @@ def make_triage(run_id: str, project_id: str, chunks: int = 1) -> TriageResult:
     )
 
 
-def create_run(tmp_repo, tracked_runs, chunks: int = 1, approved: bool = True):
+def create_run(
+    tmp_repo,
+    tracked_runs,
+    chunks: int = 1,
+    approved: bool = True,
+    review_chunks: set[int] | None = None,
+):
     project = make_project(tmp_repo)
     run_id = str(uuid.uuid4())
     tracked_runs.append(run_id)
@@ -92,7 +105,7 @@ def create_run(tmp_repo, tracked_runs, chunks: int = 1, approved: bool = True):
         run_id,
         project["id"],
         "Execute chunks",
-        make_triage(run_id, project["id"], chunks),
+        make_triage(run_id, project["id"], chunks, review_chunks),
     )
     if approved:
         approve_chunk_plan(run_id)
@@ -267,6 +280,20 @@ def add_test_checkpoint(run_id: str, chunk_number: int):
     )
 
 
+def add_code_checkpoint(run_id: str, chunk_number: int):
+    coder = make_coder_result(run_id, chunk_number)
+    save_checkpoint(
+        run_id=run_id,
+        step="code",
+        output=coder.model_dump(),
+        handoff_contract=coder.model_dump(),
+        git_hash="pre-patch",
+        tests_passed=True,
+        chunk_number=chunk_number,
+    )
+    return coder
+
+
 @pytest.mark.asyncio
 async def test_execute_refuses_when_chunk_plan_not_approved(tmp_repo, tracked_runs):
     run_id, _project = create_run(tmp_repo, tracked_runs, approved=False)
@@ -430,6 +457,53 @@ async def test_successful_chunk_commits_exactly_touched_files(
 
     commit_call = next(call for call in calls if call[0] == "commit")
     assert commit_call[1] == ["created_1.py", "modified_1.py", "deleted_1.py"]
+
+
+@pytest.mark.asyncio
+async def test_high_risk_chunk_pauses_after_tests_before_commit(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(
+        tmp_repo,
+        tracked_runs,
+        review_chunks={1},
+    )
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "awaiting_chunk_approval"
+    assert result["chunk_number"] == 1
+    assert result["approval_required"] is True
+    assert any(call[0] == "planner" for call in calls)
+    assert any(call[0] == "coder" for call in calls)
+    assert any(call[0] == "patch" for call in calls)
+    assert any(call[0] == "test" for call in calls)
+    assert not any(call[0] == "commit" for call in calls)
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[0].status == "awaiting_chunk_approval"
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT pr.status, ag.approval_type, ag.chunk_number, ag.status
+            FROM pipeline_runs pr
+            JOIN approval_gates ag ON ag.run_id = pr.id
+            WHERE pr.id = :run_id
+              AND ag.approval_type = 'chunk'
+        """), {"run_id": run_id}).fetchone()
+        final_count = conn.execute(text("""
+            SELECT COUNT(*) FROM approval_gates
+            WHERE run_id = :run_id
+              AND approval_type = 'final'
+        """), {"run_id": run_id}).fetchone()[0]
+    assert row[0] == "awaiting_chunk_approval"
+    assert row[1] == "chunk"
+    assert row[2] == 1
+    assert row[3] == "pending"
+    assert final_count == 0
 
 
 @pytest.mark.asyncio
@@ -676,6 +750,152 @@ def test_execute_route_calls_execute_approved_chunks(monkeypatch):
     assert called["run_id"] == "run-123"
 
 
+def test_approve_chunk_commits_from_code_checkpoint_without_rerunning(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, review_chunks={1})
+    add_code_checkpoint(run_id, 1)
+    update_chunk_status(run_id, 1, "awaiting_chunk_approval")
+    from backend.pipeline.approval_gate import create_chunk_approval_gate
+    create_chunk_approval_gate(run_id, 1, "chunk approval")
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+
+    async def fail_planner(*args, **kwargs):
+        raise AssertionError("planner must not run")
+
+    monkeypatch.setattr(chunked_orchestrator, "run_planner", fail_planner)
+
+    result = chunked_orchestrator.approve_chunk_and_commit(run_id, 1)
+
+    assert result["status"] == "chunk_approved"
+    assert result["chunk_number"] == 1
+    assert any(call[0] == "commit" for call in calls)
+    commit_call = next(call for call in calls if call[0] == "commit")
+    assert commit_call[1] == ["created_1.py", "modified_1.py", "deleted_1.py"]
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[0].status == "completed"
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT ag.status, pr.status
+            FROM approval_gates ag
+            JOIN pipeline_runs pr ON pr.id = ag.run_id
+            WHERE ag.run_id = :run_id
+              AND ag.approval_type = 'chunk'
+        """), {"run_id": run_id}).fetchone()
+    assert row[0] == "approved"
+    assert row[1] == "chunk_approved"
+
+
+@pytest.mark.asyncio
+async def test_resume_after_chunk_approval_continues_next_pending_chunk(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(
+        tmp_repo,
+        tracked_runs,
+        chunks=2,
+        review_chunks={1},
+    )
+    add_code_checkpoint(run_id, 1)
+    update_chunk_status(run_id, 1, "awaiting_chunk_approval")
+    from backend.pipeline.approval_gate import create_chunk_approval_gate
+    create_chunk_approval_gate(run_id, 1, "chunk approval")
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+
+    approve_result = chunked_orchestrator.approve_chunk_and_commit(run_id, 1)
+
+    assert approve_result["status"] == "chunk_approved"
+    patch_resume_git(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert result["status"] == "awaiting_final_approval"
+    assert any(call[0] == "planner" and call[1] == 2 for call in calls)
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[0].status == "completed"
+    assert status.chunks[1].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_resume_after_last_chunk_approval_creates_final_gate(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, review_chunks={1})
+    add_code_checkpoint(run_id, 1)
+    update_chunk_status(run_id, 1, "awaiting_chunk_approval")
+    from backend.pipeline.approval_gate import create_chunk_approval_gate
+    create_chunk_approval_gate(run_id, 1, "chunk approval")
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    chunked_orchestrator.approve_chunk_and_commit(run_id, 1)
+    patch_resume_git(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert result["status"] == "awaiting_final_approval"
+    assert not any(call[0] == "planner" for call in calls)
+    with engine.connect() as conn:
+        final_count = conn.execute(text("""
+            SELECT COUNT(*) FROM approval_gates
+            WHERE run_id = :run_id
+              AND approval_type = 'final'
+              AND status = 'pending'
+        """), {"run_id": run_id}).fetchone()[0]
+    assert final_count == 1
+
+
+def test_reject_chunk_rolls_back_and_fails_without_commit(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, review_chunks={1})
+    update_chunk_status(run_id, 1, "awaiting_chunk_approval")
+    from backend.pipeline.approval_gate import create_chunk_approval_gate
+    create_chunk_approval_gate(run_id, 1, "chunk approval")
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    rollback_calls = []
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "rollback_patch",
+        lambda run_id, chunk_number=0: rollback_calls.append((run_id, chunk_number)) or True,
+    )
+
+    result = chunked_orchestrator.reject_chunk_and_rollback(
+        run_id,
+        1,
+        "not safe",
+    )
+
+    assert result["status"] == "chunk_rejected"
+    assert rollback_calls == [(run_id, 1)]
+    assert not any(call[0] == "commit" for call in calls)
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[0].status == "rejected"
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT ag.status, ag.rejection_reason, pr.status
+            FROM approval_gates ag
+            JOIN pipeline_runs pr ON pr.id = ag.run_id
+            WHERE ag.run_id = :run_id
+              AND ag.approval_type = 'chunk'
+        """), {"run_id": run_id}).fetchone()
+    assert row[0] == "rejected"
+    assert row[1] == "not safe"
+    assert row[2] == "failed"
+
+
 @pytest.mark.asyncio
 async def test_resume_refuses_when_run_missing():
     with pytest.raises(Exception):
@@ -726,6 +946,31 @@ async def test_resume_fails_if_worktree_dirty(monkeypatch, tmp_repo, tracked_run
 
 
 @pytest.mark.asyncio
+async def test_resume_with_awaiting_chunk_approval_does_not_rerun(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, review_chunks={1})
+    update_chunk_status(run_id, 1, "awaiting_chunk_approval")
+    from backend.pipeline.approval_gate import create_chunk_approval_gate
+    create_chunk_approval_gate(run_id, 1, "chunk approval")
+    calls = []
+    patch_resume_git(monkeypatch, calls)
+
+    async def fail_planner(*args, **kwargs):
+        raise AssertionError("planner must not run")
+
+    monkeypatch.setattr(chunked_orchestrator, "run_planner", fail_planner)
+
+    result = await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert result["status"] == "awaiting_chunk_approval"
+    assert result["chunk_number"] == 1
+    assert not any(call[0] == "planner" for call in calls)
+
+
+@pytest.mark.asyncio
 async def test_resume_resets_stale_running_chunks_to_pending(monkeypatch, tmp_repo, tracked_runs):
     run_id, _project = create_run(tmp_repo, tracked_runs)
     update_chunk_status(run_id, 1, "running")
@@ -767,6 +1012,42 @@ async def test_resume_reruns_chunk_without_test_checkpoint(monkeypatch, tmp_repo
     assert any(call[0] == "commit" for call in calls)
     status = get_chunk_plan_status(run_id)
     assert status.chunks[0].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_resume_after_rejected_chunk_reruns_without_reusing_gate(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, review_chunks={1})
+    update_chunk_status(run_id, 1, "rejected", "not safe")
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO approval_gates
+            (id, run_id, step, status, approval_type, chunk_number)
+            VALUES (:id, :run_id, 'chunk-approval', 'rejected', 'chunk', 1)
+        """), {
+            "id": str(uuid.uuid4()),
+            "run_id": run_id,
+        })
+    calls = []
+    patch_resume_git(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert result["status"] == "awaiting_chunk_approval"
+    assert any(call[0] == "planner" and call[1] == 1 for call in calls)
+    with engine.connect() as conn:
+        pending_count = conn.execute(text("""
+            SELECT COUNT(*) FROM approval_gates
+            WHERE run_id = :run_id
+              AND approval_type = 'chunk'
+              AND chunk_number = 1
+              AND status = 'pending'
+        """), {"run_id": run_id}).fetchone()[0]
+    assert pending_count == 1
 
 
 @pytest.mark.asyncio

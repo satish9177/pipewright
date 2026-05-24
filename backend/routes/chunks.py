@@ -19,7 +19,9 @@ from backend.pipeline.chunk_store import (
     reject_chunk_plan,
 )
 from backend.pipeline.chunked_orchestrator import (
+    approve_chunk_and_commit,
     execute_approved_chunks,
+    reject_chunk_and_rollback,
     resume_chunked_pipeline,
 )
 from backend.pipeline.triage import run_triage
@@ -38,6 +40,10 @@ class RejectChunkPlanRequest(BaseModel):
 
 
 class RejectFinalApprovalRequest(BaseModel):
+    reason: str | None = None
+
+
+class RejectChunkApprovalRequest(BaseModel):
     reason: str | None = None
 
 
@@ -192,6 +198,30 @@ async def execute_chunks_route(run_id: str):
 async def resume_chunks_route(run_id: str):
     try:
         return await resume_chunked_pipeline(run_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@router.post("/runs/{run_id}/chunks/{chunk_number}/approve")
+def approve_chunk_route(run_id: str, chunk_number: int):
+    try:
+        return approve_chunk_and_commit(run_id, chunk_number)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@router.post("/runs/{run_id}/chunks/{chunk_number}/reject")
+def reject_chunk_route(
+    run_id: str,
+    chunk_number: int,
+    request: RejectChunkApprovalRequest,
+):
+    try:
+        return reject_chunk_and_rollback(run_id, chunk_number, request.reason)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:

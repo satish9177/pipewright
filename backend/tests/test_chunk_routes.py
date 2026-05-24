@@ -199,8 +199,90 @@ def test_execute_and_resume_routes_exist():
 
     assert "/runs/{run_id}/chunks/execute" in paths
     assert "/runs/{run_id}/chunks/resume" in paths
+    assert "/runs/{run_id}/chunks/{chunk_number}/approve" in paths
+    assert "/runs/{run_id}/chunks/{chunk_number}/reject" in paths
     assert "/runs/{run_id}/final-approval/approve" in paths
     assert "/runs/{run_id}/final-approval/reject" in paths
+
+
+def test_chunk_approve_route_calls_helper(monkeypatch):
+    called = {"run_id": None, "chunk_number": None}
+
+    def fake_approve(run_id, chunk_number):
+        called["run_id"] = run_id
+        called["chunk_number"] = chunk_number
+        return {
+            "status": "chunk_approved",
+            "run_id": run_id,
+            "chunk_number": chunk_number,
+            "next_action": f"call /runs/{run_id}/chunks/resume to continue",
+        }
+
+    monkeypatch.setattr("backend.routes.chunks.approve_chunk_and_commit", fake_approve)
+    client = TestClient(app)
+
+    response = client.post("/runs/run-123/chunks/2/approve")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "chunk_approved"
+    assert called == {"run_id": "run-123", "chunk_number": 2}
+
+
+def test_chunk_reject_route_calls_helper(monkeypatch):
+    called = {"run_id": None, "chunk_number": None, "reason": None}
+
+    def fake_reject(run_id, chunk_number, reason=None):
+        called["run_id"] = run_id
+        called["chunk_number"] = chunk_number
+        called["reason"] = reason
+        return {
+            "status": "chunk_rejected",
+            "run_id": run_id,
+            "chunk_number": chunk_number,
+        }
+
+    monkeypatch.setattr("backend.routes.chunks.reject_chunk_and_rollback", fake_reject)
+    client = TestClient(app)
+
+    response = client.post("/runs/run-123/chunks/2/reject", json={
+        "reason": "not safe",
+    })
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "chunk_rejected"
+    assert called == {
+        "run_id": "run-123",
+        "chunk_number": 2,
+        "reason": "not safe",
+    }
+
+
+def test_chunk_approve_route_returns_controlled_error(monkeypatch):
+    def fake_approve(run_id, chunk_number):
+        raise RuntimeError("pending chunk gate not found")
+
+    monkeypatch.setattr("backend.routes.chunks.approve_chunk_and_commit", fake_approve)
+    client = TestClient(app)
+
+    response = client.post("/runs/run-123/chunks/2/approve")
+
+    assert response.status_code == 400
+    assert "pending chunk gate not found" in response.json()["detail"]
+
+
+def test_chunk_reject_route_returns_controlled_error(monkeypatch):
+    def fake_reject(run_id, chunk_number, reason=None):
+        raise RuntimeError("pending chunk gate not found")
+
+    monkeypatch.setattr("backend.routes.chunks.reject_chunk_and_rollback", fake_reject)
+    client = TestClient(app)
+
+    response = client.post("/runs/run-123/chunks/2/reject", json={
+        "reason": "not safe",
+    })
+
+    assert response.status_code == 400
+    assert "pending chunk gate not found" in response.json()["detail"]
 
 
 def test_final_approval_approve_route_updates_run(tmp_repo, tracked_runs):

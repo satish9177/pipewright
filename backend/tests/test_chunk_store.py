@@ -196,7 +196,7 @@ def test_previous_chunks_context_ignores_incomplete_chunks(tmp_repo, tracked_run
         make_triage(run_id, project["id"]),
     )
 
-    update_chunk_status(run_id, 1, "complete")
+    update_chunk_status(run_id, 1, "completed")
     save_chunk_completion_summary(run_id, 1, {"summary": "Chunk one done"})
 
     context = get_previous_chunks_context(run_id, 3)
@@ -216,7 +216,7 @@ def test_previous_chunks_context_handles_null_completion_summary(tmp_repo, track
         make_triage(run_id, project["id"]),
     )
 
-    update_chunk_status(run_id, 1, "complete")
+    update_chunk_status(run_id, 1, "completed")
 
     context = get_previous_chunks_context(run_id, 2)
 
