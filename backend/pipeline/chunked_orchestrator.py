@@ -872,13 +872,38 @@ def reject_chunk_and_rollback(
             f"run_id={run_id} | chunk={chunk_number} | status={chunk_status.status}"
         )
 
+    project, project_runtime = _project_runtime_for_plan(plan_status)
+    target_repo_path = project["repo_path"]
+    _validate_target_repo(target_repo_path, require_clean=False)
+
+    with active_project(project_runtime):
+        rollback_ok = rollback_patch(run_id, chunk_number)
+    if not rollback_ok:
+        raise RuntimeError(
+            f"chunked_orchestrator.py: chunk rollback failed or was unavailable. "
+            f"run_id={run_id} | chunk={chunk_number}"
+        )
+
+    try:
+        local_git.ensure_clean_worktree(target_repo_path)
+    except Exception as error:
+        dirty_files = []
+        try:
+            dirty_files = local_git.get_dirty_files(target_repo_path)
+        except Exception:
+            pass
+        detail = ", ".join(dirty_files) if dirty_files else str(error)
+        raise RuntimeError(
+            f"chunked_orchestrator.py: chunk rollback did not clean worktree. "
+            f"run_id={run_id} | chunk={chunk_number} | dirty={detail}"
+        )
+
     _decide_pending_chunk_gate(
         run_id,
         chunk_number,
         "rejected",
         reason or "Chunk approval rejected",
     )
-    rollback_patch(run_id, chunk_number)
     update_chunk_status(
         run_id,
         chunk_number,

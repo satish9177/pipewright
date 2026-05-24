@@ -998,6 +998,113 @@ def test_reject_chunk_rolls_back_and_fails_without_commit(
     assert row[2] == "failed"
 
 
+def test_reject_chunk_verifies_clean_worktree_after_rollback(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, review_chunks={1})
+    update_chunk_status(run_id, 1, "awaiting_chunk_approval")
+    from backend.pipeline.approval_gate import create_chunk_approval_gate
+    create_chunk_approval_gate(run_id, 1, "chunk approval")
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    clean_checks = []
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "rollback_patch",
+        lambda run_id, chunk_number=0: True,
+    )
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "ensure_clean_worktree",
+        lambda repo: clean_checks.append(repo),
+    )
+
+    result = chunked_orchestrator.reject_chunk_and_rollback(run_id, 1)
+
+    assert result["status"] == "chunk_rejected"
+    assert clean_checks == [str(tmp_repo)]
+
+
+def test_reject_chunk_fails_without_success_status_when_rollback_fails(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, review_chunks={1})
+    update_chunk_status(run_id, 1, "awaiting_chunk_approval")
+    from backend.pipeline.approval_gate import create_chunk_approval_gate
+    create_chunk_approval_gate(run_id, 1, "chunk approval")
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "rollback_patch",
+        lambda run_id, chunk_number=0: False,
+    )
+
+    with pytest.raises(RuntimeError, match="rollback failed or was unavailable"):
+        chunked_orchestrator.reject_chunk_and_rollback(run_id, 1)
+
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[0].status == "awaiting_chunk_approval"
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT ag.status, pr.status
+            FROM approval_gates ag
+            JOIN pipeline_runs pr ON pr.id = ag.run_id
+            WHERE ag.run_id = :run_id
+              AND ag.approval_type = 'chunk'
+        """), {"run_id": run_id}).fetchone()
+    assert row[0] == "pending"
+    assert row[1] != "failed"
+
+
+def test_reject_chunk_fails_if_worktree_remains_dirty_after_rollback(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, review_chunks={1})
+    update_chunk_status(run_id, 1, "awaiting_chunk_approval")
+    from backend.pipeline.approval_gate import create_chunk_approval_gate
+    create_chunk_approval_gate(run_id, 1, "chunk approval")
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "rollback_patch",
+        lambda run_id, chunk_number=0: True,
+    )
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "ensure_clean_worktree",
+        lambda repo: (_ for _ in ()).throw(RuntimeError("[GIT] dirty")),
+    )
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "get_dirty_files",
+        lambda repo: ["src/advanced_math.py", "tests/test_advanced_math.py"],
+    )
+
+    with pytest.raises(RuntimeError, match="rollback did not clean worktree"):
+        chunked_orchestrator.reject_chunk_and_rollback(run_id, 1)
+
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[0].status == "awaiting_chunk_approval"
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT ag.status, pr.status
+            FROM approval_gates ag
+            JOIN pipeline_runs pr ON pr.id = ag.run_id
+            WHERE ag.run_id = :run_id
+              AND ag.approval_type = 'chunk'
+        """), {"run_id": run_id}).fetchone()
+    assert row[0] == "pending"
+    assert row[1] != "failed"
+
+
 @pytest.mark.asyncio
 async def test_resume_refuses_when_run_missing():
     with pytest.raises(Exception):
