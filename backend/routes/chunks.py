@@ -1,8 +1,6 @@
 """
 chunks.py
-Routes for Phase 2B chunk plan creation and approval.
-
-These endpoints stop at chunk plan approval. They do not execute chunks.
+Routes for Phase 2B chunk planning, approval, execution, and manual resume.
 """
 
 import uuid
@@ -17,7 +15,10 @@ from backend.pipeline.chunk_store import (
     get_chunk_plan_status,
     reject_chunk_plan,
 )
-from backend.pipeline.chunked_orchestrator import execute_approved_chunks
+from backend.pipeline.chunked_orchestrator import (
+    execute_approved_chunks,
+    resume_chunked_pipeline,
+)
 from backend.pipeline.triage import run_triage
 from backend.projects.project_store import get_project
 
@@ -92,6 +93,16 @@ def reject_chunk_plan_route(run_id: str, request: RejectChunkPlanRequest):
 async def execute_chunks_route(run_id: str):
     try:
         return await execute_approved_chunks(run_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@router.post("/runs/{run_id}/chunks/resume")
+async def resume_chunks_route(run_id: str):
+    try:
+        return await resume_chunked_pipeline(run_id)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:
