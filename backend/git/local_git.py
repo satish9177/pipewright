@@ -125,6 +125,20 @@ def branch_exists(branch_name: str, repo_path: str) -> bool:
     return result.stdout.strip() != ""
 
 
+def branch_exists_remote(
+    repo_path: str,
+    branch_name: str,
+    remote: str = "origin",
+) -> bool:
+    result = run_git(["ls-remote", "--heads", remote, branch_name], repo_path)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"[GIT] git ls-remote failed for branch {branch_name}: "
+            f"{result.stderr.strip()}"
+        )
+    return result.stdout.strip() != ""
+
+
 def create_or_checkout_branch(branch_name: str, repo_path: str) -> None:
     ensure_git_repo(repo_path)
 
@@ -227,6 +241,20 @@ def push_branch(
     result = run_git(["push", "-u", remote, branch_name], repo_path)
     if result.returncode != 0:
         raise RuntimeError(f"[GIT] git push failed: {result.stderr.strip()}")
+
+
+def get_remote_url(repo_path: str, remote: str = "origin") -> str:
+    result = run_git(["remote", "get-url", remote], repo_path)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"[GIT] git remote get-url failed for {remote}: "
+            f"{result.stderr.strip()}"
+        )
+
+    remote_url = result.stdout.strip()
+    if not remote_url:
+        raise RuntimeError(f"[GIT] git remote {remote} URL is empty")
+    return remote_url
 
 
 def checkout_file(file_path: str, repo_path: str) -> None:

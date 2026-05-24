@@ -91,6 +91,36 @@ def _migrate_db(conn) -> None:
                 "INTEGER DEFAULT 0",
             ),
             (
+                "pipeline_runs",
+                "pr_url",
+                "ALTER TABLE pipeline_runs ADD COLUMN pr_url TEXT",
+            ),
+            (
+                "pipeline_runs",
+                "pr_number",
+                "ALTER TABLE pipeline_runs ADD COLUMN pr_number INTEGER",
+            ),
+            (
+                "pipeline_runs",
+                "branch_name",
+                "ALTER TABLE pipeline_runs ADD COLUMN branch_name TEXT",
+            ),
+            (
+                "pipeline_runs",
+                "pushed_at",
+                "ALTER TABLE pipeline_runs ADD COLUMN pushed_at DATETIME",
+            ),
+            (
+                "pipeline_runs",
+                "pr_created_at",
+                "ALTER TABLE pipeline_runs ADD COLUMN pr_created_at DATETIME",
+            ),
+            (
+                "pipeline_runs",
+                "push_error",
+                "ALTER TABLE pipeline_runs ADD COLUMN push_error TEXT",
+            ),
+            (
                 "projects",
                 "branch",
                 "ALTER TABLE projects ADD COLUMN branch TEXT DEFAULT 'main'",

@@ -203,6 +203,7 @@ def test_execute_and_resume_routes_exist():
     assert "/runs/{run_id}/chunks/{chunk_number}/reject" in paths
     assert "/runs/{run_id}/final-approval/approve" in paths
     assert "/runs/{run_id}/final-approval/reject" in paths
+    assert "/runs/{run_id}/push-pr" in paths
 
 
 def test_chunk_approve_route_calls_helper(monkeypatch):
@@ -353,3 +354,26 @@ def test_final_approval_reject_route_updates_run_without_rollback(
     assert row[0] == "final_rejected"
     assert row[1] == "rejected"
     assert row[2] == "not ready"
+
+
+def test_push_pr_route_calls_helper(monkeypatch):
+    called = {"run_id": None}
+
+    def fake_push(run_id):
+        called["run_id"] = run_id
+        return {
+            "status": "complete",
+            "run_id": run_id,
+            "branch_name": "pipewright/run-123",
+            "pr_url": "https://github.com/acme/demo/pull/1",
+            "pr_number": 1,
+        }
+
+    monkeypatch.setattr("backend.routes.chunks.push_and_create_pr", fake_push)
+    client = TestClient(app)
+
+    response = client.post("/runs/run-123/push-pr")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "complete"
+    assert called["run_id"] == "run-123"

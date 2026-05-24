@@ -37,6 +37,12 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     chunk_plan TEXT,
     total_chunks INTEGER DEFAULT 0,
     current_chunk_number INTEGER DEFAULT 0,
+    pr_url TEXT,
+    pr_number INTEGER,
+    branch_name TEXT,
+    pushed_at DATETIME,
+    pr_created_at DATETIME,
+    push_error TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id)
 );

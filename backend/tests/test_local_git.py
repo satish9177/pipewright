@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from backend.git.local_git import (
+    branch_exists_remote,
     branch_exists,
     checkout_file,
     commit,
@@ -20,6 +21,7 @@ from backend.git.local_git import (
     get_current_branch,
     get_current_hash,
     get_dirty_files,
+    get_remote_url,
     is_working_tree_clean,
     normalize_git_path,
     push_branch,
@@ -195,6 +197,33 @@ def test_push_branch_uses_git_push_without_real_remote(git_repo):
         ["push", "-u", "origin", "feature/test"],
         str(git_repo),
     )
+
+
+def test_branch_exists_remote_uses_ls_remote(git_repo):
+    completed = subprocess.CompletedProcess(
+        args=["git", "ls-remote"],
+        returncode=0,
+        stdout="abc\trefs/heads/feature/test\n",
+        stderr="",
+    )
+    with patch("backend.git.local_git.run_git", return_value=completed) as mocked:
+        assert branch_exists_remote(str(git_repo), "feature/test") is True
+
+    mocked.assert_called_once_with(
+        ["ls-remote", "--heads", "origin", "feature/test"],
+        str(git_repo),
+    )
+
+
+def test_get_remote_url_returns_origin_url(git_repo):
+    completed = subprocess.CompletedProcess(
+        args=["git", "remote", "get-url", "origin"],
+        returncode=0,
+        stdout="https://github.com/acme/demo.git\n",
+        stderr="",
+    )
+    with patch("backend.git.local_git.run_git", return_value=completed):
+        assert get_remote_url(str(git_repo)) == "https://github.com/acme/demo.git"
 
 
 def test_run_git_uses_cwd_repo_path(git_repo):
