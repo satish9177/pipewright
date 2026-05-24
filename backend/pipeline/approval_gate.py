@@ -87,21 +87,89 @@ def _create_gate(
 def _get_pending_final_gate(run_id: str) -> dict | None:
     try:
         with engine.connect() as conn:
-            row = conn.execute(text("""
-                SELECT * FROM approval_gates
-                WHERE run_id = :run_id
-                  AND approval_type = 'final'
-                  AND chunk_number = 0
-                  AND status = 'pending'
-                ORDER BY created_at DESC
-                LIMIT 1
-            """), {"run_id": run_id}).fetchone()
-            return _row_to_dict(row) if row else None
+            return _get_pending_final_gate_for_conn(conn, run_id)
     except Exception as error:
         raise RuntimeError(
             f"approval_gate.py: failed to fetch final gate. "
             f"run_id={run_id} | error={error}"
         )
+
+
+def _get_final_gate_for_conn(conn, run_id: str) -> dict | None:
+    row = conn.execute(text("""
+        SELECT * FROM approval_gates
+        WHERE run_id = :run_id
+          AND approval_type = 'final'
+          AND chunk_number = 0
+        ORDER BY created_at DESC
+        LIMIT 1
+    """), {"run_id": run_id}).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def _get_pending_final_gate_for_conn(conn, run_id: str) -> dict | None:
+    row = conn.execute(text("""
+        SELECT * FROM approval_gates
+        WHERE run_id = :run_id
+          AND approval_type = 'final'
+          AND chunk_number = 0
+          AND status = 'pending'
+        ORDER BY created_at DESC
+        LIMIT 1
+    """), {"run_id": run_id}).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def _create_final_approval_gate_for_conn(
+    conn,
+    run_id: str,
+    summary: str | None = None,
+) -> dict:
+    existing = _get_final_gate_for_conn(conn, run_id)
+    if existing:
+        status = existing["status"]
+        if status == "pending":
+            print(
+                f"[APPROVAL] Final gate already pending | "
+                f"run_id={run_id} | gate_id={existing['id']}"
+            )
+            return existing
+        raise RuntimeError(
+            f"approval_gate.py: final approval gate already decided. "
+            f"run_id={run_id} | status={status}"
+        )
+
+    gate_id = str(uuid.uuid4())
+    final_summary = summary or (
+        f"Final approval required for chunked run {run_id}"
+    )
+    conn.execute(text("""
+        INSERT INTO approval_gates
+        (
+            id, run_id, step, status, ai_summary,
+            plain_english_summary, risk_level, chunk_number,
+            approval_type, created_at
+        )
+        VALUES
+        (
+            :id, :run_id, 'final-approval', 'pending',
+            :summary, :summary, 'medium', 0, 'final', :created_at
+        )
+    """), {
+        "id": gate_id,
+        "run_id": run_id,
+        "summary": final_summary,
+        "created_at": _utc_now(),
+    })
+    gate = _row_to_dict(conn.execute(text("""
+        SELECT * FROM approval_gates
+        WHERE id = :id
+    """), {"id": gate_id}).fetchone())
+    print(
+        f"[APPROVAL] Final gate created | "
+        f"run_id={run_id} | gate_id={gate_id}"
+    )
+    return gate
 
 
 def create_final_approval_gate(
@@ -112,48 +180,45 @@ def create_final_approval_gate(
     Create or return the pending final approval gate for a chunked run.
     """
     try:
-        existing = _get_pending_final_gate(run_id)
-        if existing:
-            print(
-                f"[APPROVAL] Final gate already pending | "
-                f"run_id={run_id} | gate_id={existing['id']}"
-            )
-            return existing
-
-        gate_id = str(uuid.uuid4())
-        final_summary = summary or (
-            f"Final approval required for chunked run {run_id}"
-        )
-        with engine.connect() as conn:
-            conn.execute(text("""
-                INSERT INTO approval_gates
-                (
-                    id, run_id, step, status, ai_summary,
-                    plain_english_summary, risk_level, chunk_number,
-                    approval_type, created_at
-                )
-                VALUES
-                (
-                    :id, :run_id, 'final-approval', 'pending',
-                    :summary, :summary, 'medium', 0, 'final', :created_at
-                )
-            """), {
-                "id": gate_id,
-                "run_id": run_id,
-                "summary": final_summary,
-                "created_at": _utc_now(),
-            })
-            conn.commit()
-
-        gate = _get_gate(gate_id)
-        print(
-            f"[APPROVAL] Final gate created | "
-            f"run_id={run_id} | gate_id={gate_id}"
-        )
-        return gate
+        with engine.begin() as conn:
+            return _create_final_approval_gate_for_conn(conn, run_id, summary)
     except Exception as error:
         raise RuntimeError(
             f"approval_gate.py: failed to create final approval gate. "
+            f"run_id={run_id} | error={error}"
+        )
+
+
+def create_final_approval_gate_and_mark_run(
+    run_id: str,
+    summary: str,
+    current_chunk_number: int,
+) -> dict:
+    """
+    Transactionally create/reuse the final gate and mark the run as awaiting it.
+    """
+    try:
+        with engine.begin() as conn:
+            gate = _create_final_approval_gate_for_conn(conn, run_id, summary)
+            result = conn.execute(text("""
+                UPDATE pipeline_runs
+                SET status = 'awaiting_final_approval',
+                    current_step = 'final_approval',
+                    current_chunk_number = :current_chunk_number
+                WHERE id = :run_id
+            """), {
+                "run_id": run_id,
+                "current_chunk_number": current_chunk_number,
+            })
+            if result.rowcount == 0:
+                raise RuntimeError(
+                    f"approval_gate.py: run not found for final approval. "
+                    f"run_id={run_id}"
+                )
+            return gate
+    except Exception as error:
+        raise RuntimeError(
+            f"approval_gate.py: failed to create final gate and mark run. "
             f"run_id={run_id} | error={error}"
         )
 

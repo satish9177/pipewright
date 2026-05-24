@@ -119,3 +119,35 @@ def test_create_final_approval_gate_is_idempotent():
               AND status = 'pending'
         """), {"run_id": run_id}).fetchone()[0]
     assert count == 1
+
+
+def test_create_final_approval_gate_returns_existing_pending_gate():
+    run_id = str(uuid.uuid4())
+
+    first = create_final_approval_gate(run_id, "first")
+    second = create_final_approval_gate(run_id, "second")
+
+    assert second["id"] == first["id"]
+    assert second["plain_english_summary"] == "first"
+
+
+@pytest.mark.parametrize("decision", ["approved", "rejected"])
+def test_create_final_approval_gate_raises_if_existing_gate_decided(decision):
+    run_id = str(uuid.uuid4())
+    gate = create_final_approval_gate(run_id, "final summary")
+    if decision == "approved":
+        approve_gate(gate["id"])
+    else:
+        reject_gate(gate["id"], "not approved")
+
+    with pytest.raises(RuntimeError) as error:
+        create_final_approval_gate(run_id, "new summary")
+
+    assert "already decided" in str(error.value)
+    with engine.connect() as conn:
+        count = conn.execute(text("""
+            SELECT COUNT(*) FROM approval_gates
+            WHERE run_id = :run_id
+              AND approval_type = 'final'
+        """), {"run_id": run_id}).fetchone()[0]
+    assert count == 1

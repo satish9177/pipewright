@@ -578,10 +578,58 @@ async def test_execute_creates_final_approval_gate(monkeypatch, tmp_repo, tracke
             FROM approval_gates
             WHERE run_id = :run_id AND approval_type = 'final'
         """), {"run_id": run_id}).fetchone()
+        count = conn.execute(text("""
+            SELECT COUNT(*) FROM approval_gates
+            WHERE run_id = :run_id
+              AND approval_type = 'final'
+              AND status = 'pending'
+        """), {"run_id": run_id}).fetchone()[0]
     assert row is not None
     assert row[0] == "final"
     assert row[1] == 0
     assert row[2] == "pending"
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_final_approval_requires_clean_worktree_after_chunks(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    clean_checks = {"count": 0}
+    monkeypatch.setattr(chunked_orchestrator.local_git, "ensure_git_repo", lambda repo: None)
+
+    def ensure_clean(repo):
+        clean_checks["count"] += 1
+        if clean_checks["count"] > 1:
+            raise RuntimeError("[GIT] dirty after chunks")
+
+    monkeypatch.setattr(chunked_orchestrator.local_git, "ensure_clean_worktree", ensure_clean)
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "create_or_checkout_branch",
+        lambda branch, repo: calls.append(("branch", branch, repo)),
+    )
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "commit_files",
+        lambda files, message, repo: calls.append(("commit", files, message, repo)),
+    )
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    with pytest.raises(RuntimeError):
+        await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    with engine.connect() as conn:
+        count = conn.execute(text("""
+            SELECT COUNT(*) FROM approval_gates
+            WHERE run_id = :run_id
+              AND approval_type = 'final'
+        """), {"run_id": run_id}).fetchone()[0]
+    assert count == 0
 
 
 @pytest.mark.asyncio

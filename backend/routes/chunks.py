@@ -4,6 +4,7 @@ Routes for Phase 2B chunk planning, approval, execution, and manual resume.
 """
 
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -11,7 +12,6 @@ from sqlalchemy import text
 
 from backend.db.database import engine
 from backend.models.chunk import ChunkPlanResponse
-from backend.pipeline.approval_gate import approve_gate, reject_gate
 from backend.pipeline.chunk_store import (
     approve_chunk_plan,
     create_chunked_run,
@@ -70,6 +70,57 @@ def _update_run_final_status(run_id: str, status: str) -> None:
         conn.commit()
     if result.rowcount == 0:
         raise ValueError(f"Run not found: {run_id}")
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _decide_final_gate(
+    run_id: str,
+    gate_status: str,
+    run_status: str,
+    reason: str | None = None,
+) -> dict:
+    with engine.begin() as conn:
+        row = conn.execute(text("""
+            SELECT * FROM approval_gates
+            WHERE run_id = :run_id
+              AND approval_type = 'final'
+              AND chunk_number = 0
+              AND status = 'pending'
+            ORDER BY created_at DESC
+            LIMIT 1
+        """), {"run_id": run_id}).fetchone()
+        if row is None:
+            raise ValueError("Pending final approval gate not found")
+
+        gate = dict(row._mapping)
+        conn.execute(text("""
+            UPDATE approval_gates
+            SET status = :gate_status,
+                rejection_reason = :reason,
+                decided_at = :decided_at
+            WHERE id = :gate_id
+              AND status = 'pending'
+        """), {
+            "gate_status": gate_status,
+            "reason": reason,
+            "decided_at": _utc_now(),
+            "gate_id": gate["id"],
+        })
+        result = conn.execute(text("""
+            UPDATE pipeline_runs
+            SET status = :run_status,
+                current_step = :run_status
+            WHERE id = :run_id
+        """), {
+            "run_id": run_id,
+            "run_status": run_status,
+        })
+        if result.rowcount == 0:
+            raise ValueError(f"Run not found: {run_id}")
+        return {"status": run_status, "run_id": run_id}
 
 
 @router.post("/runs/chunked", response_model=ChunkPlanResponse)
@@ -150,19 +201,7 @@ async def resume_chunks_route(run_id: str):
 @router.post("/runs/{run_id}/final-approval/approve")
 def approve_final_approval_route(run_id: str):
     try:
-        gate = _get_pending_final_gate(run_id)
-        if gate is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Pending final approval gate not found",
-            )
-        if not approve_gate(gate["id"]):
-            raise HTTPException(
-                status_code=400,
-                detail="Final approval gate could not be approved",
-            )
-        _update_run_final_status(run_id, "final_approved")
-        return {"status": "final_approved", "run_id": run_id}
+        return _decide_final_gate(run_id, "approved", "final_approved")
     except HTTPException:
         raise
     except ValueError as error:
@@ -177,19 +216,12 @@ def reject_final_approval_route(
     request: RejectFinalApprovalRequest,
 ):
     try:
-        gate = _get_pending_final_gate(run_id)
-        if gate is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Pending final approval gate not found",
-            )
-        if not reject_gate(gate["id"], request.reason or "Final approval rejected"):
-            raise HTTPException(
-                status_code=400,
-                detail="Final approval gate could not be rejected",
-            )
-        _update_run_final_status(run_id, "final_rejected")
-        return {"status": "final_rejected", "run_id": run_id}
+        return _decide_final_gate(
+            run_id,
+            "rejected",
+            "final_rejected",
+            request.reason or "Final approval rejected",
+        )
     except HTTPException:
         raise
     except ValueError as error:

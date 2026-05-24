@@ -15,7 +15,7 @@ from backend.git import local_git
 from backend.checkpoint.checkpoint_store import load_chunk_step_checkpoint
 from backend.models.chunk import ChunkDefinition, ChunkPlanResponse, ChunkStatus
 from backend.models.handoff import CoderHandoff, PlannerHandoff
-from backend.pipeline.approval_gate import create_final_approval_gate
+from backend.pipeline.approval_gate import create_final_approval_gate_and_mark_run
 from backend.pipeline.chunk_store import (
     get_chunk_plan_status,
     get_previous_chunks_context,
@@ -222,6 +222,11 @@ def _build_final_approval_summary(
 
 
 def _require_all_chunks_completed(plan_status: ChunkPlanResponse) -> None:
+    if plan_status.chunk_plan_status != "approved":
+        raise RuntimeError(
+            f"chunked_orchestrator.py: cannot create final approval; "
+            f"chunk_plan_status={plan_status.chunk_plan_status}"
+        )
     incomplete = [
         chunk.chunk_number
         for chunk in plan_status.chunks
@@ -238,17 +243,18 @@ def _mark_awaiting_final_approval(
     run_id: str,
     plan_status: ChunkPlanResponse,
     branch_name: str,
+    target_repo_path: str | None = None,
 ) -> dict:
     latest_status = get_chunk_plan_status(run_id)
     _require_all_chunks_completed(latest_status)
-    _update_run_status(
+    if target_repo_path:
+        local_git.ensure_clean_worktree(target_repo_path)
+    summary = _build_final_approval_summary(run_id, latest_status, branch_name)
+    create_final_approval_gate_and_mark_run(
         run_id,
-        "awaiting_final_approval",
-        "final_approval",
+        summary,
         latest_status.total_chunks,
     )
-    summary = _build_final_approval_summary(run_id, latest_status, branch_name)
-    create_final_approval_gate(run_id, summary)
     return {
         "status": "awaiting_final_approval",
         "run_id": run_id,
@@ -467,7 +473,12 @@ async def execute_approved_chunks(run_id: str) -> dict:
             except Exception as error:
                 return _fail_chunk(run_id, chunk_number, error)
 
-    result = _mark_awaiting_final_approval(run_id, plan_status, branch_name)
+    result = _mark_awaiting_final_approval(
+        run_id,
+        plan_status,
+        branch_name,
+        target_repo_path,
+    )
     result["completed_chunks"] = completed_chunks
     print(f"[CHUNKED] Awaiting final approval | run_id={run_id}")
     return result
@@ -542,7 +553,12 @@ async def resume_chunked_pipeline(run_id: str) -> dict:
             except Exception as error:
                 return _fail_chunk(run_id, chunk_number, error)
 
-    result = _mark_awaiting_final_approval(run_id, plan_status, branch_name)
+    result = _mark_awaiting_final_approval(
+        run_id,
+        plan_status,
+        branch_name,
+        target_repo_path,
+    )
     result["resumed"] = True
     result["completed_chunks"] = completed_chunks
     result["skipped_chunks"] = skipped_chunks
