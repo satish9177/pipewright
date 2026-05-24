@@ -198,7 +198,45 @@ def ensure_clean_worktree(repo_path: str) -> None:
 
     dirty_files = get_dirty_files(repo_path)
     raise RuntimeError(
-        f"[GIT] working tree is dirty: {', '.join(dirty_files)}"
+        f"[GIT] working tree is dirty: {', '.join(dirty_files)}. "
+        "Review changes, then manually run git restore . and git clean -fd if safe."
+    )
+
+
+def assert_not_on_stale_pipewright_branch(
+    repo_path: str,
+    current_run_id: str,
+) -> None:
+    """
+    Block fresh execution from starting on an old pipewright/* branch.
+
+    This guard intentionally does not auto-checkout, delete, clean, or guess a
+    base branch. Operators must move the target repo to its configured base
+    branch before starting a new run.
+    """
+    if not current_run_id or not current_run_id.strip():
+        raise RuntimeError("[GIT] current_run_id is required")
+
+    result = run_git(["rev-parse", "--abbrev-ref", "HEAD"], repo_path)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"[GIT] failed to determine current branch: {result.stderr.strip()}"
+        )
+
+    current_branch = result.stdout.strip()
+    if not current_branch or current_branch == "HEAD":
+        return
+    if not current_branch.startswith("pipewright/"):
+        return
+
+    expected_branch = f"pipewright/{current_run_id[:8]}"
+    if current_branch == expected_branch:
+        return
+
+    raise RuntimeError(
+        f"[GIT] Target repo is on stale Pipewright branch '{current_branch}'. "
+        f"Expected branch for this run is '{expected_branch}'. Checkout the "
+        "configured base branch before starting a new run."
     )
 
 

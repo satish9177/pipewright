@@ -663,6 +663,7 @@ async def execute_approved_chunks(run_id: str) -> dict:
         )
 
     branch_name = f"pipewright/{run_id[:8]}"
+    local_git.assert_not_on_stale_pipewright_branch(target_repo_path, run_id)
     local_git.create_or_checkout_branch(branch_name, target_repo_path)
 
     completed_chunks = 0
