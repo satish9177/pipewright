@@ -40,6 +40,9 @@ def tracked_runs():
     yield run_ids
     with engine.begin() as conn:
         for run_id in run_ids:
+            conn.execute(text("DELETE FROM approval_gates WHERE run_id = :run_id"), {
+                "run_id": run_id,
+            })
             conn.execute(text("DELETE FROM chunks WHERE run_id = :run_id"), {
                 "run_id": run_id,
             })
@@ -482,6 +485,34 @@ async def test_test_failure_marks_failed_stops_and_does_not_commit(
 
 
 @pytest.mark.asyncio
+async def test_no_final_approval_gate_created_if_chunk_fails(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    def failed_tests(patch, run_id, chunk_number=0):
+        return make_test_result(run_id, False)
+
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", failed_tests)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    with engine.connect() as conn:
+        count = conn.execute(text("""
+            SELECT COUNT(*) FROM approval_gates
+            WHERE run_id = :run_id
+              AND approval_type = 'final'
+        """), {"run_id": run_id}).fetchone()[0]
+    assert count == 0
+
+
+@pytest.mark.asyncio
 async def test_completion_summary_stored(monkeypatch, tmp_repo, tracked_runs):
     run_id, _project = create_run(tmp_repo, tracked_runs)
     calls = []
@@ -505,7 +536,7 @@ async def test_completion_summary_stored(monkeypatch, tmp_repo, tracked_runs):
 
 
 @pytest.mark.asyncio
-async def test_all_chunks_complete_marks_run_chunks_completed(
+async def test_all_chunks_complete_marks_run_awaiting_final_approval(
     monkeypatch,
     tmp_repo,
     tracked_runs,
@@ -517,8 +548,9 @@ async def test_all_chunks_complete_marks_run_chunks_completed(
 
     result = await chunked_orchestrator.execute_approved_chunks(run_id)
 
-    assert result["status"] == "chunks_completed"
+    assert result["status"] == "awaiting_final_approval"
     assert result["completed_chunks"] == 2
+    assert result["final_approval_required"] is True
     status = get_chunk_plan_status(run_id)
     assert all(chunk.status == "completed" for chunk in status.chunks)
     with engine.connect() as conn:
@@ -527,8 +559,49 @@ async def test_all_chunks_complete_marks_run_chunks_completed(
             FROM pipeline_runs
             WHERE id = :run_id
         """), {"run_id": run_id}).fetchone()
-    assert row[0] == "chunks_completed"
+    assert row[0] == "awaiting_final_approval"
     assert row[1] == 2
+
+
+@pytest.mark.asyncio
+async def test_execute_creates_final_approval_gate(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT approval_type, chunk_number, status
+            FROM approval_gates
+            WHERE run_id = :run_id AND approval_type = 'final'
+        """), {"run_id": run_id}).fetchone()
+    assert row is not None
+    assert row[0] == "final"
+    assert row[1] == 0
+    assert row[2] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_final_approval_gate_is_idempotent(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    await chunked_orchestrator.execute_approved_chunks(run_id)
+    await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    with engine.connect() as conn:
+        count = conn.execute(text("""
+            SELECT COUNT(*) FROM approval_gates
+            WHERE run_id = :run_id
+              AND approval_type = 'final'
+              AND status = 'pending'
+        """), {"run_id": run_id}).fetchone()[0]
+    assert count == 1
 
 
 def test_scope_guard_no_final_approval_push_or_pr():
@@ -543,7 +616,7 @@ def test_execute_route_calls_execute_approved_chunks(monkeypatch):
 
     async def fake_execute(run_id):
         called["run_id"] = run_id
-        return {"status": "chunks_completed", "run_id": run_id}
+        return {"status": "awaiting_final_approval", "run_id": run_id}
 
     monkeypatch.setattr("backend.routes.chunks.execute_approved_chunks", fake_execute)
     client = TestClient(app)
@@ -551,7 +624,7 @@ def test_execute_route_calls_execute_approved_chunks(monkeypatch):
     response = client.post("/runs/run-123/chunks/execute")
 
     assert response.status_code == 200
-    assert response.json()["status"] == "chunks_completed"
+    assert response.json()["status"] == "awaiting_final_approval"
     assert called["run_id"] == "run-123"
 
 
@@ -578,7 +651,7 @@ async def test_resume_checks_out_existing_branch(monkeypatch, tmp_repo, tracked_
 
     result = await chunked_orchestrator.resume_chunked_pipeline(run_id)
 
-    assert result["status"] == "chunks_completed"
+    assert result["status"] == "awaiting_final_approval"
     assert ("run_git", ["checkout", f"pipewright/{run_id[:8]}"], project["repo_path"]) in calls
 
 
@@ -732,6 +805,25 @@ async def test_resume_repairs_stale_db_state(monkeypatch, tmp_repo, tracked_runs
 
 
 @pytest.mark.asyncio
+async def test_resume_creates_final_approval_gate(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    add_test_checkpoint(run_id, 1)
+    patch_resume_git(monkeypatch)
+
+    result = await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert result["status"] == "awaiting_final_approval"
+    with engine.connect() as conn:
+        count = conn.execute(text("""
+            SELECT COUNT(*) FROM approval_gates
+            WHERE run_id = :run_id
+              AND approval_type = 'final'
+              AND status = 'pending'
+        """), {"run_id": run_id}).fetchone()[0]
+    assert count == 1
+
+
+@pytest.mark.asyncio
 async def test_resume_fails_if_commit_missing_despite_test_checkpoint(
     monkeypatch,
     tmp_repo,
@@ -757,7 +849,11 @@ def test_resume_route_calls_resume_chunked_pipeline(monkeypatch):
 
     async def fake_resume(run_id):
         called["run_id"] = run_id
-        return {"status": "chunks_completed", "run_id": run_id, "resumed": True}
+        return {
+            "status": "awaiting_final_approval",
+            "run_id": run_id,
+            "resumed": True,
+        }
 
     monkeypatch.setattr("backend.routes.chunks.resume_chunked_pipeline", fake_resume)
     client = TestClient(app)

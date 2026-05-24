@@ -192,6 +192,14 @@ def test_init_migration_adds_approval_gate_created_at():
             SELECT created_at FROM approval_gates
             WHERE id = 'gate-1'
         """)).fetchone()[0]
+        gate_defaults = conn.execute(text("""
+            SELECT chunk_number, approval_type FROM approval_gates
+            WHERE id = 'gate-1'
+        """)).fetchone()
 
     assert "created_at" in column_names
+    assert "chunk_number" in column_names
+    assert "approval_type" in column_names
     assert created_at is not None
+    assert gate_defaults[0] == 0
+    assert gate_defaults[1] == "legacy"

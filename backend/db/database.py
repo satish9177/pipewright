@@ -131,6 +131,16 @@ def _migrate_db(conn) -> None:
                 "created_at",
                 "ALTER TABLE approval_gates ADD COLUMN created_at DATETIME",
             ),
+            (
+                "approval_gates",
+                "chunk_number",
+                "ALTER TABLE approval_gates ADD COLUMN chunk_number INTEGER DEFAULT 0",
+            ),
+            (
+                "approval_gates",
+                "approval_type",
+                "ALTER TABLE approval_gates ADD COLUMN approval_type TEXT DEFAULT 'legacy'",
+            ),
         ]
 
         for table_name, column_name, migration_sql in migrations:
@@ -140,6 +150,18 @@ def _migrate_db(conn) -> None:
                 UPDATE approval_gates
                 SET created_at = CURRENT_TIMESTAMP
                 WHERE created_at IS NULL
+            """))
+        if _column_exists(conn, "approval_gates", "chunk_number"):
+            conn.execute(text("""
+                UPDATE approval_gates
+                SET chunk_number = 0
+                WHERE chunk_number IS NULL
+            """))
+        if _column_exists(conn, "approval_gates", "approval_type"):
+            conn.execute(text("""
+                UPDATE approval_gates
+                SET approval_type = 'legacy'
+                WHERE approval_type IS NULL
             """))
         _ensure_file_index_shape(conn)
     except Exception as error:

@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS approval_gates (
     ai_summary TEXT,
     plain_english_summary TEXT,
     risk_level TEXT DEFAULT 'medium',
+    chunk_number INTEGER DEFAULT 0,
+    approval_type TEXT DEFAULT 'legacy',
     rejection_reason TEXT,
     decided_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,

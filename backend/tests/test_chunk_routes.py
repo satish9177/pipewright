@@ -13,6 +13,7 @@ from sqlalchemy import text
 from backend.db.database import engine
 from backend.main import app
 from backend.models.chunk import ChunkDefinition, TriageResult
+from backend.pipeline.approval_gate import create_final_approval_gate
 from backend.pipeline.chunk_store import create_chunked_run
 from backend.projects.project_store import create_project
 
@@ -25,6 +26,9 @@ def tracked_runs():
     yield run_ids
     with engine.begin() as conn:
         for run_id in run_ids:
+            conn.execute(text("DELETE FROM approval_gates WHERE run_id = :run_id"), {
+                "run_id": run_id,
+            })
             conn.execute(text("DELETE FROM chunks WHERE run_id = :run_id"), {
                 "run_id": run_id,
             })
@@ -195,3 +199,75 @@ def test_execute_and_resume_routes_exist():
 
     assert "/runs/{run_id}/chunks/execute" in paths
     assert "/runs/{run_id}/chunks/resume" in paths
+    assert "/runs/{run_id}/final-approval/approve" in paths
+    assert "/runs/{run_id}/final-approval/reject" in paths
+
+
+def test_final_approval_approve_route_updates_run(tmp_repo, tracked_runs):
+    project = make_project(tmp_repo)
+    run_id = str(uuid.uuid4())
+    tracked_runs.append(run_id)
+    create_chunked_run(
+        run_id,
+        project["id"],
+        "Add route chunks",
+        make_triage(run_id, project["id"]),
+    )
+    create_final_approval_gate(run_id, "final summary")
+    client = TestClient(app)
+
+    response = client.post(f"/runs/{run_id}/final-approval/approve")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "final_approved"
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT pr.status, ag.status
+            FROM pipeline_runs pr
+            JOIN approval_gates ag ON ag.run_id = pr.id
+            WHERE pr.id = :run_id AND ag.approval_type = 'final'
+        """), {"run_id": run_id}).fetchone()
+    assert row[0] == "final_approved"
+    assert row[1] == "approved"
+
+
+def test_final_approval_reject_route_updates_run_without_rollback(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    project = make_project(tmp_repo)
+    run_id = str(uuid.uuid4())
+    tracked_runs.append(run_id)
+    create_chunked_run(
+        run_id,
+        project["id"],
+        "Add route chunks",
+        make_triage(run_id, project["id"]),
+    )
+    create_final_approval_gate(run_id, "final summary")
+    rollback_called = {"value": False}
+
+    def fake_rollback(*args, **kwargs):
+        rollback_called["value"] = True
+
+    monkeypatch.setattr("backend.pipeline.patch_applier.rollback_patch", fake_rollback)
+    client = TestClient(app)
+
+    response = client.post(f"/runs/{run_id}/final-approval/reject", json={
+        "reason": "not ready",
+    })
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "final_rejected"
+    assert rollback_called["value"] is False
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT pr.status, ag.status, ag.rejection_reason
+            FROM pipeline_runs pr
+            JOIN approval_gates ag ON ag.run_id = pr.id
+            WHERE pr.id = :run_id AND ag.approval_type = 'final'
+        """), {"run_id": run_id}).fetchone()
+    assert row[0] == "final_rejected"
+    assert row[1] == "rejected"
+    assert row[2] == "not ready"

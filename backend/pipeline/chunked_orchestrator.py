@@ -1,9 +1,9 @@
 """
 chunked_orchestrator.py
-Phase 2B-4A sequential execution for approved chunk plans.
+Phase 2B-4 chunk execution for approved chunk plans.
 
 This module executes approved chunks one at a time. It does not implement
-resume, final approval, remote push, or PR creation.
+remote push, GitHub PR creation, or per-chunk approval.
 """
 
 from pathlib import Path
@@ -15,6 +15,7 @@ from backend.git import local_git
 from backend.checkpoint.checkpoint_store import load_chunk_step_checkpoint
 from backend.models.chunk import ChunkDefinition, ChunkPlanResponse, ChunkStatus
 from backend.models.handoff import CoderHandoff, PlannerHandoff
+from backend.pipeline.approval_gate import create_final_approval_gate
 from backend.pipeline.chunk_store import (
     get_chunk_plan_status,
     get_previous_chunks_context,
@@ -196,6 +197,67 @@ def _build_completion_summary(
     }
 
 
+def _build_final_approval_summary(
+    run_id: str,
+    plan_status: ChunkPlanResponse,
+    branch_name: str,
+) -> str:
+    lines = [
+        f"Final approval required for chunked run {run_id}",
+        "",
+        "Branch:",
+        branch_name,
+        "",
+        "Chunks:",
+    ]
+    for chunk in plan_status.chunks:
+        lines.append(f"{chunk.chunk_number}. {chunk.title} - {chunk.status}")
+        if chunk.completion_summary:
+            lines.append(f"   Summary: {chunk.completion_summary}")
+    lines.extend([
+        "",
+        "This approval allows the run to proceed to PR creation in a later phase.",
+    ])
+    return "\n".join(lines)
+
+
+def _require_all_chunks_completed(plan_status: ChunkPlanResponse) -> None:
+    incomplete = [
+        chunk.chunk_number
+        for chunk in plan_status.chunks
+        if chunk.status != "completed"
+    ]
+    if incomplete:
+        raise RuntimeError(
+            f"chunked_orchestrator.py: cannot create final approval; "
+            f"incomplete chunks={incomplete}"
+        )
+
+
+def _mark_awaiting_final_approval(
+    run_id: str,
+    plan_status: ChunkPlanResponse,
+    branch_name: str,
+) -> dict:
+    latest_status = get_chunk_plan_status(run_id)
+    _require_all_chunks_completed(latest_status)
+    _update_run_status(
+        run_id,
+        "awaiting_final_approval",
+        "final_approval",
+        latest_status.total_chunks,
+    )
+    summary = _build_final_approval_summary(run_id, latest_status, branch_name)
+    create_final_approval_gate(run_id, summary)
+    return {
+        "status": "awaiting_final_approval",
+        "run_id": run_id,
+        "completed_chunks": len(latest_status.chunks),
+        "branch_name": branch_name,
+        "final_approval_required": True,
+    }
+
+
 def _fail_chunk(
     run_id: str,
     chunk_number: int,
@@ -355,8 +417,8 @@ async def execute_approved_chunks(run_id: str) -> dict:
     """
     Execute pending chunks sequentially for an approved chunk plan.
 
-    This is intentionally narrow: it does not resume, push, create PRs, or
-    perform final approval.
+    This is intentionally narrow: it does not push, create PRs, or perform
+    per-chunk approval.
     """
     print(f"[CHUNKED] Starting execution | run_id={run_id}")
 
@@ -405,19 +467,10 @@ async def execute_approved_chunks(run_id: str) -> dict:
             except Exception as error:
                 return _fail_chunk(run_id, chunk_number, error)
 
-    _update_run_status(
-        run_id,
-        "chunks_completed",
-        "chunks_completed",
-        plan_status.total_chunks,
-    )
-    print(f"[CHUNKED] Complete | run_id={run_id}")
-    return {
-        "status": "chunks_completed",
-        "run_id": run_id,
-        "completed_chunks": completed_chunks,
-        "branch_name": branch_name,
-    }
+    result = _mark_awaiting_final_approval(run_id, plan_status, branch_name)
+    result["completed_chunks"] = completed_chunks
+    print(f"[CHUNKED] Awaiting final approval | run_id={run_id}")
+    return result
 
 
 async def resume_chunked_pipeline(run_id: str) -> dict:
@@ -425,7 +478,7 @@ async def resume_chunked_pipeline(run_id: str) -> dict:
     Manually resume a failed or stale chunked run from chunk boundaries.
 
     This does not auto-clean worktrees, recreate branches, push, create PRs, or
-    perform final approval.
+    perform per-chunk approval.
     """
     print(f"[CHUNKED] Starting resume | run_id={run_id}")
 
@@ -489,18 +542,9 @@ async def resume_chunked_pipeline(run_id: str) -> dict:
             except Exception as error:
                 return _fail_chunk(run_id, chunk_number, error)
 
-    _update_run_status(
-        run_id,
-        "chunks_completed",
-        "chunks_completed",
-        plan_status.total_chunks,
-    )
-    print(f"[CHUNKED] Resume complete | run_id={run_id}")
-    return {
-        "status": "chunks_completed",
-        "run_id": run_id,
-        "resumed": True,
-        "completed_chunks": completed_chunks,
-        "skipped_chunks": skipped_chunks,
-        "branch_name": branch_name,
-    }
+    result = _mark_awaiting_final_approval(run_id, plan_status, branch_name)
+    result["resumed"] = True
+    result["completed_chunks"] = completed_chunks
+    result["skipped_chunks"] = skipped_chunks
+    print(f"[CHUNKED] Resume awaiting final approval | run_id={run_id}")
+    return result

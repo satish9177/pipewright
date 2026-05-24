@@ -13,6 +13,7 @@ from backend.db.database import init_db
 from backend.models.handoff import PipelineTestResult, PatchResult
 from backend.pipeline.approval_gate import (
     approve_gate,
+    create_final_approval_gate,
     reject_gate,
     get_pending_gates,
 )
@@ -89,3 +90,32 @@ def test_pending_gate_appears_in_list():
     gates = get_pending_gates()
     gate_ids = [g["id"] for g in gates]
     assert gate_id in gate_ids
+
+
+def test_create_final_approval_gate_creates_pending_final_gate():
+    run_id = str(uuid.uuid4())
+
+    gate = create_final_approval_gate(run_id, "final summary")
+
+    assert gate["run_id"] == run_id
+    assert gate["approval_type"] == "final"
+    assert gate["chunk_number"] == 0
+    assert gate["status"] == "pending"
+    assert gate["plain_english_summary"] == "final summary"
+
+
+def test_create_final_approval_gate_is_idempotent():
+    run_id = str(uuid.uuid4())
+
+    first = create_final_approval_gate(run_id, "first")
+    second = create_final_approval_gate(run_id, "second")
+
+    assert first["id"] == second["id"]
+    with engine.connect() as conn:
+        count = conn.execute(text("""
+            SELECT COUNT(*) FROM approval_gates
+            WHERE run_id = :run_id
+              AND approval_type = 'final'
+              AND status = 'pending'
+        """), {"run_id": run_id}).fetchone()[0]
+    assert count == 1
