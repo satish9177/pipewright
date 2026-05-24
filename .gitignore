@@ -39,3 +39,4 @@ frontend/tsconfig.tsbuildinfo
 .tmp_pytest/
 .tmp_pytest_audit/
 .tmp_pytest_fresh/
+UsersHppipewright.tmp_pytest_freshbasetemp/
