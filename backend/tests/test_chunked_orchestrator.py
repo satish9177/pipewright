@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 from backend.db.database import engine
 from backend.main import app
+from backend.checkpoint.checkpoint_store import save_checkpoint
 from backend.models.chunk import ChunkDefinition, TriageResult
 from backend.models.handoff import (
     CoderHandoff,
@@ -25,6 +26,7 @@ from backend.pipeline.chunk_store import (
     approve_chunk_plan,
     create_chunked_run,
     get_chunk_plan_status,
+    save_chunk_completion_summary,
     update_chunk_status,
 )
 from backend.projects.project_store import create_project
@@ -204,6 +206,62 @@ def patch_success_pipeline(monkeypatch, run_id: str, calls=None):
     monkeypatch.setattr(chunked_orchestrator, "run_coder", fake_coder)
     monkeypatch.setattr(chunked_orchestrator, "apply_patch", fake_patch)
     monkeypatch.setattr(chunked_orchestrator, "run_tests", fake_tests)
+
+
+def patch_resume_git(monkeypatch, calls=None, branch_exists=True, clean=True):
+    monkeypatch.setattr(chunked_orchestrator.local_git, "ensure_git_repo", lambda repo: None)
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "branch_exists",
+        lambda branch, repo: branch_exists,
+    )
+
+    def fake_run_git(args, repo):
+        if calls is not None:
+            calls.append(("run_git", args, repo))
+
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(chunked_orchestrator.local_git, "run_git", fake_run_git)
+    if clean:
+        monkeypatch.setattr(chunked_orchestrator.local_git, "ensure_clean_worktree", lambda repo: None)
+        monkeypatch.setattr(chunked_orchestrator.local_git, "get_dirty_files", lambda repo: [])
+    else:
+        monkeypatch.setattr(
+            chunked_orchestrator.local_git,
+            "ensure_clean_worktree",
+            lambda repo: (_ for _ in ()).throw(RuntimeError("[GIT] dirty")),
+        )
+        monkeypatch.setattr(chunked_orchestrator.local_git, "get_dirty_files", lambda repo: ["dirty.py"])
+
+    monkeypatch.setattr(chunked_orchestrator.local_git, "commit_message_exists", lambda repo, prefix: True)
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "commit_files",
+        lambda files, message, repo: calls.append(("commit", files, message, repo)) if calls is not None else "hash",
+    )
+
+
+def add_test_checkpoint(run_id: str, chunk_number: int):
+    save_checkpoint(
+        run_id=run_id,
+        step="test",
+        output={"passed": True},
+        handoff_contract={"passed": True},
+        git_hash="hash",
+        tests_passed=True,
+        chunk_number=chunk_number,
+    )
+    save_chunk_completion_summary(
+        run_id,
+        chunk_number,
+        {"summary": f"chunk {chunk_number} done"},
+    )
 
 
 @pytest.mark.asyncio
@@ -473,12 +531,11 @@ async def test_all_chunks_complete_marks_run_chunks_completed(
     assert row[1] == 2
 
 
-def test_scope_guard_no_resume_or_push_or_pr():
-    assert not hasattr(chunked_orchestrator, "resume_chunked_pipeline")
+def test_scope_guard_no_final_approval_push_or_pr():
     paths = {route.path for route in app.routes}
-    assert "/runs/{run_id}/chunks/resume" not in paths
     assert not hasattr(chunked_orchestrator, "create_pull_request")
     assert not hasattr(chunked_orchestrator.local_git, "push_was_called")
+    assert not hasattr(chunked_orchestrator, "final_approval")
 
 
 def test_execute_route_calls_execute_approved_chunks(monkeypatch):
@@ -495,4 +552,218 @@ def test_execute_route_calls_execute_approved_chunks(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["status"] == "chunks_completed"
+    assert called["run_id"] == "run-123"
+
+
+@pytest.mark.asyncio
+async def test_resume_refuses_when_run_missing():
+    with pytest.raises(Exception):
+        await chunked_orchestrator.resume_chunked_pipeline("missing-run")
+
+
+@pytest.mark.asyncio
+async def test_resume_refuses_when_chunk_plan_not_approved(tmp_repo, tracked_runs):
+    run_id, _project = create_run(tmp_repo, tracked_runs, approved=False)
+
+    with pytest.raises(RuntimeError):
+        await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+
+@pytest.mark.asyncio
+async def test_resume_checks_out_existing_branch(monkeypatch, tmp_repo, tracked_runs):
+    run_id, project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_resume_git(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert result["status"] == "chunks_completed"
+    assert ("run_git", ["checkout", f"pipewright/{run_id[:8]}"], project["repo_path"]) in calls
+
+
+@pytest.mark.asyncio
+async def test_resume_fails_if_expected_branch_missing(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_resume_git(monkeypatch, calls, branch_exists=False)
+
+    with pytest.raises(RuntimeError):
+        await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+
+@pytest.mark.asyncio
+async def test_resume_fails_if_worktree_dirty(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_resume_git(monkeypatch, calls, clean=False)
+
+    with pytest.raises(RuntimeError) as error:
+        await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert "Manual cleanup or rollback is required" in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_resume_resets_stale_running_chunks_to_pending(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    update_chunk_status(run_id, 1, "running")
+    patch_resume_git(monkeypatch)
+    patch_success_pipeline(monkeypatch, run_id)
+
+    await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[0].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_resume_skips_chunk_with_test_checkpoint(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    add_test_checkpoint(run_id, 1)
+    calls = []
+    patch_resume_git(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert result["skipped_chunks"] == 1
+    assert not any(call[0] == "planner" for call in calls)
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[0].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_resume_reruns_chunk_without_test_checkpoint(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_resume_git(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert any(call[0] == "planner" and call[1] == 1 for call in calls)
+    assert any(call[0] == "commit" for call in calls)
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[0].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_resume_processes_chunks_in_order_and_stops_after_failure(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, chunks=3)
+    add_test_checkpoint(run_id, 1)
+    calls = []
+    patch_resume_git(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    def failed_tests(patch, run_id, chunk_number=0):
+        calls.append(("test", chunk_number))
+        return make_test_result(run_id, chunk_number != 2)
+
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", failed_tests)
+
+    result = await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert result["status"] == "failed"
+    assert result["failed_chunk"] == 2
+    assert not any(call[0] == "planner" and call[1] == 3 for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_test_failure_during_resume_marks_failed(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_run(tmp_repo, tracked_runs, chunks=2)
+    calls = []
+    patch_resume_git(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    def failed_tests(patch, run_id, chunk_number=0):
+        calls.append(("test", chunk_number))
+        return make_test_result(run_id, False)
+
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", failed_tests)
+
+    result = await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert result["status"] == "failed"
+    assert result["failed_chunk"] == 1
+    assert not any(call[0] == "planner" and call[1] == 2 for call in calls)
+    with engine.connect() as conn:
+        status = conn.execute(text(
+            "SELECT status FROM pipeline_runs WHERE id = :run_id"
+        ), {"run_id": run_id}).fetchone()[0]
+    assert status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_commit_failure_during_resume_marks_failed(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_run(tmp_repo, tracked_runs, chunks=2)
+    calls = []
+    patch_resume_git(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    def fail_commit(files, message, repo):
+        raise RuntimeError("[GIT] commit failed")
+
+    monkeypatch.setattr(chunked_orchestrator.local_git, "commit_files", fail_commit)
+
+    result = await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert result["status"] == "failed"
+    assert result["failed_chunk"] == 1
+    assert not any(call[0] == "planner" and call[1] == 2 for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_resume_repairs_stale_db_state(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    update_chunk_status(run_id, 1, "running")
+    add_test_checkpoint(run_id, 1)
+    patch_resume_git(monkeypatch)
+
+    result = await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert result["skipped_chunks"] == 1
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[0].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_resume_fails_if_commit_missing_despite_test_checkpoint(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    add_test_checkpoint(run_id, 1)
+    patch_resume_git(monkeypatch)
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "commit_message_exists",
+        lambda repo, prefix: False,
+    )
+
+    with pytest.raises(RuntimeError) as error:
+        await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert "unsafe resume recovery" in str(error.value)
+
+
+def test_resume_route_calls_resume_chunked_pipeline(monkeypatch):
+    called = {"run_id": None}
+
+    async def fake_resume(run_id):
+        called["run_id"] = run_id
+        return {"status": "chunks_completed", "run_id": run_id, "resumed": True}
+
+    monkeypatch.setattr("backend.routes.chunks.resume_chunked_pipeline", fake_resume)
+    client = TestClient(app)
+
+    response = client.post("/runs/run-123/chunks/resume")
+
+    assert response.status_code == 200
+    assert response.json()["resumed"] is True
     assert called["run_id"] == "run-123"

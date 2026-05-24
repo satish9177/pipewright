@@ -190,8 +190,8 @@ def test_reject_endpoint_rejects_only(tmp_repo, tracked_runs):
     assert response.json()["chunk_plan_status"] == "rejected"
 
 
-def test_execute_route_exists_and_resume_route_does_not_exist():
+def test_execute_and_resume_routes_exist():
     paths = {route.path for route in app.routes}
 
     assert "/runs/{run_id}/chunks/execute" in paths
-    assert "/runs/{run_id}/chunks/resume" not in paths
+    assert "/runs/{run_id}/chunks/resume" in paths

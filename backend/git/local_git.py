@@ -234,3 +234,18 @@ def checkout_file(file_path: str, repo_path: str) -> None:
     result = run_git(["checkout", "--", normalized_path], repo_path)
     if result.returncode != 0:
         raise RuntimeError(f"[GIT] git checkout file failed: {result.stderr.strip()}")
+
+
+def commit_message_exists(repo_path: str, message_prefix: str) -> bool:
+    """
+    Return True if git log contains a commit message with message_prefix.
+    """
+    if not message_prefix or not message_prefix.strip():
+        raise RuntimeError("[GIT] commit message prefix is required")
+
+    result = run_git(["log", "--oneline"], repo_path)
+    if result.returncode != 0:
+        raise RuntimeError(f"[GIT] git log failed: {result.stderr.strip()}")
+
+    prefix = message_prefix.strip()
+    return any(prefix in line for line in result.stdout.splitlines())
