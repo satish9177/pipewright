@@ -11,6 +11,8 @@ import {
 } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import RunStatusBadge from '@/components/RunStatusBadge'
+import EventLog from '@/components/EventLog'
+import useRunEvents from '@/hooks/useRunEvents'
 
 const STEPS = ['plan', 'code', 'patch', 'test', 'approval', 'github_pr']
 
@@ -60,6 +62,7 @@ export default function RunDetailPage() {
   const { runId } = useParams<{ runId: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { events, status: wsStatus } = useRunEvents(runId)
 
   const { data: run } = useQuery({
     queryKey: ['run', runId],
@@ -107,6 +110,12 @@ export default function RunDetailPage() {
       </div>
     )
   }
+
+  const showEventLog =
+    run.status === 'running' ||
+    run.status === 'awaiting_chunk_approval' ||
+    run.status === 'awaiting_final_approval' ||
+    events.length > 0
 
   return (
     <div className="max-w-3xl">
@@ -238,6 +247,14 @@ export default function RunDetailPage() {
             <p className="text-sm font-medium text-gray-500">
               Pipeline was rejected. Files have been rolled back.
             </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {showEventLog && (
+        <Card className="mb-4">
+          <CardContent className="py-4">
+            <EventLog events={events} status={wsStatus} />
           </CardContent>
         </Card>
       )}
