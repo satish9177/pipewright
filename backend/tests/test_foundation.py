@@ -8,6 +8,8 @@ Tests for Day 1 foundation:
 
 import uuid
 import pytest
+from sqlalchemy import create_engine, text
+from backend.db import database
 from backend.memory.memory_store import (
     add_fact,
     load_hard_facts,
@@ -136,3 +138,60 @@ def test_legacy_chunk_checkpoint_still_loads():
     assert loaded is not None
     assert loaded["chunk_number"] == 0
     assert loaded["output"]["goal"] == "legacy"
+
+
+def test_init_migration_adds_approval_gate_created_at():
+    temp_engine = create_engine("sqlite:///:memory:")
+    with temp_engine.connect() as conn:
+        conn.execute(text("""
+            CREATE TABLE pipeline_runs (
+                id TEXT PRIMARY KEY,
+                feature_description TEXT NOT NULL
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE projects (
+                id TEXT PRIMARY KEY
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE checkpoints (
+                id TEXT PRIMARY KEY
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE approval_gates (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                step TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                diff TEXT,
+                test_results TEXT,
+                ai_summary TEXT,
+                plain_english_summary TEXT,
+                risk_level TEXT DEFAULT 'medium',
+                rejection_reason TEXT,
+                decided_at DATETIME
+            )
+        """))
+        conn.execute(text("""
+            INSERT INTO approval_gates
+            (id, run_id, step, status)
+            VALUES ('gate-1', 'run-1', 'approval', 'pending')
+        """))
+        conn.commit()
+
+        database._migrate_db(conn)
+        conn.commit()
+
+        columns = conn.execute(text(
+            "PRAGMA table_info(approval_gates)"
+        )).fetchall()
+        column_names = {row._mapping["name"] for row in columns}
+        created_at = conn.execute(text("""
+            SELECT created_at FROM approval_gates
+            WHERE id = 'gate-1'
+        """)).fetchone()[0]
+
+    assert "created_at" in column_names
+    assert created_at is not None

@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS approval_gates (
     risk_level TEXT DEFAULT 'medium',
     rejection_reason TEXT,
     decided_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
 );
 

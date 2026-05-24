@@ -126,10 +126,21 @@ def _migrate_db(conn) -> None:
                 "chunk_number",
                 "ALTER TABLE checkpoints ADD COLUMN chunk_number INTEGER DEFAULT 0",
             ),
+            (
+                "approval_gates",
+                "created_at",
+                "ALTER TABLE approval_gates ADD COLUMN created_at DATETIME",
+            ),
         ]
 
         for table_name, column_name, migration_sql in migrations:
             _add_column_if_missing(conn, table_name, column_name, migration_sql)
+        if _column_exists(conn, "approval_gates", "created_at"):
+            conn.execute(text("""
+                UPDATE approval_gates
+                SET created_at = CURRENT_TIMESTAMP
+                WHERE created_at IS NULL
+            """))
         _ensure_file_index_shape(conn)
     except Exception as error:
         raise RuntimeError(f"database.py: Failed to run migrations: {error}")
