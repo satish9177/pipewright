@@ -27,6 +27,7 @@ from backend.projects.project_store import (
     update_project,
 )
 from backend.routes.chunks import router as chunks_router
+from backend.routes.ws_events import router as ws_events_router
 
 
 class RunRequest(BaseModel):
@@ -68,6 +69,7 @@ app.add_middleware(
 )
 
 app.include_router(chunks_router)
+app.include_router(ws_events_router)
 
 
 @app.get("/health")

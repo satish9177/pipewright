@@ -82,3 +82,10 @@ async def subscription(run_id: str) -> AsyncIterator[asyncio.Queue]:
 def clear_all_events_for_tests() -> None:
     _buffers.clear()
     _subscribers.clear()
+
+
+def get_subscriber_count_for_tests(run_id: str) -> int:
+    """
+    Test helper for verifying WebSocket disconnect cleanup.
+    """
+    return len(_subscribers.get(run_id, set()))
