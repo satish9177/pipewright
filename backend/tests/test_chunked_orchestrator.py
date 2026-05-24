@@ -187,6 +187,11 @@ def patch_git_preflight(monkeypatch, calls=None):
     )
     monkeypatch.setattr(
         chunked_orchestrator.local_git,
+        "assert_not_on_stale_pipewright_branch",
+        lambda repo, run_id: None,
+    )
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
         "create_or_checkout_branch",
         lambda branch, repo: calls.append(("branch", branch, repo)) if calls is not None else None,
     )
@@ -348,6 +353,45 @@ async def test_dirty_target_repo_blocks_fresh_execution(monkeypatch, tmp_repo, t
             SELECT status FROM pipeline_runs WHERE id = :run_id
         """), {"run_id": run_id}).fetchone()[0]
     assert status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_fresh_execute_rejects_stale_pipewright_branch_before_checkout(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    monkeypatch.setattr(chunked_orchestrator.local_git, "ensure_git_repo", lambda repo: None)
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "ensure_clean_worktree",
+        lambda repo: None,
+    )
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "assert_not_on_stale_pipewright_branch",
+        lambda repo, run_id: (_ for _ in ()).throw(
+            RuntimeError("[GIT] stale Pipewright branch")
+        ),
+    )
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "create_or_checkout_branch",
+        lambda branch, repo: calls.append(("branch", branch, repo)),
+    )
+
+    async def fake_planner(*args, **kwargs):
+        calls.append(("planner",))
+
+    monkeypatch.setattr(chunked_orchestrator, "run_planner", fake_planner)
+
+    with pytest.raises(RuntimeError, match="stale Pipewright branch"):
+        await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert not any(call[0] == "branch" for call in calls)
+    assert not any(call[0] == "planner" for call in calls)
 
 
 @pytest.mark.asyncio
@@ -1124,6 +1168,13 @@ async def test_resume_checks_out_existing_branch(monkeypatch, tmp_repo, tracked_
     run_id, project = create_run(tmp_repo, tracked_runs)
     calls = []
     patch_resume_git(monkeypatch, calls)
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "assert_not_on_stale_pipewright_branch",
+        lambda repo, run_id: (_ for _ in ()).throw(
+            AssertionError("stale branch guard must not run during resume")
+        ),
+    )
     patch_success_pipeline(monkeypatch, run_id, calls)
 
     result = await chunked_orchestrator.resume_chunked_pipeline(run_id)

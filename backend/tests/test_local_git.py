@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from backend.git.local_git import (
+    assert_not_on_stale_pipewright_branch,
     branch_exists_remote,
     branch_exists,
     checkout_file,
@@ -250,3 +251,42 @@ def test_ensure_clean_worktree_raises_with_dirty_files(git_repo):
 
     with pytest.raises(RuntimeError, match=r"\[GIT\].*README.md"):
         ensure_clean_worktree(str(git_repo))
+
+
+@pytest.mark.parametrize("branch_name", [
+    "main",
+    "pipewright/12345678",
+    "HEAD",
+    "feature/foo",
+    "pipewright-staging",
+])
+def test_stale_pipewright_branch_guard_allows_safe_branches(
+    monkeypatch,
+    git_repo,
+    branch_name,
+):
+    completed = subprocess.CompletedProcess(
+        args=["git", "rev-parse"],
+        returncode=0,
+        stdout=f"{branch_name}\n",
+        stderr="",
+    )
+    with patch("backend.git.local_git.run_git", return_value=completed) as mocked:
+        assert_not_on_stale_pipewright_branch(str(git_repo), "12345678-abcd")
+
+    mocked.assert_called_once_with(
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+        str(git_repo),
+    )
+
+
+def test_stale_pipewright_branch_guard_rejects_old_pipewright_branch(git_repo):
+    completed = subprocess.CompletedProcess(
+        args=["git", "rev-parse"],
+        returncode=0,
+        stdout="pipewright/deadbeef\n",
+        stderr="",
+    )
+    with patch("backend.git.local_git.run_git", return_value=completed):
+        with pytest.raises(RuntimeError, match=r"\[GIT\].*stale Pipewright branch"):
+            assert_not_on_stale_pipewright_branch(str(git_repo), "12345678-abcd")
