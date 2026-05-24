@@ -120,6 +120,106 @@ def _get_pending_final_gate_for_conn(conn, run_id: str) -> dict | None:
     return _row_to_dict(row) if row else None
 
 
+def _get_chunk_gate_for_conn(
+    conn,
+    run_id: str,
+    chunk_number: int,
+) -> dict | None:
+    row = conn.execute(text("""
+        SELECT * FROM approval_gates
+        WHERE run_id = :run_id
+          AND approval_type = 'chunk'
+          AND chunk_number = :chunk_number
+        ORDER BY created_at DESC
+        LIMIT 1
+    """), {
+        "run_id": run_id,
+        "chunk_number": chunk_number,
+    }).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def _get_pending_chunk_gate_for_conn(
+    conn,
+    run_id: str,
+    chunk_number: int,
+) -> dict | None:
+    row = conn.execute(text("""
+        SELECT * FROM approval_gates
+        WHERE run_id = :run_id
+          AND approval_type = 'chunk'
+          AND chunk_number = :chunk_number
+          AND status = 'pending'
+        ORDER BY created_at DESC
+        LIMIT 1
+    """), {
+        "run_id": run_id,
+        "chunk_number": chunk_number,
+    }).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def _create_chunk_approval_gate_for_conn(
+    conn,
+    run_id: str,
+    chunk_number: int,
+    summary: str | None = None,
+    allow_new_attempt: bool = False,
+) -> dict:
+    existing = _get_chunk_gate_for_conn(conn, run_id, chunk_number)
+    if existing:
+        status = existing["status"]
+        if status == "pending":
+            print(
+                f"[APPROVAL] Chunk gate already pending | "
+                f"run_id={run_id} | chunk={chunk_number} | "
+                f"gate_id={existing['id']}"
+            )
+            return existing
+        if not allow_new_attempt or status != "rejected":
+            raise RuntimeError(
+                f"approval_gate.py: chunk approval gate already decided. "
+                f"run_id={run_id} | chunk={chunk_number} | status={status}"
+            )
+
+    gate_id = str(uuid.uuid4())
+    branch_name = f"pipewright/{run_id[:8]}"
+    chunk_summary = summary or (
+        f"Chunk approval required for run {run_id}\n\n"
+        f"Chunk: {chunk_number}\n"
+        f"Branch: {branch_name}\n\n"
+        "Tests have passed. Commit is pending human approval."
+    )
+    conn.execute(text("""
+        INSERT INTO approval_gates
+        (
+            id, run_id, step, status, ai_summary,
+            plain_english_summary, risk_level, chunk_number,
+            approval_type, created_at
+        )
+        VALUES
+        (
+            :id, :run_id, 'chunk-approval', 'pending',
+            :summary, :summary, 'high', :chunk_number, 'chunk', :created_at
+        )
+    """), {
+        "id": gate_id,
+        "run_id": run_id,
+        "summary": chunk_summary,
+        "chunk_number": chunk_number,
+        "created_at": _utc_now(),
+    })
+    gate = _row_to_dict(conn.execute(text("""
+        SELECT * FROM approval_gates
+        WHERE id = :id
+    """), {"id": gate_id}).fetchone())
+    print(
+        f"[APPROVAL] Chunk gate created | "
+        f"run_id={run_id} | chunk={chunk_number} | gate_id={gate_id}"
+    )
+    return gate
+
+
 def _create_final_approval_gate_for_conn(
     conn,
     run_id: str,
@@ -186,6 +286,84 @@ def create_final_approval_gate(
         raise RuntimeError(
             f"approval_gate.py: failed to create final approval gate. "
             f"run_id={run_id} | error={error}"
+        )
+
+
+def create_chunk_approval_gate(
+    run_id: str,
+    chunk_number: int,
+    summary: str | None = None,
+) -> dict:
+    """
+    Create or return the pending approval gate for a high-risk chunk.
+    """
+    try:
+        with engine.begin() as conn:
+            return _create_chunk_approval_gate_for_conn(
+                conn,
+                run_id,
+                chunk_number,
+                summary,
+            )
+    except Exception as error:
+        raise RuntimeError(
+            f"approval_gate.py: failed to create chunk approval gate. "
+            f"run_id={run_id} | chunk={chunk_number} | error={error}"
+        )
+
+
+def create_chunk_approval_gate_and_mark_chunk(
+    run_id: str,
+    chunk_number: int,
+    summary: str,
+) -> dict:
+    """
+    Transactionally create/reuse a chunk gate and mark the run as paused.
+    """
+    try:
+        with engine.begin() as conn:
+            gate = _create_chunk_approval_gate_for_conn(
+                conn,
+                run_id,
+                chunk_number,
+                summary,
+                allow_new_attempt=True,
+            )
+            chunk_result = conn.execute(text("""
+                UPDATE chunks
+                SET status = 'awaiting_chunk_approval',
+                    error_message = NULL
+                WHERE run_id = :run_id
+                  AND chunk_number = :chunk_number
+            """), {
+                "run_id": run_id,
+                "chunk_number": chunk_number,
+            })
+            if chunk_result.rowcount == 0:
+                raise RuntimeError(
+                    f"approval_gate.py: chunk not found for approval pause. "
+                    f"run_id={run_id} | chunk={chunk_number}"
+                )
+            run_result = conn.execute(text("""
+                UPDATE pipeline_runs
+                SET status = 'awaiting_chunk_approval',
+                    current_step = 'chunk_approval',
+                    current_chunk_number = :chunk_number
+                WHERE id = :run_id
+            """), {
+                "run_id": run_id,
+                "chunk_number": chunk_number,
+            })
+            if run_result.rowcount == 0:
+                raise RuntimeError(
+                    f"approval_gate.py: run not found for chunk approval. "
+                    f"run_id={run_id}"
+                )
+            return gate
+    except Exception as error:
+        raise RuntimeError(
+            f"approval_gate.py: failed to create chunk gate and mark chunk. "
+            f"run_id={run_id} | chunk={chunk_number} | error={error}"
         )
 
 
