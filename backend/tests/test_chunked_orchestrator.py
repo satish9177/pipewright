@@ -5,12 +5,14 @@ No real AI calls, no real GitHub, no push.
 """
 
 import uuid
+import inspect
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from backend.db.database import engine
+from backend.events.event_bus import clear_all_events_for_tests, get_buffered_events
 from backend.main import app
 from backend.checkpoint.checkpoint_store import save_checkpoint
 from backend.models.chunk import ChunkDefinition, TriageResult
@@ -299,6 +301,14 @@ def add_code_checkpoint(run_id: str, chunk_number: int):
     return coder
 
 
+def event_statuses(run_id: str, kind: str) -> list[str]:
+    return [
+        event.data["to_status"]
+        for event in get_buffered_events(run_id)
+        if event.kind == kind
+    ]
+
+
 @pytest.mark.asyncio
 async def test_execute_refuses_when_chunk_plan_not_approved(tmp_repo, tracked_runs):
     run_id, _project = create_run(tmp_repo, tracked_runs, approved=False)
@@ -504,6 +514,48 @@ async def test_successful_chunk_commits_exactly_touched_files(
 
 
 @pytest.mark.asyncio
+async def test_chunked_execution_emits_chunk_running_and_completed_events(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    clear_all_events_for_tests()
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    statuses = event_statuses(run_id, "chunk_status_changed")
+    assert "running" in statuses
+    assert "completed" in statuses
+    events = [
+        event for event in get_buffered_events(run_id)
+        if event.kind == "chunk_status_changed"
+    ]
+    assert all(event.stage == "orchestrator" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_final_approval_path_emits_run_status_event(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    clear_all_events_for_tests()
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    statuses = event_statuses(run_id, "run_status_changed")
+    assert "awaiting_final_approval" in statuses
+
+
+@pytest.mark.asyncio
 async def test_high_risk_chunk_pauses_after_tests_before_commit(
     monkeypatch,
     tmp_repo,
@@ -548,6 +600,35 @@ async def test_high_risk_chunk_pauses_after_tests_before_commit(
     assert row[2] == 1
     assert row[3] == "pending"
     assert final_count == 0
+
+
+@pytest.mark.asyncio
+async def test_high_risk_chunk_pause_emits_run_and_chunk_status_events(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    clear_all_events_for_tests()
+    run_id, _project = create_run(
+        tmp_repo,
+        tracked_runs,
+        review_chunks={1},
+    )
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "awaiting_chunk_approval"
+    assert "awaiting_chunk_approval" in event_statuses(
+        run_id,
+        "chunk_status_changed",
+    )
+    assert "awaiting_chunk_approval" in event_statuses(
+        run_id,
+        "run_status_changed",
+    )
 
 
 @pytest.mark.asyncio
@@ -733,6 +814,80 @@ async def test_no_final_approval_gate_created_if_chunk_fails(
 
 
 @pytest.mark.asyncio
+async def test_failed_chunk_emits_failure_status_events(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    clear_all_events_for_tests()
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    def failed_tests(patch, run_id, chunk_number=0):
+        return make_test_result(run_id, False)
+
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", failed_tests)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    assert "failed" in event_statuses(run_id, "chunk_status_changed")
+    assert "failed" in event_statuses(run_id, "run_status_changed")
+
+
+@pytest.mark.asyncio
+async def test_broken_event_bus_does_not_break_happy_path_execution(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+    monkeypatch.setattr(
+        chunked_orchestrator.event_bus,
+        "publish",
+        lambda event: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "awaiting_final_approval"
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[0].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_broken_event_bus_does_not_break_high_risk_pause(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(
+        tmp_repo,
+        tracked_runs,
+        review_chunks={1},
+    )
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+    monkeypatch.setattr(
+        chunked_orchestrator.event_bus,
+        "publish",
+        lambda event: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "awaiting_chunk_approval"
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[0].status == "awaiting_chunk_approval"
+
+
+@pytest.mark.asyncio
 async def test_completion_summary_stored(monkeypatch, tmp_repo, tracked_runs):
     run_id, _project = create_run(tmp_repo, tracked_runs)
     calls = []
@@ -877,6 +1032,13 @@ def test_scope_guard_no_final_approval_push_or_pr():
     assert not hasattr(chunked_orchestrator, "create_pull_request")
     assert not hasattr(chunked_orchestrator.local_git, "push_was_called")
     assert not hasattr(chunked_orchestrator, "final_approval")
+
+
+def test_pipeline_uses_publish_safe_wrapper_for_events():
+    source = inspect.getsource(chunked_orchestrator)
+
+    assert "def _publish_safe" in source
+    assert source.count("event_bus.publish(") == 1
 
 
 def test_execute_route_calls_execute_approved_chunks(monkeypatch):
