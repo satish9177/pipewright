@@ -185,6 +185,32 @@ def test_get_chunk_plan_status_returns_chunks_and_triage(tmp_repo, tracked_runs)
     assert len(response.chunks) == 2
 
 
+def test_get_chunk_plan_status_reads_persisted_human_review_flag(tmp_repo, tracked_runs):
+    project = make_project(tmp_repo)
+    run_id = str(uuid.uuid4())
+    tracked_runs.append(run_id)
+    create_chunked_run(
+        run_id,
+        project["id"],
+        "Build chunk planning",
+        make_triage(run_id, project["id"]),
+    )
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE chunks
+            SET requires_human_review = 1
+            WHERE run_id = :run_id
+              AND chunk_number = 2
+        """), {"run_id": run_id})
+
+    response = get_chunk_plan_status(run_id)
+
+    assert response.chunks[1].requires_human_review is True
+    assert response.triage is not None
+    assert response.triage.chunks[1].requires_human_review is False
+
+
 def test_previous_chunks_context_ignores_incomplete_chunks(tmp_repo, tracked_runs):
     project = make_project(tmp_repo)
     run_id = str(uuid.uuid4())

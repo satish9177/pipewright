@@ -107,7 +107,27 @@ def _definition_by_number(plan: ChunkPlanResponse) -> dict[int, ChunkDefinition]
         raise RuntimeError(
             f"chunked_orchestrator.py: missing triage plan for run {plan.run_id}"
         )
-    return {chunk.chunk_number: chunk for chunk in plan.triage.chunks}
+    definitions = {chunk.chunk_number: chunk for chunk in plan.triage.chunks}
+    merged: dict[int, ChunkDefinition] = {}
+    for chunk_status in plan.chunks:
+        base = definitions.get(chunk_status.chunk_number)
+        if base is None:
+            raise RuntimeError(
+                f"chunked_orchestrator.py: chunk definition missing. "
+                f"run_id={plan.run_id} | chunk={chunk_status.chunk_number}"
+            )
+        merged[chunk_status.chunk_number] = ChunkDefinition(
+            chunk_number=chunk_status.chunk_number,
+            title=chunk_status.title,
+            description=base.description,
+            files_expected=chunk_status.files_expected,
+            depends_on=chunk_status.depends_on,
+            risk_level=chunk_status.risk_level,
+            token_estimate=base.token_estimate,
+            requires_human_review=chunk_status.requires_human_review,
+            rationale=base.rationale,
+        )
+    return merged
 
 
 def _format_relevant_files(relevant_files: list[dict]) -> str:

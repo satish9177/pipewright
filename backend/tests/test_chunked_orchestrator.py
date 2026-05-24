@@ -507,6 +507,108 @@ async def test_high_risk_chunk_pauses_after_tests_before_commit(
 
 
 @pytest.mark.asyncio
+async def test_execute_honors_persisted_human_review_flag_before_commit(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(
+        tmp_repo,
+        tracked_runs,
+        chunks=2,
+        review_chunks=set(),
+    )
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE chunks
+            SET requires_human_review = 1
+            WHERE run_id = :run_id
+              AND chunk_number = 2
+        """), {"run_id": run_id})
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "awaiting_chunk_approval"
+    assert result["chunk_number"] == 2
+    commit_calls = [call for call in calls if call[0] == "commit"]
+    assert len(commit_calls) == 1
+    assert commit_calls[0][1] == ["created_1.py", "modified_1.py", "deleted_1.py"]
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[0].status == "completed"
+    assert status.chunks[1].status == "awaiting_chunk_approval"
+    assert status.chunks[1].requires_human_review is True
+    assert status.triage is not None
+    assert status.triage.chunks[1].requires_human_review is False
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT pr.status, ag.approval_type, ag.chunk_number, ag.status
+            FROM pipeline_runs pr
+            JOIN approval_gates ag ON ag.run_id = pr.id
+            WHERE pr.id = :run_id
+              AND ag.approval_type = 'chunk'
+        """), {"run_id": run_id}).fetchone()
+        final_count = conn.execute(text("""
+            SELECT COUNT(*) FROM approval_gates
+            WHERE run_id = :run_id
+              AND approval_type = 'final'
+        """), {"run_id": run_id}).fetchone()[0]
+    assert row[0] == "awaiting_chunk_approval"
+    assert row[1] == "chunk"
+    assert row[2] == 2
+    assert row[3] == "pending"
+    assert final_count == 0
+
+
+@pytest.mark.asyncio
+async def test_chunk_approve_works_after_persisted_flag_pause(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(
+        tmp_repo,
+        tracked_runs,
+        chunks=2,
+        review_chunks=set(),
+    )
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE chunks
+            SET requires_human_review = 1
+            WHERE run_id = :run_id
+              AND chunk_number = 2
+        """), {"run_id": run_id})
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+    assert result["status"] == "awaiting_chunk_approval"
+    add_code_checkpoint(run_id, 2)
+
+    approve_result = chunked_orchestrator.approve_chunk_and_commit(run_id, 2)
+
+    assert approve_result["status"] == "chunk_approved"
+    assert approve_result["chunk_number"] == 2
+    commit_calls = [call for call in calls if call[0] == "commit"]
+    assert len(commit_calls) == 2
+    assert commit_calls[1][1] == ["created_2.py", "modified_2.py", "deleted_2.py"]
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[1].status == "completed"
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT status FROM approval_gates
+            WHERE run_id = :run_id
+              AND approval_type = 'chunk'
+              AND chunk_number = 2
+        """), {"run_id": run_id}).fetchone()
+    assert row[0] == "approved"
+
+
+@pytest.mark.asyncio
 async def test_git_commit_failure_marks_failed_and_stops(
     monkeypatch,
     tmp_repo,
