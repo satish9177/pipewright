@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from backend.core.config import get_config
 from backend.core.logging_config import configure_logging
 from backend.db.database import init_db
 from backend.db.database import engine
@@ -36,6 +37,7 @@ from backend.routes.ws_events import router as ws_events_router
 
 configure_logging()
 logger = logging.getLogger(__name__)
+app_config = get_config()
 
 
 class RunRequest(BaseModel):
@@ -69,7 +71,7 @@ async def lifespan(app):
 
 
 app = FastAPI(
-    title="Pipewright",
+    title=app_config.app_name,
     description="AI pipeline that orchestrates multiple models with human approval.",
     version="0.1.0",
     lifespan=lifespan
@@ -77,10 +79,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-    ],
+    allow_origins=list(app_config.cors_allowed_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
