@@ -123,10 +123,10 @@ class ProjectResponse(BaseModel):
     test_command: str
     branch: str = "main"
     description: str = ""
-    github_token: Optional[str] = None
     github_owner: Optional[str] = None
     github_repo: Optional[str] = None
     github_base_branch: str = "pipewright-staging"
+    has_github_token: bool = False
     status: str = "active"
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
