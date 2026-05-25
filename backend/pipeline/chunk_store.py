@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
+from backend.core.statuses import ChunkPlanStatus, ChunkStatusValue, RunStatus
 from backend.db.database import engine, init_db
 from backend.models.chunk import (
     ChunkPlanResponse,
@@ -74,7 +75,7 @@ def _insert_chunks(conn, run_id: str, project_id: str, triage_result: TriageResu
             (
                 :id, :run_id, :project_id, :chunk_number, :title,
                 :description, :files_expected, :depends_on, :risk_level,
-                :token_estimate, :requires_human_review, 'pending'
+                :token_estimate, :requires_human_review, :status
             )
         """), {
             "id": str(uuid.uuid4()),
@@ -88,6 +89,7 @@ def _insert_chunks(conn, run_id: str, project_id: str, triage_result: TriageResu
             "risk_level": chunk.risk_level,
             "token_estimate": chunk.token_estimate,
             "requires_human_review": 1 if chunk.requires_human_review else 0,
+            "status": ChunkStatusValue.PENDING,
         })
 
     row = conn.execute(text("""
@@ -119,14 +121,16 @@ def create_chunked_run(
                 VALUES
                 (
                     :id, :project_id, :feature_description,
-                    'awaiting_chunk_plan_approval', 'chunk_plan',
-                    'awaiting_approval', :chunk_plan, :total_chunks,
+                    :status, 'chunk_plan',
+                    :chunk_plan_status, :chunk_plan, :total_chunks,
                     0, :created_at
                 )
             """), {
                 "id": run_id,
                 "project_id": project_id,
                 "feature_description": feature_description,
+                "status": RunStatus.AWAITING_CHUNK_PLAN_APPROVAL,
+                "chunk_plan_status": ChunkPlanStatus.AWAITING_APPROVAL,
                 "chunk_plan": triage_result.model_dump_json(),
                 "total_chunks": triage_result.total_chunks,
                 "created_at": datetime.now(timezone.utc).isoformat(),
@@ -180,7 +184,7 @@ def get_chunk_plan_status(run_id: str) -> ChunkPlanResponse:
         return ChunkPlanResponse(
             run_id=run_id,
             project_id=run_data.get("project_id") or "",
-            chunk_plan_status=run_data.get("chunk_plan_status") or "none",
+            chunk_plan_status=run_data.get("chunk_plan_status") or ChunkPlanStatus.NONE,
             total_chunks=run_data.get("total_chunks") or len(chunks),
             current_chunk_number=run_data.get("current_chunk_number") or 0,
             triage=triage,
@@ -201,7 +205,7 @@ def _require_awaiting_approval(conn, run_id: str):
         raise ValueError(f"chunk_store.py: run not found: {run_id}")
 
     status = dict(run._mapping).get("chunk_plan_status")
-    if status != "awaiting_approval":
+    if status != ChunkPlanStatus.AWAITING_APPROVAL:
         raise RuntimeError(
             f"chunk_store.py: chunk plan is not awaiting approval. "
             f"run_id={run_id} | status={status}"
@@ -216,11 +220,16 @@ def approve_chunk_plan(run_id: str) -> ChunkPlanResponse:
             _require_awaiting_approval(conn, run_id)
             conn.execute(text("""
                 UPDATE pipeline_runs
-                SET chunk_plan_status = 'approved',
-                    status = 'chunk_plan_approved',
-                    current_step = 'chunk_plan_approved'
+                SET chunk_plan_status = :chunk_plan_status,
+                    status = :status,
+                    current_step = :current_step
                 WHERE id = :run_id
-            """), {"run_id": run_id})
+            """), {
+                "run_id": run_id,
+                "chunk_plan_status": ChunkPlanStatus.APPROVED,
+                "status": RunStatus.CHUNK_PLAN_APPROVED,
+                "current_step": RunStatus.CHUNK_PLAN_APPROVED,
+            })
         print(f"[CHUNKS] Chunk plan approved | run_id={run_id}")
         return get_chunk_plan_status(run_id)
     except Exception as error:
@@ -240,13 +249,15 @@ def reject_chunk_plan(
             _require_awaiting_approval(conn, run_id)
             conn.execute(text("""
                 UPDATE pipeline_runs
-                SET chunk_plan_status = 'rejected',
-                    status = 'rejected',
+                SET chunk_plan_status = :chunk_plan_status,
+                    status = :status,
                     current_step = 'chunk_plan_rejected',
                     plain_english_summary = :reason
                 WHERE id = :run_id
             """), {
                 "run_id": run_id,
+                "chunk_plan_status": ChunkPlanStatus.REJECTED,
+                "status": RunStatus.REJECTED,
                 "reason": reason or "Chunk plan rejected.",
             })
         print(f"[CHUNKS] Chunk plan rejected | run_id={run_id}")
@@ -264,9 +275,12 @@ def get_pending_chunks(run_id: str) -> list[ChunkStatus]:
         with engine.connect() as conn:
             rows = conn.execute(text("""
                 SELECT * FROM chunks
-                WHERE run_id = :run_id AND status = 'pending'
+                WHERE run_id = :run_id AND status = :status
                 ORDER BY chunk_number ASC
-            """), {"run_id": run_id}).fetchall()
+            """), {
+                "run_id": run_id,
+                "status": ChunkStatusValue.PENDING,
+            }).fetchall()
         return [_chunk_row_to_status(row) for row in rows]
     except Exception as error:
         raise RuntimeError(
@@ -410,11 +424,12 @@ def get_previous_chunks_context(run_id: str, before_chunk_number: int) -> str:
                 SELECT * FROM chunks
                 WHERE run_id = :run_id
                   AND chunk_number < :before_chunk_number
-                  AND status = 'completed'
+                  AND status = :status
                 ORDER BY chunk_number ASC
             """), {
                 "run_id": run_id,
                 "before_chunk_number": before_chunk_number,
+                "status": ChunkStatusValue.COMPLETED,
             }).fetchall()
 
         parts = ["[Previous Chunks Context]"]
