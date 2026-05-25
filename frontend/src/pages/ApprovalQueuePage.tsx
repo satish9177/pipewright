@@ -1,6 +1,18 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { gatesApi, ApprovalGate } from '@/api/client'
+import RunStatusBadge from '@/components/RunStatusBadge'
+import { getApprovalTypeLabel } from '@/utils/statusDisplay'
+
+function getGateSubtitle(gate: ApprovalGate) {
+  if (gate.approval_type === 'chunk' && gate.chunk_number) {
+    return `Chunk ${gate.chunk_number}`
+  }
+  if (gate.approval_type === 'final') {
+    return 'Final review'
+  }
+  return gate.step || 'Pre-merge review'
+}
 
 export default function ApprovalQueuePage() {
   const navigate = useNavigate()
@@ -41,7 +53,6 @@ export default function ApprovalQueuePage() {
           fontFamily: 'IBM Plex Sans, sans-serif',
           fontSize: 28,
           fontWeight: 600,
-          letterSpacing: '-0.01em',
           margin: 0,
           color: '#0E1116',
         }}>
@@ -84,6 +95,7 @@ export default function ApprovalQueuePage() {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
+              gap: 16,
             }}>
               <div>
                 <span style={{
@@ -93,7 +105,7 @@ export default function ApprovalQueuePage() {
                   color: '#B7531C',
                   textTransform: 'uppercase',
                 }}>
-                  [APPROVAL · PIPELINE PAUSED]
+                  {getApprovalTypeLabel(gate.approval_type)}
                 </span>
                 <p style={{
                   margin: '4px 0 0',
@@ -103,8 +115,23 @@ export default function ApprovalQueuePage() {
                 }}>
                   Run: {gate.run_id.slice(0, 8)}...
                 </p>
+                <p style={{
+                  margin: '4px 0 0',
+                  fontSize: 12,
+                  fontFamily: 'IBM Plex Sans, sans-serif',
+                  color: '#6B7280',
+                }}>
+                  {getGateSubtitle(gate)}
+                </p>
               </div>
-              <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{
+                display: 'flex',
+                gap: 8,
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                justifyContent: 'flex-end',
+              }}>
+                <RunStatusBadge status={gate.status} />
                 <button
                   onClick={() => navigate(`/runs/${gate.run_id}`)}
                   style={{
@@ -151,7 +178,7 @@ export default function ApprovalQueuePage() {
                     fontWeight: 500,
                   }}
                 >
-                  Approve →
+                  Approve
                 </button>
               </div>
             </div>

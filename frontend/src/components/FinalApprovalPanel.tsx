@@ -10,6 +10,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
+import { getStatusDisplay } from '@/utils/statusDisplay'
 
 interface FinalApprovalPanelProps {
   run: Run
@@ -43,6 +44,7 @@ export default function FinalApprovalPanel({
   const actionPending =
     isApproving || isRejecting || isCheckingFinalGate || !hasPendingFinalGate
   const finalApprovalRequired = getBooleanExtra(run, 'final_approval_required')
+  const statusDisplay = getStatusDisplay(run.status)
 
   return (
     <Card className="mb-4 border-yellow-400">
@@ -54,7 +56,9 @@ export default function FinalApprovalPanel({
               Review the completed chunked run before allowing GitHub push and PR.
             </CardDescription>
           </div>
-          <Badge variant="secondary">{run.status}</Badge>
+          <Badge variant="outline" className={statusDisplay.className}>
+            {statusDisplay.label}
+          </Badge>
         </div>
       </CardHeader>
       <CardContent className="grid gap-4">

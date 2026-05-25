@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
+import { getStatusDisplay } from '@/utils/statusDisplay'
 
 interface ChunkPlanPanelProps {
   plan: ChunkPlanResponse
@@ -87,6 +88,7 @@ export default function ChunkPlanPanel({
     rejectingChunkNumber !== null
   const featureDescription =
     plan.triage?.feature_description || 'Feature description not available.'
+  const planStatusDisplay = getStatusDisplay(plan.chunk_plan_status)
 
   return (
     <Card className="mb-4">
@@ -98,7 +100,9 @@ export default function ChunkPlanPanel({
               Review the planned execution chunks before approving.
             </CardDescription>
           </div>
-          <Badge variant="secondary">{plan.chunk_plan_status}</Badge>
+          <Badge variant="outline" className={planStatusDisplay.className}>
+            {planStatusDisplay.label}
+          </Badge>
         </div>
       </CardHeader>
       <CardContent className="grid gap-4">
@@ -198,6 +202,7 @@ export default function ChunkPlanPanel({
             const chunkActionPending =
               approvingChunkNumber === chunk.chunk_number ||
               rejectingChunkNumber === chunk.chunk_number
+            const chunkStatusDisplay = getStatusDisplay(chunk.status)
 
             return (
               <div
@@ -213,7 +218,9 @@ export default function ChunkPlanPanel({
                       {definition?.description || 'No description available.'}
                     </p>
                   </div>
-                  <Badge variant="outline">{chunk.status}</Badge>
+                  <Badge variant="outline" className={chunkStatusDisplay.className}>
+                    {chunkStatusDisplay.label}
+                  </Badge>
                 </div>
 
                 <div className="grid gap-3 text-sm">
