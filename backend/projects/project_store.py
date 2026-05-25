@@ -5,12 +5,16 @@ Projects remove the need to edit .env for repo path and test command.
 """
 
 import uuid
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import text
 
 from backend.db.database import engine, init_db
+
+
+logger = logging.getLogger(__name__)
 
 
 def _new_project_id() -> str:
@@ -170,7 +174,7 @@ def update_project(
                 WHERE id = :id
             """), updated)
             conn.commit()
-        print(f"[PROJECTS] Updated project | id={project_id}")
+        logger.info("[PROJECTS] Updated project | id=%s", project_id)
         return get_project(project_id)
     except Exception as e:
         raise RuntimeError(
