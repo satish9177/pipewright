@@ -6,13 +6,19 @@ This module executes approved chunks one at a time. It does not implement
 remote push, GitHub PR creation, or remote branch management.
 """
 
+import logging
 from pathlib import Path
 
 from sqlalchemy import text
 
+from backend.core.status_service import (
+    publish_chunk_status_changed as _publish_chunk_status_changed,
+    publish_run_status_changed as _publish_run_status_changed,
+    update_chunk_status as _service_update_chunk_status,
+    update_run_status as _service_update_run_status,
+)
 from backend.db.database import engine, init_db
 from backend.events import event_bus
-from backend.events.schema import Event
 from backend.git import local_git
 from backend.checkpoint.checkpoint_store import load_chunk_step_checkpoint
 from backend.models.chunk import ChunkDefinition, ChunkPlanResponse, ChunkStatus
@@ -25,7 +31,6 @@ from backend.pipeline.chunk_store import (
     get_chunk_plan_status,
     get_previous_chunks_context,
     save_chunk_completion_summary,
-    update_chunk_status as _store_update_chunk_status,
 )
 from backend.pipeline.coder import run_coder
 from backend.pipeline.patch_applier import apply_patch, rollback_patch
@@ -36,55 +41,14 @@ from backend.projects.project_context import ProjectRuntimeConfig, active_projec
 from backend.projects.project_store import require_project
 from backend.repo.repo_indexer import get_relevant_files
 
+logger = logging.getLogger(__name__)
 
-def _publish_safe(event: Event) -> None:
+
+def _publish_safe(event) -> None:
     try:
         event_bus.publish(event)
     except Exception as error:
-        print(f"[EVENT_BUS] publish raised, ignored: {error}")
-
-
-def _publish_run_status_changed(
-    run_id: str,
-    status: str,
-    current_chunk_number: int | None = None,
-) -> None:
-    try:
-        data = {"to_status": status}
-        if current_chunk_number is not None:
-            data["current_chunk_number"] = current_chunk_number
-        _publish_safe(Event(
-            run_id=run_id,
-            kind="run_status_changed",
-            stage="orchestrator",
-            level="info",
-            message=f"Run -> {status}",
-            data=data,
-        ))
-    except Exception as error:
-        print(f"[EVENT_BUS] publish raised, ignored: {error}")
-
-
-def _publish_chunk_status_changed(
-    run_id: str,
-    chunk_number: int,
-    status: str,
-) -> None:
-    try:
-        _publish_safe(Event(
-            run_id=run_id,
-            chunk_number=chunk_number,
-            kind="chunk_status_changed",
-            stage="orchestrator",
-            level="info",
-            message=f"Chunk {chunk_number} -> {status}",
-            data={
-                "chunk_number": chunk_number,
-                "to_status": status,
-            },
-        ))
-    except Exception as error:
-        print(f"[EVENT_BUS] publish raised, ignored: {error}")
+        logger.warning("[EVENT_BUS] publish raised, ignored: %s", error)
 
 
 def update_chunk_status(
@@ -93,8 +57,13 @@ def update_chunk_status(
     status: str,
     error_message: str | None = None,
 ) -> None:
-    _store_update_chunk_status(run_id, chunk_number, status, error_message)
-    _publish_chunk_status_changed(run_id, chunk_number, status)
+    _service_update_chunk_status(
+        run_id,
+        chunk_number,
+        status,
+        error_message,
+        publish_event=True,
+    )
 
 
 def _update_run_status(
@@ -103,39 +72,13 @@ def _update_run_status(
     current_step: str,
     current_chunk_number: int | None = None,
 ) -> None:
-    try:
-        init_db()
-        with engine.begin() as conn:
-            if current_chunk_number is None:
-                conn.execute(text("""
-                    UPDATE pipeline_runs
-                    SET status = :status,
-                        current_step = :current_step
-                    WHERE id = :run_id
-                """), {
-                    "run_id": run_id,
-                    "status": status,
-                    "current_step": current_step,
-                })
-            else:
-                conn.execute(text("""
-                    UPDATE pipeline_runs
-                    SET status = :status,
-                        current_step = :current_step,
-                        current_chunk_number = :current_chunk_number
-                    WHERE id = :run_id
-                """), {
-                    "run_id": run_id,
-                    "status": status,
-                    "current_step": current_step,
-                    "current_chunk_number": current_chunk_number,
-                })
-    except Exception as error:
-        raise RuntimeError(
-            f"chunked_orchestrator.py: failed to update run status. "
-            f"run_id={run_id} | error={error}"
-        )
-    _publish_run_status_changed(run_id, status, current_chunk_number)
+    _service_update_run_status(
+        run_id,
+        status,
+        current_step,
+        current_chunk_number,
+        publish_event=True,
+    )
 
 
 def _pending_chunks(plan: ChunkPlanResponse) -> list[ChunkStatus]:
