@@ -17,6 +17,7 @@ Rules:
 
 import json
 import os
+import asyncio
 from pathlib import Path
 from pydantic import ValidationError
 import google.generativeai as genai
@@ -275,15 +276,15 @@ async def run_coder(
             print("[CODER] Handoff validated on attempt 1")
 
         except ValidationError as first_error:
-            handoff = _retry_after_parse_failure(
+            handoff = await _retry_after_parse_failure(
                 model, user_prompt, raw_text, first_error, run_id
             )
         except json.JSONDecodeError as first_error:
-            handoff = _retry_after_parse_failure(
+            handoff = await _retry_after_parse_failure(
                 model, user_prompt, raw_text, first_error, run_id
             )
         except ValueError as first_error:
-            handoff = _retry_after_parse_failure(
+            handoff = await _retry_after_parse_failure(
                 model, user_prompt, raw_text, first_error, run_id
             )
 
@@ -316,7 +317,7 @@ async def run_coder(
     return handoff
 
 
-def _retry_after_parse_failure(
+async def _retry_after_parse_failure(
     model,
     user_prompt: str,
     raw_text: str,
@@ -365,14 +366,18 @@ def _retry_after_parse_failure(
         error_str = str(unexpected)
         if "429" in error_str:
             print(f"[CODER] Rate limited by Gemini. Waiting 60 seconds...")
-            time.sleep(60)
+            await asyncio.sleep(60)
             print(f"[CODER] Retrying after rate limit wait...")
             try:
-                response = model.generate_content(user_prompt)
+                response = model.generate_content(
+                    user_prompt,
+                    request_options={"timeout": CODER_TIMEOUT_SECONDS}
+                )
                 raw_text = response.text
                 _log_token_usage(response, run_id)
                 handoff = _parse_handoff(raw_text, run_id)
-                print(f"[CODER] Plan validated after rate limit retry")
+                print(f"[CODER] Handoff validated after rate limit retry")
+                return handoff
             except Exception as retry_error:
                 raise RuntimeError(
                     f"coder.py: Failed after rate limit retry. "

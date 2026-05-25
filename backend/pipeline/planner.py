@@ -16,7 +16,7 @@ Rules:
 
 import json
 import uuid
-import time
+import asyncio
 import google.generativeai as genai
 from pydantic import ValidationError
 
@@ -187,7 +187,7 @@ async def run_planner(
         error_str = str(unexpected)
         if "429" in error_str:
            print(f"[PLANNER] Rate limited by Gemini. Waiting 60 seconds...")
-           time.sleep(60)
+           await asyncio.sleep(60)
            print(f"[PLANNER] Retrying after rate limit wait...")
            try:
               response = model.generate_content(user_prompt)
