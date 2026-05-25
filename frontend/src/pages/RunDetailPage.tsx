@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { runsApi, gatesApi, ApprovalGate } from '@/api/client'
@@ -12,6 +13,7 @@ import {
 import { Separator } from '@/components/ui/separator'
 import RunStatusBadge from '@/components/RunStatusBadge'
 import EventLog from '@/components/EventLog'
+import ChunkPlanPanel from '@/components/ChunkPlanPanel'
 import useRunEvents from '@/hooks/useRunEvents'
 
 const STEPS = ['plan', 'code', 'patch', 'test', 'approval', 'github_pr']
@@ -58,11 +60,30 @@ function StepIndicator({
   )
 }
 
+function getErrorMessage(error: unknown, fallback: string) {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'response' in error
+  ) {
+    const response = (error as { response?: { data?: { detail?: unknown } } })
+      .response
+    if (typeof response?.data?.detail === 'string') {
+      return response.data.detail
+    }
+  }
+
+  return fallback
+}
+
 export default function RunDetailPage() {
   const { runId } = useParams<{ runId: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { events, status: wsStatus } = useRunEvents(runId)
+  const [chunkPlanActionError, setChunkPlanActionError] = useState<string | null>(
+    null
+  )
 
   const { data: run } = useQuery({
     queryKey: ['run', runId],
@@ -83,6 +104,18 @@ export default function RunDetailPage() {
     refetchInterval: run?.status === 'paused' ? 2000 : false,
   })
 
+  const { data: chunkPlan } = useQuery({
+    queryKey: ['runChunks', runId],
+    queryFn: () => runsApi.getRunChunks(runId!),
+    enabled: !!runId,
+    retry: false,
+    refetchInterval: (query) => {
+      const data = query.state.data
+      if (!data) return false
+      return data.chunk_plan_status === 'awaiting_approval' ? 2000 : false
+    },
+  })
+
   const pendingGate = gates?.find(
     (g: ApprovalGate) => g.run_id === runId && g.status === 'pending'
   )
@@ -100,6 +133,37 @@ export default function RunDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['gates'] })
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
+    },
+  })
+
+  const approveChunkPlanMutation = useMutation({
+    mutationFn: () => runsApi.approveChunkPlan(runId!),
+    onSuccess: () => {
+      setChunkPlanActionError(null)
+      queryClient.invalidateQueries({ queryKey: ['run', runId] })
+      queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+      queryClient.invalidateQueries({ queryKey: ['gates'] })
+    },
+    onError: (error: unknown) => {
+      setChunkPlanActionError(
+        getErrorMessage(error, 'Failed to approve chunk plan.')
+      )
+    },
+  })
+
+  const rejectChunkPlanMutation = useMutation({
+    mutationFn: (reason: string) =>
+      runsApi.rejectChunkPlan(runId!, reason || 'Chunk plan rejected by user'),
+    onSuccess: () => {
+      setChunkPlanActionError(null)
+      queryClient.invalidateQueries({ queryKey: ['run', runId] })
+      queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+      queryClient.invalidateQueries({ queryKey: ['gates'] })
+    },
+    onError: (error: unknown) => {
+      setChunkPlanActionError(
+        getErrorMessage(error, 'Failed to reject chunk plan.')
+      )
     },
   })
 
@@ -142,6 +206,17 @@ export default function RunDetailPage() {
         currentStep={run.current_step}
         status={run.status}
       />
+
+      {chunkPlan && (
+        <ChunkPlanPanel
+          plan={chunkPlan}
+          isApproving={approveChunkPlanMutation.isPending}
+          isRejecting={rejectChunkPlanMutation.isPending}
+          error={chunkPlanActionError}
+          onApprove={() => approveChunkPlanMutation.mutate()}
+          onReject={(reason) => rejectChunkPlanMutation.mutate(reason)}
+        />
+      )}
 
       {pendingGate && (
         <Card className="mb-4 border-yellow-400">
