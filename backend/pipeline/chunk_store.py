@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
+from backend.core.status_service import update_chunk_status as _service_update_chunk_status
 from backend.core.statuses import ChunkPlanStatus, ChunkStatusValue, RunStatus
 from backend.db.database import engine, init_db
 from backend.models.chunk import (
@@ -321,25 +322,7 @@ def update_chunk_status(
     status: str,
     error_message: str | None = None,
 ) -> None:
-    try:
-        init_db()
-        with engine.begin() as conn:
-            conn.execute(text("""
-                UPDATE chunks
-                SET status = :status,
-                    error_message = :error_message
-                WHERE run_id = :run_id AND chunk_number = :chunk_number
-            """), {
-                "status": status,
-                "error_message": error_message,
-                "run_id": run_id,
-                "chunk_number": chunk_number,
-            })
-    except Exception as error:
-        raise RuntimeError(
-            f"chunk_store.py: update_chunk_status failed. "
-            f"run_id={run_id} | chunk_number={chunk_number} | error={error}"
-        )
+    _service_update_chunk_status(run_id, chunk_number, status, error_message)
 
 
 def save_chunk_completion_summary(
