@@ -4,12 +4,14 @@ FastAPI application entry point.
 Initializes database on startup.
 """
 
+import logging
 import uuid
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, Field, field_validator
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from backend.core.logging_config import configure_logging
 from backend.db.database import init_db
 from backend.db.database import engine
 from backend.models.handoff import (
@@ -40,6 +42,10 @@ from backend.routes.chunks import router as chunks_router
 from backend.routes.ws_events import router as ws_events_router
 
 
+configure_logging()
+logger = logging.getLogger(__name__)
+
+
 class RunRequest(BaseModel):
     project_id: str
     feature_description: str = Field(
@@ -66,7 +72,7 @@ async def lifespan(app):
             AND created_at < datetime('now', '-2 hours')
         """))
         conn.commit()
-    print("Pipewright started.")
+    logger.info("Pipewright started.")
     yield
 
 
