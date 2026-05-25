@@ -25,6 +25,7 @@ from backend.pipeline.chunked_orchestrator import (
     resume_chunked_pipeline,
 )
 from backend.pipeline.pr_orchestrator import push_and_create_pr
+from backend.pipeline.run_locks import ProjectRepoLockError
 from backend.pipeline.triage import run_triage
 from backend.projects.project_store import get_project
 
@@ -189,6 +190,8 @@ def reject_chunk_plan_route(run_id: str, request: RejectChunkPlanRequest):
 async def execute_chunks_route(run_id: str):
     try:
         return await execute_approved_chunks(run_id)
+    except ProjectRepoLockError as error:
+        raise HTTPException(status_code=409, detail=str(error))
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:
@@ -199,6 +202,8 @@ async def execute_chunks_route(run_id: str):
 async def resume_chunks_route(run_id: str):
     try:
         return await resume_chunked_pipeline(run_id)
+    except ProjectRepoLockError as error:
+        raise HTTPException(status_code=409, detail=str(error))
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:
@@ -209,6 +214,8 @@ async def resume_chunks_route(run_id: str):
 def approve_chunk_route(run_id: str, chunk_number: int):
     try:
         return approve_chunk_and_commit(run_id, chunk_number)
+    except ProjectRepoLockError as error:
+        raise HTTPException(status_code=409, detail=str(error))
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:
@@ -223,6 +230,8 @@ def reject_chunk_route(
 ):
     try:
         return reject_chunk_and_rollback(run_id, chunk_number, request.reason)
+    except ProjectRepoLockError as error:
+        raise HTTPException(status_code=409, detail=str(error))
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:
@@ -265,6 +274,8 @@ def reject_final_approval_route(
 def push_pr_route(run_id: str):
     try:
         return push_and_create_pr(run_id)
+    except ProjectRepoLockError as error:
+        raise HTTPException(status_code=409, detail=str(error))
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:

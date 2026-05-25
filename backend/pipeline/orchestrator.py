@@ -18,6 +18,7 @@ from backend.models.handoff import (
 from backend.pipeline.planner import run_planner
 from backend.pipeline.coder import run_coder
 from backend.pipeline.patch_applier import apply_patch
+from backend.pipeline.run_locks import ProjectRepoLockError, project_repo_lock
 from backend.pipeline.tester import run_tests
 from backend.pipeline.approval_gate import request_approval
 from backend.projects.project_context import ProjectRuntimeConfig, active_project
@@ -294,12 +295,17 @@ async def _run_pipeline_with_id(
     if project_runtime is None:
         return await _run_pipeline_steps(feature_description, run_id, project)
 
-    with active_project(project_runtime):
-        print(
-            f"[PIPELINE] Project selected | "
-            f"project_id={project_runtime.project_id}"
-        )
-        return await _run_pipeline_steps(feature_description, run_id, project)
+    try:
+        async with project_repo_lock(project_runtime.project_id):
+            with active_project(project_runtime):
+                print(
+                    f"[PIPELINE] Project selected | "
+                    f"project_id={project_runtime.project_id}"
+                )
+                return await _run_pipeline_steps(feature_description, run_id, project)
+    except ProjectRepoLockError as error:
+        _update_run_status(run_id, "failed", "repo_lock_conflict")
+        return _fail(run_id, "repo_lock", error)
 
 
 async def run_pipeline(

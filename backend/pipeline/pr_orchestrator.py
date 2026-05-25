@@ -14,6 +14,7 @@ from sqlalchemy import text
 from backend.db.database import engine, init_db
 from backend.git import local_git
 from backend.pipeline.chunk_store import get_chunk_plan_status
+from backend.pipeline.run_locks import project_repo_lock_sync
 from backend.projects.project_store import require_project
 
 
@@ -243,8 +244,7 @@ def _create_pr(repo, run_id: str, feature_description: str, branch_name: str, ba
     )
 
 
-def push_and_create_pr(run_id: str) -> dict:
-    run = _load_run(run_id)
+def _push_and_create_pr_locked(run_id: str, run: dict) -> dict:
     branch_name = f"pipewright/{run_id[:8]}"
     if run.get("pr_url"):
         return {
@@ -296,3 +296,14 @@ def push_and_create_pr(run_id: str) -> dict:
             f"pr_orchestrator.py: push-pr failed. "
             f"run_id={run_id} | error={error_text}"
         )
+
+
+def push_and_create_pr(run_id: str) -> dict:
+    run = _load_run(run_id)
+    project_id = run.get("project_id")
+    if not project_id:
+        raise RuntimeError(
+            f"pr_orchestrator.py: run is missing project_id. run_id={run_id}"
+        )
+    with project_repo_lock_sync(project_id):
+        return _push_and_create_pr_locked(run_id, run)
