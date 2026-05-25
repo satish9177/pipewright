@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import text
 
+from backend.core.config import get_config
 from backend.db.database import engine
 from backend.events import event_bus
 from backend.events.schema import Event
@@ -18,12 +19,7 @@ router = APIRouter()
 HEARTBEAT_INTERVAL_SECONDS = 15
 TERMINAL_GRACE_SECONDS = 1
 
-ALLOWED_ORIGINS = {
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:3000",
-}
+ALLOWED_ORIGINS = set(get_config().ws_allowed_origins)
 
 
 def _utc_iso() -> str:
@@ -48,7 +44,7 @@ def _run_exists(run_id: str) -> bool:
 
 def _origin_allowed(websocket: WebSocket) -> bool:
     origin = websocket.headers.get("origin")
-    return origin is None or origin in ALLOWED_ORIGINS
+    return origin is None or origin in set(get_config().ws_allowed_origins)
 
 
 async def _safe_close(websocket: WebSocket, code: int) -> None:

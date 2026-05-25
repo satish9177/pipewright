@@ -4,11 +4,10 @@ Centralized backend logging setup.
 """
 
 import logging
-import os
 import sys
 
+from backend.core.config import DEFAULT_LOG_LEVEL, get_config
 
-DEFAULT_LOG_LEVEL = "INFO"
 LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 BACKEND_LOGGER_NAME = "backend"
 _PIPEWRIGHT_HANDLER_ATTR = "_pipewright_console_handler"
@@ -30,7 +29,7 @@ def configure_logging() -> None:
     reloads. It updates the existing Pipewright handler instead of adding a
     duplicate, and it leaves uvicorn/root handlers in place.
     """
-    level = _resolve_log_level(os.getenv("LOG_LEVEL"))
+    level = _resolve_log_level(get_config().log_level)
     formatter = logging.Formatter(LOG_FORMAT)
     logger = logging.getLogger(BACKEND_LOGGER_NAME)
 
