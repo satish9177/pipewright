@@ -185,7 +185,7 @@ export default function ProjectsPage() {
                     {project.branch}
                   </td>
                   <td style={{ padding: '10px 14px' }}>
-                    {project.github_repo ? (
+                    {project.github_repo && project.has_github_token ? (
                       <span style={{
                         fontSize: 10,
                         fontFamily: 'IBM Plex Mono, monospace',
@@ -195,6 +195,17 @@ export default function ProjectsPage() {
                         borderRadius: 999,
                       }}>
                         [CONNECTED]
+                      </span>
+                    ) : project.github_repo ? (
+                      <span style={{
+                        fontSize: 10,
+                        fontFamily: 'IBM Plex Mono, monospace',
+                        backgroundColor: '#FEF3C7',
+                        color: '#92400E',
+                        padding: '2px 8px',
+                        borderRadius: 999,
+                      }}>
+                        [NEEDS TOKEN]
                       </span>
                     ) : (
                       <span style={{
@@ -219,7 +230,7 @@ export default function ProjectsPage() {
         fontFamily: 'IBM Plex Mono, monospace',
         color: '#9CA3AF',
       }}>
-        GET /projects · {projects?.length ?? 0} result{projects?.length === 1 ? '' : 's'}
+        GET /projects - {projects?.length ?? 0} result{projects?.length === 1 ? '' : 's'}
       </div>
     </div>
   )

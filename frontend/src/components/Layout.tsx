@@ -60,7 +60,7 @@ export default function Layout() {
             WORKSPACE
           </div>
 
-          <SidebarLink to="/projects" label="Runs" />
+          <SidebarLink to="/projects" label="Projects" />
 
           <SidebarLink
             to="/approval"

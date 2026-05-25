@@ -43,6 +43,21 @@ function eventLabel(event: RunEvent) {
   return event.stage ? `${event.stage}/${event.kind}` : event.kind
 }
 
+function eventSource(event: RunEvent) {
+  if (typeof event.chunk_number === 'number') {
+    return `chunk ${event.chunk_number}`
+  }
+  if (event.kind.includes('chunk')) return 'chunk'
+  return 'run'
+}
+
+function eventSourceClass(event: RunEvent) {
+  if (eventSource(event).startsWith('chunk')) {
+    return 'border-yellow-200 bg-yellow-50 text-yellow-800'
+  }
+  return 'border-blue-200 bg-blue-50 text-blue-700'
+}
+
 function eventMessage(event: RunEvent) {
   const toStatus = event.data.to_status
   if (
@@ -79,10 +94,15 @@ export default function EventLog({ events, status }: Props) {
   }
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-3">
-        <p className="text-sm font-medium">Live Log</p>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground font-mono">
+    <div className="grid gap-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium">Live Log</p>
+          <p className="text-xs text-muted-foreground">
+            Real-time run events from the backend event stream.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 rounded border bg-background px-2 py-1 text-xs text-muted-foreground font-mono">
           <span className={`h-2 w-2 rounded-full ${config.dotClassName}`} />
           <span>{config.label}</span>
         </div>
@@ -91,21 +111,30 @@ export default function EventLog({ events, status }: Props) {
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        className="max-h-80 overflow-y-auto font-mono text-xs border rounded bg-muted/30"
+        className="max-h-96 overflow-y-auto rounded border bg-background font-mono text-xs"
       >
         {visibleEvents.length === 0 ? (
-          <div className="px-3 py-6 text-center text-muted-foreground">
-            Waiting for run events...
+          <div className="px-4 py-8 text-center">
+            <p className="font-medium text-foreground">No live events yet</p>
+            <p className="mt-1 text-muted-foreground">
+              Events will appear here when planning, approvals, execution, or
+              PR actions start.
+            </p>
           </div>
         ) : (
           <div className="divide-y">
             {visibleEvents.map(event => (
               <div
                 key={event.id}
-                className="grid grid-cols-[72px_160px_1fr] gap-3 px-3 py-2"
+                className="grid gap-2 px-3 py-2 sm:grid-cols-[76px_88px_160px_1fr] sm:gap-3"
               >
                 <span className="text-muted-foreground">
                   {formatTime(event.ts)}
+                </span>
+                <span
+                  className={`w-fit rounded-full border px-2 py-0.5 text-[10px] uppercase ${eventSourceClass(event)}`}
+                >
+                  {eventSource(event)}
                 </span>
                 <span className="truncate text-muted-foreground">
                   {eventLabel(event)}

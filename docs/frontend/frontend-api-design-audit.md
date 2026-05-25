@@ -89,6 +89,20 @@ responses.
 Broader design polish, Live Log readability polish, and frontend smoke/release
 notes remain future frontend work.
 
+## FE-8 Update
+
+Phase 2D-FE-8 polished the existing frontend surfaces without changing backend
+behavior or flow logic. `RunDetailPage` now has clearer sections for run
+summary, chunk plan/execution, final approval/PR, and timeline. `EventLog` now
+has a stronger empty state, compact scrollable event rows, connection status,
+timestamps, event labels, and run/chunk source tags.
+
+ProjectDashboard now has clearer project header warnings, feature request form
+feedback, and recent run empty states. Projects list GitHub status now
+distinguishes connected repos from repos that still need a token.
+
+Frontend smoke/release notes remain future frontend work.
+
 ## Current Frontend API Functions and Backend Route Mapping
 
 | Backend route | Frontend mapping | Status |
@@ -239,10 +253,10 @@ polling too early for chunked statuses such as `running_chunks`, `pushing`,
 - Approval actions are not specific enough. Users should know whether they are
   approving a plan, a high-risk chunk commit, final merge readiness, or legacy
   gate.
-- Live Log is functional but dense. It needs stronger visual grouping by stage,
-  severity, chunk number, and terminal events.
-- Project setup form needs clearer GitHub credential state: not configured,
-  token stored, owner/repo missing, ready for PR.
+- Fixed in FE-8: Live Log has clearer timestamps, event labels, run/chunk
+  source tags, connection status, empty state, and compact scroll behavior.
+- Fixed in FE-8: ProjectDashboard and Projects list show clearer GitHub
+  credential/configuration states.
 - Empty, loading, and error states exist in places but are not consistent across
   projects, runs, approvals, and logs.
 - Long paths, test commands, feature descriptions, and event messages need
@@ -278,10 +292,9 @@ polling too early for chunked statuses such as `running_chunks`, `pushing`,
 
 ## Recommended Implementation Order
 
-1. Clean up remaining encoding artifacts and consolidate shared visual
-   components.
-2. Polish Live Log readability and deployment-aware connection state.
-3. Add frontend smoke/release notes for the chunked run UI flow.
+1. Add frontend smoke/release notes for the chunked run UI flow.
+2. Continue gradual shared component consolidation as later UI work expands.
+3. Add deployment-aware frontend API/WS base URL handling.
 
 ## Validation Results
 

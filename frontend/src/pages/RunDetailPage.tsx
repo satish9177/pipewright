@@ -409,19 +409,13 @@ export default function RunDetailPage() {
     )
   }
 
-  const showEventLog =
-    run.status === 'running' ||
-    run.status === 'running_chunks' ||
-    run.status === 'awaiting_chunk_approval' ||
-    run.status === 'awaiting_final_approval' ||
-    events.length > 0
   const hasPrData = Boolean(run.pr_url || run.pr_number || run.push_error)
   const showFinalApprovalPanel = run.status === 'awaiting_final_approval'
   const showPushPrPanel = shouldShowPushPrPanel(run.status, hasPrData)
 
   return (
-    <div className="max-w-3xl">
-      <div className="flex items-center justify-between mb-6">
+    <div className="mx-auto max-w-5xl px-6 py-6">
+      <div className="mb-6 flex items-start justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold">Pipeline Run</h2>
           <p className="text-xs text-muted-foreground font-mono mt-1">
@@ -431,48 +425,94 @@ export default function RunDetailPage() {
         <RunStatusBadge status={run.status} />
       </div>
 
-      <Card className="mb-4">
-        <CardContent className="py-4">
-          <p className="text-sm font-medium mb-1">Feature</p>
-          <p className="text-sm text-muted-foreground">
-            {run.feature_description}
-          </p>
+      <Card className="mb-6 border-muted-foreground/20">
+        <CardHeader>
+          <CardTitle className="text-base">Run Summary</CardTitle>
+          <CardDescription>
+            Current state, requested feature, and pipeline progress.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <div className="grid gap-3 text-sm sm:grid-cols-3">
+            <div>
+              <p className="font-medium">Current Step</p>
+              <p className="text-muted-foreground">
+                {run.current_step || 'Not started'}
+              </p>
+            </div>
+            <div>
+              <p className="font-medium">Total Chunks</p>
+              <p className="text-muted-foreground">
+                {run.total_chunks ?? 'Unknown'}
+              </p>
+            </div>
+            <div>
+              <p className="font-medium">Current Chunk</p>
+              <p className="text-muted-foreground">
+                {run.current_chunk_number ?? 'None'}
+              </p>
+            </div>
+          </div>
+          <div>
+            <p className="text-sm font-medium mb-1">Feature</p>
+            <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+              {run.feature_description}
+            </p>
+          </div>
+          <StepIndicator
+            currentStep={run.current_step}
+            status={run.status}
+          />
         </CardContent>
       </Card>
 
-      <StepIndicator
-        currentStep={run.current_step}
-        status={run.status}
-      />
+      <section className="mb-6">
+        <div className="mb-3">
+          <h3 className="text-sm font-semibold">Chunk Plan and Execution</h3>
+          <p className="text-xs text-muted-foreground">
+            Review the plan, execute approved chunks, and resolve chunk-level
+            approvals.
+          </p>
+        </div>
 
-      {chunkPlan && (
-        <ChunkPlanPanel
-          plan={chunkPlan}
-          isApproving={approveChunkPlanMutation.isPending}
-          isRejecting={rejectChunkPlanMutation.isPending}
-          isExecuting={executeChunksMutation.isPending}
-          isResuming={resumeChunksMutation.isPending}
-          approvingChunkNumber={approveChunkMutation.variables ?? null}
-          rejectingChunkNumber={
-            rejectChunkMutation.variables?.chunkNumber ?? null
-          }
-          error={chunkPlanActionError}
-          executionMessage={chunkExecutionMessage}
-          executionError={chunkExecutionError}
-          chunkActionMessage={chunkActionMessage}
-          chunkActionError={chunkActionError}
-          onApprove={() => approveChunkPlanMutation.mutate()}
-          onReject={(reason) => rejectChunkPlanMutation.mutate(reason)}
-          onExecute={() => executeChunksMutation.mutate()}
-          onResume={() => resumeChunksMutation.mutate()}
-          onApproveChunk={(chunkNumber) =>
-            approveChunkMutation.mutate(chunkNumber)
-          }
-          onRejectChunk={(chunkNumber, reason) =>
-            rejectChunkMutation.mutate({ chunkNumber, reason })
-          }
-        />
-      )}
+        {chunkPlan ? (
+          <ChunkPlanPanel
+            plan={chunkPlan}
+            isApproving={approveChunkPlanMutation.isPending}
+            isRejecting={rejectChunkPlanMutation.isPending}
+            isExecuting={executeChunksMutation.isPending}
+            isResuming={resumeChunksMutation.isPending}
+            approvingChunkNumber={approveChunkMutation.variables ?? null}
+            rejectingChunkNumber={
+              rejectChunkMutation.variables?.chunkNumber ?? null
+            }
+            error={chunkPlanActionError}
+            executionMessage={chunkExecutionMessage}
+            executionError={chunkExecutionError}
+            chunkActionMessage={chunkActionMessage}
+            chunkActionError={chunkActionError}
+            onApprove={() => approveChunkPlanMutation.mutate()}
+            onReject={(reason) => rejectChunkPlanMutation.mutate(reason)}
+            onExecute={() => executeChunksMutation.mutate()}
+            onResume={() => resumeChunksMutation.mutate()}
+            onApproveChunk={(chunkNumber) =>
+              approveChunkMutation.mutate(chunkNumber)
+            }
+            onRejectChunk={(chunkNumber, reason) =>
+              rejectChunkMutation.mutate({ chunkNumber, reason })
+            }
+          />
+        ) : (
+          <Card className="mb-4 border-dashed">
+            <CardContent className="py-6">
+              <p className="text-sm font-medium">No chunk plan loaded</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Legacy runs or interrupted runs may not have chunk plan data.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+      </section>
 
       {pendingGate && (
         <Card className="mb-4 border-yellow-400">
@@ -546,29 +586,40 @@ export default function RunDetailPage() {
         </Card>
       )}
 
-      {showFinalApprovalPanel && (
-        <FinalApprovalPanel
-          run={run}
-          hasPendingFinalGate={Boolean(pendingFinalGate)}
-          isCheckingFinalGate={gatesLoading}
-          isApproving={approveFinalApprovalMutation.isPending}
-          isRejecting={rejectFinalApprovalMutation.isPending}
-          message={finalApprovalMessage}
-          error={finalApprovalError}
-          onApprove={() => approveFinalApprovalMutation.mutate()}
-          onReject={(reason) => rejectFinalApprovalMutation.mutate(reason)}
-        />
-      )}
+      {(showFinalApprovalPanel || showPushPrPanel) && (
+        <section className="mb-6">
+          <div className="mb-3">
+            <h3 className="text-sm font-semibold">Final Approval and PR</h3>
+            <p className="text-xs text-muted-foreground">
+              Complete the human approval loop, then push and create a GitHub PR.
+            </p>
+          </div>
 
-      {showPushPrPanel && (
-        <PushPrPanel
-          run={run}
-          project={project}
-          isPushing={pushPrMutation.isPending}
-          message={pushPrMessage}
-          error={pushPrError}
-          onPush={() => pushPrMutation.mutate()}
-        />
+          {showFinalApprovalPanel && (
+            <FinalApprovalPanel
+              run={run}
+              hasPendingFinalGate={Boolean(pendingFinalGate)}
+              isCheckingFinalGate={gatesLoading}
+              isApproving={approveFinalApprovalMutation.isPending}
+              isRejecting={rejectFinalApprovalMutation.isPending}
+              message={finalApprovalMessage}
+              error={finalApprovalError}
+              onApprove={() => approveFinalApprovalMutation.mutate()}
+              onReject={(reason) => rejectFinalApprovalMutation.mutate(reason)}
+            />
+          )}
+
+          {showPushPrPanel && (
+            <PushPrPanel
+              run={run}
+              project={project}
+              isPushing={pushPrMutation.isPending}
+              message={pushPrMessage}
+              error={pushPrError}
+              onPush={() => pushPrMutation.mutate()}
+            />
+          )}
+        </section>
       )}
 
       {run.status === 'complete' && (
@@ -607,13 +658,19 @@ export default function RunDetailPage() {
         </Card>
       )}
 
-      {showEventLog && (
-        <Card className="mb-4">
+      <section className="mb-6">
+        <div className="mb-3">
+          <h3 className="text-sm font-semibold">Timeline</h3>
+          <p className="text-xs text-muted-foreground">
+            Live run events and status changes from the backend.
+          </p>
+        </div>
+        <Card>
           <CardContent className="py-4">
             <EventLog events={events} status={wsStatus} />
           </CardContent>
         </Card>
-      )}
+      </section>
 
       <div className="mt-4">
         <Button
