@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
+from backend.core.statuses import ApprovalStatus, RunStatus
 from backend.db.database import engine
 from backend.models.handoff import (
     FEATURE_DESCRIPTION_MAX_LENGTH,
@@ -256,7 +257,11 @@ def reject_chunk_route(
 @router.post("/runs/{run_id}/final-approval/approve")
 def approve_final_approval_route(run_id: str):
     try:
-        return _decide_final_gate(run_id, "approved", "final_approved")
+        return _decide_final_gate(
+            run_id,
+            ApprovalStatus.APPROVED,
+            RunStatus.FINAL_APPROVED,
+        )
     except HTTPException:
         raise
     except ValueError as error:
@@ -273,8 +278,8 @@ def reject_final_approval_route(
     try:
         return _decide_final_gate(
             run_id,
-            "rejected",
-            "final_rejected",
+            ApprovalStatus.REJECTED,
+            RunStatus.FINAL_REJECTED,
             request.reason or "Final approval rejected",
         )
     except HTTPException:

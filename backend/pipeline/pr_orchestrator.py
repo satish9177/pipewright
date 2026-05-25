@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from github import Github
 from sqlalchemy import text
 
+from backend.core.statuses import RunStatus
 from backend.db.database import engine, init_db
 from backend.git import local_git
 from backend.pipeline.chunk_store import get_chunk_plan_status
@@ -38,19 +39,23 @@ def _mark_pushing(run_id: str, branch_name: str) -> None:
     with engine.begin() as conn:
         conn.execute(text("""
             UPDATE pipeline_runs
-            SET status = 'pushing',
+            SET status = :status,
                 current_step = 'push_pr',
                 branch_name = :branch_name,
                 push_error = NULL
             WHERE id = :run_id
-        """), {"run_id": run_id, "branch_name": branch_name})
+        """), {
+            "run_id": run_id,
+            "branch_name": branch_name,
+            "status": RunStatus.PUSHING,
+        })
 
 
 def _mark_push_failed(run_id: str, error: str, branch_name: str | None = None) -> None:
     with engine.begin() as conn:
         conn.execute(text("""
             UPDATE pipeline_runs
-            SET status = 'push_failed',
+            SET status = :status,
                 current_step = 'push_pr_failed',
                 branch_name = COALESCE(:branch_name, branch_name),
                 push_error = :push_error
@@ -59,6 +64,7 @@ def _mark_push_failed(run_id: str, error: str, branch_name: str | None = None) -
             "run_id": run_id,
             "branch_name": branch_name,
             "push_error": error,
+            "status": RunStatus.PUSH_FAILED,
         })
 
 
@@ -88,8 +94,8 @@ def _save_pr_metadata(
     with engine.begin() as conn:
         result = conn.execute(text("""
             UPDATE pipeline_runs
-            SET status = 'complete',
-                current_step = 'complete',
+            SET status = :status,
+                current_step = :current_step,
                 pr_url = :pr_url,
                 pr_number = :pr_number,
                 branch_name = :branch_name,
@@ -102,11 +108,13 @@ def _save_pr_metadata(
             "pr_number": pr_number,
             "branch_name": branch_name,
             "pr_created_at": pr_created_at,
+            "status": RunStatus.COMPLETE,
+            "current_step": RunStatus.COMPLETE,
         })
         if result.rowcount == 0:
             raise ValueError(f"pr_orchestrator.py: run not found: {run_id}")
     return {
-        "status": "complete",
+        "status": RunStatus.COMPLETE,
         "run_id": run_id,
         "branch_name": branch_name,
         "pr_url": pr_url,
@@ -248,7 +256,7 @@ def _push_and_create_pr_locked(run_id: str, run: dict) -> dict:
     branch_name = f"pipewright/{run_id[:8]}"
     if run.get("pr_url"):
         return {
-            "status": "complete",
+            "status": RunStatus.COMPLETE,
             "run_id": run_id,
             "branch_name": run.get("branch_name") or branch_name,
             "pr_url": run["pr_url"],
@@ -256,7 +264,7 @@ def _push_and_create_pr_locked(run_id: str, run: dict) -> dict:
         }
 
     status = run.get("status")
-    if status not in {"final_approved", "push_failed"}:
+    if status not in {RunStatus.FINAL_APPROVED, RunStatus.PUSH_FAILED}:
         raise RuntimeError(
             f"pr_orchestrator.py: run is not ready for push-pr. "
             f"run_id={run_id} | status={status}"
