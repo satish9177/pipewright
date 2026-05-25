@@ -9,9 +9,11 @@ Coder reads files from there but never writes.
 
 import uuid
 import pytest
+from types import SimpleNamespace
 from backend.memory.memory_store import add_fact
 from backend.models.handoff import PlannerHandoff
 from backend.pipeline.coder import run_coder
+from backend.pipeline import coder
 
 pytestmark = pytest.mark.api
 
@@ -35,6 +37,106 @@ def make_test_plan(run_id: str) -> PlannerHandoff:
         risks=["main.py may not exist in target repo"],
         suggested_memory_entries=[]
     )
+
+
+def _coder_response(run_id: str):
+    text = (
+        "{"
+        '"handoff_from": "coder",'
+        '"handoff_to": "patch_applier",'
+        f'"run_id": "{run_id}",'
+        '"feature_description": "Add a ping endpoint",'
+        '"files_changed": ['
+        "{"
+        '"path": "backend/routes/ping.py",'
+        '"action": "create",'
+        '"content": "def ping():\\n    return {\'status\': \'ok\'}\\n",'
+        '"reason": "Add ping route"'
+        "}"
+        "],"
+        '"summary": "Added a ping route.",'
+        '"suggested_memory_entries": []'
+        "}"
+    )
+    usage = SimpleNamespace(prompt_token_count=10, candidates_token_count=20)
+    return SimpleNamespace(text=text, usage_metadata=usage)
+
+
+class _CoderModel:
+    def __init__(self, responses):
+        self.responses = list(responses)
+
+    def generate_content(self, prompt, request_options=None):
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def _patch_coder_dependencies(monkeypatch, model, tmp_repo):
+    monkeypatch.setattr(coder, "load_hard_facts", lambda: "")
+    monkeypatch.setattr(coder, "get_target_repo_path", lambda: str(tmp_repo))
+    monkeypatch.setattr(coder, "save_checkpoint", lambda **kwargs: None)
+    monkeypatch.setattr(coder.genai, "configure", lambda api_key: None)
+    monkeypatch.setattr(
+        coder.genai,
+        "GenerationConfig",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    monkeypatch.setattr(
+        coder.genai,
+        "GenerativeModel",
+        lambda **kwargs: model,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_coder_429_retry_path_does_not_crash(monkeypatch, tmp_repo):
+    run_id = str(uuid.uuid4())
+    plan = make_test_plan(run_id)
+    model = _CoderModel([
+        SimpleNamespace(text="{not json", usage_metadata=SimpleNamespace()),
+        RuntimeError("429 rate limit"),
+        _coder_response(run_id),
+    ])
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    _patch_coder_dependencies(monkeypatch, model, tmp_repo)
+    monkeypatch.setattr(coder.asyncio, "sleep", fake_sleep)
+
+    result = await run_coder(plan=plan, run_id=run_id)
+
+    assert result.run_id == run_id
+    assert len(result.files_changed) == 1
+    assert sleeps == [60]
+    assert not hasattr(coder, "time")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_coder_429_retry_failure_raises_runtime_error(monkeypatch, tmp_repo):
+    run_id = str(uuid.uuid4())
+    plan = make_test_plan(run_id)
+    model = _CoderModel([
+        SimpleNamespace(text="{not json", usage_metadata=SimpleNamespace()),
+        RuntimeError("429 rate limit"),
+        RuntimeError("still rate limited"),
+    ])
+
+    async def fake_sleep(seconds):
+        return None
+
+    _patch_coder_dependencies(monkeypatch, model, tmp_repo)
+    monkeypatch.setattr(coder.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(RuntimeError) as error:
+        await run_coder(plan=plan, run_id=run_id)
+
+    assert "coder.py: Failed after rate limit retry" in str(error.value)
 
 
 @pytest.mark.asyncio
