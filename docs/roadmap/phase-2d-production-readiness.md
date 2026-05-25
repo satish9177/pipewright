@@ -12,8 +12,10 @@ Phase 2D should not add major new product capability. It should reduce risk.
 
 ## Completion Note
 
-Phase 2D is complete. The final release notes are in
-`docs/releases/phase-2d-production-readiness.md`.
+Phase 2D is complete with backend production-readiness hardening plus frontend
+chunked-run stabilization. The consolidated release notes are in
+`docs/releases/phase-2d-production-readiness.md`, with frontend smoke coverage
+in `docs/frontend/frontend-smoke-checklist.md`.
 
 ## P0 Priorities
 
