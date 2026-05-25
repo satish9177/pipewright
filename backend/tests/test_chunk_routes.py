@@ -140,6 +140,30 @@ def test_missing_project_returns_404_before_triage(monkeypatch):
     assert called["value"] is False
 
 
+def test_chunked_run_rejects_empty_feature_description(tmp_repo):
+    project = make_project(tmp_repo)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "",
+    })
+
+    assert response.status_code == 422
+
+
+def test_chunked_run_rejects_too_long_feature_description(tmp_repo):
+    project = make_project(tmp_repo)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "x" * 12001,
+    })
+
+    assert response.status_code == 422
+
+
 def test_get_chunks_route_returns_plan(tmp_repo, tracked_runs):
     project = make_project(tmp_repo)
     run_id = str(uuid.uuid4())
@@ -288,6 +312,36 @@ def test_chunk_reject_route_returns_controlled_error(monkeypatch):
 
     assert response.status_code == 400
     assert "pending chunk gate not found" in response.json()["detail"]
+
+
+def test_chunk_plan_reject_route_rejects_too_long_reason():
+    client = TestClient(app)
+
+    response = client.post("/runs/run-123/chunks/reject", json={
+        "reason": "x" * 2001,
+    })
+
+    assert response.status_code == 422
+
+
+def test_chunk_approval_reject_route_rejects_too_long_reason():
+    client = TestClient(app)
+
+    response = client.post("/runs/run-123/chunks/1/reject", json={
+        "reason": "x" * 2001,
+    })
+
+    assert response.status_code == 422
+
+
+def test_final_approval_reject_route_rejects_too_long_reason():
+    client = TestClient(app)
+
+    response = client.post("/runs/run-123/final-approval/reject", json={
+        "reason": "x" * 2001,
+    })
+
+    assert response.status_code == 422
 
 
 def test_execute_route_maps_project_lock_conflict_to_409(monkeypatch):

@@ -7,10 +7,15 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
 from backend.db.database import engine
+from backend.models.handoff import (
+    FEATURE_DESCRIPTION_MAX_LENGTH,
+    REJECTION_REASON_MAX_LENGTH,
+    _is_blank,
+)
 from backend.models.chunk import ChunkPlanResponse
 from backend.pipeline.chunk_store import (
     approve_chunk_plan,
@@ -34,19 +39,29 @@ router = APIRouter()
 
 class ChunkedRunRequest(BaseModel):
     project_id: str
-    feature_description: str
+    feature_description: str = Field(
+        min_length=1,
+        max_length=FEATURE_DESCRIPTION_MAX_LENGTH,
+    )
+
+    @field_validator("feature_description")
+    @classmethod
+    def feature_description_must_not_be_blank(cls, value: str) -> str:
+        if _is_blank(value):
+            raise ValueError("Field must not be blank")
+        return value
 
 
 class RejectChunkPlanRequest(BaseModel):
-    reason: str | None = None
+    reason: str | None = Field(default=None, max_length=REJECTION_REASON_MAX_LENGTH)
 
 
 class RejectFinalApprovalRequest(BaseModel):
-    reason: str | None = None
+    reason: str | None = Field(default=None, max_length=REJECTION_REASON_MAX_LENGTH)
 
 
 class RejectChunkApprovalRequest(BaseModel):
-    reason: str | None = None
+    reason: str | None = Field(default=None, max_length=REJECTION_REASON_MAX_LENGTH)
 
 
 def _get_pending_final_gate(run_id: str) -> dict | None:

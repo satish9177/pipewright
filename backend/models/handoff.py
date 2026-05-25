@@ -6,8 +6,24 @@ Every downstream module receives one of these.
 Never use raw dicts between pipeline modules.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
+
+
+PROJECT_NAME_MAX_LENGTH = 120
+PROJECT_REPO_PATH_MAX_LENGTH = 1000
+PROJECT_TEST_COMMAND_MAX_LENGTH = 1000
+PROJECT_DESCRIPTION_MAX_LENGTH = 2000
+GITHUB_OWNER_MAX_LENGTH = 100
+GITHUB_REPO_MAX_LENGTH = 100
+GITHUB_BASE_BRANCH_MAX_LENGTH = 100
+GITHUB_TOKEN_MAX_LENGTH = 5000
+FEATURE_DESCRIPTION_MAX_LENGTH = 12000
+REJECTION_REASON_MAX_LENGTH = 2000
+
+
+def _is_blank(value: str) -> bool:
+    return not value.strip()
 
 
 class PlannerHandoff(BaseModel):
@@ -79,7 +95,7 @@ class ApprovalRequest(BaseModel):
 
 
 class RejectRequest(BaseModel):
-    reason: str
+    reason: str = Field(max_length=REJECTION_REASON_MAX_LENGTH)
 
 
 class GateStatus(BaseModel):
@@ -94,26 +110,46 @@ class GateStatus(BaseModel):
 
 
 class ProjectCreate(BaseModel):
-    name: str
-    repo_path: str
-    test_command: str
-    branch: str = "main"
-    description: str = ""
-    github_token: Optional[str] = None
-    github_owner: Optional[str] = None
-    github_repo: Optional[str] = None
-    github_base_branch: str = "pipewright-staging"
+    name: str = Field(min_length=1, max_length=PROJECT_NAME_MAX_LENGTH)
+    repo_path: str = Field(min_length=1, max_length=PROJECT_REPO_PATH_MAX_LENGTH)
+    test_command: str = Field(min_length=1, max_length=PROJECT_TEST_COMMAND_MAX_LENGTH)
+    branch: str = Field(default="main", min_length=1, max_length=GITHUB_BASE_BRANCH_MAX_LENGTH)
+    description: str = Field(default="", max_length=PROJECT_DESCRIPTION_MAX_LENGTH)
+    github_token: Optional[str] = Field(default=None, max_length=GITHUB_TOKEN_MAX_LENGTH)
+    github_owner: Optional[str] = Field(default=None, max_length=GITHUB_OWNER_MAX_LENGTH)
+    github_repo: Optional[str] = Field(default=None, max_length=GITHUB_REPO_MAX_LENGTH)
+    github_base_branch: str = Field(
+        default="pipewright-staging",
+        min_length=1,
+        max_length=GITHUB_BASE_BRANCH_MAX_LENGTH,
+    )
+
+    @field_validator("name", "repo_path", "test_command", "branch", "github_base_branch")
+    @classmethod
+    def required_string_must_not_be_blank(cls, value: str) -> str:
+        if _is_blank(value):
+            raise ValueError("Field must not be blank")
+        return value
 
 
 class ProjectUpdate(BaseModel):
-    name: Optional[str] = None
-    test_command: Optional[str] = None
-    branch: Optional[str] = None
-    description: Optional[str] = None
-    github_token: Optional[str] = None
-    github_owner: Optional[str] = None
-    github_repo: Optional[str] = None
-    github_base_branch: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=PROJECT_NAME_MAX_LENGTH)
+    test_command: Optional[str] = Field(default=None, min_length=1, max_length=PROJECT_TEST_COMMAND_MAX_LENGTH)
+    branch: Optional[str] = Field(default=None, min_length=1, max_length=GITHUB_BASE_BRANCH_MAX_LENGTH)
+    description: Optional[str] = Field(default=None, max_length=PROJECT_DESCRIPTION_MAX_LENGTH)
+    github_token: Optional[str] = Field(default=None, max_length=GITHUB_TOKEN_MAX_LENGTH)
+    github_owner: Optional[str] = Field(default=None, max_length=GITHUB_OWNER_MAX_LENGTH)
+    github_repo: Optional[str] = Field(default=None, max_length=GITHUB_REPO_MAX_LENGTH)
+    github_base_branch: Optional[str] = Field(default=None, min_length=1, max_length=GITHUB_BASE_BRANCH_MAX_LENGTH)
+
+    @field_validator("name", "test_command", "branch", "github_base_branch")
+    @classmethod
+    def provided_string_must_not_be_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if _is_blank(value):
+            raise ValueError("Field must not be blank")
+        return value
 
 
 class ProjectResponse(BaseModel):

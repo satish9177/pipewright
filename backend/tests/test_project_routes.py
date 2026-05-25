@@ -140,6 +140,231 @@ def test_update_project_sanitizes_github_token(tmp_repo):
     assert data["has_github_token"] is True
 
 
+def test_project_create_rejects_empty_name(tmp_repo):
+    client = TestClient(app)
+
+    response = client.post("/projects", json={
+        "name": "",
+        "repo_path": str(tmp_repo),
+        "test_command": "python --version",
+    })
+
+    assert response.status_code == 422
+
+
+def test_project_create_rejects_too_long_name(tmp_repo):
+    client = TestClient(app)
+
+    response = client.post("/projects", json={
+        "name": "x" * 121,
+        "repo_path": str(tmp_repo),
+        "test_command": "python --version",
+    })
+
+    assert response.status_code == 422
+
+
+def test_project_create_rejects_too_long_repo_path():
+    client = TestClient(app)
+
+    response = client.post("/projects", json={
+        "name": "Long Repo Path",
+        "repo_path": "x" * 1001,
+        "test_command": "python --version",
+    })
+
+    assert response.status_code == 422
+
+
+def test_project_create_rejects_too_long_test_command(tmp_repo):
+    client = TestClient(app)
+
+    response = client.post("/projects", json={
+        "name": "Long Test Command",
+        "repo_path": str(tmp_repo),
+        "test_command": "x" * 1001,
+    })
+
+    assert response.status_code == 422
+
+
+def test_project_update_rejects_empty_name_when_provided(tmp_repo):
+    client = TestClient(app)
+    create_response = client.post("/projects", json={
+        "name": "Patch Validation Project",
+        "repo_path": str(tmp_repo),
+        "test_command": "python --version",
+    })
+    project_id = create_response.json()["id"]
+
+    response = client.patch(f"/projects/{project_id}", json={
+        "name": "",
+    })
+
+    assert response.status_code == 422
+
+
+def test_project_update_rejects_too_long_name_when_provided(tmp_repo):
+    client = TestClient(app)
+    create_response = client.post("/projects", json={
+        "name": "Patch Validation Project",
+        "repo_path": str(tmp_repo),
+        "test_command": "python --version",
+    })
+    project_id = create_response.json()["id"]
+
+    response = client.patch(f"/projects/{project_id}", json={
+        "name": "x" * 121,
+    })
+
+    assert response.status_code == 422
+
+
+def test_project_update_allows_omitted_fields(tmp_repo):
+    client = TestClient(app)
+    create_response = client.post("/projects", json={
+        "name": "Patch Omitted Fields",
+        "repo_path": str(tmp_repo),
+        "test_command": "python --version",
+    })
+    project_id = create_response.json()["id"]
+
+    response = client.patch(f"/projects/{project_id}", json={})
+
+    assert response.status_code == 200
+    assert response.json()["id"] == project_id
+
+
+def test_project_update_allows_null_description(tmp_repo):
+    client = TestClient(app)
+    create_response = client.post("/projects", json={
+        "name": "Patch Null Description",
+        "repo_path": str(tmp_repo),
+        "test_command": "python --version",
+        "description": "keep me",
+    })
+    project_id = create_response.json()["id"]
+
+    response = client.patch(f"/projects/{project_id}", json={
+        "description": None,
+    })
+
+    assert response.status_code == 200
+    assert response.json()["description"] == "keep me"
+
+
+def test_project_update_allows_blank_description(tmp_repo):
+    client = TestClient(app)
+    create_response = client.post("/projects", json={
+        "name": "Patch Blank Description",
+        "repo_path": str(tmp_repo),
+        "test_command": "python --version",
+        "description": "clear me",
+    })
+    project_id = create_response.json()["id"]
+
+    response = client.patch(f"/projects/{project_id}", json={
+        "description": "",
+    })
+
+    assert response.status_code == 200
+    assert response.json()["description"] == ""
+
+
+def test_project_update_rejects_too_long_description(tmp_repo):
+    client = TestClient(app)
+    create_response = client.post("/projects", json={
+        "name": "Patch Long Description",
+        "repo_path": str(tmp_repo),
+        "test_command": "python --version",
+    })
+    project_id = create_response.json()["id"]
+
+    response = client.patch(f"/projects/{project_id}", json={
+        "description": "x" * 2001,
+    })
+
+    assert response.status_code == 422
+
+
+def test_project_update_allows_null_branch(tmp_repo):
+    client = TestClient(app)
+    create_response = client.post("/projects", json={
+        "name": "Patch Null Branch",
+        "repo_path": str(tmp_repo),
+        "test_command": "python --version",
+        "branch": "develop",
+    })
+    project_id = create_response.json()["id"]
+
+    response = client.patch(f"/projects/{project_id}", json={
+        "branch": None,
+    })
+
+    assert response.status_code == 200
+    assert response.json()["branch"] == "develop"
+
+
+def test_project_update_rejects_blank_branch_when_provided(tmp_repo):
+    client = TestClient(app)
+    create_response = client.post("/projects", json={
+        "name": "Patch Blank Branch",
+        "repo_path": str(tmp_repo),
+        "test_command": "python --version",
+    })
+    project_id = create_response.json()["id"]
+
+    response = client.patch(f"/projects/{project_id}", json={
+        "branch": "",
+    })
+
+    assert response.status_code == 422
+
+
+def test_run_rejects_empty_feature_description(tmp_repo):
+    client = TestClient(app)
+    create_response = client.post("/projects", json={
+        "name": "Run Validation Project",
+        "repo_path": str(tmp_repo),
+        "test_command": "python --version",
+    })
+    project_id = create_response.json()["id"]
+
+    response = client.post("/run", json={
+        "project_id": project_id,
+        "feature_description": "",
+    })
+
+    assert response.status_code == 422
+
+
+def test_run_rejects_too_long_feature_description(tmp_repo):
+    client = TestClient(app)
+    create_response = client.post("/projects", json={
+        "name": "Run Validation Project",
+        "repo_path": str(tmp_repo),
+        "test_command": "python --version",
+    })
+    project_id = create_response.json()["id"]
+
+    response = client.post("/run", json={
+        "project_id": project_id,
+        "feature_description": "x" * 12001,
+    })
+
+    assert response.status_code == 422
+
+
+def test_gate_reject_rejects_too_long_reason():
+    client = TestClient(app)
+
+    response = client.post("/gates/gate-missing/reject", json={
+        "reason": "x" * 2001,
+    })
+
+    assert response.status_code == 422
+
+
 def test_run_requires_existing_project():
     client = TestClient(app)
 
