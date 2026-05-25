@@ -15,6 +15,17 @@ approval/rejection, final approval/rejection, and push/PR. WebSocket live logs
 already exist and remain scoped to the EventLog; polling remains the source of
 truth for run/chunk status.
 
+## FE-2 Update
+
+Phase 2D-FE-2 added a focused chunk plan review panel to `RunDetailPage`.
+Run detail now fetches chunk plan data through `runsApi.getRunChunks`, displays
+the plan status, feature description, total chunks, current chunk number, and
+chunk definitions, and wires plan approval/rejection to
+`runsApi.approveChunkPlan` and `runsApi.rejectChunkPlan`.
+
+Execute/resume controls, high-risk per-chunk approval UI, final approval, and
+push/PR actions remain future frontend work.
+
 ## Current Frontend API Functions and Backend Route Mapping
 
 | Backend route | Frontend mapping | Status |
@@ -32,9 +43,9 @@ truth for run/chunk status.
 | `POST /gates/{gate_id}/approve` | `gatesApi.approve` | Present legacy approval flow |
 | `POST /gates/{gate_id}/reject` | `gatesApi.reject` | Present legacy approval flow |
 | `POST /runs/chunked` | `runsApi.createChunkedRun` | API helper present; UI flow missing |
-| `GET /runs/{run_id}/chunks` | `runsApi.getRunChunks` | API helper present; UI flow missing |
-| `POST /runs/{run_id}/chunks/approve` | `runsApi.approveChunkPlan` | API helper present; UI flow missing |
-| `POST /runs/{run_id}/chunks/reject` | `runsApi.rejectChunkPlan` | API helper present; UI flow missing |
+| `GET /runs/{run_id}/chunks` | `runsApi.getRunChunks` | Present in RunDetail chunk plan panel |
+| `POST /runs/{run_id}/chunks/approve` | `runsApi.approveChunkPlan` | Present in RunDetail chunk plan panel |
+| `POST /runs/{run_id}/chunks/reject` | `runsApi.rejectChunkPlan` | Present in RunDetail chunk plan panel |
 | `POST /runs/{run_id}/chunks/execute` | `runsApi.executeChunks` | API helper present; UI flow missing |
 | `POST /runs/{run_id}/chunks/resume` | `runsApi.resumeChunks` | API helper present; UI flow missing |
 | `POST /runs/{run_id}/chunks/{chunk_number}/approve` | `runsApi.approveChunk` | API helper present; UI flow missing |
@@ -94,9 +105,9 @@ truth for run/chunk status.
 
 - No chunked run creation UI. The primary project dashboard still offers the
   legacy single-run submit path.
-- No chunk plan review UI. Users cannot inspect chunk definitions, dependency
-  order, risk level, token estimates, or files expected before approval.
-- No chunk plan approve/reject controls.
+- Fixed in FE-2: `RunDetailPage` now shows chunk plan review details, including
+  chunk definitions, dependency order, risk level, token estimates, files
+  expected, and plan approve/reject controls.
 - No chunk execution control after plan approval.
 - No manual resume control for failed or interrupted chunked runs.
 - No high-risk per-chunk approval experience that clearly shows the specific
@@ -211,9 +222,8 @@ polling too early for chunked statuses such as `running_chunks`, `pushing`,
    conditions for current backend statuses.
 2. Add chunked run creation from `ProjectDashboard` using `POST /runs/chunked`.
    Keep the legacy `/run` flow only if intentionally still supported.
-3. Rework `RunDetailPage` around current chunked lifecycle:
-   chunk plan review, approve/reject plan, execute/resume, high-risk chunk
-   approval, final approval, push PR.
+3. Continue the `RunDetailPage` chunked lifecycle work:
+   execute/resume, high-risk chunk approval, final approval, and push PR.
 4. Update `ApprovalQueuePage` to classify approval types and route users to the
    right run/chunk action.
 5. Add project edit/GitHub credential UI and display `has_github_token`.
