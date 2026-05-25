@@ -144,7 +144,7 @@ def create_pull_request(
     )
 
     for file_change in coder_output.files_changed:
-        file_path = file_change.path
+        file_path = file_change.path.replace("\\", "/")
         full_path = target_repo / file_path
 
         try:

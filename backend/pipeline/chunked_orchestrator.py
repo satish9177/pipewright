@@ -7,6 +7,7 @@ remote push, GitHub PR creation, or remote branch management.
 """
 
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import text
@@ -42,6 +43,10 @@ from backend.projects.project_store import require_project
 from backend.repo.repo_indexer import get_relevant_files
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _publish_safe(event) -> None:
@@ -533,12 +538,13 @@ def _decide_pending_chunk_gate(
                 UPDATE approval_gates
                 SET status = :status,
                     rejection_reason = :reason,
-                    decided_at = CURRENT_TIMESTAMP
+                    decided_at = :decided_at
                 WHERE id = :gate_id
                   AND status = 'pending'
             """), {
                 "status": status,
                 "reason": reason,
+                "decided_at": _utc_now(),
                 "gate_id": gate["id"],
             })
             if result.rowcount == 0:

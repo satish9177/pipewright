@@ -357,6 +357,47 @@ def test_execute_route_maps_project_lock_conflict_to_409(monkeypatch):
     assert response.json()["detail"] == PROJECT_LOCK_CONFLICT_MESSAGE
 
 
+def test_resume_route_maps_project_lock_conflict_to_409(monkeypatch):
+    async def fake_resume(run_id):
+        raise ProjectRepoLockError(PROJECT_LOCK_CONFLICT_MESSAGE)
+
+    monkeypatch.setattr("backend.routes.chunks.resume_chunked_pipeline", fake_resume)
+    client = TestClient(app)
+
+    response = client.post("/runs/run-123/chunks/resume")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == PROJECT_LOCK_CONFLICT_MESSAGE
+
+
+def test_approve_chunk_route_maps_project_lock_conflict_to_409(monkeypatch):
+    def fake_approve(run_id, chunk_number):
+        raise ProjectRepoLockError(PROJECT_LOCK_CONFLICT_MESSAGE)
+
+    monkeypatch.setattr("backend.routes.chunks.approve_chunk_and_commit", fake_approve)
+    client = TestClient(app)
+
+    response = client.post("/runs/run-123/chunks/1/approve")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == PROJECT_LOCK_CONFLICT_MESSAGE
+
+
+def test_reject_chunk_route_maps_project_lock_conflict_to_409(monkeypatch):
+    def fake_reject(run_id, chunk_number, reason):
+        raise ProjectRepoLockError(PROJECT_LOCK_CONFLICT_MESSAGE)
+
+    monkeypatch.setattr("backend.routes.chunks.reject_chunk_and_rollback", fake_reject)
+    client = TestClient(app)
+
+    response = client.post("/runs/run-123/chunks/1/reject", json={
+        "reason": "not safe",
+    })
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == PROJECT_LOCK_CONFLICT_MESSAGE
+
+
 def test_final_approval_approve_route_updates_run(tmp_repo, tracked_runs):
     project = make_project(tmp_repo)
     run_id = str(uuid.uuid4())
@@ -448,3 +489,16 @@ def test_push_pr_route_calls_helper(monkeypatch):
     assert response.status_code == 200
     assert response.json()["status"] == "complete"
     assert called["run_id"] == "run-123"
+
+
+def test_push_pr_route_maps_project_lock_conflict_to_409(monkeypatch):
+    def fake_push(run_id):
+        raise ProjectRepoLockError(PROJECT_LOCK_CONFLICT_MESSAGE)
+
+    monkeypatch.setattr("backend.routes.chunks.push_and_create_pr", fake_push)
+    client = TestClient(app)
+
+    response = client.post("/runs/run-123/push-pr")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == PROJECT_LOCK_CONFLICT_MESSAGE

@@ -17,6 +17,7 @@ from backend.git import local_git
 from backend.pipeline.chunk_store import get_chunk_plan_status
 from backend.pipeline.run_locks import project_repo_lock_sync
 from backend.projects.project_store import require_project
+from backend.security.secrets import decrypt_secret
 
 
 def _utc_now() -> str:
@@ -200,13 +201,13 @@ def _verify_local_branch(repo_path: str, branch_name: str, owner: str, repo_name
 
 
 def _require_project_github(project: dict) -> tuple[str, str, str, str]:
-    token = project.get("github_token")
+    stored_token = project.get("github_token")
     owner = project.get("github_owner")
     repo_name = project.get("github_repo")
     base_branch = project.get("github_base_branch") or "main"
     missing = [
         name for name, value in [
-            ("github_token", token),
+            ("github_token", stored_token),
             ("github_owner", owner),
             ("github_repo", repo_name),
         ]
@@ -217,6 +218,7 @@ def _require_project_github(project: dict) -> tuple[str, str, str, str]:
             f"pr_orchestrator.py: missing GitHub project fields: "
             f"{', '.join(missing)}"
         )
+    token = decrypt_secret(stored_token)
     return token, owner, repo_name, base_branch
 
 

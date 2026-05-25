@@ -14,6 +14,11 @@ from pathlib import Path
 from backend.models.handoff import CoderHandoff, PatchResult, FileChange
 from backend.checkpoint.checkpoint_store import save_checkpoint
 from backend.projects.project_context import get_target_repo_path
+from backend.utils.path_safety import (
+    is_forbidden_path as is_secret_path,
+    normalize_relative_path,
+    validate_safe_relative_path,
+)
 
 BACKUP_DIR = Path(__file__).parent.parent / "backups"
 
@@ -63,9 +68,12 @@ def _get_git_hash(repo_path: str) -> str:
 
 def _is_forbidden_path(relative_path: str) -> bool:
     try:
-        normalized = os.path.normpath(relative_path).replace("\\", "/")
+        normalized = normalize_relative_path(relative_path)
         parts = [part.lower() for part in normalized.split("/")]
         lower_path = normalized.lower()
+
+        if is_secret_path(normalized):
+            return True
 
         for forbidden in FORBIDDEN_PATHS:
             forbidden_lower = forbidden.lower()
@@ -87,20 +95,6 @@ def _validate_path(relative_path: str, target_repo: str) -> Path:
     try:
         print(f"[PATCH] Validating path: {relative_path}")
 
-        if not relative_path or not relative_path.strip():
-            raise RuntimeError("patch_applier.py: [SECURITY] empty path rejected")
-
-        normalized_input = relative_path.replace("\\", "/")
-        if (
-            ".." in normalized_input.split("/")
-            or normalized_input.startswith("/")
-            or Path(relative_path).is_absolute()
-        ):
-            raise RuntimeError(
-                f"patch_applier.py: [SECURITY] unsafe path rejected: "
-                f"{relative_path}"
-            )
-
         if _is_forbidden_path(relative_path):
             raise RuntimeError(
                 f"patch_applier.py: [SECURITY] forbidden path rejected: "
@@ -108,17 +102,7 @@ def _validate_path(relative_path: str, target_repo: str) -> Path:
             )
 
         root = Path(target_repo).resolve()
-        full_path = (root / relative_path).resolve()
-
-        try:
-            full_path.relative_to(root)
-        except ValueError:
-            raise RuntimeError(
-                f"patch_applier.py: [SECURITY] path traversal detected: "
-                f"{relative_path}"
-            )
-
-        return full_path
+        return validate_safe_relative_path(relative_path, root)
     except RuntimeError:
         raise
     except Exception as error:
@@ -279,28 +263,9 @@ def _rollback_from_manifest(
         root = Path(target_repo).resolve()
 
         for entry in reversed(manifest):
-            relative_path = entry["path"]
+            relative_path = normalize_relative_path(entry["path"])
             action = entry["action"]
-            normalized_input = relative_path.replace("\\", "/")
-            if (
-                ".." in normalized_input.split("/")
-                or normalized_input.startswith("/")
-                or Path(relative_path).is_absolute()
-            ):
-                raise RuntimeError(
-                    f"patch_applier.py: [SECURITY] rollback unsafe path "
-                    f"rejected: {relative_path}"
-                )
-
-            full_path = (root / relative_path).resolve()
-
-            try:
-                full_path.relative_to(root)
-            except ValueError:
-                raise RuntimeError(
-                    f"patch_applier.py: [SECURITY] rollback path traversal "
-                    f"detected: {relative_path}"
-                )
+            full_path = validate_safe_relative_path(relative_path, root)
 
             if action == "create":
                 if full_path.exists():
@@ -411,7 +376,8 @@ def apply_patch(
             output=patch_result.model_dump(),
             handoff_contract=patch_result.model_dump(),
             git_hash=post_patch_git_hash,
-            tests_passed=True,
+            tests_passed=False,
+            step_completed=True,
             chunk_number=chunk_number
         )
         print(f"[PATCH] Checkpoint saved | run_id={run_id}")

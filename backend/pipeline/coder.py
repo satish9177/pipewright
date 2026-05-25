@@ -16,7 +16,6 @@ Rules:
 """
 
 import json
-import os
 import asyncio
 from pathlib import Path
 from pydantic import ValidationError
@@ -27,6 +26,7 @@ from backend.models.handoff import PlannerHandoff, CoderHandoff
 from backend.memory.memory_store import load_hard_facts
 from backend.checkpoint.checkpoint_store import save_checkpoint
 from backend.utils.json_helpers import clean_json_response
+from backend.utils.path_safety import normalize_relative_path, validate_safe_relative_path
 from backend.projects.project_context import get_target_repo_path
 
 CODER_MODEL = "gemini-2.5-flash-lite"
@@ -73,24 +73,18 @@ Respond with nothing except the JSON object."""
 def _read_target_file(
     relative_path: str,
     target_repo: str,
-    max_lines: int = 200
+    max_lines: int = 200,
+    purpose: str = "modify",
 ) -> str | None:
     """
     Read a file from target repo safely.
     Returns file content string or None if file not found.
     Raises RuntimeError if path traversal detected.
-    Truncates to max_lines with warning if file is longer.
+    Refuses files larger than max_lines to avoid unsafe full-file rewrites.
     """
     try:
         root = Path(target_repo).resolve()
-        file_path = (root / relative_path).resolve()
-
-        try:
-            file_path.relative_to(root)
-        except ValueError:
-            raise RuntimeError(
-                f"coder.py: path traversal detected for {relative_path}"
-            )
+        file_path = validate_safe_relative_path(relative_path, root)
 
         if not file_path.exists():
             print(f"[CODER] Warning: target file missing, skipping {relative_path}")
@@ -102,11 +96,17 @@ def _read_target_file(
 
         lines = file_path.read_text(encoding="utf-8").splitlines(keepends=True)
         if len(lines) > max_lines:
-            print(
-                f"[CODER] Warning: truncating {relative_path} "
-                f"from {len(lines)} lines to {max_lines} lines"
+            if purpose == "read":
+                raise RuntimeError(
+                    f"Refusing to read large file {relative_path}: "
+                    f"{len(lines)} lines exceeds safe limit {max_lines}. "
+                    "Large-file reading requires explicit summarization."
+                )
+            raise RuntimeError(
+                f"Refusing to modify large file {relative_path}: "
+                f"{len(lines)} lines exceeds safe limit {max_lines}. "
+                "Large-file editing requires diff-based patching."
             )
-            lines = lines[:max_lines]
 
         return "".join(lines)
     except RuntimeError:
@@ -132,16 +132,30 @@ def _build_file_contents_block(
     try:
         seen = set()
         ordered_paths = []
+        path_purposes: dict[str, str] = {}
 
-        for path in [*files_to_read, *files_to_modify]:
-            normalized = os.path.normpath(path)
+        for path in files_to_read:
+            normalized = normalize_relative_path(path)
             if normalized not in seen:
                 seen.add(normalized)
-                ordered_paths.append(path)
+                ordered_paths.append(normalized)
+            path_purposes[normalized] = "read"
+
+        for path in files_to_modify:
+            normalized = normalize_relative_path(path)
+            if normalized not in seen:
+                seen.add(normalized)
+                ordered_paths.append(normalized)
+            path_purposes[normalized] = "modify"
 
         blocks = []
         for path in ordered_paths:
-            content = _read_target_file(path, target_repo, MAX_FILE_LINES)
+            content = _read_target_file(
+                path,
+                target_repo,
+                MAX_FILE_LINES,
+                path_purposes.get(path, "modify"),
+            )
             if content is None:
                 continue
             blocks.append(
@@ -303,7 +317,8 @@ async def run_coder(
             output=handoff.model_dump(),
             handoff_contract=handoff.model_dump(),
             git_hash="pre-patch",
-            tests_passed=True,
+            tests_passed=False,
+            step_completed=True,
             chunk_number=chunk_number
         )
         print(f"[CODER] Checkpoint saved | run_id={run_id}")
@@ -385,6 +400,6 @@ async def _retry_after_parse_failure(
                 )
         else:
             raise RuntimeError(
-                f"coder.py: Unexpected error during planning. "
+                f"coder.py: Unexpected error during coding. "
                 f"run_id={run_id} | error={unexpected}"
             )

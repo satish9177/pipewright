@@ -7,6 +7,7 @@ No real push. No real GitHub calls.
 import uuid
 
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy import text
 
 from backend.db.database import engine
@@ -41,6 +42,11 @@ class FakeRepo:
         return FakePull(456, "https://github.com/acme/demo/pull/456")
 
 
+@pytest.fixture(autouse=True)
+def github_encryption_key(monkeypatch):
+    monkeypatch.setenv("PIPEWRIGHT_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+
 @pytest.fixture()
 def tracked_runs():
     run_ids = []
@@ -58,7 +64,9 @@ def tracked_runs():
             })
 
 
-def make_project(tmp_repo, owner="acme", repo="demo"):
+def make_project(tmp_repo, monkeypatch=None, owner="acme", repo="demo"):
+    if monkeypatch is not None:
+        monkeypatch.setenv("PIPEWRIGHT_ENCRYPTION_KEY", Fernet.generate_key().decode())
     return create_project(
         name=f"PR Project {uuid.uuid4()}",
         repo_path=str(tmp_repo),

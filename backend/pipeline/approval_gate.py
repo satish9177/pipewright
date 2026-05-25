@@ -60,11 +60,11 @@ def _create_gate(
             conn.execute(text("""
                 INSERT INTO approval_gates
                 (id, run_id, step, status, diff, test_results,
-                 ai_summary, plain_english_summary, risk_level)
+                 ai_summary, plain_english_summary, risk_level, created_at)
                 VALUES
                 (:id, :run_id, 'pre-merge', 'pending', :diff,
                  :test_results, :ai_summary, :plain_english_summary,
-                 :risk_level)
+                 :risk_level, :created_at)
             """), {
                 "id": gate_id,
                 "run_id": run_id,
@@ -73,6 +73,7 @@ def _create_gate(
                 "ai_summary": ai_summary,
                 "plain_english_summary": ai_summary,
                 "risk_level": risk_level,
+                "created_at": _utc_now(),
             })
             conn.commit()
         print(f"[APPROVAL] Gate created | run_id={run_id} | gate_id={gate_id}")
@@ -532,7 +533,8 @@ async def request_approval(
                     output={"gate_id": gate_id, "approved": True},
                     handoff_contract={"approved": True},
                     git_hash=test_result.run_id,
-                    tests_passed=True
+                    tests_passed=False,
+                    step_completed=True,
                 )
                 print(f"[APPROVAL] Checkpoint saved | run_id={run_id}")
                 print(f"[APPROVAL] Complete | run_id={run_id}")

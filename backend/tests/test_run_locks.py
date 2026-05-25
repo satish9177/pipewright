@@ -7,8 +7,10 @@ No API calls. No Gemini.
 import uuid
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from backend.main import app
 from backend.db.database import engine
 from backend.models.chunk import ChunkDefinition, TriageResult
 from backend.pipeline.chunk_store import approve_chunk_plan, create_chunked_run
@@ -121,6 +123,35 @@ async def test_async_lock_releases_after_exception():
     assert not is_project_locked(project_id)
 
 
+async def test_same_project_concurrent_async_locks_cannot_both_proceed():
+    project_id = f"proj-{uuid.uuid4().hex[:8]}"
+    entered = []
+
+    async def hold_lock():
+        async with project_repo_lock(project_id):
+            entered.append("first")
+            with pytest.raises(ProjectRepoLockError):
+                async with project_repo_lock(project_id):
+                    entered.append("second")
+
+    await hold_lock()
+
+    assert entered == ["first"]
+
+
+async def test_different_projects_can_lock_concurrently():
+    first_project = f"proj-{uuid.uuid4().hex[:8]}"
+    second_project = f"proj-{uuid.uuid4().hex[:8]}"
+
+    async with project_repo_lock(first_project):
+        async with project_repo_lock(second_project):
+            assert is_project_locked(first_project)
+            assert is_project_locked(second_project)
+
+    assert not is_project_locked(first_project)
+    assert not is_project_locked(second_project)
+
+
 def test_sync_lock_blocks_same_project_and_allows_different_projects():
     project_id = f"proj-{uuid.uuid4().hex[:8]}"
     other_project_id = f"proj-{uuid.uuid4().hex[:8]}"
@@ -136,6 +167,20 @@ def test_sync_lock_blocks_same_project_and_allows_different_projects():
 
     assert not is_project_locked(project_id)
     assert not is_project_locked(other_project_id)
+
+
+def test_legacy_run_route_returns_409_when_project_locked(tmp_repo):
+    project = _project(tmp_repo)
+    client = TestClient(app)
+
+    with project_repo_lock_sync(project["id"]):
+        response = client.post("/run", json={
+            "project_id": project["id"],
+            "feature_description": "Locked run",
+        })
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == PROJECT_LOCK_CONFLICT_MESSAGE
 
 
 async def test_execute_refuses_when_same_project_locked(tmp_repo, tracked_runs):

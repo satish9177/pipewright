@@ -1,7 +1,7 @@
 """
 checkpoint_store.py
 Saves and loads pipeline step checkpoints.
-CRITICAL RULE: Never save a checkpoint unless tests_passed is True.
+CRITICAL RULE: tests_passed=True only means tests actually passed.
 Every checkpoint stores the git hash at time of save.
 """
 
@@ -19,17 +19,22 @@ def save_checkpoint(
     handoff_contract: dict,
     git_hash: str,
     tests_passed: bool,
-    chunk_number: int = 0
+    chunk_number: int = 0,
+    step_completed: bool = True,
 ) -> dict:
     """
     Save a checkpoint for a completed pipeline step.
-    RAISES if tests_passed is False.
-    This rule has zero exceptions.
+    Non-test steps may complete without tests_passed=True.
     """
-    if not tests_passed:
+    if not step_completed:
         raise ValueError(
             f"checkpoint_store.py: Cannot checkpoint step '{step}' "
-            f"- tests_passed is False. Fix tests before checkpointing."
+            f"- step_completed is False."
+        )
+    if tests_passed and step != "test":
+        raise ValueError(
+            f"checkpoint_store.py: tests_passed=True is only valid for "
+            f"test checkpoints. step={step}"
         )
 
     checkpoint_id = str(uuid.uuid4())
@@ -41,10 +46,11 @@ def save_checkpoint(
                 INSERT INTO checkpoints
                 (id, run_id, step, status, output,
                  handoff_contract, git_commit_hash,
-                 tests_passed, chunk_number, created_at)
+                 step_completed, tests_passed, chunk_number, created_at)
                 VALUES
                 (:id, :run_id, :step, 'complete', :output,
-                 :handoff, :git_hash, 1, :chunk_number, :now)
+                 :handoff, :git_hash, :step_completed,
+                 :tests_passed, :chunk_number, :now)
             """), {
                 "id": checkpoint_id,
                 "run_id": run_id,
@@ -52,6 +58,8 @@ def save_checkpoint(
                 "output": json.dumps(output),
                 "handoff": json.dumps(handoff_contract),
                 "git_hash": git_hash,
+                "step_completed": 1 if step_completed else 0,
+                "tests_passed": 1 if tests_passed else 0,
                 "chunk_number": chunk_number,
                 "now": now
             })
@@ -62,6 +70,8 @@ def save_checkpoint(
             "step": step,
             "git_hash": git_hash,
             "chunk_number": chunk_number,
+            "step_completed": step_completed,
+            "tests_passed": tests_passed,
         }
     except Exception as e:
         raise RuntimeError(f"checkpoint_store.py: save_checkpoint failed: {e}")
@@ -78,6 +88,7 @@ def load_last_checkpoint(run_id: str) -> dict | None:
                 SELECT * FROM checkpoints
                 WHERE run_id = :run_id
                 AND status = 'complete'
+                AND step = 'test'
                 AND tests_passed = 1
                 ORDER BY created_at DESC
                 LIMIT 1
@@ -131,6 +142,7 @@ def load_chunk_step_checkpoint(
     Returns None if the chunk step was not checkpointed yet.
     """
     try:
+        tests_filter = "AND tests_passed = 1" if step == "test" else ""
         with engine.connect() as conn:
             result = conn.execute(text("""
                 SELECT * FROM checkpoints
@@ -138,7 +150,8 @@ def load_chunk_step_checkpoint(
                 AND chunk_number = :chunk_number
                 AND step = :step
                 AND status = 'complete'
-                AND tests_passed = 1
+                AND step_completed = 1
+                """ + tests_filter + """
                 ORDER BY created_at DESC
                 LIMIT 1
             """), {

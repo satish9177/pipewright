@@ -20,6 +20,7 @@ from pathlib import Path
 from sqlalchemy import text
 
 from backend.db.database import engine
+from backend.utils.path_safety import is_forbidden_path
 
 MAX_FILE_SIZE_BYTES = 1_000_000
 MAX_IMPORTS_PER_FILE = 50
@@ -79,6 +80,9 @@ def should_skip_path(path: Path) -> bool:
         if path.is_file() and path.stat().st_size > MAX_FILE_SIZE_BYTES:
             return True
 
+        if path.is_file() and is_forbidden_path(path.name):
+            return True
+
         return False
     except Exception as error:
         print(f"[REPO_INDEXER] Warning: failed to inspect path {path}: {error}")
@@ -96,7 +100,7 @@ def is_supported_file(path: Path) -> bool:
 
         if name == "Dockerfile":
             return True
-        if lower_name == ".env.example":
+        if lower_name in {".env.example", ".env.sample"}:
             return True
         return path.suffix.lower() in SUPPORTED_EXTENSIONS
     except Exception as error:

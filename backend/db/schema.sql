@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     output TEXT,
     handoff_contract TEXT,
     git_commit_hash TEXT,
+    step_completed INTEGER DEFAULT 1,
     tests_passed INTEGER DEFAULT 0,
     chunk_number INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -116,3 +117,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     FOREIGN KEY (run_id) REFERENCES pipeline_runs(id),
     UNIQUE(run_id, chunk_number)
 );
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_project ON pipeline_runs(project_id);
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);
+CREATE INDEX IF NOT EXISTS idx_chunks_run_status ON chunks(run_id, status);
+CREATE INDEX IF NOT EXISTS idx_approval_gates_run_status ON approval_gates(run_id, approval_type, status);

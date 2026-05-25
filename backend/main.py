@@ -15,6 +15,8 @@ from backend.core.config import get_config
 from backend.core.logging_config import configure_logging
 from backend.db.database import init_db
 from backend.db.database import engine
+from backend.runtime.approval_gate_recovery import timeout_stale_approval_gates
+from backend.runtime.startup_recovery import recover_interrupted_runs
 from backend.models.handoff import (
     RejectRequest,
     FEATURE_DESCRIPTION_MAX_LENGTH,
@@ -27,6 +29,7 @@ from backend.pipeline.approval_gate import (
     get_gate,
 )
 from backend.pipeline.orchestrator import _run_pipeline_with_id
+from backend.pipeline.run_locks import ProjectRepoLockError, project_repo_lock_sync
 from backend.projects.project_store import (
     get_project,
 )
@@ -57,15 +60,8 @@ class RunRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app):
     init_db()
-    # Clean up stale gates from crashed sessions
-    with engine.connect() as conn:
-        conn.execute(text("""
-            UPDATE approval_gates
-            SET status = 'timeout'
-            WHERE status = 'pending'
-            AND created_at < datetime('now', '-2 hours')
-        """))
-        conn.commit()
+    timeout_stale_approval_gates()
+    recover_interrupted_runs()
     logger.info("Pipewright started.")
     yield
 
@@ -92,7 +88,15 @@ app.include_router(ws_events_router)
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.1.0"}
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1")).scalar_one()
+        return {"status": "ok", "version": "0.1.0", "database": "ok"}
+    except Exception as error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Database unavailable: {error}",
+        )
 
 
 @app.post("/run")
@@ -109,12 +113,22 @@ async def start_pipeline(request: RunRequest, background_tasks: BackgroundTasks)
 
     run_id = str(uuid.uuid4())
 
+    try:
+        reservation = project_repo_lock_sync(request.project_id)
+        reservation.__enter__()
+    except ProjectRepoLockError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+
     async def pipeline_task():
-        await _run_pipeline_with_id(
-            request.feature_description,
-            run_id,
-            request.project_id
-        )
+        try:
+            await _run_pipeline_with_id(
+                request.feature_description,
+                run_id,
+                request.project_id,
+                lock_already_held=True,
+            )
+        finally:
+            reservation.__exit__(None, None, None)
 
     background_tasks.add_task(pipeline_task)
 

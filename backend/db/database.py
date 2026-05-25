@@ -56,6 +56,18 @@ def _add_column_if_missing(
         )
 
 
+def _create_index_if_columns_exist(
+    conn,
+    table_name: str,
+    index_sql: str,
+    columns: tuple[str, ...],
+) -> None:
+    if not _table_exists(conn, table_name):
+        return
+    if all(_column_exists(conn, table_name, column) for column in columns):
+        conn.execute(text(index_sql))
+
+
 def _migrate_db(conn) -> None:
     """
     Apply small SQLite migrations for existing local databases.
@@ -157,6 +169,11 @@ def _migrate_db(conn) -> None:
                 "ALTER TABLE checkpoints ADD COLUMN chunk_number INTEGER DEFAULT 0",
             ),
             (
+                "checkpoints",
+                "step_completed",
+                "ALTER TABLE checkpoints ADD COLUMN step_completed INTEGER DEFAULT 1",
+            ),
+            (
                 "approval_gates",
                 "created_at",
                 "ALTER TABLE approval_gates ADD COLUMN created_at DATETIME",
@@ -193,6 +210,34 @@ def _migrate_db(conn) -> None:
                 SET approval_type = 'legacy'
                 WHERE approval_type IS NULL
             """))
+        _create_index_if_columns_exist(
+            conn,
+            "pipeline_runs",
+            "CREATE INDEX IF NOT EXISTS idx_pipeline_runs_project "
+            "ON pipeline_runs(project_id)",
+            ("project_id",),
+        )
+        _create_index_if_columns_exist(
+            conn,
+            "pipeline_runs",
+            "CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status "
+            "ON pipeline_runs(status)",
+            ("status",),
+        )
+        _create_index_if_columns_exist(
+            conn,
+            "chunks",
+            "CREATE INDEX IF NOT EXISTS idx_chunks_run_status "
+            "ON chunks(run_id, status)",
+            ("run_id", "status"),
+        )
+        _create_index_if_columns_exist(
+            conn,
+            "approval_gates",
+            "CREATE INDEX IF NOT EXISTS idx_approval_gates_run_status "
+            "ON approval_gates(run_id, approval_type, status)",
+            ("run_id", "approval_type", "status"),
+        )
         _ensure_file_index_shape(conn)
     except Exception as error:
         raise RuntimeError(f"database.py: Failed to run migrations: {error}")

@@ -52,22 +52,23 @@ def test_save_and_load_checkpoint():
     run_id = str(uuid.uuid4())
     cp = save_checkpoint(
         run_id=run_id,
-        step="plan",
+        step="test",
         output={"goal": "test goal"},
         handoff_contract={"handoff_from": "planner"},
         git_hash="abc123",
-        tests_passed=True
+        tests_passed=True,
+        step_completed=True,
     )
-    assert cp["step"] == "plan"
+    assert cp["step"] == "test"
 
     loaded = load_last_checkpoint(run_id)
     assert loaded is not None
-    assert loaded["step"] == "plan"
+    assert loaded["step"] == "test"
     assert loaded["git_commit_hash"] == "abc123"
     assert loaded["chunk_number"] == 0
 
 
-def test_checkpoint_fails_without_tests_passed():
+def test_checkpoint_fails_without_step_completed():
     run_id = str(uuid.uuid4())
     with pytest.raises(ValueError):
         save_checkpoint(
@@ -76,8 +77,27 @@ def test_checkpoint_fails_without_tests_passed():
             output={},
             handoff_contract={},
             git_hash="abc123",
-            tests_passed=False
+            tests_passed=False,
+            step_completed=False,
         )
+
+
+def test_non_test_checkpoint_does_not_set_tests_passed():
+    run_id = str(uuid.uuid4())
+    cp = save_checkpoint(
+        run_id=run_id,
+        step="plan",
+        output={"goal": "step test"},
+        handoff_contract={"handoff_from": "planner"},
+        git_hash="def456",
+        tests_passed=False,
+        step_completed=True,
+    )
+
+    assert cp["tests_passed"] is False
+    loaded = load_step_checkpoint(run_id, "plan")
+    assert loaded is not None
+    assert loaded["tests_passed"] == 0
 
 
 def test_load_step_checkpoint():
@@ -88,7 +108,8 @@ def test_load_step_checkpoint():
         output={"goal": "step test"},
         handoff_contract={"handoff_from": "planner"},
         git_hash="def456",
-        tests_passed=True
+        tests_passed=False,
+        step_completed=True,
     )
     loaded = load_step_checkpoint(run_id, "plan")
     assert loaded is not None
@@ -109,6 +130,7 @@ def test_checkpoint_chunk_number_persistence():
         handoff_contract={"handoff_from": "tester"},
         git_hash="chunk123",
         tests_passed=True,
+        step_completed=True,
         chunk_number=2
     )
     assert cp["chunk_number"] == 2
@@ -131,7 +153,8 @@ def test_legacy_chunk_checkpoint_still_loads():
         output={"goal": "legacy"},
         handoff_contract={"handoff_from": "planner"},
         git_hash="legacy123",
-        tests_passed=True
+        tests_passed=False,
+        step_completed=True,
     )
 
     loaded = load_chunk_step_checkpoint(run_id, 0, "plan")

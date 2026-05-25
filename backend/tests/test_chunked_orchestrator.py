@@ -295,7 +295,8 @@ def add_code_checkpoint(run_id: str, chunk_number: int):
         output=coder.model_dump(),
         handoff_contract=coder.model_dump(),
         git_hash="pre-patch",
-        tests_passed=True,
+        tests_passed=False,
+        step_completed=True,
         chunk_number=chunk_number,
     )
     return coder

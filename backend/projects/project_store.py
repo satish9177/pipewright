@@ -12,6 +12,7 @@ from pathlib import Path
 from sqlalchemy import text
 
 from backend.db.database import engine, init_db
+from backend.security.secrets import encrypt_secret
 
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,8 @@ def create_project(
         )
         now = datetime.now(timezone.utc).isoformat()
 
+        encrypted_github_token = encrypt_secret(github_token)
+
         init_db()
         with engine.connect() as conn:
             conn.execute(text("""
@@ -78,7 +81,7 @@ def create_project(
                 "test_command": test_command.strip(),
                 "branch": normalized_branch,
                 "description": description.strip() if description else "",
-                "github_token": github_token,
+                "github_token": encrypted_github_token,
                 "github_owner": github_owner,
                 "github_repo": github_repo,
                 "github_base_branch": normalized_base_branch,
@@ -150,7 +153,7 @@ def update_project(
         "test_command": test_command.strip() if test_command else project["test_command"],
         "branch": branch.strip() if branch else project["branch"],
         "description": description.strip() if description is not None else project.get("description", ""),
-        "github_token": github_token if github_token is not None else project.get("github_token"),
+        "github_token": encrypt_secret(github_token) if github_token is not None else project.get("github_token"),
         "github_owner": github_owner if github_owner is not None else project.get("github_owner"),
         "github_repo": github_repo if github_repo is not None else project.get("github_repo"),
         "github_base_branch": github_base_branch if github_base_branch is not None else project.get("github_base_branch", "pipewright-staging"),

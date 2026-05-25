@@ -10,6 +10,7 @@ string values, so this module must not introduce Enum serialization behavior.
 class RunStatus:
     RUNNING = "running"
     RUNNING_CHUNKS = "running_chunks"
+    INTERRUPTED = "interrupted"
     PAUSED = "paused"
     FAILED = "failed"
     REJECTED = "rejected"

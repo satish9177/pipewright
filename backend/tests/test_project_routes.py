@@ -9,10 +9,12 @@ import shutil
 from pathlib import Path
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from backend.main import app
 from backend.projects.project_store import get_project
+from backend.security.secrets import decrypt_secret
 
 pytestmark = pytest.mark.unit
 
@@ -45,7 +47,8 @@ def test_create_project_route(tmp_repo):
     assert data["has_github_token"] is False
 
 
-def test_create_project_with_github_token_sanitizes_response(tmp_repo):
+def test_create_project_with_github_token_sanitizes_response(tmp_repo, monkeypatch):
+    monkeypatch.setenv("PIPEWRIGHT_ENCRYPTION_KEY", Fernet.generate_key().decode())
     client = TestClient(app)
 
     response = client.post("/projects", json={
@@ -61,12 +64,15 @@ def test_create_project_with_github_token_sanitizes_response(tmp_repo):
     data = response.json()
     assert "github_token" not in data
     assert data["has_github_token"] is True
+    assert "secret-token" not in response.text
 
     stored_project = get_project(data["id"])
-    assert stored_project["github_token"] == "secret-token"
+    assert stored_project["github_token"] != "secret-token"
+    assert decrypt_secret(stored_project["github_token"]) == "secret-token"
 
 
-def test_get_project_sanitizes_github_token(tmp_repo):
+def test_get_project_sanitizes_github_token(tmp_repo, monkeypatch):
+    monkeypatch.setenv("PIPEWRIGHT_ENCRYPTION_KEY", Fernet.generate_key().decode())
     client = TestClient(app)
     create_response = client.post("/projects", json={
         "name": "Get Token Project",
@@ -82,6 +88,7 @@ def test_get_project_sanitizes_github_token(tmp_repo):
     data = response.json()
     assert "github_token" not in data
     assert data["has_github_token"] is True
+    assert "secret-token" not in response.text
 
 
 def test_get_project_without_token_returns_false_flag(tmp_repo):
@@ -101,7 +108,8 @@ def test_get_project_without_token_returns_false_flag(tmp_repo):
     assert data["has_github_token"] is False
 
 
-def test_list_projects_sanitizes_all_github_tokens(tmp_repo):
+def test_list_projects_sanitizes_all_github_tokens(tmp_repo, monkeypatch):
+    monkeypatch.setenv("PIPEWRIGHT_ENCRYPTION_KEY", Fernet.generate_key().decode())
     client = TestClient(app)
     client.post("/projects", json={
         "name": "List Token Project",
@@ -116,10 +124,12 @@ def test_list_projects_sanitizes_all_github_tokens(tmp_repo):
     projects = response.json()
     assert isinstance(projects, list)
     assert all("github_token" not in project for project in projects)
+    assert "secret-token" not in response.text
     assert any(project["has_github_token"] is True for project in projects)
 
 
-def test_update_project_sanitizes_github_token(tmp_repo):
+def test_update_project_sanitizes_github_token(tmp_repo, monkeypatch):
+    monkeypatch.setenv("PIPEWRIGHT_ENCRYPTION_KEY", Fernet.generate_key().decode())
     client = TestClient(app)
     create_response = client.post("/projects", json={
         "name": "Patch Token Project",
@@ -138,6 +148,7 @@ def test_update_project_sanitizes_github_token(tmp_repo):
     data = response.json()
     assert "github_token" not in data
     assert data["has_github_token"] is True
+    assert "updated-secret-token" not in response.text
 
 
 def test_project_create_rejects_empty_name(tmp_repo):

@@ -146,6 +146,7 @@ def run_tests(
                 handoff_contract=test_result.model_dump(),
                 git_hash=patch_result.post_patch_git_hash,
                 tests_passed=True,
+                step_completed=True,
                 chunk_number=chunk_number
             )
             print(f"[TESTER] Checkpoint saved | run_id={run_id}")

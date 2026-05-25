@@ -111,6 +111,12 @@ async def test_coder_429_retry_path_does_not_crash(monkeypatch, tmp_repo):
         sleeps.append(seconds)
 
     _patch_coder_dependencies(monkeypatch, model, tmp_repo)
+    checkpoint_calls = []
+    monkeypatch.setattr(
+        coder,
+        "save_checkpoint",
+        lambda **kwargs: checkpoint_calls.append(kwargs),
+    )
     monkeypatch.setattr(coder.asyncio, "sleep", fake_sleep)
 
     result = await run_coder(plan=plan, run_id=run_id)
@@ -119,6 +125,9 @@ async def test_coder_429_retry_path_does_not_crash(monkeypatch, tmp_repo):
     assert len(result.files_changed) == 1
     assert sleeps == [60]
     assert not hasattr(coder, "time")
+    assert checkpoint_calls[0]["step"] == "code"
+    assert checkpoint_calls[0]["tests_passed"] is False
+    assert checkpoint_calls[0]["step_completed"] is True
 
 
 @pytest.mark.unit

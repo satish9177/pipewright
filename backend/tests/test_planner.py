@@ -80,6 +80,12 @@ async def test_planner_429_retry_uses_asyncio_sleep(monkeypatch):
         sleeps.append(seconds)
 
     _patch_planner_dependencies(monkeypatch, model)
+    checkpoint_calls = []
+    monkeypatch.setattr(
+        planner,
+        "save_checkpoint",
+        lambda **kwargs: checkpoint_calls.append(kwargs),
+    )
     monkeypatch.setattr(planner.asyncio, "sleep", fake_sleep)
 
     result = await run_planner("Add ping endpoint", run_id)
@@ -87,6 +93,9 @@ async def test_planner_429_retry_uses_asyncio_sleep(monkeypatch):
     assert result.run_id == run_id
     assert sleeps == [60]
     assert not hasattr(planner, "time")
+    assert checkpoint_calls[0]["step"] == "plan"
+    assert checkpoint_calls[0]["tests_passed"] is False
+    assert checkpoint_calls[0]["step_completed"] is True
 
 
 @pytest.mark.unit
