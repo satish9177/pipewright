@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { runsApi, gatesApi, ApprovalGate } from '@/api/client'
+import type { ChunkPlanResponse, RunStatus } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -76,6 +77,32 @@ function getErrorMessage(error: unknown, fallback: string) {
   return fallback
 }
 
+function shouldPollRunStatus(status: RunStatus) {
+  return [
+    'running',
+    'running_chunks',
+    'paused',
+    'awaiting_chunk_plan_approval',
+    'awaiting_chunk_approval',
+    'awaiting_final_approval',
+    'pushing',
+  ].includes(status)
+}
+
+function shouldPollChunkPlan(plan: ChunkPlanResponse) {
+  if (plan.chunk_plan_status === 'awaiting_approval') return true
+  if (plan.chunk_plan_status !== 'approved') return false
+
+  return plan.chunks.some(chunk =>
+    [
+      'pending',
+      'running',
+      'failed',
+      'awaiting_chunk_approval',
+    ].includes(chunk.status)
+  )
+}
+
 export default function RunDetailPage() {
   const { runId } = useParams<{ runId: string }>()
   const navigate = useNavigate()
@@ -84,6 +111,16 @@ export default function RunDetailPage() {
   const [chunkPlanActionError, setChunkPlanActionError] = useState<string | null>(
     null
   )
+  const [chunkExecutionMessage, setChunkExecutionMessage] = useState<
+    string | null
+  >(null)
+  const [chunkExecutionError, setChunkExecutionError] = useState<string | null>(
+    null
+  )
+  const [chunkActionMessage, setChunkActionMessage] = useState<string | null>(
+    null
+  )
+  const [chunkActionError, setChunkActionError] = useState<string | null>(null)
 
   const { data: run } = useQuery({
     queryKey: ['run', runId],
@@ -92,7 +129,7 @@ export default function RunDetailPage() {
     refetchInterval: (query) => {
       const data = query.state.data
       if (!data) return 2000
-      return data.status === 'running' || data.status === 'paused'
+      return shouldPollRunStatus(data.status)
         ? 2000
         : false
     },
@@ -111,8 +148,8 @@ export default function RunDetailPage() {
     retry: false,
     refetchInterval: (query) => {
       const data = query.state.data
-      if (!data) return false
-      return data.chunk_plan_status === 'awaiting_approval' ? 2000 : false
+      if (!data) return 2000
+      return shouldPollChunkPlan(data) ? 2000 : false
     },
   })
 
@@ -140,6 +177,10 @@ export default function RunDetailPage() {
     mutationFn: () => runsApi.approveChunkPlan(runId!),
     onSuccess: () => {
       setChunkPlanActionError(null)
+      setChunkExecutionMessage(null)
+      setChunkExecutionError(null)
+      setChunkActionMessage(null)
+      setChunkActionError(null)
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
       queryClient.invalidateQueries({ queryKey: ['gates'] })
@@ -156,6 +197,10 @@ export default function RunDetailPage() {
       runsApi.rejectChunkPlan(runId!, reason || 'Chunk plan rejected by user'),
     onSuccess: () => {
       setChunkPlanActionError(null)
+      setChunkExecutionMessage(null)
+      setChunkExecutionError(null)
+      setChunkActionMessage(null)
+      setChunkActionError(null)
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
       queryClient.invalidateQueries({ queryKey: ['gates'] })
@@ -164,6 +209,93 @@ export default function RunDetailPage() {
       setChunkPlanActionError(
         getErrorMessage(error, 'Failed to reject chunk plan.')
       )
+    },
+  })
+
+  const executeChunksMutation = useMutation({
+    mutationFn: () => runsApi.executeChunks(runId!),
+    onSuccess: (response) => {
+      setChunkExecutionMessage(
+        response.message || 'Chunk execution started.'
+      )
+      setChunkExecutionError(null)
+      setChunkActionMessage(null)
+      setChunkActionError(null)
+      queryClient.invalidateQueries({ queryKey: ['run', runId] })
+      queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+      queryClient.invalidateQueries({ queryKey: ['gates'] })
+    },
+    onError: (error: unknown) => {
+      setChunkExecutionMessage(null)
+      setChunkExecutionError(
+        getErrorMessage(error, 'Failed to execute chunks.')
+      )
+    },
+  })
+
+  const resumeChunksMutation = useMutation({
+    mutationFn: () => runsApi.resumeChunks(runId!),
+    onSuccess: (response) => {
+      setChunkExecutionMessage(response.message || 'Chunked run resumed.')
+      setChunkExecutionError(null)
+      setChunkActionMessage(null)
+      setChunkActionError(null)
+      queryClient.invalidateQueries({ queryKey: ['run', runId] })
+      queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+      queryClient.invalidateQueries({ queryKey: ['gates'] })
+    },
+    onError: (error: unknown) => {
+      setChunkExecutionMessage(null)
+      setChunkExecutionError(getErrorMessage(error, 'Failed to resume run.'))
+    },
+  })
+
+  const approveChunkMutation = useMutation({
+    mutationFn: (chunkNumber: number) => runsApi.approveChunk(runId!, chunkNumber),
+    onSuccess: (response, chunkNumber) => {
+      setChunkActionMessage(
+        response.message || `Chunk ${chunkNumber} approved.`
+      )
+      setChunkActionError(null)
+      setChunkExecutionMessage(null)
+      setChunkExecutionError(null)
+      queryClient.invalidateQueries({ queryKey: ['run', runId] })
+      queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+      queryClient.invalidateQueries({ queryKey: ['gates'] })
+    },
+    onError: (error: unknown) => {
+      setChunkActionMessage(null)
+      setChunkActionError(getErrorMessage(error, 'Failed to approve chunk.'))
+    },
+  })
+
+  const rejectChunkMutation = useMutation({
+    mutationFn: ({
+      chunkNumber,
+      reason,
+    }: {
+      chunkNumber: number
+      reason: string
+    }) =>
+      runsApi.rejectChunk(
+        runId!,
+        chunkNumber,
+        reason || 'Chunk rejected by user'
+      ),
+    onSuccess: (response, variables) => {
+      setChunkActionMessage(
+        response.message || `Chunk ${variables.chunkNumber} rejected.`
+      )
+      setChunkActionError(null)
+      setChunkExecutionMessage(null)
+      setChunkExecutionError(null)
+      queryClient.invalidateQueries({ queryKey: ['run', runId] })
+      queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+      queryClient.invalidateQueries({ queryKey: ['gates'] })
+    },
+    onError: (error: unknown) => {
+      setChunkActionMessage(null)
+      setChunkActionError(getErrorMessage(error, 'Failed to reject chunk.'))
     },
   })
 
@@ -177,6 +309,7 @@ export default function RunDetailPage() {
 
   const showEventLog =
     run.status === 'running' ||
+    run.status === 'running_chunks' ||
     run.status === 'awaiting_chunk_approval' ||
     run.status === 'awaiting_final_approval' ||
     events.length > 0
@@ -212,9 +345,27 @@ export default function RunDetailPage() {
           plan={chunkPlan}
           isApproving={approveChunkPlanMutation.isPending}
           isRejecting={rejectChunkPlanMutation.isPending}
+          isExecuting={executeChunksMutation.isPending}
+          isResuming={resumeChunksMutation.isPending}
+          approvingChunkNumber={approveChunkMutation.variables ?? null}
+          rejectingChunkNumber={
+            rejectChunkMutation.variables?.chunkNumber ?? null
+          }
           error={chunkPlanActionError}
+          executionMessage={chunkExecutionMessage}
+          executionError={chunkExecutionError}
+          chunkActionMessage={chunkActionMessage}
+          chunkActionError={chunkActionError}
           onApprove={() => approveChunkPlanMutation.mutate()}
           onReject={(reason) => rejectChunkPlanMutation.mutate(reason)}
+          onExecute={() => executeChunksMutation.mutate()}
+          onResume={() => resumeChunksMutation.mutate()}
+          onApproveChunk={(chunkNumber) =>
+            approveChunkMutation.mutate(chunkNumber)
+          }
+          onRejectChunk={(chunkNumber, reason) =>
+            rejectChunkMutation.mutate({ chunkNumber, reason })
+          }
         />
       )}
 
