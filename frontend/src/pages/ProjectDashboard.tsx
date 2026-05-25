@@ -13,6 +13,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import RunStatusBadge from '@/components/RunStatusBadge'
+import ProjectSettingsPanel from '@/components/ProjectSettingsPanel'
 
 export default function ProjectDashboard() {
   const { projectId } = useParams<{ projectId: string }>()
@@ -101,6 +102,8 @@ export default function ProjectDashboard() {
           All Projects
         </Button>
       </div>
+
+      <ProjectSettingsPanel project={project} />
 
       <Card className="mb-6">
         <CardHeader>

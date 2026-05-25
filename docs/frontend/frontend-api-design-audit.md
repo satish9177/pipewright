@@ -73,6 +73,22 @@ the gate status badge while preserving existing approve/reject behavior.
 Project edit/GitHub credential UI, broader design polish, and frontend
 smoke/release notes remain future frontend work.
 
+## FE-7 Update
+
+Phase 2D-FE-7 added a ProjectDashboard settings panel for editing project
+metadata and GitHub PR configuration. The panel displays `repo_path`,
+`test_command`, `branch`, `github_owner`, `github_repo`,
+`github_base_branch`, and a token configured badge from `has_github_token`.
+It updates project settings through `projectsApi.update`.
+
+The GitHub token input is always blank, uses "Leave blank to keep existing
+token" copy, and only sends `github_token` in PATCH when the user enters a
+non-empty replacement. Stored tokens are never displayed or expected from API
+responses.
+
+Broader design polish, Live Log readability polish, and frontend smoke/release
+notes remain future frontend work.
+
 ## Current Frontend API Functions and Backend Route Mapping
 
 | Backend route | Frontend mapping | Status |
@@ -81,7 +97,7 @@ smoke/release notes remain future frontend work.
 | `POST /projects` | `projectsApi.create` | Present |
 | `GET /projects` | `projectsApi.list` | Present |
 | `GET /projects/{project_id}` | `projectsApi.get` | Present |
-| `PATCH /projects/{project_id}` | `projectsApi.update` | Present API helper, no edit UI found |
+| `PATCH /projects/{project_id}` | `projectsApi.update` | Present in ProjectDashboard settings panel |
 | `POST /run` | `runsApi.start` | Present, legacy single-run flow |
 | `GET /runs` | `runsApi.list` | Present |
 | `GET /runs/{run_id}` | `runsApi.get` | Present |
@@ -168,9 +184,10 @@ smoke/release notes remain future frontend work.
   `final_approved` and retry after `push_failed`.
 - Fixed in FE-4: `RunDetailPage` now displays PR result/failure fields:
   `pr_url`, `pr_number`, `branch_name`, and `push_error`.
-- No project edit screen for adding/updating GitHub credentials after project
-  creation, even though `projectsApi.update` exists.
-- No token configured indicator based on `has_github_token`.
+- Fixed in FE-7: `ProjectDashboard` now has project edit and GitHub credential
+  UI backed by `projectsApi.update`.
+- Fixed in FE-7: Project settings show a token configured badge based on
+  `has_github_token` without displaying `github_token`.
 - No explicit lock-conflict UI for HTTP 409 responses from repo-mutating routes.
 - No request validation feedback polish for 422 errors from Pydantic limits.
 
@@ -261,11 +278,10 @@ polling too early for chunked statuses such as `running_chunks`, `pushing`,
 
 ## Recommended Implementation Order
 
-1. Add project edit/GitHub credential UI and display `has_github_token`.
-2. Clean up remaining encoding artifacts and consolidate shared visual
+1. Clean up remaining encoding artifacts and consolidate shared visual
    components.
-3. Polish Live Log readability and deployment-aware connection state.
-4. Add frontend smoke/release notes for the chunked run UI flow.
+2. Polish Live Log readability and deployment-aware connection state.
+3. Add frontend smoke/release notes for the chunked run UI flow.
 
 ## Validation Results
 
