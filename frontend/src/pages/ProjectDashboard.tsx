@@ -86,13 +86,19 @@ export default function ProjectDashboard() {
   }
 
   return (
-    <div className="max-w-3xl">
-      <div className="flex items-center justify-between mb-6">
+    <div className="mx-auto max-w-5xl px-6 py-6">
+      <div className="mb-6 flex items-start justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold">{project.name}</h2>
           <p className="text-xs text-muted-foreground font-mono mt-1">
             {project.repo_path}
           </p>
+          {!project.has_github_token && (
+            <p className="mt-2 text-sm text-yellow-700">
+              GitHub token is not configured. Push/create PR will need project
+              GitHub settings before it can succeed.
+            </p>
+          )}
         </div>
         <Button
           variant="outline"
@@ -121,14 +127,16 @@ export default function ProjectDashboard() {
               placeholder="Add a GET /ping endpoint that returns status ok and current timestamp..."
               value={feature}
               onChange={e => setFeature(e.target.value)}
-              rows={4}
+              rows={5}
               className="resize-none"
             />
             {submitError && (
-              <p className="text-red-500 text-sm">{submitError}</p>
+              <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+                {submitError}
+              </div>
             )}
             {lastRunId && (
-              <p className="text-sm text-muted-foreground">
+              <p className="rounded border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
                 Chunked run created.{' '}
                 <button
                   className="underline text-primary"
@@ -141,6 +149,7 @@ export default function ProjectDashboard() {
             <Button
               onClick={() => runMutation.mutate()}
               disabled={!feature.trim() || runMutation.isPending}
+              className="w-fit"
             >
               {runMutation.isPending ? 'Creating...' : 'Create Chunked Run'}
             </Button>
@@ -149,11 +158,21 @@ export default function ProjectDashboard() {
       </Card>
 
       <div>
-        <h3 className="font-semibold mb-3">Recent Runs</h3>
-        {projectRuns.length === 0 && (
-          <p className="text-muted-foreground text-sm">
-            No runs yet. Submit a feature above.
+        <div className="mb-3">
+          <h3 className="font-semibold">Recent Runs</h3>
+          <p className="text-xs text-muted-foreground">
+            Existing legacy and chunked runs remain available here.
           </p>
+        </div>
+        {projectRuns.length === 0 && (
+          <Card className="border-dashed">
+            <CardContent className="py-6">
+              <p className="text-sm font-medium">No runs yet</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Describe a feature above to create the first chunked run.
+              </p>
+            </CardContent>
+          </Card>
         )}
         <div className="grid gap-2">
           {projectRuns.map((run: PipelineRun) => (
@@ -169,7 +188,7 @@ export default function ProjectDashboard() {
                   </p>
                   <div className="flex items-center gap-3 shrink-0">
                     <span className="text-xs text-muted-foreground">
-                      {run.current_step}
+                      {run.current_step || 'not started'}
                     </span>
                     <RunStatusBadge status={run.status} />
                   </div>
