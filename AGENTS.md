@@ -95,14 +95,14 @@ Phase 2C - Live logs complete.
 
 ## Current Known Risks
 
-- Project API responses may still expose `github_token`. This is the top Phase 2D risk.
-- Chunk execution does not yet have project/repo-level execution locking.
-- Planner/coder retry paths may still contain async sleep bugs.
-- Large user inputs need request validation and limits.
-- Logging is still mostly `print()` calls.
-- Status strings are not centralized and are easy to mistype.
-- `main.py` still owns too many routes.
-- WebSocket allowed origins are hardcoded.
+- Project GitHub tokens are still stored internally and are not encrypted yet,
+  though project APIs no longer return them.
+- Project/repo execution locking is in-process only and does not protect
+  multiple API processes or instances.
+- SQLite is still local/single-instance oriented.
+- Event bus and Live Log buffers are in-memory and non-durable.
+- Logging still has many pipeline/operator-visible `print()` calls.
+- `main.py` still owns run and gate routes.
 - Raw SQL is spread across modules.
 - Checkpoint naming is historical and needs semantic cleanup later.
 

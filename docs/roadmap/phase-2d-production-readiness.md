@@ -10,6 +10,11 @@ state handling, and fewer production footguns.
 
 Phase 2D should not add major new product capability. It should reduce risk.
 
+## Completion Note
+
+Phase 2D is complete. The final release notes are in
+`docs/releases/phase-2d-production-readiness.md`.
+
 ## P0 Priorities
 
 1. Stop returning `github_token` from project API responses.
