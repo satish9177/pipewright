@@ -1,17 +1,16 @@
 """
 test_planner.py
 Tests for planner.py pipeline stage.
-Requires GEMINI_API_KEY in .env to run.
-These tests make real API calls.
+Mocked unit tests are fast and local.
+API-marked tests make real Gemini calls.
 """
 import uuid
 import pytest
 from types import SimpleNamespace
+from backend.config.keys import settings
 from backend.memory.memory_store import add_fact
 from backend.pipeline.planner import run_planner
 from backend.pipeline import planner
-
-pytestmark = pytest.mark.api
 
 
 def _planner_response(run_id: str):
@@ -62,6 +61,11 @@ def _patch_planner_dependencies(monkeypatch, model):
     )
 
 
+def _skip_without_gemini_key():
+    if not settings.gemini_api_key:
+        pytest.skip("GEMINI_API_KEY is required for live Gemini test")
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_planner_429_retry_uses_asyncio_sleep(monkeypatch):
@@ -105,8 +109,11 @@ async def test_planner_429_retry_failure_raises_runtime_error(monkeypatch):
 
     assert "planner.py: Failed after rate limit retry" in str(error.value)
 
+
+@pytest.mark.api
 @pytest.mark.asyncio
 async def test_planner_returns_valid_handoff():
+    _skip_without_gemini_key()
     add_fact(
         "Tech stack: Python 3.11 FastAPI backend",
         "test", "founder"
@@ -142,8 +149,10 @@ async def test_planner_returns_valid_handoff():
     assert result.goal and len(result.goal) > 10
 
 
+@pytest.mark.api
 @pytest.mark.asyncio
 async def test_planner_works_with_no_memory():
+    _skip_without_gemini_key()
     run_id = str(uuid.uuid4())
     feature = "Add a simple ping endpoint that returns pong"
 
