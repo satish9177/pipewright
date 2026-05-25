@@ -26,6 +26,10 @@ from backend.projects.project_store import (
     list_projects as list_stored_projects,
     update_project,
 )
+from backend.projects.project_responses import (
+    sanitize_project_list_response,
+    sanitize_project_response,
+)
 from backend.routes.chunks import router as chunks_router
 from backend.routes.ws_events import router as ws_events_router
 
@@ -80,7 +84,7 @@ def health():
 @app.post("/projects")
 def create_project_route(request: ProjectCreate):
     try:
-        return create_project(
+        project = create_project(
             name=request.name,
             repo_path=request.repo_path,
             test_command=request.test_command,
@@ -91,13 +95,14 @@ def create_project_route(request: ProjectCreate):
             github_repo=request.github_repo,
             github_base_branch=request.github_base_branch,
         )
+        return sanitize_project_response(project)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
 
 
 @app.get("/projects")
 def list_projects_route():
-    return list_stored_projects()
+    return sanitize_project_list_response(list_stored_projects())
 
 
 @app.get("/projects/{project_id}")
@@ -105,7 +110,7 @@ def get_project_route(project_id: str):
     project = get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    return project
+    return sanitize_project_response(project)
 
 
 @app.patch("/projects/{project_id}")
@@ -136,7 +141,7 @@ def update_project_endpoint(
             status_code=404,
             detail="Project not found"
         )
-    return project
+    return sanitize_project_response(project)
 
 
 @app.post("/run")
