@@ -48,6 +48,16 @@ based on the sanitized project response without exposing `github_token`.
 Chunked run creation, richer status badges, approval queue classification, and
 broader design polish remain future frontend work.
 
+## FE-5 Update
+
+ProjectDashboard now creates new feature requests through the chunked run flow
+with `runsApi.createChunkedRun`, then navigates directly to `RunDetailPage` for
+chunk plan review. The legacy `/run` helper remains in the API client for older
+flows and existing run viewing remains supported.
+
+Richer status badges, approval queue classification, project edit/GitHub
+credential UI, and broader design polish remain future frontend work.
+
 ## Current Frontend API Functions and Backend Route Mapping
 
 | Backend route | Frontend mapping | Status |
@@ -64,7 +74,7 @@ broader design polish remain future frontend work.
 | `GET /gates/{gate_id}` | `gatesApi.get` | Present API helper, not clearly used |
 | `POST /gates/{gate_id}/approve` | `gatesApi.approve` | Present legacy approval flow |
 | `POST /gates/{gate_id}/reject` | `gatesApi.reject` | Present legacy approval flow |
-| `POST /runs/chunked` | `runsApi.createChunkedRun` | API helper present; UI flow missing |
+| `POST /runs/chunked` | `runsApi.createChunkedRun` | Present in ProjectDashboard create flow |
 | `GET /runs/{run_id}/chunks` | `runsApi.getRunChunks` | Present in RunDetail chunk plan panel |
 | `POST /runs/{run_id}/chunks/approve` | `runsApi.approveChunkPlan` | Present in RunDetail chunk plan panel |
 | `POST /runs/{run_id}/chunks/reject` | `runsApi.rejectChunkPlan` | Present in RunDetail chunk plan panel |
@@ -79,10 +89,9 @@ broader design polish remain future frontend work.
 
 ## Mismatched or Outdated API Calls
 
-- `ProjectDashboard` still starts work through `runsApi.start`, which calls the
-  legacy `POST /run` endpoint. Current backend capability centers on chunked
-  planning via `POST /runs/chunked`, chunk plan approval, chunk execution,
-  final approval, and push/PR.
+- Fixed in FE-5: `ProjectDashboard` starts new work through
+  `runsApi.createChunkedRun`, which calls `POST /runs/chunked`, then navigates
+  to run detail for chunk plan review.
 - `RunDetailPage` uses legacy gate endpoints for approvals. It does not use the
   chunk plan approval/rejection routes, per-chunk approval/rejection routes, or
   final approval routes.
@@ -125,8 +134,8 @@ broader design polish remain future frontend work.
 
 ## Missing UI Support for Backend Features
 
-- No chunked run creation UI. The primary project dashboard still offers the
-  legacy single-run submit path.
+- Fixed in FE-5: `ProjectDashboard` now creates chunked runs instead of using
+  the legacy single-run submit path.
 - Fixed in FE-2: `RunDetailPage` now shows chunk plan review details, including
   chunk definitions, dependency order, risk level, token estimates, files
   expected, and plan approve/reject controls.
@@ -246,13 +255,11 @@ polling too early for chunked statuses such as `running_chunks`, `pushing`,
 1. Add status coverage:
    expand `RunStatusBadge`, add chunk/plan badge helpers, and update polling
    conditions for current backend statuses.
-2. Add chunked run creation from `ProjectDashboard` using `POST /runs/chunked`.
-   Decide whether the legacy `/run` flow remains visible.
-3. Update `ApprovalQueuePage` to classify approval types and route users to the
+2. Update `ApprovalQueuePage` to classify approval types and route users to the
    right run/chunk action.
-4. Add project edit/GitHub credential UI and display `has_github_token`.
-5. Clean up encoding artifacts and consolidate shared visual components.
-6. Polish Live Log readability and deployment-aware connection state.
+3. Add project edit/GitHub credential UI and display `has_github_token`.
+4. Clean up encoding artifacts and consolidate shared visual components.
+5. Polish Live Log readability and deployment-aware connection state.
 
 ## Validation Results
 
