@@ -1,8 +1,8 @@
 """
 test_coder.py
 Tests for coder.py pipeline stage.
-Requires GEMINI_API_KEY in .env to run.
-These tests make real API calls.
+Mocked unit tests are fast and local.
+API-marked tests make real Gemini calls.
 The target repo is ai-workflow-platform.
 Coder reads files from there but never writes.
 """
@@ -10,12 +10,12 @@ Coder reads files from there but never writes.
 import uuid
 import pytest
 from types import SimpleNamespace
+from backend.config.keys import settings
 from backend.memory.memory_store import add_fact
 from backend.models.handoff import PlannerHandoff
 from backend.pipeline.coder import run_coder
 from backend.pipeline import coder
 
-pytestmark = pytest.mark.api
 
 def make_test_plan(run_id: str) -> PlannerHandoff:
     return PlannerHandoff(
@@ -37,6 +37,11 @@ def make_test_plan(run_id: str) -> PlannerHandoff:
         risks=["main.py may not exist in target repo"],
         suggested_memory_entries=[]
     )
+
+
+def _skip_without_gemini_key():
+    if not settings.gemini_api_key:
+        pytest.skip("GEMINI_API_KEY is required for live Gemini test")
 
 
 def _coder_response(run_id: str):
@@ -139,8 +144,10 @@ async def test_coder_429_retry_failure_raises_runtime_error(monkeypatch, tmp_rep
     assert "coder.py: Failed after rate limit retry" in str(error.value)
 
 
+@pytest.mark.api
 @pytest.mark.asyncio
 async def test_coder_returns_valid_handoff():
+    _skip_without_gemini_key()
     add_fact(
         "Tech stack: Python FastAPI",
         "test", "founder"
@@ -166,8 +173,10 @@ async def test_coder_returns_valid_handoff():
             assert len(fc.content) > 0
 
 
+@pytest.mark.api
 @pytest.mark.asyncio
 async def test_coder_handles_missing_files_gracefully():
+    _skip_without_gemini_key()
     run_id = str(uuid.uuid4())
 
     plan = PlannerHandoff(
