@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { runsApi, gatesApi, ApprovalGate } from '@/api/client'
+import { runsApi, gatesApi, projectsApi, ApprovalGate } from '@/api/client'
 import type { ChunkPlanResponse, RunStatus } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import {
@@ -15,6 +15,8 @@ import { Separator } from '@/components/ui/separator'
 import RunStatusBadge from '@/components/RunStatusBadge'
 import EventLog from '@/components/EventLog'
 import ChunkPlanPanel from '@/components/ChunkPlanPanel'
+import FinalApprovalPanel from '@/components/FinalApprovalPanel'
+import PushPrPanel from '@/components/PushPrPanel'
 import useRunEvents from '@/hooks/useRunEvents'
 
 const STEPS = ['plan', 'code', 'patch', 'test', 'approval', 'github_pr']
@@ -103,6 +105,24 @@ function shouldPollChunkPlan(plan: ChunkPlanResponse) {
   )
 }
 
+function shouldShowPushPrPanel(status: RunStatus, hasPrData: boolean) {
+  return (
+    hasPrData ||
+    status === 'final_approved' ||
+    status === 'pushing' ||
+    status === 'push_failed'
+  )
+}
+
+function isPendingFinalGate(gate: ApprovalGate, runId: string) {
+  return (
+    gate.run_id === runId &&
+    gate.approval_type === 'final' &&
+    gate.chunk_number === 0 &&
+    gate.status === 'pending'
+  )
+}
+
 export default function RunDetailPage() {
   const { runId } = useParams<{ runId: string }>()
   const navigate = useNavigate()
@@ -121,6 +141,14 @@ export default function RunDetailPage() {
     null
   )
   const [chunkActionError, setChunkActionError] = useState<string | null>(null)
+  const [finalApprovalMessage, setFinalApprovalMessage] = useState<
+    string | null
+  >(null)
+  const [finalApprovalError, setFinalApprovalError] = useState<string | null>(
+    null
+  )
+  const [pushPrMessage, setPushPrMessage] = useState<string | null>(null)
+  const [pushPrError, setPushPrError] = useState<string | null>(null)
 
   const { data: run } = useQuery({
     queryKey: ['run', runId],
@@ -135,7 +163,7 @@ export default function RunDetailPage() {
     },
   })
 
-  const { data: gates } = useQuery({
+  const { data: gates, isLoading: gatesLoading } = useQuery({
     queryKey: ['gates'],
     queryFn: gatesApi.list,
     refetchInterval: run?.status === 'paused' ? 2000 : false,
@@ -153,8 +181,21 @@ export default function RunDetailPage() {
     },
   })
 
+  const { data: project } = useQuery({
+    queryKey: ['project', run?.project_id],
+    queryFn: () => projectsApi.get(run!.project_id!),
+    enabled: !!run?.project_id,
+  })
+
+  const pendingFinalGate = gates?.find(
+    (gate: ApprovalGate) => runId ? isPendingFinalGate(gate, runId) : false
+  )
+
   const pendingGate = gates?.find(
-    (g: ApprovalGate) => g.run_id === runId && g.status === 'pending'
+    (g: ApprovalGate) =>
+      g.run_id === runId &&
+      g.status === 'pending' &&
+      !isPendingFinalGate(g, runId!)
   )
 
   const approveMutation = useMutation({
@@ -299,6 +340,67 @@ export default function RunDetailPage() {
     },
   })
 
+  const approveFinalApprovalMutation = useMutation({
+    mutationFn: () => runsApi.approveFinalApproval(runId!),
+    onSuccess: () => {
+      setFinalApprovalMessage('Final approval accepted.')
+      setFinalApprovalError(null)
+      setPushPrMessage(null)
+      setPushPrError(null)
+      queryClient.invalidateQueries({ queryKey: ['run', runId] })
+      queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+      queryClient.invalidateQueries({ queryKey: ['gates'] })
+    },
+    onError: (error: unknown) => {
+      setFinalApprovalMessage(null)
+      setFinalApprovalError(
+        getErrorMessage(error, 'Failed to approve final approval.')
+      )
+    },
+  })
+
+  const rejectFinalApprovalMutation = useMutation({
+    mutationFn: (reason: string) =>
+      runsApi.rejectFinalApproval(
+        runId!,
+        reason || 'Final approval rejected by user'
+      ),
+    onSuccess: () => {
+      setFinalApprovalMessage('Final approval rejected.')
+      setFinalApprovalError(null)
+      setPushPrMessage(null)
+      setPushPrError(null)
+      queryClient.invalidateQueries({ queryKey: ['run', runId] })
+      queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+      queryClient.invalidateQueries({ queryKey: ['gates'] })
+    },
+    onError: (error: unknown) => {
+      setFinalApprovalMessage(null)
+      setFinalApprovalError(
+        getErrorMessage(error, 'Failed to reject final approval.')
+      )
+    },
+  })
+
+  const pushPrMutation = useMutation({
+    mutationFn: () => runsApi.pushPr(runId!),
+    onSuccess: (response) => {
+      setPushPrMessage(
+        response.pr_url
+          ? `Pull request created: ${response.pr_url}`
+          : 'Push/PR operation completed.'
+      )
+      setPushPrError(null)
+      queryClient.invalidateQueries({ queryKey: ['run', runId] })
+      queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+      queryClient.invalidateQueries({ queryKey: ['gates'] })
+    },
+    onError: (error: unknown) => {
+      setPushPrMessage(null)
+      setPushPrError(getErrorMessage(error, 'Failed to push/create PR.'))
+    },
+  })
+
   if (!run) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -313,6 +415,9 @@ export default function RunDetailPage() {
     run.status === 'awaiting_chunk_approval' ||
     run.status === 'awaiting_final_approval' ||
     events.length > 0
+  const hasPrData = Boolean(run.pr_url || run.pr_number || run.push_error)
+  const showFinalApprovalPanel = run.status === 'awaiting_final_approval'
+  const showPushPrPanel = shouldShowPushPrPanel(run.status, hasPrData)
 
   return (
     <div className="max-w-3xl">
@@ -441,6 +546,31 @@ export default function RunDetailPage() {
         </Card>
       )}
 
+      {showFinalApprovalPanel && (
+        <FinalApprovalPanel
+          run={run}
+          hasPendingFinalGate={Boolean(pendingFinalGate)}
+          isCheckingFinalGate={gatesLoading}
+          isApproving={approveFinalApprovalMutation.isPending}
+          isRejecting={rejectFinalApprovalMutation.isPending}
+          message={finalApprovalMessage}
+          error={finalApprovalError}
+          onApprove={() => approveFinalApprovalMutation.mutate()}
+          onReject={(reason) => rejectFinalApprovalMutation.mutate(reason)}
+        />
+      )}
+
+      {showPushPrPanel && (
+        <PushPrPanel
+          run={run}
+          project={project}
+          isPushing={pushPrMutation.isPending}
+          message={pushPrMessage}
+          error={pushPrError}
+          onPush={() => pushPrMutation.mutate()}
+        />
+      )}
+
       {run.status === 'complete' && (
         <Card className="mb-4 border-green-500">
           <CardContent className="py-4">
@@ -467,7 +597,7 @@ export default function RunDetailPage() {
         </Card>
       )}
 
-      {run.status === 'rejected' && (
+      {(run.status === 'rejected' || run.status === 'final_rejected') && (
         <Card className="mb-4 border-gray-400">
           <CardContent className="py-4">
             <p className="text-sm font-medium text-gray-500">

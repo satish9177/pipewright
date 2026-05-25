@@ -36,6 +36,18 @@ refetches run and chunk plan state after each successful action.
 
 Final approval and push/PR controls remain future frontend work.
 
+## FE-4 Update
+
+Phase 2D-FE-4 added final approval and push/PR panels to `RunDetailPage`.
+Run detail now uses `runsApi.approveFinalApproval`,
+`runsApi.rejectFinalApproval`, and `runsApi.pushPr`, then refetches run,
+chunk plan, and gate state after successful actions. The PR panel displays
+branch name, PR URL, PR number, push errors, and a GitHub configuration warning
+based on the sanitized project response without exposing `github_token`.
+
+Chunked run creation, richer status badges, approval queue classification, and
+broader design polish remain future frontend work.
+
 ## Current Frontend API Functions and Backend Route Mapping
 
 | Backend route | Frontend mapping | Status |
@@ -60,9 +72,9 @@ Final approval and push/PR controls remain future frontend work.
 | `POST /runs/{run_id}/chunks/resume` | `runsApi.resumeChunks` | Present in RunDetail chunk plan panel |
 | `POST /runs/{run_id}/chunks/{chunk_number}/approve` | `runsApi.approveChunk` | Present in RunDetail high-risk chunk controls |
 | `POST /runs/{run_id}/chunks/{chunk_number}/reject` | `runsApi.rejectChunk` | Present in RunDetail high-risk chunk controls |
-| `POST /runs/{run_id}/final-approval/approve` | `runsApi.approveFinalApproval` | API helper present; UI flow missing |
-| `POST /runs/{run_id}/final-approval/reject` | `runsApi.rejectFinalApproval` | API helper present; UI flow missing |
-| `POST /runs/{run_id}/push-pr` | `runsApi.pushPr` | API helper present; UI flow missing |
+| `POST /runs/{run_id}/final-approval/approve` | `runsApi.approveFinalApproval` | Present in RunDetail final approval panel |
+| `POST /runs/{run_id}/final-approval/reject` | `runsApi.rejectFinalApproval` | Present in RunDetail final approval panel |
+| `POST /runs/{run_id}/push-pr` | `runsApi.pushPr` | Present in RunDetail PR panel |
 | `WS /ws/runs/{run_id}/events` | `useRunEvents` | Present and path matches backend |
 
 ## Mismatched or Outdated API Calls
@@ -125,11 +137,12 @@ Final approval and push/PR controls remain future frontend work.
 - Remaining: high-risk chunk approval could still be enriched with changed
   files, checkpoint state, and rollback consequence once the backend exposes or
   links those details.
-- No final approval action using `/runs/{run_id}/final-approval/approve` or
-  `/runs/{run_id}/final-approval/reject`.
-- No push/create PR control using `/runs/{run_id}/push-pr`.
-- No PR result display for `pr_url`, `pr_number`, `branch_name`, or
-  `push_error`.
+- Fixed in FE-4: `RunDetailPage` now exposes final approval approve/reject
+  controls when a run is `awaiting_final_approval`.
+- Fixed in FE-4: `RunDetailPage` now exposes push/create PR controls for
+  `final_approved` and retry after `push_failed`.
+- Fixed in FE-4: `RunDetailPage` now displays PR result/failure fields:
+  `pr_url`, `pr_number`, `branch_name`, and `push_error`.
 - No project edit screen for adding/updating GitHub credentials after project
   creation, even though `projectsApi.update` exists.
 - No token configured indicator based on `has_github_token`.
@@ -234,14 +247,12 @@ polling too early for chunked statuses such as `running_chunks`, `pushing`,
    expand `RunStatusBadge`, add chunk/plan badge helpers, and update polling
    conditions for current backend statuses.
 2. Add chunked run creation from `ProjectDashboard` using `POST /runs/chunked`.
-   Keep the legacy `/run` flow only if intentionally still supported.
-3. Continue the `RunDetailPage` chunked lifecycle work:
-   final approval and push PR.
-4. Update `ApprovalQueuePage` to classify approval types and route users to the
+   Decide whether the legacy `/run` flow remains visible.
+3. Update `ApprovalQueuePage` to classify approval types and route users to the
    right run/chunk action.
-5. Add project edit/GitHub credential UI and display `has_github_token`.
-6. Clean up encoding artifacts and consolidate shared visual components.
-7. Polish Live Log readability and deployment-aware connection state.
+4. Add project edit/GitHub credential UI and display `has_github_token`.
+5. Clean up encoding artifacts and consolidate shared visual components.
+6. Polish Live Log readability and deployment-aware connection state.
 
 ## Validation Results
 
