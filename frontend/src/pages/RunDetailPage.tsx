@@ -20,10 +20,10 @@ function StepIndicator({
   currentStep,
   status,
 }: {
-  currentStep: string
+  currentStep: string | null
   status: string
 }) {
-  const currentIndex = STEPS.indexOf(currentStep)
+  const currentIndex = currentStep ? STEPS.indexOf(currentStep) : -1
 
   return (
     <div className="flex items-center gap-1 mb-6 flex-wrap">
