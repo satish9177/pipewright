@@ -38,18 +38,33 @@ export default function ProjectDashboard() {
     (r: PipelineRun) => r.project_id === projectId
   ) ?? []
 
+  function getSubmitError(error: unknown) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'response' in error
+    ) {
+      const response = (error as { response?: { data?: { detail?: unknown } } })
+        .response
+      if (typeof response?.data?.detail === 'string') {
+        return response.data.detail
+      }
+    }
+
+    return 'Failed to create chunked run'
+  }
+
   const runMutation = useMutation({
-    mutationFn: () => runsApi.start(projectId!, feature),
+    mutationFn: () => runsApi.createChunkedRun(projectId!, feature),
     onSuccess: (data) => {
       setLastRunId(data.run_id)
       setFeature('')
       setSubmitError(null)
       queryClient.invalidateQueries({ queryKey: ['runs'] })
+      navigate(`/runs/${data.run_id}`)
     },
-    onError: (err: any) => {
-      setSubmitError(
-        err.response?.data?.detail ?? 'Failed to start pipeline'
-      )
+    onError: (error: unknown) => {
+      setSubmitError(getSubmitError(error))
     },
   })
 
@@ -89,9 +104,10 @@ export default function ProjectDashboard() {
 
       <Card className="mb-6">
         <CardHeader>
-          <CardTitle className="text-base">Run Pipeline</CardTitle>
+          <CardTitle className="text-base">Create Chunked Run</CardTitle>
           <CardDescription>
-            Describe the feature you want to build in plain English
+            Pipewright will generate a chunk plan for approval before executing
+            changes.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -110,7 +126,7 @@ export default function ProjectDashboard() {
             )}
             {lastRunId && (
               <p className="text-sm text-muted-foreground">
-                Pipeline started.{' '}
+                Chunked run created.{' '}
                 <button
                   className="underline text-primary"
                   onClick={() => navigate(`/runs/${lastRunId}`)}
@@ -123,7 +139,7 @@ export default function ProjectDashboard() {
               onClick={() => runMutation.mutate()}
               disabled={!feature.trim() || runMutation.isPending}
             >
-              {runMutation.isPending ? 'Starting...' : 'Run Pipeline'}
+              {runMutation.isPending ? 'Creating...' : 'Create Chunked Run'}
             </Button>
           </div>
         </CardContent>
