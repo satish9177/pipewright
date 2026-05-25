@@ -8,6 +8,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { getStatusDisplay } from '@/utils/statusDisplay'
 
 interface PushPrPanelProps {
   run: Run
@@ -39,8 +40,8 @@ export default function PushPrPanel({
   const canPush =
     (run.status === 'final_approved' || run.status === 'push_failed') &&
     !hasPr
-  const isPushFailed = run.status === 'push_failed'
   const warning = hasGithubConfigWarning(project)
+  const statusDisplay = getStatusDisplay(run.status)
 
   return (
     <Card className="mb-4">
@@ -52,8 +53,8 @@ export default function PushPrPanel({
               Push the final-approved branch and create a pull request.
             </CardDescription>
           </div>
-          <Badge variant={isPushFailed ? 'destructive' : 'secondary'}>
-            {run.status}
+          <Badge variant="outline" className={statusDisplay.className}>
+            {statusDisplay.label}
           </Badge>
         </div>
       </CardHeader>

@@ -58,6 +58,21 @@ flows and existing run viewing remains supported.
 Richer status badges, approval queue classification, project edit/GitHub
 credential UI, and broader design polish remain future frontend work.
 
+## FE-6 Update
+
+Phase 2D-FE-6 added shared frontend status display helpers and expanded status
+badge coverage for current run, chunk, plan, approval, and push/PR statuses.
+`RunStatusBadge`, `ChunkPlanPanel`, `FinalApprovalPanel`, and `PushPrPanel`
+now render known backend statuses with clearer neutral, running, approval,
+success, and failure tones while still showing unknown statuses as raw text.
+
+ApprovalQueue now classifies pending gates as Chunk Approval, Final Approval,
+or Legacy/Pre-merge Approval, shows chunk numbers when available, and displays
+the gate status badge while preserving existing approve/reject behavior.
+
+Project edit/GitHub credential UI, broader design polish, and frontend
+smoke/release notes remain future frontend work.
+
 ## Current Frontend API Functions and Backend Route Mapping
 
 | Backend route | Frontend mapping | Status |
@@ -95,8 +110,9 @@ credential UI, and broader design polish remain future frontend work.
 - `RunDetailPage` uses legacy gate endpoints for approvals. It does not use the
   chunk plan approval/rejection routes, per-chunk approval/rejection routes, or
   final approval routes.
-- `ApprovalQueuePage` also uses only legacy gate approve/reject endpoints and
-  cannot distinguish plan approval, chunk approval, and final approval actions.
+- Fixed in FE-6: `ApprovalQueuePage` now classifies pending gates by
+  `approval_type` and shows chunk numbers when available. It still uses the
+  existing legacy gate approve/reject endpoints for queue actions.
 - `projectsApi.delete` calls `DELETE /projects/{id}`. That route exists in the
   older AGENTS route inventory, but it is not in the current Phase 2D route
   verification list and is not shown in the current route scan. Treat it as
@@ -160,15 +176,8 @@ credential UI, and broader design polish remain future frontend work.
 
 ## Status Coverage Gaps
 
-`RunStatusBadge` explicitly styles only:
-
-- `running`
-- `paused`
-- `complete`
-- `failed`
-- `rejected`
-
-Current backend statuses also include:
+Fixed in FE-6: `RunStatusBadge` and shared status display helpers now style
+current backend statuses including:
 
 - `started`
 - `running_chunks`
@@ -194,8 +203,8 @@ Chunk and plan statuses that need UI treatment:
 - `approved`
 - `none`
 
-The fallback `status.toUpperCase()` prevents crashes, but important states do
-not receive useful colors, labels, or action affordances.
+The fallback still prevents crashes and shows unknown statuses as raw text in a
+neutral badge.
 
 `RunDetailPage` polling only continues for `running` and `paused`. It may stop
 polling too early for chunked statuses such as `running_chunks`, `pushing`,
@@ -252,14 +261,11 @@ polling too early for chunked statuses such as `running_chunks`, `pushing`,
 
 ## Recommended Implementation Order
 
-1. Add status coverage:
-   expand `RunStatusBadge`, add chunk/plan badge helpers, and update polling
-   conditions for current backend statuses.
-2. Update `ApprovalQueuePage` to classify approval types and route users to the
-   right run/chunk action.
-3. Add project edit/GitHub credential UI and display `has_github_token`.
-4. Clean up encoding artifacts and consolidate shared visual components.
-5. Polish Live Log readability and deployment-aware connection state.
+1. Add project edit/GitHub credential UI and display `has_github_token`.
+2. Clean up remaining encoding artifacts and consolidate shared visual
+   components.
+3. Polish Live Log readability and deployment-aware connection state.
+4. Add frontend smoke/release notes for the chunked run UI flow.
 
 ## Validation Results
 
