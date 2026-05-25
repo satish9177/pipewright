@@ -103,6 +103,13 @@ distinguishes connected repos from repos that still need a token.
 
 Frontend smoke/release notes remain future frontend work.
 
+## FE-FINAL Update
+
+Frontend API alignment and core run flow implementation are complete through
+FE-8. Release notes and a manual smoke checklist were added for the stabilized
+frontend chunked-run flow. Remaining limitations are documented below and are
+not blockers for MVP frontend stabilization.
+
 ## Current Frontend API Functions and Backend Route Mapping
 
 | Backend route | Frontend mapping | Status |
