@@ -20,9 +20,21 @@ interface ChunkPlanPanelProps {
   plan: ChunkPlanResponse
   isApproving: boolean
   isRejecting: boolean
+  isExecuting: boolean
+  isResuming: boolean
+  approvingChunkNumber: number | null
+  rejectingChunkNumber: number | null
   error: string | null
+  executionMessage: string | null
+  executionError: string | null
+  chunkActionMessage: string | null
+  chunkActionError: string | null
   onApprove: () => void
   onReject: (reason: string) => void
+  onExecute: () => void
+  onResume: () => void
+  onApproveChunk: (chunkNumber: number) => void
+  onRejectChunk: (chunkNumber: number, reason: string) => void
 }
 
 function formatList(values: Array<string | number>) {
@@ -41,16 +53,38 @@ export default function ChunkPlanPanel({
   plan,
   isApproving,
   isRejecting,
+  isExecuting,
+  isResuming,
+  approvingChunkNumber,
+  rejectingChunkNumber,
   error,
+  executionMessage,
+  executionError,
+  chunkActionMessage,
+  chunkActionError,
   onApprove,
   onReject,
+  onExecute,
+  onResume,
+  onApproveChunk,
+  onRejectChunk,
 }: ChunkPlanPanelProps) {
   const [rejectReason, setRejectReason] = useState('')
+  const [chunkRejectReasons, setChunkRejectReasons] = useState<
+    Record<number, string>
+  >({})
   const definitionsByNumber = new Map<number, ChunkDefinition>(
     (plan.triage?.chunks ?? []).map(chunk => [chunk.chunk_number, chunk])
   )
   const isAwaitingApproval = plan.chunk_plan_status === 'awaiting_approval'
-  const actionPending = isApproving || isRejecting
+  const isApproved = plan.chunk_plan_status === 'approved'
+  const actionPending =
+    isApproving ||
+    isRejecting ||
+    isExecuting ||
+    isResuming ||
+    approvingChunkNumber !== null ||
+    rejectingChunkNumber !== null
   const featureDescription =
     plan.triage?.feature_description || 'Feature description not available.'
 
@@ -98,6 +132,50 @@ export default function ChunkPlanPanel({
 
         <Separator />
 
+        {isApproved && (
+          <>
+            <div className="grid gap-3 rounded border bg-background p-4">
+              <div>
+                <p className="text-sm font-medium">Execution Controls</p>
+                <p className="text-sm text-muted-foreground">
+                  Execute approved chunks or resume the run after an interruption,
+                  failed chunk, or high-risk approval.
+                </p>
+              </div>
+
+              {executionMessage && (
+                <p className="text-sm font-medium text-green-600">
+                  {executionMessage}
+                </p>
+              )}
+              {executionError && (
+                <p className="text-sm font-medium text-red-500">
+                  {executionError}
+                </p>
+              )}
+
+              <div className="flex flex-wrap gap-3">
+                <Button
+                  onClick={onExecute}
+                  disabled={actionPending}
+                  className="bg-blue-600 hover:bg-blue-700 text-white"
+                >
+                  {isExecuting ? 'Executing...' : 'Execute Chunks'}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={onResume}
+                  disabled={actionPending}
+                >
+                  {isResuming ? 'Resuming...' : 'Resume Run'}
+                </Button>
+              </div>
+            </div>
+
+            <Separator />
+          </>
+        )}
+
         <div className="grid gap-3">
           {plan.chunks.map(chunk => {
             const definition = getChunkDefinition(chunk, definitionsByNumber)
@@ -115,6 +193,11 @@ export default function ChunkPlanPanel({
               chunk.requires_human_review ||
               definition?.requires_human_review ||
               false
+            const isAwaitingChunkApproval =
+              chunk.status === 'awaiting_chunk_approval'
+            const chunkActionPending =
+              approvingChunkNumber === chunk.chunk_number ||
+              rejectingChunkNumber === chunk.chunk_number
 
             return (
               <div
@@ -175,11 +258,93 @@ export default function ChunkPlanPanel({
                       </p>
                     </div>
                   )}
+
+                  {chunk.completion_summary && (
+                    <div>
+                      <p className="font-medium">Completion Summary</p>
+                      <p className="text-muted-foreground whitespace-pre-wrap">
+                        {chunk.completion_summary}
+                      </p>
+                    </div>
+                  )}
+
+                  {chunk.error_message && (
+                    <div>
+                      <p className="font-medium text-red-500">Error</p>
+                      <p className="text-red-500 whitespace-pre-wrap">
+                        {chunk.error_message}
+                      </p>
+                    </div>
+                  )}
+
+                  {isAwaitingChunkApproval && (
+                    <div className="grid gap-3 rounded border border-yellow-400 p-3">
+                      <div>
+                        <p className="font-medium">High-Risk Chunk Approval</p>
+                        <p className="text-muted-foreground">
+                          Review this chunk before continuing execution.
+                        </p>
+                      </div>
+
+                      <Textarea
+                        value={chunkRejectReasons[chunk.chunk_number] ?? ''}
+                        onChange={event =>
+                          setChunkRejectReasons(previous => ({
+                            ...previous,
+                            [chunk.chunk_number]: event.target.value,
+                          }))
+                        }
+                        placeholder="Optional rejection reason"
+                        disabled={actionPending}
+                      />
+
+                      <div className="flex flex-wrap gap-3">
+                        <Button
+                          onClick={() => onApproveChunk(chunk.chunk_number)}
+                          disabled={actionPending}
+                          className="bg-green-600 hover:bg-green-700 text-white"
+                        >
+                          {chunkActionPending && approvingChunkNumber
+                            ? 'Approving...'
+                            : 'Approve Chunk'}
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          onClick={() =>
+                            onRejectChunk(
+                              chunk.chunk_number,
+                              chunkRejectReasons[chunk.chunk_number] ?? ''
+                            )
+                          }
+                          disabled={actionPending}
+                        >
+                          {chunkActionPending && rejectingChunkNumber
+                            ? 'Rejecting...'
+                            : 'Reject Chunk'}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )
           })}
         </div>
+
+        {(chunkActionMessage || chunkActionError) && (
+          <div>
+            {chunkActionMessage && (
+              <p className="text-sm font-medium text-green-600">
+                {chunkActionMessage}
+              </p>
+            )}
+            {chunkActionError && (
+              <p className="text-sm font-medium text-red-500">
+                {chunkActionError}
+              </p>
+            )}
+          </div>
+        )}
 
         {isAwaitingApproval && (
           <>

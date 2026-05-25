@@ -26,6 +26,16 @@ chunk definitions, and wires plan approval/rejection to
 Execute/resume controls, high-risk per-chunk approval UI, final approval, and
 push/PR actions remain future frontend work.
 
+## FE-3 Update
+
+Phase 2D-FE-3 extended the RunDetail chunk plan panel with approved-plan
+execution controls, resume controls, chunk status details, and high-risk
+per-chunk approval/rejection actions. The UI now uses `runsApi.executeChunks`,
+`runsApi.resumeChunks`, `runsApi.approveChunk`, and `runsApi.rejectChunk`, then
+refetches run and chunk plan state after each successful action.
+
+Final approval and push/PR controls remain future frontend work.
+
 ## Current Frontend API Functions and Backend Route Mapping
 
 | Backend route | Frontend mapping | Status |
@@ -46,10 +56,10 @@ push/PR actions remain future frontend work.
 | `GET /runs/{run_id}/chunks` | `runsApi.getRunChunks` | Present in RunDetail chunk plan panel |
 | `POST /runs/{run_id}/chunks/approve` | `runsApi.approveChunkPlan` | Present in RunDetail chunk plan panel |
 | `POST /runs/{run_id}/chunks/reject` | `runsApi.rejectChunkPlan` | Present in RunDetail chunk plan panel |
-| `POST /runs/{run_id}/chunks/execute` | `runsApi.executeChunks` | API helper present; UI flow missing |
-| `POST /runs/{run_id}/chunks/resume` | `runsApi.resumeChunks` | API helper present; UI flow missing |
-| `POST /runs/{run_id}/chunks/{chunk_number}/approve` | `runsApi.approveChunk` | API helper present; UI flow missing |
-| `POST /runs/{run_id}/chunks/{chunk_number}/reject` | `runsApi.rejectChunk` | API helper present; UI flow missing |
+| `POST /runs/{run_id}/chunks/execute` | `runsApi.executeChunks` | Present in RunDetail chunk plan panel |
+| `POST /runs/{run_id}/chunks/resume` | `runsApi.resumeChunks` | Present in RunDetail chunk plan panel |
+| `POST /runs/{run_id}/chunks/{chunk_number}/approve` | `runsApi.approveChunk` | Present in RunDetail high-risk chunk controls |
+| `POST /runs/{run_id}/chunks/{chunk_number}/reject` | `runsApi.rejectChunk` | Present in RunDetail high-risk chunk controls |
 | `POST /runs/{run_id}/final-approval/approve` | `runsApi.approveFinalApproval` | API helper present; UI flow missing |
 | `POST /runs/{run_id}/final-approval/reject` | `runsApi.rejectFinalApproval` | API helper present; UI flow missing |
 | `POST /runs/{run_id}/push-pr` | `runsApi.pushPr` | API helper present; UI flow missing |
@@ -108,10 +118,13 @@ push/PR actions remain future frontend work.
 - Fixed in FE-2: `RunDetailPage` now shows chunk plan review details, including
   chunk definitions, dependency order, risk level, token estimates, files
   expected, and plan approve/reject controls.
-- No chunk execution control after plan approval.
-- No manual resume control for failed or interrupted chunked runs.
-- No high-risk per-chunk approval experience that clearly shows the specific
-  chunk number, changed files, checkpoint state, or rollback consequence.
+- Fixed in FE-3: `RunDetailPage` now exposes chunk execution and resume
+  controls after plan approval.
+- Fixed in FE-3: `RunDetailPage` now exposes high-risk per-chunk approve/reject
+  controls for chunks with `awaiting_chunk_approval` status.
+- Remaining: high-risk chunk approval could still be enriched with changed
+  files, checkpoint state, and rollback consequence once the backend exposes or
+  links those details.
 - No final approval action using `/runs/{run_id}/final-approval/approve` or
   `/runs/{run_id}/final-approval/reject`.
 - No push/create PR control using `/runs/{run_id}/push-pr`.
@@ -223,7 +236,7 @@ polling too early for chunked statuses such as `running_chunks`, `pushing`,
 2. Add chunked run creation from `ProjectDashboard` using `POST /runs/chunked`.
    Keep the legacy `/run` flow only if intentionally still supported.
 3. Continue the `RunDetailPage` chunked lifecycle work:
-   execute/resume, high-risk chunk approval, final approval, and push PR.
+   final approval and push PR.
 4. Update `ApprovalQueuePage` to classify approval types and route users to the
    right run/chunk action.
 5. Add project edit/GitHub credential UI and display `has_github_token`.
