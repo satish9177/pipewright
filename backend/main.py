@@ -6,13 +6,19 @@ Initializes database on startup.
 
 import uuid
 from contextlib import asynccontextmanager
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from backend.db.database import init_db
 from backend.db.database import engine
-from backend.models.handoff import ProjectCreate, ProjectUpdate, RejectRequest
+from backend.models.handoff import (
+    ProjectCreate,
+    ProjectUpdate,
+    RejectRequest,
+    FEATURE_DESCRIPTION_MAX_LENGTH,
+    _is_blank,
+)
 from backend.pipeline.approval_gate import (
     approve_gate,
     reject_gate,
@@ -36,7 +42,17 @@ from backend.routes.ws_events import router as ws_events_router
 
 class RunRequest(BaseModel):
     project_id: str
-    feature_description: str
+    feature_description: str = Field(
+        min_length=1,
+        max_length=FEATURE_DESCRIPTION_MAX_LENGTH,
+    )
+
+    @field_validator("feature_description")
+    @classmethod
+    def feature_description_must_not_be_blank(cls, value: str) -> str:
+        if _is_blank(value):
+            raise ValueError("Field must not be blank")
+        return value
 
 @asynccontextmanager
 async def lifespan(app):
