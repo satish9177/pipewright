@@ -6,6 +6,15 @@ This audit compares the current React frontend with the Phase 2D backend route
 surface and the current Claude-inspired visual direction. It is documentation
 only. No backend behavior or frontend implementation was changed in this step.
 
+## FE-1 Update
+
+Phase 2D-FE-1 aligned `frontend/src/api/client.ts` with the current backend
+routes and response shapes. The frontend now has typed helpers for chunked run
+creation, chunk plan approval/rejection, chunk execution/resume, per-chunk
+approval/rejection, final approval/rejection, and push/PR. WebSocket live logs
+already exist and remain scoped to the EventLog; polling remains the source of
+truth for run/chunk status.
+
 ## Current Frontend API Functions and Backend Route Mapping
 
 | Backend route | Frontend mapping | Status |
@@ -22,17 +31,17 @@ only. No backend behavior or frontend implementation was changed in this step.
 | `GET /gates/{gate_id}` | `gatesApi.get` | Present API helper, not clearly used |
 | `POST /gates/{gate_id}/approve` | `gatesApi.approve` | Present legacy approval flow |
 | `POST /gates/{gate_id}/reject` | `gatesApi.reject` | Present legacy approval flow |
-| `POST /runs/chunked` | No API helper or UI flow | Missing |
-| `GET /runs/{run_id}/chunks` | No API helper or UI flow | Missing |
-| `POST /runs/{run_id}/chunks/approve` | No API helper or UI flow | Missing |
-| `POST /runs/{run_id}/chunks/reject` | No API helper or UI flow | Missing |
-| `POST /runs/{run_id}/chunks/execute` | No API helper or UI flow | Missing |
-| `POST /runs/{run_id}/chunks/resume` | No API helper or UI flow | Missing |
-| `POST /runs/{run_id}/chunks/{chunk_number}/approve` | No API helper or UI flow | Missing |
-| `POST /runs/{run_id}/chunks/{chunk_number}/reject` | No API helper or UI flow | Missing |
-| `POST /runs/{run_id}/final-approval/approve` | No API helper or UI flow | Missing |
-| `POST /runs/{run_id}/final-approval/reject` | No API helper or UI flow | Missing |
-| `POST /runs/{run_id}/push-pr` | No API helper or UI flow | Missing |
+| `POST /runs/chunked` | `runsApi.createChunkedRun` | API helper present; UI flow missing |
+| `GET /runs/{run_id}/chunks` | `runsApi.getRunChunks` | API helper present; UI flow missing |
+| `POST /runs/{run_id}/chunks/approve` | `runsApi.approveChunkPlan` | API helper present; UI flow missing |
+| `POST /runs/{run_id}/chunks/reject` | `runsApi.rejectChunkPlan` | API helper present; UI flow missing |
+| `POST /runs/{run_id}/chunks/execute` | `runsApi.executeChunks` | API helper present; UI flow missing |
+| `POST /runs/{run_id}/chunks/resume` | `runsApi.resumeChunks` | API helper present; UI flow missing |
+| `POST /runs/{run_id}/chunks/{chunk_number}/approve` | `runsApi.approveChunk` | API helper present; UI flow missing |
+| `POST /runs/{run_id}/chunks/{chunk_number}/reject` | `runsApi.rejectChunk` | API helper present; UI flow missing |
+| `POST /runs/{run_id}/final-approval/approve` | `runsApi.approveFinalApproval` | API helper present; UI flow missing |
+| `POST /runs/{run_id}/final-approval/reject` | `runsApi.rejectFinalApproval` | API helper present; UI flow missing |
+| `POST /runs/{run_id}/push-pr` | `runsApi.pushPr` | API helper present; UI flow missing |
 | `WS /ws/runs/{run_id}/events` | `useRunEvents` | Present and path matches backend |
 
 ## Mismatched or Outdated API Calls
@@ -60,23 +69,24 @@ only. No backend behavior or frontend implementation was changed in this step.
 
 - `Project` should not include `github_token`. It currently does not, which is
   correct.
-- `Project` should include `has_github_token: boolean`. It currently does not.
-  This means the UI cannot accurately show whether a project has a token stored.
-- `Project` includes `is_active: number`, but the backend `ProjectResponse`
-  shape exposes `status: string` plus optional `updated_at`, not `is_active`.
+- Fixed in FE-1: `Project` includes `has_github_token: boolean`.
+- Fixed in FE-1: stale `is_active` was removed from `Project`; backend project
+  responses expose `status` and optional `updated_at`.
 - `ProjectCreate` includes `github_token`, which is correct for create/update
   requests. Create/update forms should not expect `github_token` in responses;
   current code does not read it from responses.
-- `PipelineRun` is too narrow for current backend responses. Backend run rows
+- Fixed in FE-1: `PipelineRun` now aliases the broader `Run` type.
+  Backend run rows
   can include fields such as `chunk_plan_status`, `total_chunks`,
   `current_chunk_number`, `pr_url`, `pr_number`, `branch_name`, `push_error`,
   and timestamps for push/PR.
-- `ApprovalGate` is too narrow for current approval gate rows. Backend gates can
+- Fixed in FE-1: `ApprovalGate` now aliases the broader `Gate` type.
+  Backend gates can
   include `step`, `plain_english_summary`, `chunk_number`, `approval_type`,
   `rejection_reason`, and `decided_at`.
-- No TypeScript types exist for `ChunkPlanResponse`, `ChunkStatus`,
-  `TriageResult`, chunk action responses, final approval responses, or push/PR
-  responses.
+- Fixed in FE-1: TypeScript types now exist for `ChunkPlanResponse`,
+  `ChunkStatus`, `TriageResult`, chunk action responses, final approval
+  responses, and push/PR responses.
 - `RunEvent.kind` and `RunEvent.stage` are typed as broad strings. This builds,
   but it gives no compile-time help for known backend event kinds/stages.
 
@@ -196,22 +206,19 @@ polling too early for chunked statuses such as `running_chunks`, `pushing`,
 
 ## Recommended Implementation Order
 
-1. Update `frontend/src/api/client.ts` types and helpers:
-   add `has_github_token`, remove stale `is_active`, add chunk/final/PR helper
-   functions, and define chunk/run/approval response types.
-2. Add status coverage:
+1. Add status coverage:
    expand `RunStatusBadge`, add chunk/plan badge helpers, and update polling
    conditions for current backend statuses.
-3. Add chunked run creation from `ProjectDashboard` using `POST /runs/chunked`.
+2. Add chunked run creation from `ProjectDashboard` using `POST /runs/chunked`.
    Keep the legacy `/run` flow only if intentionally still supported.
-4. Rework `RunDetailPage` around current chunked lifecycle:
+3. Rework `RunDetailPage` around current chunked lifecycle:
    chunk plan review, approve/reject plan, execute/resume, high-risk chunk
    approval, final approval, push PR.
-5. Update `ApprovalQueuePage` to classify approval types and route users to the
+4. Update `ApprovalQueuePage` to classify approval types and route users to the
    right run/chunk action.
-6. Add project edit/GitHub credential UI and display `has_github_token`.
-7. Clean up encoding artifacts and consolidate shared visual components.
-8. Polish Live Log readability and deployment-aware connection state.
+5. Add project edit/GitHub credential UI and display `has_github_token`.
+6. Clean up encoding artifacts and consolidate shared visual components.
+7. Polish Live Log readability and deployment-aware connection state.
 
 ## Validation Results
 

@@ -9,21 +9,72 @@ export const api = axios.create({
   },
 })
 
-export interface Project {
+type ExtraFields = Record<string, unknown>
+
+export type RunStatus =
+  | 'running'
+  | 'running_chunks'
+  | 'paused'
+  | 'failed'
+  | 'rejected'
+  | 'complete'
+  | 'started'
+  | 'awaiting_chunk_plan_approval'
+  | 'chunk_plan_approved'
+  | 'awaiting_chunk_approval'
+  | 'chunk_approved'
+  | 'awaiting_final_approval'
+  | 'final_approved'
+  | 'final_rejected'
+  | 'pushing'
+  | 'push_failed'
+  | (string & {})
+
+export type ChunkStatusValue =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'rejected'
+  | 'awaiting_chunk_approval'
+  | (string & {})
+
+export type ChunkPlanStatus =
+  | 'awaiting_approval'
+  | 'approved'
+  | 'rejected'
+  | 'none'
+  | (string & {})
+
+export type ApprovalStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'timeout'
+  | (string & {})
+
+export interface HealthResponse extends ExtraFields {
+  status: string
+  version: string
+}
+
+export interface Project extends ExtraFields {
   id: string
   name: string
   repo_path: string
   test_command: string
   branch: string
   description: string
-  github_owner?: string
-  github_repo?: string
-  github_base_branch?: string
-  is_active: number
-  created_at: string
+  github_owner?: string | null
+  github_repo?: string | null
+  github_base_branch?: string | null
+  has_github_token: boolean
+  status: string
+  created_at?: string | null
+  updated_at?: string | null
 }
 
-export interface ProjectCreate {
+export interface ProjectCreateRequest {
   name: string
   repo_path: string
   test_command: string
@@ -35,54 +86,227 @@ export interface ProjectCreate {
   github_base_branch?: string
 }
 
-export interface PipelineRun {
+export interface ProjectUpdateRequest {
+  name?: string | null
+  test_command?: string | null
+  branch?: string | null
+  description?: string | null
+  github_token?: string | null
+  github_owner?: string | null
+  github_repo?: string | null
+  github_base_branch?: string | null
+}
+
+export type ProjectCreate = ProjectCreateRequest
+
+export interface Run extends ExtraFields {
   id: string
-  project_id: string
+  project_id?: string | null
   feature_description: string
-  status: string
-  current_step: string
+  plain_english_summary?: string | null
+  status: RunStatus
+  current_step: string | null
+  chunk_plan_status?: ChunkPlanStatus | null
+  chunk_plan?: string | null
+  total_chunks?: number | null
+  current_chunk_number?: number | null
+  pr_url?: string | null
+  pr_number?: number | null
+  branch_name?: string | null
+  pushed_at?: string | null
+  pr_created_at?: string | null
+  push_error?: string | null
   created_at: string
 }
 
-export interface ApprovalGate {
+export type PipelineRun = Run
+
+export interface LegacyRunStartResponse extends ExtraFields {
+  run_id: string
+  project_id: string
+  status: RunStatus
+  message: string
+}
+
+export interface Gate extends ExtraFields {
   id: string
   run_id: string
-  status: string
-  diff?: string
-  test_results?: string
-  ai_summary?: string
+  step?: string
+  status: ApprovalStatus
+  diff?: string | null
+  test_results?: string | null
+  ai_summary?: string | null
+  plain_english_summary?: string | null
   risk_level: string
+  chunk_number?: number | null
+  approval_type?: string
+  rejection_reason?: string | null
+  decided_at?: string | null
   created_at: string
+}
+
+export type ApprovalGate = Gate
+
+export interface GateDecisionResponse extends ExtraFields {
+  status: ApprovalStatus
+  gate_id: string
+  reason?: string
+}
+
+export interface ChunkDefinition extends ExtraFields {
+  chunk_number: number
+  title: string
+  description: string
+  files_expected: string[]
+  depends_on: number[]
+  risk_level: 'low' | 'medium' | 'high' | (string & {})
+  token_estimate: number
+  requires_human_review: boolean
+  rationale: string
+}
+
+export interface TriageResult extends ExtraFields {
+  run_id: string
+  project_id: string
+  feature_description: string
+  complexity: 'easy' | 'medium' | 'hard' | (string & {})
+  total_chunks: number
+  chunks: ChunkDefinition[]
+  reasoning: string
+}
+
+export interface ChunkStatus extends ExtraFields {
+  run_id: string
+  project_id: string
+  chunk_number: number
+  title: string
+  status: ChunkStatusValue
+  risk_level: string
+  requires_human_review: boolean
+  files_expected: string[]
+  depends_on: number[]
+  completion_summary?: string | null
+  error_message?: string | null
+}
+
+export interface ChunkPlanResponse extends ExtraFields {
+  run_id: string
+  project_id: string
+  chunk_plan_status: ChunkPlanStatus
+  total_chunks: number
+  current_chunk_number: number
+  triage?: TriageResult | null
+  chunks: ChunkStatus[]
+}
+
+export interface ChunkedRunRequest {
+  project_id: string
+  feature_description: string
+}
+
+export type ChunkedRunResponse = ChunkPlanResponse
+
+export interface RejectRequest {
+  reason?: string | null
+}
+
+export interface ChunkOperationResponse extends ExtraFields {
+  status: RunStatus | ChunkStatusValue | string
+  run_id?: string
+  message?: string
+  completed_chunks?: number
+  skipped_chunks?: number
+  chunk_number?: number
+  failed_chunk?: number
+  approval_required?: boolean
+  final_approval_required?: boolean
+  branch_name?: string
+  next_action?: string
+  resumed?: boolean
+  error?: string
+}
+
+export type ChunkExecuteResponse = ChunkOperationResponse
+export type ChunkResumeResponse = ChunkOperationResponse
+export type ChunkApprovalResponse = ChunkOperationResponse
+export type ChunkRejectionResponse = ChunkOperationResponse
+
+export interface FinalApprovalResponse extends ExtraFields {
+  status: RunStatus
+  run_id: string
+}
+
+export interface PushPrResponse extends ExtraFields {
+  status: RunStatus
+  run_id: string
+  branch_name: string
+  pr_url?: string | null
+  pr_number?: number | null
+}
+
+export const healthApi = {
+  get: () => api.get<HealthResponse>('/health').then(r => r.data),
 }
 
 export const projectsApi = {
   list: () => api.get<Project[]>('/projects').then(r => r.data),
   get: (id: string) => api.get<Project>(`/projects/${id}`).then(r => r.data),
-  create: (data: ProjectCreate) =>
+  create: (data: ProjectCreateRequest) =>
     api.post<Project>('/projects', data).then(r => r.data),
-  update: (id: string, data: Partial<ProjectCreate>) =>
+  update: (id: string, data: ProjectUpdateRequest) =>
     api.patch<Project>(`/projects/${id}`, data).then(r => r.data),
   delete: (id: string) =>
     api.delete(`/projects/${id}`).then(r => r.data),
 }
 
 export const runsApi = {
-  list: () => api.get<PipelineRun[]>('/runs').then(r => r.data),
+  list: () => api.get<Run[]>('/runs').then(r => r.data),
   get: (id: string) =>
-    api.get<PipelineRun>(`/runs/${id}`).then(r => r.data),
+    api.get<Run>(`/runs/${id}`).then(r => r.data),
   start: (projectId: string, featureDescription: string) =>
-    api.post('/run', {
+    api.post<LegacyRunStartResponse>('/run', {
       project_id: projectId,
       feature_description: featureDescription,
     }).then(r => r.data),
+  createChunkedRun: (projectId: string, featureDescription: string) =>
+    api.post<ChunkedRunResponse>('/runs/chunked', {
+      project_id: projectId,
+      feature_description: featureDescription,
+    }).then(r => r.data),
+  getRunChunks: (runId: string) =>
+    api.get<ChunkPlanResponse>(`/runs/${runId}/chunks`).then(r => r.data),
+  approveChunkPlan: (runId: string) =>
+    api.post<ChunkPlanResponse>(`/runs/${runId}/chunks/approve`).then(r => r.data),
+  rejectChunkPlan: (runId: string, reason?: string | null) =>
+    api.post<ChunkPlanResponse>(`/runs/${runId}/chunks/reject`, { reason }).then(r => r.data),
+  executeChunks: (runId: string) =>
+    api.post<ChunkExecuteResponse>(`/runs/${runId}/chunks/execute`).then(r => r.data),
+  resumeChunks: (runId: string) =>
+    api.post<ChunkResumeResponse>(`/runs/${runId}/chunks/resume`).then(r => r.data),
+  approveChunk: (runId: string, chunkNumber: number) =>
+    api.post<ChunkApprovalResponse>(`/runs/${runId}/chunks/${chunkNumber}/approve`).then(r => r.data),
+  rejectChunk: (runId: string, chunkNumber: number, reason?: string | null) =>
+    api.post<ChunkRejectionResponse>(
+      `/runs/${runId}/chunks/${chunkNumber}/reject`,
+      { reason },
+    ).then(r => r.data),
+  approveFinalApproval: (runId: string) =>
+    api.post<FinalApprovalResponse>(`/runs/${runId}/final-approval/approve`).then(r => r.data),
+  rejectFinalApproval: (runId: string, reason?: string | null) =>
+    api.post<FinalApprovalResponse>(
+      `/runs/${runId}/final-approval/reject`,
+      { reason },
+    ).then(r => r.data),
+  pushPr: (runId: string) =>
+    api.post<PushPrResponse>(`/runs/${runId}/push-pr`).then(r => r.data),
 }
 
 export const gatesApi = {
-  list: () => api.get<ApprovalGate[]>('/gates').then(r => r.data),
+  list: () => api.get<Gate[]>('/gates').then(r => r.data),
   get: (id: string) =>
-    api.get<ApprovalGate>(`/gates/${id}`).then(r => r.data),
+    api.get<Gate>(`/gates/${id}`).then(r => r.data),
   approve: (id: string) =>
-    api.post(`/gates/${id}/approve`).then(r => r.data),
+    api.post<GateDecisionResponse>(`/gates/${id}/approve`).then(r => r.data),
   reject: (id: string, reason: string) =>
-    api.post(`/gates/${id}/reject`, { reason }).then(r => r.data),
+    api.post<GateDecisionResponse>(`/gates/${id}/reject`, { reason }).then(r => r.data),
 }
