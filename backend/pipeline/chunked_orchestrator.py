@@ -30,6 +30,7 @@ from backend.pipeline.chunk_store import (
 from backend.pipeline.coder import run_coder
 from backend.pipeline.patch_applier import apply_patch, rollback_patch
 from backend.pipeline.planner import run_planner
+from backend.pipeline.run_locks import project_repo_lock, project_repo_lock_sync
 from backend.pipeline.tester import run_tests
 from backend.projects.project_context import ProjectRuntimeConfig, active_project
 from backend.projects.project_store import require_project
@@ -705,7 +706,10 @@ async def _execute_single_chunk(
     return None
 
 
-async def execute_approved_chunks(run_id: str) -> dict:
+async def _execute_approved_chunks_locked(
+    run_id: str,
+    plan_status: ChunkPlanResponse,
+) -> dict:
     """
     Execute pending chunks sequentially for an approved chunk plan.
 
@@ -714,7 +718,6 @@ async def execute_approved_chunks(run_id: str) -> dict:
     """
     print(f"[CHUNKED] Starting execution | run_id={run_id}")
 
-    plan_status = get_chunk_plan_status(run_id)
     if plan_status.chunk_plan_status != "approved":
         raise RuntimeError(
             f"chunked_orchestrator.py: chunk plan is not approved. "
@@ -774,7 +777,16 @@ async def execute_approved_chunks(run_id: str) -> dict:
     return result
 
 
-async def resume_chunked_pipeline(run_id: str) -> dict:
+async def execute_approved_chunks(run_id: str) -> dict:
+    plan_status = get_chunk_plan_status(run_id)
+    async with project_repo_lock(plan_status.project_id):
+        return await _execute_approved_chunks_locked(run_id, plan_status)
+
+
+async def _resume_chunked_pipeline_locked(
+    run_id: str,
+    plan_status: ChunkPlanResponse,
+) -> dict:
     """
     Manually resume a failed or stale chunked run from chunk boundaries.
 
@@ -783,7 +795,6 @@ async def resume_chunked_pipeline(run_id: str) -> dict:
     """
     print(f"[CHUNKED] Starting resume | run_id={run_id}")
 
-    plan_status = get_chunk_plan_status(run_id)
     if plan_status.chunk_plan_status != "approved":
         raise RuntimeError(
             f"chunked_orchestrator.py: chunk plan is not approved. "
@@ -871,7 +882,17 @@ async def resume_chunked_pipeline(run_id: str) -> dict:
     return result
 
 
-def approve_chunk_and_commit(run_id: str, chunk_number: int) -> dict:
+async def resume_chunked_pipeline(run_id: str) -> dict:
+    plan_status = get_chunk_plan_status(run_id)
+    async with project_repo_lock(plan_status.project_id):
+        return await _resume_chunked_pipeline_locked(run_id, plan_status)
+
+
+def _approve_chunk_and_commit_locked(
+    run_id: str,
+    chunk_number: int,
+    plan_status: ChunkPlanResponse,
+) -> dict:
     """
     Approve a pending high-risk chunk and commit its already-tested files.
     """
@@ -879,7 +900,6 @@ def approve_chunk_and_commit(run_id: str, chunk_number: int) -> dict:
         f"[CHUNKED] Approving chunk | "
         f"run_id={run_id} | chunk={chunk_number}"
     )
-    plan_status = get_chunk_plan_status(run_id)
     definitions = _definition_by_number(plan_status)
     if chunk_number not in definitions:
         raise RuntimeError(
@@ -923,9 +943,16 @@ def approve_chunk_and_commit(run_id: str, chunk_number: int) -> dict:
     }
 
 
-def reject_chunk_and_rollback(
+def approve_chunk_and_commit(run_id: str, chunk_number: int) -> dict:
+    plan_status = get_chunk_plan_status(run_id)
+    with project_repo_lock_sync(plan_status.project_id):
+        return _approve_chunk_and_commit_locked(run_id, chunk_number, plan_status)
+
+
+def _reject_chunk_and_rollback_locked(
     run_id: str,
     chunk_number: int,
+    plan_status: ChunkPlanResponse,
     reason: str | None = None,
 ) -> dict:
     """
@@ -935,7 +962,6 @@ def reject_chunk_and_rollback(
         f"[CHUNKED] Rejecting chunk | "
         f"run_id={run_id} | chunk={chunk_number}"
     )
-    plan_status = get_chunk_plan_status(run_id)
     chunk_status = next(
         (chunk for chunk in plan_status.chunks if chunk.chunk_number == chunk_number),
         None,
@@ -995,3 +1021,18 @@ def reject_chunk_and_rollback(
         "run_id": run_id,
         "chunk_number": chunk_number,
     }
+
+
+def reject_chunk_and_rollback(
+    run_id: str,
+    chunk_number: int,
+    reason: str | None = None,
+) -> dict:
+    plan_status = get_chunk_plan_status(run_id)
+    with project_repo_lock_sync(plan_status.project_id):
+        return _reject_chunk_and_rollback_locked(
+            run_id,
+            chunk_number,
+            plan_status,
+            reason,
+        )

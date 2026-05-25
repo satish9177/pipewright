@@ -15,6 +15,10 @@ from backend.main import app
 from backend.models.chunk import ChunkDefinition, TriageResult
 from backend.pipeline.approval_gate import create_final_approval_gate
 from backend.pipeline.chunk_store import create_chunked_run
+from backend.pipeline.run_locks import (
+    PROJECT_LOCK_CONFLICT_MESSAGE,
+    ProjectRepoLockError,
+)
 from backend.projects.project_store import create_project
 
 pytestmark = pytest.mark.unit
@@ -284,6 +288,19 @@ def test_chunk_reject_route_returns_controlled_error(monkeypatch):
 
     assert response.status_code == 400
     assert "pending chunk gate not found" in response.json()["detail"]
+
+
+def test_execute_route_maps_project_lock_conflict_to_409(monkeypatch):
+    async def fake_execute(run_id):
+        raise ProjectRepoLockError(PROJECT_LOCK_CONFLICT_MESSAGE)
+
+    monkeypatch.setattr("backend.routes.chunks.execute_approved_chunks", fake_execute)
+    client = TestClient(app)
+
+    response = client.post("/runs/run-123/chunks/execute")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == PROJECT_LOCK_CONFLICT_MESSAGE
 
 
 def test_final_approval_approve_route_updates_run(tmp_repo, tracked_runs):
