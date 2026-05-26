@@ -7,6 +7,8 @@ import {
   type MemoryFact,
   type MemoryPreviewRole,
   type MemoryScope,
+  type MemorySuggestion,
+  type MemorySuggestionStatus,
   type MemoryStatus,
   type MemoryUpdateRequest,
 } from '@/api/client'
@@ -39,6 +41,12 @@ const CATEGORIES: MemoryCategory[] = [
 
 const SCOPES: MemoryScope[] = ['global', 'backend', 'frontend', 'tests', 'infra']
 const STATUSES: MemoryStatus[] = ['active', 'stale', 'archived', 'historical']
+const SUGGESTION_STATUSES: MemorySuggestionStatus[] = [
+  'pending',
+  'approved',
+  'rejected',
+  'archived',
+]
 const ROLES: MemoryPreviewRole[] = [
   'triage',
   'planner',
@@ -53,6 +61,13 @@ const STATUS_ORDER: Record<string, number> = {
   stale: 1,
   archived: 2,
   historical: 3,
+}
+
+const SUGGESTION_STATUS_ORDER: Record<string, number> = {
+  pending: 0,
+  approved: 1,
+  rejected: 2,
+  archived: 3,
 }
 
 interface ProjectMemoryPanelProps {
@@ -97,6 +112,29 @@ function getErrorMessage(error: unknown) {
   }
 
   return 'Failed to update project memory.'
+}
+
+function getSuggestionErrorMessage(error: unknown) {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'response' in error
+  ) {
+    const response = (error as {
+      response?: { status?: number; data?: { detail?: unknown } }
+    }).response
+    if (response?.status === 409) {
+      return 'An active memory fact already exists for this suggestion.'
+    }
+    if (response?.status === 422) {
+      return 'Please provide a rejection reason.'
+    }
+    if (typeof response?.data?.detail === 'string') {
+      return response.data.detail
+    }
+  }
+
+  return 'Failed to update memory suggestions.'
 }
 
 function formatDate(value?: string | null) {
@@ -178,13 +216,18 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
   const [statusFilter, setStatusFilter] = useState<'all' | MemoryStatus>('all')
   const [categoryFilter, setCategoryFilter] = useState<'all' | MemoryCategory>('all')
   const [scopeFilter, setScopeFilter] = useState<'all' | MemoryScope>('all')
+  const [suggestionStatusFilter, setSuggestionStatusFilter] =
+    useState<'all' | MemorySuggestionStatus>('pending')
   const [form, setForm] = useState<MemoryFormState>(emptyForm)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editForm, setEditForm] = useState<MemoryFormState>(emptyForm)
   const [archiveReasons, setArchiveReasons] = useState<Record<string, string>>({})
+  const [rejectionReasons, setRejectionReasons] = useState<Record<string, string>>({})
   const [role, setRole] = useState<MemoryPreviewRole>('coder')
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [suggestionMessage, setSuggestionMessage] = useState<string | null>(null)
+  const [suggestionError, setSuggestionError] = useState<string | null>(null)
 
   const filters = useMemo(() => {
     return {
@@ -205,6 +248,19 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
     queryFn: () => memoryApi.listProjectMemory(projectId, filters),
   })
 
+  const suggestionFilters = useMemo(() => {
+    return {
+      ...(suggestionStatusFilter === 'all'
+        ? {}
+        : { status: suggestionStatusFilter }),
+    }
+  }, [suggestionStatusFilter])
+
+  const suggestionsQuery = useQuery({
+    queryKey: ['project-memory-suggestions', projectId, suggestionStatusFilter],
+    queryFn: () => memoryApi.listMemorySuggestions(projectId, suggestionFilters),
+  })
+
   const previewQuery = useQuery({
     queryKey: ['project-memory-preview', projectId, role],
     queryFn: () => memoryApi.previewProjectMemory(projectId, role),
@@ -219,10 +275,26 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
     })
   }, [memoryQuery.data?.facts])
 
+  const sortedSuggestions = useMemo(() => {
+    return [...(suggestionsQuery.data?.suggestions ?? [])].sort((a, b) => {
+      const statusDelta =
+        (SUGGESTION_STATUS_ORDER[a.status] ?? 99) -
+        (SUGGESTION_STATUS_ORDER[b.status] ?? 99)
+      if (statusDelta !== 0) return statusDelta
+      return (a.priority ?? 100) - (b.priority ?? 100)
+    })
+  }, [suggestionsQuery.data?.suggestions])
+
   function refreshMemory() {
     queryClient.invalidateQueries({ queryKey: ['project-memory', projectId] })
     queryClient.invalidateQueries({
       queryKey: ['project-memory-preview', projectId],
+    })
+  }
+
+  function refreshSuggestions() {
+    queryClient.invalidateQueries({
+      queryKey: ['project-memory-suggestions', projectId],
     })
   }
 
@@ -285,6 +357,57 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
     },
   })
 
+  const generateSuggestionsMutation = useMutation({
+    mutationFn: () =>
+      memoryApi.generateBootstrapMemorySuggestions(projectId, false),
+    onSuccess: (data) => {
+      setSuggestionMessage(
+        data.suggestions.length > 0
+          ? `${data.suggestions.length} bootstrap suggestion${data.suggestions.length === 1 ? '' : 's'} generated.`
+          : 'No new bootstrap suggestions were generated.',
+      )
+      setSuggestionError(null)
+      refreshSuggestions()
+    },
+    onError: (mutationError: unknown) => {
+      setSuggestionMessage(null)
+      setSuggestionError(getSuggestionErrorMessage(mutationError))
+    },
+  })
+
+  const approveSuggestionMutation = useMutation({
+    mutationFn: (suggestionId: string) =>
+      memoryApi.approveMemorySuggestion(projectId, suggestionId),
+    onSuccess: () => {
+      setSuggestionMessage('Suggestion approved and added to active memory.')
+      setSuggestionError(null)
+      refreshSuggestions()
+      refreshMemory()
+    },
+    onError: (mutationError: unknown) => {
+      setSuggestionMessage(null)
+      setSuggestionError(getSuggestionErrorMessage(mutationError))
+    },
+  })
+
+  const rejectSuggestionMutation = useMutation({
+    mutationFn: ({ suggestionId, reason }: { suggestionId: string; reason: string }) =>
+      memoryApi.rejectMemorySuggestion(projectId, suggestionId, reason),
+    onSuccess: (_data, variables) => {
+      setRejectionReasons(previous => ({
+        ...previous,
+        [variables.suggestionId]: '',
+      }))
+      setSuggestionMessage('Suggestion rejected.')
+      setSuggestionError(null)
+      refreshSuggestions()
+    },
+    onError: (mutationError: unknown) => {
+      setSuggestionMessage(null)
+      setSuggestionError(getSuggestionErrorMessage(mutationError))
+    },
+  })
+
   const updateForm = (field: keyof MemoryFormState) =>
     (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
       setForm(previous => ({ ...previous, [field]: event.target.value }))
@@ -342,6 +465,16 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
       return
     }
     archiveMutation.mutate({ memoryId: fact.id, reason })
+  }
+
+  function rejectSuggestion(suggestion: MemorySuggestion) {
+    const reason = (rejectionReasons[suggestion.id] ?? '').trim()
+    if (reason.length < 4) {
+      setSuggestionMessage(null)
+      setSuggestionError('Please provide a rejection reason.')
+      return
+    }
+    rejectSuggestionMutation.mutate({ suggestionId: suggestion.id, reason })
   }
 
   return (
@@ -491,8 +624,8 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
             <div className="rounded-lg border border-dashed p-4">
               <p className="text-sm font-medium">No memory facts yet</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                Add a project-scoped fact above to make it available for prompt
-                preview and future runs.
+                No approved memory yet. Generate bootstrap suggestions or add
+                memory manually.
               </p>
             </div>
           )}
@@ -618,6 +751,161 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                         disabled={archiveMutation.isPending}
                       >
                         Archive
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        <div className="grid gap-3 rounded-lg border p-4">
+          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+            <div>
+              <h3 className="text-sm font-semibold">Bootstrap Suggestions</h3>
+              <p className="text-xs text-muted-foreground">
+                Generate suggested memory facts from repository/config files.
+                Suggestions are not injected until you approve them.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Source code and explicit user instructions still win over
+                approved memory.
+              </p>
+            </div>
+            <Button
+              onClick={() => generateSuggestionsMutation.mutate()}
+              disabled={generateSuggestionsMutation.isPending}
+              className="w-fit"
+            >
+              {generateSuggestionsMutation.isPending
+                ? 'Generating...'
+                : 'Generate Suggestions'}
+            </Button>
+          </div>
+
+          <div className="grid gap-2 sm:w-56">
+            <Label htmlFor="memory-suggestion-status-filter">
+              Suggestion Status
+            </Label>
+            <SelectField
+              id="memory-suggestion-status-filter"
+              value={suggestionStatusFilter}
+              options={['all', ...SUGGESTION_STATUSES]}
+              onChange={event =>
+                setSuggestionStatusFilter(
+                  event.target.value as 'all' | MemorySuggestionStatus,
+                )
+              }
+            />
+          </div>
+
+          {(suggestionMessage || suggestionError) && (
+            <div
+              className={
+                suggestionError
+                  ? 'rounded border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700'
+                  : 'rounded border border-green-200 bg-green-50 px-3 py-2 text-sm font-medium text-green-700'
+              }
+            >
+              {suggestionError || suggestionMessage}
+            </div>
+          )}
+
+          {suggestionsQuery.isLoading && (
+            <p className="text-sm text-muted-foreground">
+              Loading suggestions...
+            </p>
+          )}
+          {!suggestionsQuery.isLoading && sortedSuggestions.length === 0 && (
+            <div className="rounded-lg border border-dashed p-4">
+              <p className="text-sm font-medium">
+                {suggestionStatusFilter === 'pending'
+                  ? 'No pending suggestions.'
+                  : 'No suggestions match this filter.'}
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Generate bootstrap suggestions to review repo-derived memory
+                proposals.
+              </p>
+            </div>
+          )}
+
+          {sortedSuggestions.map(suggestion => {
+            const isPending = suggestion.status === 'pending'
+            return (
+              <div key={suggestion.id} className="rounded-lg border p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge
+                      variant="outline"
+                      className={statusClass(suggestion.status)}
+                    >
+                      {suggestion.status}
+                    </Badge>
+                    <Badge variant="outline">{suggestion.category}</Badge>
+                    <Badge variant="outline">{suggestion.scope}</Badge>
+                    <span className="text-xs text-muted-foreground">
+                      priority {suggestion.priority}
+                    </span>
+                    {suggestion.source && (
+                      <span className="text-xs text-muted-foreground">
+                        source {suggestion.source}
+                      </span>
+                    )}
+                  </div>
+                  {isPending && (
+                    <Button
+                      size="sm"
+                      onClick={() =>
+                        approveSuggestionMutation.mutate(suggestion.id)
+                      }
+                      disabled={approveSuggestionMutation.isPending}
+                    >
+                      Approve
+                    </Button>
+                  )}
+                </div>
+
+                <p className="mt-3 text-sm leading-6">{suggestion.content}</p>
+
+                {(suggestion.evidence_path || suggestion.evidence_excerpt) && (
+                  <div className="mt-3 rounded-lg bg-muted/30 p-3 text-xs text-muted-foreground">
+                    {suggestion.evidence_path && (
+                      <p className="font-mono">
+                        Evidence: {suggestion.evidence_path}
+                      </p>
+                    )}
+                    {suggestion.evidence_excerpt && (
+                      <p className="mt-1">{suggestion.evidence_excerpt}</p>
+                    )}
+                  </div>
+                )}
+
+                {isPending && (
+                  <div className="mt-3 grid gap-2 rounded-lg bg-muted/30 p-3">
+                    <Label htmlFor={`reject-suggestion-${suggestion.id}`}>
+                      Rejection Reason
+                    </Label>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <Input
+                        id={`reject-suggestion-${suggestion.id}`}
+                        value={rejectionReasons[suggestion.id] ?? ''}
+                        onChange={event =>
+                          setRejectionReasons(previous => ({
+                            ...previous,
+                            [suggestion.id]: event.target.value,
+                          }))
+                        }
+                        placeholder="Not accurate for this project."
+                      />
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => rejectSuggestion(suggestion)}
+                        disabled={rejectSuggestionMutation.isPending}
+                      >
+                        Reject
                       </Button>
                     </div>
                   </div>

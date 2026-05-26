@@ -270,6 +270,12 @@ export type MemoryStatus =
   | 'archived'
   | 'historical'
 
+export type MemorySuggestionStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'archived'
+
 export type MemoryPreviewRole =
   | 'triage'
   | 'planner'
@@ -337,6 +343,45 @@ export interface MemoryPromptPreviewResponse {
   role: MemoryPreviewRole | null
   memory_block: string
   empty: boolean
+}
+
+export interface MemorySuggestion extends ExtraFields {
+  id: string
+  project_id: string
+  content: string
+  category: MemoryCategory | (string & {})
+  scope: MemoryScope | (string & {})
+  priority: number
+  source?: string | null
+  evidence_path?: string | null
+  evidence_excerpt?: string | null
+  status: MemorySuggestionStatus | (string & {})
+  created_at?: string | null
+  updated_at?: string | null
+  approved_by?: string | null
+  approved_at?: string | null
+  rejected_by?: string | null
+  rejected_at?: string | null
+  rejection_reason?: string | null
+}
+
+export interface MemorySuggestionListResponse {
+  project_id: string
+  suggestions: MemorySuggestion[]
+}
+
+export interface BootstrapSuggestionsResponse {
+  project_id: string
+  suggestions: MemorySuggestion[]
+}
+
+export interface MemorySuggestionApprovalResponse {
+  suggestion: MemorySuggestion
+  fact: MemoryFact
+}
+
+export interface MemorySuggestionFilters {
+  status?: MemorySuggestionStatus
 }
 
 export const healthApi = {
@@ -450,5 +495,37 @@ export const memoryApi = {
     api.get<MemoryPromptPreviewResponse>(
       `/api/v1/projects/${projectId}/memory/prompt-preview`,
       { params: { role } },
+    ).then(r => r.data),
+  generateBootstrapMemorySuggestions: (projectId: string, force = false) =>
+    api.post<BootstrapSuggestionsResponse>(
+      `/api/v1/projects/${projectId}/memory/bootstrap-suggestions`,
+      { force },
+    ).then(r => r.data),
+  listMemorySuggestions: (
+    projectId: string,
+    filters?: MemorySuggestionFilters,
+  ) =>
+    api.get<MemorySuggestionListResponse>(
+      `/api/v1/projects/${projectId}/memory/suggestions`,
+      {
+        params: filters
+          ? Object.fromEntries(
+              Object.entries(filters).filter(([, value]) => value !== undefined),
+            )
+          : undefined,
+      },
+    ).then(r => r.data),
+  approveMemorySuggestion: (projectId: string, suggestionId: string) =>
+    api.post<MemorySuggestionApprovalResponse>(
+      `/api/v1/projects/${projectId}/memory/suggestions/${suggestionId}/approve`,
+    ).then(r => r.data),
+  rejectMemorySuggestion: (
+    projectId: string,
+    suggestionId: string,
+    reason: string,
+  ) =>
+    api.post<MemorySuggestion>(
+      `/api/v1/projects/${projectId}/memory/suggestions/${suggestionId}/reject`,
+      { reason },
     ).then(r => r.data),
 }
