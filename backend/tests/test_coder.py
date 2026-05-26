@@ -10,8 +10,11 @@ Coder reads files from there but never writes.
 import uuid
 import pytest
 from types import SimpleNamespace
+from sqlalchemy import text
 from backend.config.keys import settings
+from backend.db.database import engine
 from backend.memory.memory_store import add_fact
+from backend.memory.prompt_builder import build_project_memory_block as real_build_memory_block
 from backend.models.handoff import PlannerHandoff
 from backend.pipeline.coder import run_coder
 from backend.pipeline import coder
@@ -70,8 +73,10 @@ def _coder_response(run_id: str):
 class _CoderModel:
     def __init__(self, responses):
         self.responses = list(responses)
+        self.prompts = []
 
     def generate_content(self, prompt, request_options=None):
+        self.prompts.append(prompt)
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -79,7 +84,7 @@ class _CoderModel:
 
 
 def _patch_coder_dependencies(monkeypatch, model, tmp_repo):
-    monkeypatch.setattr(coder, "load_hard_facts", lambda: "")
+    monkeypatch.setattr(coder, "build_project_memory_block", lambda **kwargs: "")
     monkeypatch.setattr(coder, "get_target_repo_path", lambda: str(tmp_repo))
     monkeypatch.setattr(coder, "save_checkpoint", lambda **kwargs: None)
     monkeypatch.setattr(coder.genai, "configure", lambda api_key: None)
@@ -93,6 +98,13 @@ def _patch_coder_dependencies(monkeypatch, model, tmp_repo):
         "GenerativeModel",
         lambda **kwargs: model,
     )
+
+
+def _cleanup_memory(project_id: str):
+    with engine.begin() as conn:
+        conn.execute(text("""
+            DELETE FROM memory_facts WHERE project_id = :project_id
+        """), {"project_id": project_id})
 
 
 @pytest.mark.unit
@@ -151,6 +163,66 @@ async def test_coder_429_retry_failure_raises_runtime_error(monkeypatch, tmp_rep
         await run_coder(plan=plan, run_id=run_id)
 
     assert "coder.py: Failed after rate limit retry" in str(error.value)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_coder_prompt_includes_project_memory(monkeypatch, tmp_repo):
+    run_id = str(uuid.uuid4())
+    project_id = f"coder-project-{uuid.uuid4().hex}"
+    plan = make_test_plan(run_id)
+    model = _CoderModel([_coder_response(run_id)])
+    _patch_coder_dependencies(monkeypatch, model, tmp_repo)
+    monkeypatch.setattr(coder, "build_project_memory_block", real_build_memory_block)
+    add_fact(project_id, "Backend uses FastAPI memory", category="stack", scope="backend")
+
+    try:
+        await run_coder(plan=plan, run_id=run_id, project_id=project_id)
+    finally:
+        _cleanup_memory(project_id)
+
+    prompt = model.prompts[0]
+    assert "=== PROJECT MEMORY" in prompt
+    assert "[stack/backend] Backend uses FastAPI memory" in prompt
+    assert "source code and explicit user instructions win" in prompt
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_coder_prompt_injection_skips_empty_memory(monkeypatch, tmp_repo):
+    run_id = str(uuid.uuid4())
+    project_id = f"coder-empty-{uuid.uuid4().hex}"
+    plan = make_test_plan(run_id)
+    model = _CoderModel([_coder_response(run_id)])
+    _patch_coder_dependencies(monkeypatch, model, tmp_repo)
+    monkeypatch.setattr(coder, "build_project_memory_block", real_build_memory_block)
+
+    await run_coder(plan=plan, run_id=run_id, project_id=project_id)
+
+    assert "=== PROJECT MEMORY" not in model.prompts[0]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_coder_prompt_injection_is_project_scoped(monkeypatch, tmp_repo):
+    run_id = str(uuid.uuid4())
+    project_a = f"coder-a-{uuid.uuid4().hex}"
+    project_b = f"coder-b-{uuid.uuid4().hex}"
+    plan = make_test_plan(run_id)
+    model = _CoderModel([_coder_response(run_id)])
+    _patch_coder_dependencies(monkeypatch, model, tmp_repo)
+    monkeypatch.setattr(coder, "build_project_memory_block", real_build_memory_block)
+    add_fact(project_a, "Project A coder memory", category="stack")
+    add_fact(project_b, "Project B coder memory", category="stack")
+
+    try:
+        await run_coder(plan=plan, run_id=run_id, project_id=project_a)
+    finally:
+        _cleanup_memory(project_a)
+        _cleanup_memory(project_b)
+
+    assert "Project A coder memory" in model.prompts[0]
+    assert "Project B coder memory" not in model.prompts[0]
 
 
 @pytest.mark.api

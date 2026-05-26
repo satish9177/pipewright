@@ -12,6 +12,7 @@ import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import text
 
+from backend.config.keys import settings
 from backend.db.database import engine
 from backend.projects.project_store import (
     create_project,
@@ -136,8 +137,25 @@ def test_github_token_not_stored_plaintext_in_db(tmp_repo, monkeypatch):
     assert stored.startswith(ENCRYPTED_PREFIX)
 
 
+def test_github_token_encryption_uses_settings_key(tmp_repo, monkeypatch):
+    key = Fernet.generate_key().decode()
+    monkeypatch.delenv("PIPEWRIGHT_ENCRYPTION_KEY", raising=False)
+    monkeypatch.setattr(settings, "pipewright_encryption_key", key)
+
+    project = create_project(
+        name=f"Settings Key {uuid.uuid4()}",
+        repo_path=str(tmp_repo),
+        test_command="python --version",
+        github_token="ghp_secret",
+    )
+
+    assert project["github_token"].startswith(ENCRYPTED_PREFIX)
+    assert decrypt_secret(project["github_token"]) == "ghp_secret"
+
+
 def test_empty_github_token_does_not_require_encryption_key(tmp_repo, monkeypatch):
     monkeypatch.delenv("PIPEWRIGHT_ENCRYPTION_KEY", raising=False)
+    monkeypatch.setattr(settings, "pipewright_encryption_key", None)
 
     project = create_project(
         name=f"No Token Key {uuid.uuid4()}",
@@ -151,6 +169,7 @@ def test_empty_github_token_does_not_require_encryption_key(tmp_repo, monkeypatc
 
 def test_missing_encryption_key_fails_when_storing_token(tmp_repo, monkeypatch):
     monkeypatch.delenv("PIPEWRIGHT_ENCRYPTION_KEY", raising=False)
+    monkeypatch.setattr(settings, "pipewright_encryption_key", None)
 
     with pytest.raises(RuntimeError) as error:
         create_project(
@@ -171,6 +190,7 @@ def test_decrypt_legacy_plaintext_token_fails_loudly():
 def test_missing_encryption_key_fails_when_decrypting(monkeypatch):
     key = Fernet.generate_key().decode()
     monkeypatch.setenv("PIPEWRIGHT_ENCRYPTION_KEY", key)
+    monkeypatch.setattr(settings, "pipewright_encryption_key", None)
     project_token = create_project(
         name=f"Decrypt Missing Key {uuid.uuid4()}",
         repo_path=str(LOCAL_TMP / str(uuid.uuid4())),
@@ -178,6 +198,7 @@ def test_missing_encryption_key_fails_when_decrypting(monkeypatch):
         github_token="ghp_secret",
     )["github_token"]
     monkeypatch.delenv("PIPEWRIGHT_ENCRYPTION_KEY", raising=False)
+    monkeypatch.setattr(settings, "pipewright_encryption_key", None)
 
     with pytest.raises(RuntimeError, match="PIPEWRIGHT_ENCRYPTION_KEY"):
         decrypt_secret(project_token)

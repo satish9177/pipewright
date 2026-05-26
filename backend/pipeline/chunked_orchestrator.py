@@ -640,8 +640,14 @@ async def _execute_single_chunk(
         enriched_description,
         run_id,
         chunk_number=chunk_number,
+        project_id=project_id,
     )
-    code = await run_coder(plan, run_id, chunk_number=chunk_number)
+    code = await run_coder(
+        plan,
+        run_id,
+        chunk_number=chunk_number,
+        project_id=project_id,
+    )
     patch = apply_patch(code, run_id, chunk_number=chunk_number)
     test_result = run_tests(patch, run_id, chunk_number=chunk_number)
 
