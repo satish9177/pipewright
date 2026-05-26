@@ -1,0 +1,289 @@
+"""
+memory.py
+Project-scoped memory management routes.
+"""
+
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from backend.memory.memory_store import (
+    ALLOWED_CATEGORIES,
+    ALLOWED_SCOPES,
+    ALLOWED_STATUSES,
+    DEFAULT_PRIORITY,
+    add_fact,
+    archive_fact,
+    list_facts,
+    update_fact,
+    verify_fact,
+)
+from backend.memory.prompt_builder import ROLE_CATEGORIES, build_project_memory_block
+from backend.projects.project_store import get_project
+
+router = APIRouter(prefix="/api/v1/projects/{project_id}/memory")
+
+
+class MemoryFactResponse(BaseModel):
+    id: str
+    project_id: str
+    content: str
+    category: str
+    scope: str
+    priority: int
+    status: str
+    source: str | None = None
+    added_by: str | None = None
+    approved_by: str | None = None
+    approved_at: str | None = None
+    last_verified_at: str | None = None
+    archived_reason: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class MemoryFactListResponse(BaseModel):
+    project_id: str
+    facts: list[MemoryFactResponse]
+
+
+class MemoryFactCreateRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=400)
+    category: str = "other"
+    scope: str = "global"
+    priority: int = Field(default=DEFAULT_PRIORITY, ge=0, le=1000)
+    source: str = "manual"
+
+    @field_validator("category")
+    @classmethod
+    def category_must_be_allowed(cls, value: str) -> str:
+        return _validate_allowed(value, ALLOWED_CATEGORIES, "category")
+
+    @field_validator("scope")
+    @classmethod
+    def scope_must_be_allowed(cls, value: str) -> str:
+        return _validate_allowed(value, ALLOWED_SCOPES, "scope")
+
+
+class MemoryFactUpdateRequest(BaseModel):
+    content: str | None = Field(default=None, min_length=1, max_length=400)
+    category: str | None = None
+    scope: str | None = None
+    priority: int | None = Field(default=None, ge=0, le=1000)
+
+    @field_validator("category")
+    @classmethod
+    def category_must_be_allowed(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return _validate_allowed(value, ALLOWED_CATEGORIES, "category")
+
+    @field_validator("scope")
+    @classmethod
+    def scope_must_be_allowed(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return _validate_allowed(value, ALLOWED_SCOPES, "scope")
+
+    @model_validator(mode="after")
+    def at_least_one_field(self) -> "MemoryFactUpdateRequest":
+        if not self.model_fields_set:
+            raise ValueError("At least one memory field must be provided")
+        return self
+
+
+class MemoryArchiveRequest(BaseModel):
+    reason: str = Field(min_length=4, max_length=400)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Archive reason is required")
+        return value
+
+
+class MemoryVerifyResponse(BaseModel):
+    id: str
+    project_id: str
+    last_verified_at: str
+
+
+class MemoryPromptPreviewResponse(BaseModel):
+    project_id: str
+    role: str | None
+    memory_block: str
+    empty: bool
+
+
+def _validate_allowed(value: str, allowed_values: set[str], field_name: str) -> str:
+    normalized = (value or "").strip()
+    if normalized not in allowed_values:
+        raise ValueError(f"Invalid memory {field_name}")
+    return normalized
+
+
+def _require_project(project_id: str) -> dict:
+    project = get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+def _sanitize_fact(fact: dict) -> dict:
+    return {
+        key: value
+        for key, value in fact.items()
+        if key != "content_hash"
+    }
+
+
+def _get_fact_for_project(project_id: str, memory_id: str) -> dict:
+    for fact in list_facts(project_id):
+        if fact["id"] == memory_id:
+            return fact
+    raise HTTPException(status_code=404, detail="Memory fact not found")
+
+
+def _map_memory_error(error: ValueError) -> HTTPException:
+    message = str(error)
+    if "active duplicate memory fact already exists" in message:
+        return HTTPException(
+            status_code=409,
+            detail="Active duplicate memory fact already exists",
+        )
+    if "memory fact not found" in message:
+        return HTTPException(status_code=404, detail="Memory fact not found")
+    return HTTPException(status_code=422, detail=message)
+
+
+@router.get("", response_model=MemoryFactListResponse)
+def list_memory_facts(
+    project_id: str,
+    status: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    scope: str | None = Query(default=None),
+):
+    _require_project(project_id)
+    if status is not None:
+        _validate_allowed(status, ALLOWED_STATUSES, "status")
+    if category is not None:
+        category = _validate_allowed(category, ALLOWED_CATEGORIES, "category")
+    if scope is not None:
+        scope = _validate_allowed(scope, ALLOWED_SCOPES, "scope")
+
+    try:
+        facts = list_facts(
+            project_id,
+            status=status,
+            category=category,
+            scope=scope,
+        )
+    except ValueError as error:
+        raise _map_memory_error(error)
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+    return {
+        "project_id": project_id,
+        "facts": [_sanitize_fact(fact) for fact in facts],
+    }
+
+
+@router.post("", response_model=MemoryFactResponse)
+def create_memory_fact(project_id: str, request: MemoryFactCreateRequest):
+    _require_project(project_id)
+    try:
+        fact = add_fact(
+            project_id=project_id,
+            content=request.content,
+            category=request.category,
+            scope=request.scope,
+            priority=request.priority,
+            source=request.source,
+            added_by="api",
+            approved_by="api",
+        )
+        return _sanitize_fact(_get_fact_for_project(project_id, fact["id"]))
+    except ValueError as error:
+        raise _map_memory_error(error)
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+
+@router.get("/prompt-preview", response_model=MemoryPromptPreviewResponse)
+def preview_memory_prompt(
+    project_id: str,
+    role: str | None = Query(default=None),
+    token_budget: int | None = Query(default=None, ge=1),
+):
+    project = _require_project(project_id)
+    if role is not None and role not in ROLE_CATEGORIES:
+        raise HTTPException(status_code=422, detail="Invalid memory role")
+
+    memory_block = build_project_memory_block(
+        project_id=project_id,
+        role=role,
+        project_name=project.get("name"),
+        token_budget=token_budget,
+    )
+    return {
+        "project_id": project_id,
+        "role": role,
+        "memory_block": memory_block,
+        "empty": memory_block == "",
+    }
+
+
+@router.patch("/{memory_id}", response_model=MemoryFactResponse)
+def update_memory_fact(
+    project_id: str,
+    memory_id: str,
+    request: MemoryFactUpdateRequest,
+):
+    _require_project(project_id)
+    values: dict[str, Any] = request.model_dump(exclude_unset=True)
+    try:
+        fact = update_fact(project_id=project_id, memory_id=memory_id, **values)
+        return _sanitize_fact(fact)
+    except ValueError as error:
+        raise _map_memory_error(error)
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+
+@router.post("/{memory_id}/archive", response_model=MemoryFactResponse)
+def archive_memory_fact(
+    project_id: str,
+    memory_id: str,
+    request: MemoryArchiveRequest,
+):
+    _require_project(project_id)
+    try:
+        archive_fact(
+            project_id=project_id,
+            memory_id=memory_id,
+            reason=request.reason,
+            archived_by="api",
+        )
+        return _sanitize_fact(_get_fact_for_project(project_id, memory_id))
+    except ValueError as error:
+        raise _map_memory_error(error)
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+
+@router.post("/{memory_id}/verify", response_model=MemoryVerifyResponse)
+def verify_memory_fact(project_id: str, memory_id: str):
+    _require_project(project_id)
+    try:
+        return verify_fact(
+            project_id=project_id,
+            memory_id=memory_id,
+            verified_by="api",
+        )
+    except ValueError as error:
+        raise _map_memory_error(error)
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error))
