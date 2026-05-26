@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -33,12 +34,38 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_SUGGESTION_STATUSES = {"pending", "approved", "rejected", "archived"}
 BOOTSTRAP_SOURCE = "bootstrap"
+BOOTSTRAP_MAX_DEPTH = 5
+BOOTSTRAP_MAX_MANIFEST_FILES = 100
 
-CONFIG_FILES = [
+BOOTSTRAP_IGNORED_DIRS = {
+    ".git",
+    "node_modules",
+    "venv",
+    ".venv",
+    "dist",
+    "build",
+    "target",
+    "__pycache__",
+    "coverage",
+    "vendor",
+    "generated",
+    ".next",
+    "out",
+    "tmp",
+    "logs",
+    "examples",
+    "example",
+    "samples",
+    "sample",
+    "demo",
+    "template",
+    "templates",
+    "fixtures",
+}
+
+MANIFEST_FILENAMES = {
     "package.json",
-    "frontend/package.json",
     "requirements.txt",
-    "backend/requirements.txt",
     "pyproject.toml",
     "Pipfile",
     "setup.py",
@@ -60,10 +87,13 @@ CONFIG_FILES = [
     "vite.config.ts",
     "next.config.js",
     "next.config.ts",
-    "prisma/schema.prisma",
     "alembic.ini",
-    "backend/db/schema.sql",
-]
+    "schema.sql",
+}
+
+SPECIAL_MANIFEST_SUFFIXES = {
+    "prisma/schema.prisma",
+}
 
 
 @dataclass(frozen=True)
@@ -109,6 +139,50 @@ def _load_repo_file(root: Path, relative_path: str) -> str | None:
         return None
 
 
+def _relative_posix(path: Path, root: Path) -> str:
+    return path.relative_to(root).as_posix()
+
+
+def _is_ignored_relative_path(relative_path: str) -> bool:
+    parts = {part.lower() for part in relative_path.split("/") if part}
+    return bool(parts & BOOTSTRAP_IGNORED_DIRS)
+
+
+def _is_manifest_path(relative_path: str) -> bool:
+    name = relative_path.rsplit("/", 1)[-1]
+    if name in MANIFEST_FILENAMES:
+        return True
+    return any(relative_path.endswith(suffix) for suffix in SPECIAL_MANIFEST_SUFFIXES)
+
+
+def _discover_manifest_files(root: Path) -> list[str]:
+    discovered: list[str] = []
+    root = root.resolve()
+
+    for current_root, dirnames, filenames in os.walk(root):
+        current_path = Path(current_root)
+        relative_dir = current_path.relative_to(root)
+        depth = 0 if str(relative_dir) == "." else len(relative_dir.parts)
+        dirnames[:] = [
+            dirname for dirname in dirnames
+            if dirname.lower() not in BOOTSTRAP_IGNORED_DIRS
+            and depth < BOOTSTRAP_MAX_DEPTH
+        ]
+        if depth > BOOTSTRAP_MAX_DEPTH:
+            continue
+
+        for filename in sorted(filenames):
+            relative_path = _relative_posix(current_path / filename, root)
+            if _is_ignored_relative_path(relative_path):
+                continue
+            if not _is_manifest_path(relative_path):
+                continue
+            discovered.append(relative_path)
+            if len(discovered) >= BOOTSTRAP_MAX_MANIFEST_FILES:
+                return discovered
+    return discovered
+
+
 def _lower_files(files: dict[str, str]) -> dict[str, str]:
     return {path: content.lower() for path, content in files.items()}
 
@@ -132,6 +206,32 @@ def _package_has_script(package_json: str, script_name: str) -> bool:
         return False
     scripts = data.get("scripts") or {}
     return script_name in scripts
+
+
+def _package_script_contains(package_json: str, script_name: str, fragment: str) -> bool:
+    try:
+        data = json.loads(package_json)
+    except json.JSONDecodeError:
+        return False
+    scripts = data.get("scripts") or {}
+    return fragment.lower() in str(scripts.get(script_name, "")).lower()
+
+
+def _scope_from_path(path: str, default: str = "backend") -> str:
+    parts = {part.lower() for part in path.split("/") if part}
+    if parts & {"frontend", "web", "client", "ui"}:
+        return "frontend"
+    if parts & {"tests", "test", "spec"}:
+        return "tests"
+    if parts & {"infra", "deploy", "docker"}:
+        return "infra"
+    if parts & {"backend", "api", "server", "service", "services"}:
+        return "backend"
+    return default
+
+
+def _content_has_any(content: str, needles: set[str]) -> bool:
+    return any(needle in content for needle in needles)
 
 
 def _python_311_detected(files: dict[str, str]) -> bool:
@@ -167,15 +267,15 @@ def _add_candidate(
 def _collect_candidates(root: Path) -> list[CandidateSuggestion]:
     files = {
         relative_path: content
-        for relative_path in CONFIG_FILES
+        for relative_path in _discover_manifest_files(root)
         if (content := _load_repo_file(root, relative_path)) is not None
     }
     lowered = _lower_files(files)
     candidates: list[CandidateSuggestion] = []
 
     for path, content in lowered.items():
-        if path.endswith("requirements.txt") or path in {"pyproject.toml", "Pipfile", "setup.py"}:
-            if "fastapi" in content:
+        if path.endswith(("requirements.txt", "pyproject.toml", "Pipfile", "setup.py")):
+            if "fastapi" in content or "uvicorn" in content:
                 _add_candidate(
                     candidates,
                     "Backend uses FastAPI.",
@@ -183,6 +283,26 @@ def _collect_candidates(root: Path) -> list[CandidateSuggestion]:
                     "backend",
                     path,
                     "Detected FastAPI dependency.",
+                    priority=80,
+                )
+            if "django" in content:
+                _add_candidate(
+                    candidates,
+                    "Backend uses Django.",
+                    "stack",
+                    "backend",
+                    path,
+                    "Detected Django dependency.",
+                    priority=80,
+                )
+            if "flask" in content:
+                _add_candidate(
+                    candidates,
+                    "Backend uses Flask.",
+                    "stack",
+                    "backend",
+                    path,
+                    "Detected Flask dependency.",
                     priority=80,
                 )
             if "sqlalchemy" in content:
@@ -205,25 +325,71 @@ def _collect_candidates(root: Path) -> list[CandidateSuggestion]:
                     "Detected pytest dependency.",
                     priority=90,
                 )
+            if _content_has_any(content, {"postgresql", "psycopg", "asyncpg"}):
+                _add_candidate(
+                    candidates,
+                    "Project uses PostgreSQL.",
+                    "db",
+                    "backend",
+                    path,
+                    "Detected PostgreSQL dependency or reference.",
+                    priority=100,
+                )
+            if _content_has_any(content, {"mysql", "pymysql", "mysqlclient"}):
+                _add_candidate(
+                    candidates,
+                    "Project uses MySQL.",
+                    "db",
+                    "backend",
+                    path,
+                    "Detected MySQL dependency or reference.",
+                    priority=100,
+                )
+            if _content_has_any(content, {"mongodb", "mongoose"}):
+                _add_candidate(
+                    candidates,
+                    "Project uses MongoDB.",
+                    "db",
+                    "backend",
+                    path,
+                    "Detected MongoDB dependency or reference.",
+                    priority=100,
+                )
 
     if _python_311_detected(files):
+        evidence_path = next(
+            (
+                path for path, content in lowered.items()
+                if "3.11" in content
+            ),
+            None,
+        )
         _add_candidate(
             candidates,
             "Backend uses Python 3.11.",
             "stack",
             "backend",
-            "pyproject.toml",
+            evidence_path,
             "Detected Python 3.11 runtime hint.",
             priority=90,
         )
 
-    for path in ("package.json", "frontend/package.json"):
-        package_json = files.get(path)
-        if not package_json:
+    for path, package_json in files.items():
+        if not path.endswith("package.json"):
             continue
         uses_react = _package_uses(package_json, "react")
         uses_vite = _package_uses(package_json, "vite")
         uses_typescript = _package_uses(package_json, "typescript")
+        uses_next = _package_uses(package_json, "next")
+        uses_express = _package_uses(package_json, "express")
+        uses_nest = (
+            _package_uses(package_json, "@nestjs/core")
+            or "@nestjs/core" in package_json.lower()
+            or "nestjs" in package_json.lower()
+        )
+        uses_fastify = _package_uses(package_json, "fastify")
+        uses_prisma = _package_uses(package_json, "prisma") or _package_uses(package_json, "@prisma/client")
+        uses_mongoose = _package_uses(package_json, "mongoose") or "mongodb" in package_json.lower()
         if uses_react and uses_vite and uses_typescript:
             _add_candidate(
                 candidates,
@@ -234,7 +400,79 @@ def _collect_candidates(root: Path) -> list[CandidateSuggestion]:
                 "Detected React, Vite, and TypeScript dependencies.",
                 priority=80,
             )
-        if _package_has_script(package_json, "build"):
+        elif uses_react and uses_vite:
+            _add_candidate(
+                candidates,
+                "Frontend uses React and Vite.",
+                "stack",
+                "frontend",
+                path,
+                "Detected React and Vite dependencies.",
+                priority=90,
+            )
+        elif uses_next:
+            _add_candidate(
+                candidates,
+                "Frontend uses Next.js.",
+                "stack",
+                "frontend",
+                path,
+                "Detected Next.js dependency.",
+                priority=80,
+            )
+        if uses_express:
+            _add_candidate(
+                candidates,
+                "Backend uses Express.",
+                "stack",
+                "backend",
+                path,
+                "Detected Express dependency.",
+                priority=80,
+            )
+        if uses_nest:
+            _add_candidate(
+                candidates,
+                "Backend uses NestJS.",
+                "stack",
+                "backend",
+                path,
+                "Detected NestJS dependency.",
+                priority=80,
+            )
+        if uses_fastify:
+            _add_candidate(
+                candidates,
+                "Backend uses Fastify.",
+                "stack",
+                "backend",
+                path,
+                "Detected Fastify dependency.",
+                priority=80,
+            )
+        if uses_prisma:
+            _add_candidate(
+                candidates,
+                "Project uses Prisma for database access.",
+                "db",
+                _scope_from_path(path),
+                path,
+                "Detected Prisma dependency.",
+                priority=100,
+            )
+        if uses_mongoose:
+            _add_candidate(
+                candidates,
+                "Project uses MongoDB.",
+                "db",
+                "backend",
+                path,
+                "Detected MongoDB dependency.",
+                priority=100,
+            )
+        if _package_has_script(package_json, "build") and (
+            uses_vite or _package_script_contains(package_json, "build", "vite")
+        ):
             _add_candidate(
                 candidates,
                 "Frontend build uses npm run build.",
@@ -244,68 +482,173 @@ def _collect_candidates(root: Path) -> list[CandidateSuggestion]:
                 "Detected package.json build script.",
                 priority=100,
             )
-        if "jest" in package_json.lower() or "vitest" in package_json.lower():
+        if "jest" in package_json.lower():
             _add_candidate(
                 candidates,
-                "Frontend tests use a JavaScript test runner.",
+                "Frontend tests use Jest.",
                 "test",
                 "frontend",
                 path,
-                "Detected frontend test dependency.",
+                "Detected Jest dependency.",
                 priority=120,
             )
+        if "vitest" in package_json.lower():
+            _add_candidate(
+                candidates,
+                "Frontend tests use Vitest.",
+                "test",
+                "frontend",
+                path,
+                "Detected Vitest dependency.",
+                priority=120,
+            )
+        if _package_has_script(package_json, "test"):
+            scope = "frontend" if uses_react or uses_vite or uses_next else "backend"
+            _add_candidate(
+                candidates,
+                "Project defines npm test script.",
+                "test",
+                scope,
+                path,
+                "Detected package.json test script.",
+                priority=130,
+            )
 
-    if "pytest.ini" in files:
+    for path in files:
+        if not path.endswith("pytest.ini"):
+            continue
         _add_candidate(
             candidates,
             "Run backend unit tests with pytest.",
             "test",
             "tests",
-            "pytest.ini",
+            path,
             "Detected pytest.ini.",
             priority=90,
         )
 
-    if "backend/db/schema.sql" in files or "sqlite" in "\n".join(lowered.values()):
+    for path, content in lowered.items():
+        if not path.endswith(("pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle")):
+            continue
+        if "spring-boot" in content:
+            _add_candidate(
+                candidates,
+                "Backend uses Spring Boot.",
+                "stack",
+                "backend",
+                path,
+                "Detected Spring Boot dependency.",
+                priority=80,
+            )
+        if path.endswith("pom.xml") and "maven" in content:
+            _add_candidate(
+                candidates,
+                "Java build uses Maven.",
+                "deploy",
+                "backend",
+                path,
+                "Detected Maven project file.",
+                priority=140,
+            )
+        if path.endswith(("build.gradle", "build.gradle.kts", "settings.gradle")):
+            _add_candidate(
+                candidates,
+                "Java build uses Gradle.",
+                "deploy",
+                "backend",
+                path,
+                "Detected Gradle build file.",
+                priority=140,
+            )
+        if "junit" in content:
+            _add_candidate(
+                candidates,
+                "Java tests use JUnit.",
+                "test",
+                "tests",
+                path,
+                "Detected JUnit dependency.",
+                priority=130,
+            )
+
+    for path in files:
+        if path.endswith("go.mod"):
+            _add_candidate(
+                candidates,
+                "Backend includes a Go module.",
+                "stack",
+                "backend",
+                path,
+                "Detected go.mod.",
+                priority=110,
+            )
+        if path.endswith("Cargo.toml"):
+            _add_candidate(
+                candidates,
+                "Project includes a Rust component.",
+                "stack",
+                _scope_from_path(path, default="backend"),
+                path,
+                "Detected Cargo.toml.",
+                priority=120,
+            )
+
+    sqlite_evidence = next(
+        (
+            path for path, content in lowered.items()
+            if "sqlite" in content or "sqlite3" in content or path.endswith("schema.sql")
+        ),
+        None,
+    )
+    if sqlite_evidence:
         _add_candidate(
             candidates,
             "Current local database is SQLite.",
             "db",
             "backend",
-            "backend/db/schema.sql" if "backend/db/schema.sql" in files else None,
+            sqlite_evidence,
             "Detected SQLite schema or SQLite reference.",
             priority=80,
         )
 
-    if "Dockerfile" in files or "docker-compose.yml" in files or "docker-compose.yaml" in files:
+    docker_evidence = next(
+        (
+            path for path in files
+            if path.endswith(("Dockerfile", "docker-compose.yml", "docker-compose.yaml"))
+        ),
+        None,
+    )
+    if docker_evidence:
         _add_candidate(
             candidates,
             "Project includes Docker deployment configuration.",
             "deploy",
             "infra",
-            "Dockerfile" if "Dockerfile" in files else "docker-compose.yml",
+            docker_evidence,
             "Detected Docker configuration.",
             priority=130,
         )
 
-    if "prisma/schema.prisma" in files:
+    prisma_evidence = next((path for path in files if path.endswith("prisma/schema.prisma")), None)
+    if prisma_evidence:
         _add_candidate(
             candidates,
             "Project uses Prisma schema configuration.",
             "db",
-            "backend",
-            "prisma/schema.prisma",
+            _scope_from_path(prisma_evidence),
+            prisma_evidence,
             "Detected Prisma schema.",
             priority=120,
         )
 
-    if "alembic.ini" in files or (root / "alembic").is_dir():
+    alembic_evidence = next((path for path in files if path.endswith("alembic.ini")), None)
+    if alembic_evidence or (root / "alembic").is_dir():
         _add_candidate(
             candidates,
             "Project uses Alembic database migrations.",
             "db",
             "backend",
-            "alembic.ini",
+            alembic_evidence or "alembic",
             "Detected Alembic configuration.",
             priority=120,
         )
@@ -315,7 +658,7 @@ def _collect_candidates(root: Path) -> list[CandidateSuggestion]:
         "Never log secrets, API keys, tokens, or .env values.",
         "security",
         "global",
-        None,
+        "__bootstrap_default__",
         "Default bootstrap safety rule.",
         priority=0,
     )
