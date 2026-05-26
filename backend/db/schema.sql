@@ -18,6 +18,27 @@ CREATE TABLE IF NOT EXISTS memory_facts (
     content_hash TEXT
 );
 
+CREATE TABLE IF NOT EXISTS memory_suggestions (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    category TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    priority INTEGER DEFAULT 100,
+    source TEXT DEFAULT 'bootstrap',
+    evidence_path TEXT,
+    evidence_excerpt TEXT,
+    status TEXT DEFAULT 'pending',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME,
+    approved_by TEXT,
+    approved_at DATETIME,
+    rejected_by TEXT,
+    rejected_at DATETIME,
+    rejection_reason TEXT,
+    content_hash TEXT
+);
+
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -130,3 +151,8 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_runs_project ON pipeline_runs(project_id
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);
 CREATE INDEX IF NOT EXISTS idx_chunks_run_status ON chunks(run_id, status);
 CREATE INDEX IF NOT EXISTS idx_approval_gates_run_status ON approval_gates(run_id, approval_type, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_suggestions_pending_dedupe
+ON memory_suggestions(project_id, content_hash)
+WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_memory_suggestions_project_status
+ON memory_suggestions(project_id, status);
