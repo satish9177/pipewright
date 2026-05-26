@@ -22,7 +22,7 @@ from pydantic import ValidationError
 
 from backend.config.keys import settings
 from backend.models.handoff import PlannerHandoff
-from backend.memory.memory_store import load_hard_facts
+from backend.memory.prompt_builder import build_project_memory_block
 from backend.checkpoint.checkpoint_store import save_checkpoint
 from backend.utils.json_helpers import clean_json_response
 
@@ -63,13 +63,17 @@ Respond with nothing except the JSON object."""
 def _build_user_prompt(
     feature_description: str,
     run_id: str,
-    hard_facts: str
+    project_memory_block: str = "",
 ) -> str:
-    context = hard_facts if hard_facts else (
-        "No memory entries yet. This is a fresh project."
+    memory_section = (
+        f"{project_memory_block}\n\n"
+        "Remember: Project memory is advisory. Current source code and "
+        "explicit user instructions win on conflict.\n\n"
+        if project_memory_block
+        else ""
     )
     return (
-        f"PROJECT CONTEXT (from memory):\n{context}\n\n"
+        f"{memory_section}"
         f"FEATURE REQUEST:\n{feature_description}\n\n"
         f"RUN ID: {run_id}\n\n"
         f"Respond with the JSON plan only."
@@ -107,7 +111,9 @@ def _parse_handoff(raw_text: str, run_id: str) -> PlannerHandoff:
 async def run_planner(
     feature_description: str,
     run_id: str,
-    chunk_number: int = 0
+    chunk_number: int = 0,
+    project_id: str | None = None,
+    project_name: str | None = None,
 ) -> PlannerHandoff:
     """
     Run the planning stage of the pipeline.
@@ -121,8 +127,15 @@ async def run_planner(
     """
     print(f"[PLANNER] Starting | run_id={run_id}")
 
-    hard_facts = load_hard_facts()
-    fact_count = len(hard_facts.splitlines()) if hard_facts else 0
+    project_memory_block = build_project_memory_block(
+        project_id=project_id,
+        role="planner",
+        project_name=project_name,
+    )
+    fact_count = len([
+        line for line in project_memory_block.splitlines()
+        if line.startswith("[")
+    ])
     print(f"[PLANNER] Loaded {fact_count} memory facts")
 
     # Configure Gemini client
@@ -140,7 +153,7 @@ async def run_planner(
     )
 
     user_prompt = _build_user_prompt(
-        feature_description, run_id, hard_facts
+        feature_description, run_id, project_memory_block
     )
 
     raw_text = ""

@@ -13,6 +13,7 @@ import google.generativeai as genai
 from pydantic import ValidationError
 
 from backend.config.keys import settings
+from backend.memory.prompt_builder import build_project_memory_block
 from backend.models.chunk import TriageResult
 from backend.projects.project_store import require_project
 from backend.repo.repo_indexer import ensure_repo_indexed, get_relevant_files
@@ -88,13 +89,22 @@ def _build_triage_prompt(
     project_id: str,
     feature_description: str,
     relevant_files: list[dict],
+    project_memory_block: str = "",
 ) -> str:
+    memory_section = (
+        f"\n\n{project_memory_block}\n\n"
+        "Remember: Project memory is advisory. Current source code and "
+        "explicit user instructions win on conflict."
+        if project_memory_block
+        else "\n\n"
+    )
     return (
         f"RUN ID:\n{run_id}\n\n"
         f"PROJECT ID:\n{project_id}\n\n"
         f"FEATURE REQUEST:\n{feature_description}\n\n"
         f"RELEVANT INDEXED FILES:\n"
-        f"{_format_relevant_files(relevant_files)}\n\n"
+        f"{_format_relevant_files(relevant_files)}"
+        f"{memory_section}"
         f"Apply these core rules exactly:\n"
         f"1. Each chunk must be independently testable.\n"
         f"2. Dependencies flow forward only.\n"
@@ -206,6 +216,11 @@ async def run_triage(
         project_id=project_id,
         feature_description=feature_description,
         relevant_files=relevant_files,
+        project_memory_block=build_project_memory_block(
+            project_id=project_id,
+            role="triage",
+            project_name=project.get("name"),
+        ),
     )
 
     raw_text = ""

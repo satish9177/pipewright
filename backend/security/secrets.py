@@ -7,13 +7,18 @@ import os
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from backend.config.keys import settings
 
 ENCRYPTED_PREFIX = "fernet:"
 ENCRYPTION_KEY_ENV = "PIPEWRIGHT_ENCRYPTION_KEY"
 
 
+def _get_encryption_key() -> str | None:
+    return settings.pipewright_encryption_key or os.getenv(ENCRYPTION_KEY_ENV)
+
+
 def _get_fernet() -> Fernet:
-    key = os.getenv(ENCRYPTION_KEY_ENV)
+    key = _get_encryption_key()
     if not key:
         raise RuntimeError(
             f"secrets.py: {ENCRYPTION_KEY_ENV} is required for GitHub token storage"

@@ -205,12 +205,12 @@ def patch_git_preflight(monkeypatch, calls=None):
 
 
 def patch_success_pipeline(monkeypatch, run_id: str, calls=None):
-    async def fake_planner(feature_description, run_id, chunk_number=0):
+    async def fake_planner(feature_description, run_id, chunk_number=0, **kwargs):
         if calls is not None:
             calls.append(("planner", chunk_number, feature_description))
         return make_planner_result(run_id)
 
-    async def fake_coder(plan, run_id, chunk_number=0):
+    async def fake_coder(plan, run_id, chunk_number=0, **kwargs):
         if calls is not None:
             calls.append(("coder", chunk_number))
         return make_coder_result(run_id, chunk_number)

@@ -158,10 +158,17 @@ async def _run_pipeline_steps(
     project: dict | None = None
 ) -> dict:
     print(f"[PIPELINE] Started | run_id={run_id}")
+    project_id = project.get("id") if project else None
+    project_name = project.get("name") if project else None
 
     try:
         _update_run_status(run_id, "running", "plan")
-        plan = await run_planner(feature_description, run_id)
+        plan = await run_planner(
+            feature_description,
+            run_id,
+            project_id=project_id,
+            project_name=project_name,
+        )
         print("[PIPELINE] Stage 1 complete: plan")
     except Exception as error:
         _update_run_status(run_id, "failed", "plan")
@@ -169,7 +176,12 @@ async def _run_pipeline_steps(
 
     try:
         _update_run_status(run_id, "running", "code")
-        coder_output = await run_coder(plan, run_id)
+        coder_output = await run_coder(
+            plan,
+            run_id,
+            project_id=project_id,
+            project_name=project_name,
+        )
         print("[PIPELINE] Stage 2 complete: code")
     except Exception as error:
         _update_run_status(run_id, "failed", "code")
