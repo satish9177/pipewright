@@ -69,10 +69,14 @@ SECRET_PATTERNS = [
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b"),
-    re.compile(r"\b[a-fA-F0-9]{40,}\b"),
     re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
-    re.compile(r"(?:\+?\d[\d\s().-]{8,}\d)"),
 ]
+LONG_HEX_PATTERN = re.compile(r"\b[a-fA-F0-9]{40,}\b")
+GIT_HASH_CONTEXT_PATTERN = re.compile(
+    r"\b(?:commit|sha|git hash|git commit|commit hash)\s+"
+    r"[a-fA-F0-9]{40,}\b",
+    re.IGNORECASE,
+)
 
 PROMPT_INJECTION_MARKERS = [
     "SYSTEM:",
@@ -119,6 +123,27 @@ def _contains_payment_card(content: str) -> bool:
     return False
 
 
+def _contains_phone_number(content: str) -> bool:
+    for candidate in re.findall(r"(?:\+?\d[\d\s().-]{8,}\d)", content):
+        digits = re.sub(r"\D", "", candidate)
+        has_phone_context = candidate.strip().startswith("+") or bool(
+            re.search(r"[\s().-]", candidate)
+        )
+        if has_phone_context and 10 <= len(digits) <= 15:
+            return True
+    return False
+
+
+def _contains_unexplained_long_hex(content: str) -> bool:
+    for match in LONG_HEX_PATTERN.finditer(content):
+        start = max(0, match.start() - 24)
+        context = content[start:match.end()]
+        if GIT_HASH_CONTEXT_PATTERN.search(context):
+            continue
+        return True
+    return False
+
+
 def validate_memory_content(content: str) -> str:
     if content is None:
         raise ValueError("memory_store.py: content is required")
@@ -138,6 +163,10 @@ def validate_memory_content(content: str) -> str:
         raise ValueError("memory_store.py: memory content contains unsafe instructions")
 
     if any(pattern.search(value) for pattern in SECRET_PATTERNS):
+        raise ValueError(MEMORY_SAFETY_ERROR)
+    if _contains_unexplained_long_hex(value):
+        raise ValueError(MEMORY_SAFETY_ERROR)
+    if _contains_phone_number(value):
         raise ValueError(MEMORY_SAFETY_ERROR)
     if _contains_payment_card(value):
         raise ValueError(MEMORY_SAFETY_ERROR)
@@ -527,12 +556,20 @@ def update_fact(
 
 def flag_stale_memories(days: int = 90, project_id: str | None = None) -> int:
     try:
+        if project_id is None:
+            logger.warning(
+                "memory_store.py: flag_stale_memories called without project_id"
+            )
+            return 0
+
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         filters = ["created_at < :cutoff", "is_stale = 0", "status = 'active'"]
-        params = {"cutoff": cutoff, "now": _utc_now()}
-        if project_id is not None:
-            filters.append("project_id = :project_id")
-            params["project_id"] = _validate_project_id(project_id)
+        params = {
+            "cutoff": cutoff,
+            "now": _utc_now(),
+            "project_id": _validate_project_id(project_id),
+        }
+        filters.append("project_id = :project_id")
         with engine.connect() as conn:
             result = conn.execute(text(f"""
                 UPDATE memory_facts

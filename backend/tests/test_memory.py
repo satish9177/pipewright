@@ -14,6 +14,7 @@ from backend.memory.memory_store import (
     add_fact,
     archive_fact,
     compute_content_hash,
+    flag_stale_memories,
     list_facts,
     load_hard_facts,
     update_fact,
@@ -206,6 +207,46 @@ def test_archive_fact_requires_reason(memory_project_ids):
         archive_fact(project_id, fact["id"], " ")
 
 
+def test_flag_stale_memories_requires_project_id(monkeypatch, memory_project_ids):
+    project_id = make_project_id(memory_project_ids)
+    add_fact(project_id, "Backend uses FastAPI", category="stack")
+    warnings = []
+    monkeypatch.setattr(
+        "backend.memory.memory_store.logger.warning",
+        lambda message, *args: warnings.append(message % args if args else message),
+    )
+
+    count = flag_stale_memories(days=0, project_id=None)
+
+    assert count == 0
+    assert any("without project_id" in warning for warning in warnings)
+    assert "Backend uses FastAPI" in load_hard_facts(project_id)
+
+
+def test_flag_stale_memories_only_updates_given_project(memory_project_ids):
+    project_a = make_project_id(memory_project_ids, "project-a")
+    project_b = make_project_id(memory_project_ids, "project-b")
+    fact_a = add_fact(project_a, "Backend uses FastAPI", category="stack")
+    fact_b = add_fact(project_b, "Frontend uses React", category="stack")
+    old_created_at = "2000-01-01T00:00:00+00:00"
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE memory_facts
+            SET created_at = :created_at
+            WHERE id IN (:id_a, :id_b)
+        """), {
+            "created_at": old_created_at,
+            "id_a": fact_a["id"],
+            "id_b": fact_b["id"],
+        })
+
+    count = flag_stale_memories(days=1, project_id=project_a)
+
+    assert count == 1
+    assert load_hard_facts(project_a) == ""
+    assert "Frontend uses React" in load_hard_facts(project_b)
+
+
 def test_archived_fact_not_loaded(memory_project_ids):
     project_id = make_project_id(memory_project_ids)
     fact = add_fact(project_id, "Backend uses FastAPI", category="stack")
@@ -213,6 +254,23 @@ def test_archived_fact_not_loaded(memory_project_ids):
     archive_fact(project_id, fact["id"], "No longer true")
 
     assert load_hard_facts(project_id) == ""
+
+
+def test_add_fact_rejects_unexplained_long_hex_secret_like_value(memory_project_ids):
+    project_id = make_project_id(memory_project_ids)
+    secret_like = "a" * 48
+
+    with pytest.raises(ValueError, match=MEMORY_SAFETY_ERROR):
+        add_fact(project_id, f"Token value {secret_like}")
+
+
+def test_add_fact_allows_git_commit_hash_context_if_safe(memory_project_ids):
+    project_id = make_project_id(memory_project_ids)
+    commit_hash = "abcdef1234567890abcdef1234567890abcdef12"
+
+    fact = add_fact(project_id, f"Last safe commit {commit_hash}")
+
+    assert fact["content"].endswith(commit_hash)
 
 
 def test_stale_fact_not_loaded_in_m1_safety_foundation(memory_project_ids):
