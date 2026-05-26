@@ -14,7 +14,6 @@ import {
 } from '@/components/ui/card'
 import RunStatusBadge from '@/components/RunStatusBadge'
 import ProjectSettingsPanel from '@/components/ProjectSettingsPanel'
-import ProjectMemoryPanel from '@/components/ProjectMemoryPanel'
 
 export default function ProjectDashboard() {
   const { projectId } = useParams<{ projectId: string }>()
@@ -112,7 +111,23 @@ export default function ProjectDashboard() {
 
       <ProjectSettingsPanel project={project} />
 
-      <ProjectMemoryPanel projectId={project.id} />
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle className="text-base">Project Memory</CardTitle>
+          <CardDescription>
+            Manage advisory project memory and bootstrap suggestions in the
+            dedicated Memory tab.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button
+            variant="outline"
+            onClick={() => navigate(`/memory?projectId=${project.id}`)}
+          >
+            Open Memory
+          </Button>
+        </CardContent>
+      </Card>
 
       <Card className="mb-6">
         <CardHeader>
