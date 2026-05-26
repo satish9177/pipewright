@@ -244,6 +244,101 @@ export interface PushPrResponse extends ExtraFields {
   pr_number?: number | null
 }
 
+export type MemoryCategory =
+  | 'stack'
+  | 'structure'
+  | 'test'
+  | 'db'
+  | 'style'
+  | 'security'
+  | 'architecture'
+  | 'deploy'
+  | 'forbidden_paths'
+  | 'reviewer_pref'
+  | 'other'
+
+export type MemoryScope =
+  | 'global'
+  | 'backend'
+  | 'frontend'
+  | 'tests'
+  | 'infra'
+
+export type MemoryStatus =
+  | 'active'
+  | 'stale'
+  | 'archived'
+  | 'historical'
+
+export type MemoryPreviewRole =
+  | 'triage'
+  | 'planner'
+  | 'architect'
+  | 'coder'
+  | 'reviewer'
+  | 'summary'
+
+export interface MemoryFact extends ExtraFields {
+  id: string
+  project_id: string
+  content: string
+  category: MemoryCategory | (string & {})
+  scope: MemoryScope | (string & {})
+  priority: number
+  status: MemoryStatus | (string & {})
+  source?: string | null
+  added_by?: string | null
+  approved_by?: string | null
+  approved_at?: string | null
+  last_verified_at?: string | null
+  archived_reason?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface MemoryFactListResponse {
+  project_id: string
+  facts: MemoryFact[]
+}
+
+export interface MemoryListFilters {
+  status?: MemoryStatus
+  category?: MemoryCategory
+  scope?: MemoryScope
+}
+
+export interface MemoryCreateRequest {
+  content: string
+  category: MemoryCategory
+  scope: MemoryScope
+  priority: number
+  source?: string
+}
+
+export interface MemoryUpdateRequest {
+  content?: string
+  category?: MemoryCategory
+  scope?: MemoryScope
+  priority?: number
+}
+
+export interface MemoryArchiveRequest {
+  reason: string
+}
+
+export interface MemoryVerifyResponse {
+  id: string
+  project_id: string
+  last_verified_at: string
+}
+
+export interface MemoryPromptPreviewResponse {
+  project_id: string
+  role: MemoryPreviewRole | null
+  memory_block: string
+  empty: boolean
+}
+
 export const healthApi = {
   get: () => api.get<HealthResponse>('/health').then(r => r.data),
 }
@@ -309,4 +404,51 @@ export const gatesApi = {
     api.post<GateDecisionResponse>(`/gates/${id}/approve`).then(r => r.data),
   reject: (id: string, reason: string) =>
     api.post<GateDecisionResponse>(`/gates/${id}/reject`, { reason }).then(r => r.data),
+}
+
+export const memoryApi = {
+  listProjectMemory: (projectId: string, filters?: MemoryListFilters) =>
+    api.get<MemoryFactListResponse>(
+      `/api/v1/projects/${projectId}/memory`,
+      {
+        params: filters
+          ? Object.fromEntries(
+              Object.entries(filters).filter(([, value]) => value !== undefined),
+            )
+          : undefined,
+      },
+    ).then(r => r.data),
+  createProjectMemory: (projectId: string, data: MemoryCreateRequest) =>
+    api.post<MemoryFact>(
+      `/api/v1/projects/${projectId}/memory`,
+      data,
+    ).then(r => r.data),
+  updateProjectMemory: (
+    projectId: string,
+    memoryId: string,
+    data: MemoryUpdateRequest,
+  ) =>
+    api.patch<MemoryFact>(
+      `/api/v1/projects/${projectId}/memory/${memoryId}`,
+      data,
+    ).then(r => r.data),
+  archiveProjectMemory: (
+    projectId: string,
+    memoryId: string,
+    reason: string,
+  ) =>
+    api.post<MemoryFact>(
+      `/api/v1/projects/${projectId}/memory/${memoryId}/archive`,
+      { reason } satisfies MemoryArchiveRequest,
+    ).then(r => r.data),
+  verifyProjectMemory: (projectId: string, memoryId: string) =>
+    api.post<MemoryVerifyResponse>(
+      `/api/v1/projects/${projectId}/memory/${memoryId}/verify`,
+      {},
+    ).then(r => r.data),
+  previewProjectMemory: (projectId: string, role: MemoryPreviewRole) =>
+    api.get<MemoryPromptPreviewResponse>(
+      `/api/v1/projects/${projectId}/memory/prompt-preview`,
+      { params: { role } },
+    ).then(r => r.data),
 }

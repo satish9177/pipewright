@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/card'
 import RunStatusBadge from '@/components/RunStatusBadge'
 import ProjectSettingsPanel from '@/components/ProjectSettingsPanel'
+import ProjectMemoryPanel from '@/components/ProjectMemoryPanel'
 
 export default function ProjectDashboard() {
   const { projectId } = useParams<{ projectId: string }>()
@@ -110,6 +111,8 @@ export default function ProjectDashboard() {
       </div>
 
       <ProjectSettingsPanel project={project} />
+
+      <ProjectMemoryPanel projectId={project.id} />
 
       <Card className="mb-6">
         <CardHeader>
