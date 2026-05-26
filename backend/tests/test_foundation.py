@@ -26,16 +26,22 @@ from backend.checkpoint.checkpoint_store import (
 pytestmark = pytest.mark.unit
 
 def test_add_and_load_facts():
-    add_fact("Tech stack: Python FastAPI", "test", "founder")
-    add_fact("Database: SQLite via SQLAlchemy", "test", "founder")
-    facts = load_hard_facts()
+    project_id = f"test-project-{uuid.uuid4()}"
+    add_fact(project_id, "Tech stack: Python FastAPI", source="test", added_by="founder")
+    add_fact(
+        project_id,
+        "Database: SQLite via SQLAlchemy",
+        source="test",
+        added_by="founder",
+    )
+    facts = load_hard_facts(project_id)
     assert "FastAPI" in facts
     assert "SQLite" in facts
 
 
 def test_empty_content_raises():
     with pytest.raises(ValueError):
-        add_fact("", "test", "founder")
+        add_fact(f"test-project-{uuid.uuid4()}", "", source="test", added_by="founder")
 
 
 def test_flag_stale_memories():

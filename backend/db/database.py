@@ -47,6 +47,8 @@ def _add_column_if_missing(
     migration_sql: str
 ) -> None:
     try:
+        if not _table_exists(conn, table_name):
+            return
         if not _column_exists(conn, table_name, column_name):
             conn.execute(text(migration_sql))
     except Exception as error:
@@ -75,6 +77,46 @@ def _migrate_db(conn) -> None:
     """
     try:
         migrations = [
+            (
+                "memory_facts",
+                "project_id",
+                "ALTER TABLE memory_facts ADD COLUMN project_id TEXT",
+            ),
+            (
+                "memory_facts",
+                "category",
+                "ALTER TABLE memory_facts ADD COLUMN category TEXT DEFAULT 'other'",
+            ),
+            (
+                "memory_facts",
+                "scope",
+                "ALTER TABLE memory_facts ADD COLUMN scope TEXT DEFAULT 'global'",
+            ),
+            (
+                "memory_facts",
+                "priority",
+                "ALTER TABLE memory_facts ADD COLUMN priority INTEGER DEFAULT 100",
+            ),
+            (
+                "memory_facts",
+                "approved_by",
+                "ALTER TABLE memory_facts ADD COLUMN approved_by TEXT",
+            ),
+            (
+                "memory_facts",
+                "approved_at",
+                "ALTER TABLE memory_facts ADD COLUMN approved_at DATETIME",
+            ),
+            (
+                "memory_facts",
+                "last_verified_at",
+                "ALTER TABLE memory_facts ADD COLUMN last_verified_at DATETIME",
+            ),
+            (
+                "memory_facts",
+                "content_hash",
+                "ALTER TABLE memory_facts ADD COLUMN content_hash TEXT",
+            ),
             (
                 "pipeline_runs",
                 "project_id",
@@ -210,6 +252,19 @@ def _migrate_db(conn) -> None:
                 SET approval_type = 'legacy'
                 WHERE approval_type IS NULL
             """))
+        if _column_exists(conn, "memory_facts", "project_id"):
+            conn.execute(text("""
+                UPDATE memory_facts
+                SET status = 'archived',
+                    is_stale = 1,
+                    archived_reason = COALESCE(
+                        archived_reason,
+                        'pre-M1 unscoped memory archived for project-safety'
+                    ),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE project_id IS NULL
+                  AND status = 'active'
+            """))
         _create_index_if_columns_exist(
             conn,
             "pipeline_runs",
@@ -237,6 +292,21 @@ def _migrate_db(conn) -> None:
             "CREATE INDEX IF NOT EXISTS idx_approval_gates_run_status "
             "ON approval_gates(run_id, approval_type, status)",
             ("run_id", "approval_type", "status"),
+        )
+        _create_index_if_columns_exist(
+            conn,
+            "memory_facts",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_facts_active_dedupe "
+            "ON memory_facts(project_id, content_hash) "
+            "WHERE status = 'active'",
+            ("project_id", "content_hash", "status"),
+        )
+        _create_index_if_columns_exist(
+            conn,
+            "memory_facts",
+            "CREATE INDEX IF NOT EXISTS idx_memory_facts_project_status "
+            "ON memory_facts(project_id, status)",
+            ("project_id", "status"),
         )
         _ensure_file_index_shape(conn)
     except Exception as error:
