@@ -123,17 +123,21 @@ async def test_planner_429_retry_failure_raises_runtime_error(monkeypatch):
 @pytest.mark.asyncio
 async def test_planner_returns_valid_handoff():
     _skip_without_gemini_key()
+    project_id = str(uuid.uuid4())
     add_fact(
+        project_id,
         "Tech stack: Python 3.11 FastAPI backend",
-        "test", "founder"
+        source="test", added_by="founder"
     )
     add_fact(
+        project_id,
         "Database: SQLite via SQLAlchemy synchronous",
-        "test", "founder"
+        source="test", added_by="founder"
     )
     add_fact(
+        project_id,
         "All IDs are UUIDs not integers",
-        "test", "founder"
+        source="test", added_by="founder"
     )
 
     run_id = str(uuid.uuid4())

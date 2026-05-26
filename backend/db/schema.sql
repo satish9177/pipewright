@@ -1,13 +1,21 @@
 CREATE TABLE IF NOT EXISTS memory_facts (
     id TEXT PRIMARY KEY,
+    project_id TEXT,
     content TEXT NOT NULL,
+    category TEXT DEFAULT 'other',
+    scope TEXT DEFAULT 'global',
+    priority INTEGER DEFAULT 100,
     source TEXT,
     added_by TEXT,
+    approved_by TEXT,
+    approved_at DATETIME,
+    last_verified_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME,
     is_stale INTEGER DEFAULT 0,
     status TEXT DEFAULT 'active',
-    archived_reason TEXT
+    archived_reason TEXT,
+    content_hash TEXT
 );
 
 CREATE TABLE IF NOT EXISTS projects (

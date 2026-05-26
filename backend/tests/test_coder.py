@@ -157,9 +157,11 @@ async def test_coder_429_retry_failure_raises_runtime_error(monkeypatch, tmp_rep
 @pytest.mark.asyncio
 async def test_coder_returns_valid_handoff():
     _skip_without_gemini_key()
+    project_id = str(uuid.uuid4())
     add_fact(
+        project_id,
         "Tech stack: Python FastAPI",
-        "test", "founder"
+        source="test", added_by="founder"
     )
 
     run_id = str(uuid.uuid4())
