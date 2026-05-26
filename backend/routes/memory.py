@@ -8,6 +8,13 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from backend.memory.bootstrap import (
+    ALLOWED_SUGGESTION_STATUSES,
+    approve_suggestion,
+    generate_bootstrap_suggestions,
+    list_suggestions,
+    reject_suggestion,
+)
 from backend.memory.memory_store import (
     ALLOWED_CATEGORIES,
     ALLOWED_SCOPES,
@@ -117,6 +124,51 @@ class MemoryPromptPreviewResponse(BaseModel):
     empty: bool
 
 
+class MemoryBootstrapRequest(BaseModel):
+    force: bool = False
+
+
+class MemorySuggestionResponse(BaseModel):
+    id: str
+    project_id: str
+    content: str
+    category: str
+    scope: str
+    priority: int
+    source: str | None = None
+    evidence_path: str | None = None
+    evidence_excerpt: str | None = None
+    status: str
+    created_at: str | None = None
+    updated_at: str | None = None
+    approved_by: str | None = None
+    approved_at: str | None = None
+    rejected_by: str | None = None
+    rejected_at: str | None = None
+    rejection_reason: str | None = None
+
+
+class MemorySuggestionListResponse(BaseModel):
+    project_id: str
+    suggestions: list[MemorySuggestionResponse]
+
+
+class MemorySuggestionApprovalResponse(BaseModel):
+    suggestion: MemorySuggestionResponse
+    fact: MemoryFactResponse
+
+
+class MemorySuggestionRejectRequest(BaseModel):
+    reason: str = Field(min_length=4, max_length=400)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Rejection reason is required")
+        return value
+
+
 def _validate_allowed(value: str, allowed_values: set[str], field_name: str) -> str:
     normalized = (value or "").strip()
     if normalized not in allowed_values:
@@ -155,6 +207,10 @@ def _map_memory_error(error: ValueError) -> HTTPException:
         )
     if "memory fact not found" in message:
         return HTTPException(status_code=404, detail="Memory fact not found")
+    if "suggestion not found" in message:
+        return HTTPException(status_code=404, detail="Memory suggestion not found")
+    if "suggestion is not pending" in message:
+        return HTTPException(status_code=409, detail="Memory suggestion is not pending")
     return HTTPException(status_code=422, detail=message)
 
 
@@ -212,6 +268,44 @@ def create_memory_fact(project_id: str, request: MemoryFactCreateRequest):
         raise HTTPException(status_code=500, detail=str(error))
 
 
+@router.post(
+    "/bootstrap-suggestions",
+    response_model=MemorySuggestionListResponse,
+)
+def create_bootstrap_suggestions(
+    project_id: str,
+    request: MemoryBootstrapRequest,
+):
+    _require_project(project_id)
+    try:
+        suggestions = generate_bootstrap_suggestions(
+            project_id,
+            force=request.force,
+        )
+        return {"project_id": project_id, "suggestions": suggestions}
+    except ValueError as error:
+        raise _map_memory_error(error)
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+
+@router.get("/suggestions", response_model=MemorySuggestionListResponse)
+def list_memory_suggestions(
+    project_id: str,
+    status: str | None = Query(default=None),
+):
+    _require_project(project_id)
+    if status is not None:
+        _validate_allowed(status, ALLOWED_SUGGESTION_STATUSES, "suggestion status")
+    try:
+        suggestions = list_suggestions(project_id, status=status)
+        return {"project_id": project_id, "suggestions": suggestions}
+    except ValueError as error:
+        raise _map_memory_error(error)
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+
 @router.get("/prompt-preview", response_model=MemoryPromptPreviewResponse)
 def preview_memory_prompt(
     project_id: str,
@@ -234,6 +328,47 @@ def preview_memory_prompt(
         "memory_block": memory_block,
         "empty": memory_block == "",
     }
+
+
+@router.post(
+    "/suggestions/{suggestion_id}/approve",
+    response_model=MemorySuggestionApprovalResponse,
+)
+def approve_memory_suggestion(project_id: str, suggestion_id: str):
+    _require_project(project_id)
+    try:
+        return approve_suggestion(
+            project_id=project_id,
+            suggestion_id=suggestion_id,
+            approved_by="api",
+        )
+    except ValueError as error:
+        raise _map_memory_error(error)
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+
+@router.post(
+    "/suggestions/{suggestion_id}/reject",
+    response_model=MemorySuggestionResponse,
+)
+def reject_memory_suggestion(
+    project_id: str,
+    suggestion_id: str,
+    request: MemorySuggestionRejectRequest,
+):
+    _require_project(project_id)
+    try:
+        return reject_suggestion(
+            project_id=project_id,
+            suggestion_id=suggestion_id,
+            reason=request.reason,
+            rejected_by="api",
+        )
+    except ValueError as error:
+        raise _map_memory_error(error)
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error))
 
 
 @router.patch("/{memory_id}", response_model=MemoryFactResponse)

@@ -308,6 +308,22 @@ def _migrate_db(conn) -> None:
             "ON memory_facts(project_id, status)",
             ("project_id", "status"),
         )
+        _create_index_if_columns_exist(
+            conn,
+            "memory_suggestions",
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "idx_memory_suggestions_pending_dedupe "
+            "ON memory_suggestions(project_id, content_hash) "
+            "WHERE status = 'pending'",
+            ("project_id", "content_hash", "status"),
+        )
+        _create_index_if_columns_exist(
+            conn,
+            "memory_suggestions",
+            "CREATE INDEX IF NOT EXISTS idx_memory_suggestions_project_status "
+            "ON memory_suggestions(project_id, status)",
+            ("project_id", "status"),
+        )
         _ensure_file_index_shape(conn)
     except Exception as error:
         raise RuntimeError(f"database.py: Failed to run migrations: {error}")
