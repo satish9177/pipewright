@@ -90,6 +90,11 @@ def _write_frontend_repo(root: Path) -> None:
     )
 
 
+def _write_json(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
 def _bootstrap(client, project_id: str, force: bool = False):
     return client.post(
         f"/api/v1/projects/{project_id}/memory/bootstrap-suggestions",
@@ -394,3 +399,242 @@ def test_bootstrap_detects_frontend_stack(client, project_factory, project_repo)
     contents = {suggestion["content"] for suggestion in response.json()["suggestions"]}
     assert "Frontend uses React, Vite, and TypeScript." in contents
     assert "Frontend build uses npm run build." in contents
+
+
+def test_bootstrap_detects_backend_requirements_in_backend_folder(
+    client,
+    project_factory,
+    project_repo,
+):
+    backend_dir = project_repo / "backend"
+    backend_dir.mkdir()
+    (backend_dir / "requirements.txt").write_text(
+        "fastapi\nuvicorn\nsqlalchemy\npytest\n",
+        encoding="utf-8",
+    )
+    project_id = project_factory(project_repo)
+
+    response = _bootstrap(client, project_id)
+
+    assert response.status_code == 200
+    suggestions = response.json()["suggestions"]
+    contents = {suggestion["content"] for suggestion in suggestions}
+    assert "Backend uses FastAPI." in contents
+    assert "Backend uses SQLAlchemy for database access." in contents
+    assert "Run backend unit tests with pytest." in contents
+    assert any(
+        suggestion["evidence_path"] == "backend/requirements.txt"
+        for suggestion in suggestions
+        if suggestion["content"] == "Backend uses FastAPI."
+    )
+
+
+def test_bootstrap_detects_backend_from_arbitrary_folder_name(
+    client,
+    project_factory,
+    project_repo,
+):
+    service_dir = project_repo / "service-main"
+    service_dir.mkdir()
+    (service_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+    project_id = project_factory(project_repo)
+
+    response = _bootstrap(client, project_id)
+
+    assert response.status_code == 200
+    assert any(
+        suggestion["content"] == "Backend uses FastAPI."
+        and suggestion["scope"] == "backend"
+        and suggestion["evidence_path"] == "service-main/requirements.txt"
+        for suggestion in response.json()["suggestions"]
+    )
+
+
+def test_bootstrap_detects_frontend_from_nested_package_json(
+    client,
+    project_factory,
+    project_repo,
+):
+    _write_json(
+        project_repo / "apps" / "web" / "package.json",
+        """
+        {
+          "scripts": {"build": "vite build"},
+          "dependencies": {"react": "latest"},
+          "devDependencies": {"vite": "latest", "typescript": "latest"}
+        }
+        """,
+    )
+    project_id = project_factory(project_repo)
+
+    response = _bootstrap(client, project_id)
+
+    assert response.status_code == 200
+    assert any(
+        suggestion["content"] == "Frontend uses React, Vite, and TypeScript."
+        and suggestion["scope"] == "frontend"
+        and suggestion["evidence_path"] == "apps/web/package.json"
+        for suggestion in response.json()["suggestions"]
+    )
+
+
+def test_bootstrap_detects_node_backend_from_nested_package_json(
+    client,
+    project_factory,
+    project_repo,
+):
+    _write_json(
+        project_repo / "services" / "payroll" / "package.json",
+        """
+        {
+          "dependencies": {"express": "^4.18.0"}
+        }
+        """,
+    )
+    project_id = project_factory(project_repo)
+
+    response = _bootstrap(client, project_id)
+
+    assert response.status_code == 200
+    assert any(
+        suggestion["content"] == "Backend uses Express."
+        and suggestion["scope"] == "backend"
+        and suggestion["evidence_path"] == "services/payroll/package.json"
+        for suggestion in response.json()["suggestions"]
+    )
+
+
+def test_folder_name_does_not_override_dependency_content(
+    client,
+    project_factory,
+    project_repo,
+):
+    _write_json(
+        project_repo / "backend" / "package.json",
+        """
+        {
+          "scripts": {"build": "vite build"},
+          "dependencies": {"react": "latest"},
+          "devDependencies": {"vite": "latest", "typescript": "latest"}
+        }
+        """,
+    )
+    project_id = project_factory(project_repo)
+
+    response = _bootstrap(client, project_id)
+
+    assert response.status_code == 200
+    contents = {suggestion["content"] for suggestion in response.json()["suggestions"]}
+    assert "Backend uses Express." not in contents
+    assert "Backend uses NestJS." not in contents
+    assert "Backend uses Fastify." not in contents
+    assert "Frontend uses React, Vite, and TypeScript." in contents
+
+
+def test_bootstrap_ignores_node_modules_and_dist(
+    client,
+    project_factory,
+    project_repo,
+):
+    _write_json(
+        project_repo / "node_modules" / "old-service" / "package.json",
+        '{"dependencies": {"express": "latest"}}',
+    )
+    _write_json(
+        project_repo / "dist" / "package.json",
+        '{"dependencies": {"@nestjs/core": "latest"}}',
+    )
+    project_id = project_factory(project_repo)
+
+    response = _bootstrap(client, project_id)
+
+    assert response.status_code == 200
+    contents = {suggestion["content"] for suggestion in response.json()["suggestions"]}
+    assert "Backend uses Express." not in contents
+    assert "Backend uses NestJS." not in contents
+
+
+def test_bootstrap_ignores_examples_templates(
+    client,
+    project_factory,
+    project_repo,
+):
+    _write_json(
+        project_repo / "examples" / "legacy" / "package.json",
+        '{"dependencies": {"express": "latest"}}',
+    )
+    _write_json(
+        project_repo / "templates" / "api" / "requirements.txt",
+        "fastapi\n",
+    )
+    project_id = project_factory(project_repo)
+
+    response = _bootstrap(client, project_id)
+
+    assert response.status_code == 200
+    contents = {suggestion["content"] for suggestion in response.json()["suggestions"]}
+    assert "Backend uses Express." not in contents
+    assert "Backend uses FastAPI." not in contents
+
+
+def test_bootstrap_respects_max_manifest_files(
+    client,
+    project_factory,
+    project_repo,
+    monkeypatch,
+):
+    monkeypatch.setattr(bootstrap, "BOOTSTRAP_MAX_MANIFEST_FILES", 3)
+    for index in range(10):
+        folder = project_repo / f"service-{index}"
+        folder.mkdir()
+        (folder / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+    project_id = project_factory(project_repo)
+
+    response = _bootstrap(client, project_id)
+
+    assert response.status_code == 200
+    evidence_paths = {
+        suggestion["evidence_path"]
+        for suggestion in response.json()["suggestions"]
+        if suggestion["evidence_path"] and suggestion["evidence_path"].endswith("requirements.txt")
+    }
+    assert len(evidence_paths) <= 3
+
+
+def test_bootstrap_reads_env_example_safely_if_supported(
+    client,
+    project_factory,
+    project_repo,
+):
+    secret = "sk-thisisaverylongsecretkeyvalue"
+    (project_repo / ".env.example").write_text(
+        f"OPENAI_API_KEY={secret}\n",
+        encoding="utf-8",
+    )
+    _write_basic_python_repo(project_repo)
+    project_id = project_factory(project_repo)
+
+    response = _bootstrap(client, project_id)
+
+    assert response.status_code == 200
+    assert secret not in response.text
+
+
+def test_bootstrap_evidence_path_is_nested_path(
+    client,
+    project_factory,
+    project_repo,
+):
+    api_dir = project_repo / "apps" / "api"
+    api_dir.mkdir(parents=True)
+    (api_dir / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+    project_id = project_factory(project_repo)
+
+    response = _bootstrap(client, project_id)
+
+    assert response.status_code == 200
+    assert any(
+        suggestion["content"] == "Backend uses FastAPI."
+        and suggestion["evidence_path"] == "apps/api/requirements.txt"
+        for suggestion in response.json()["suggestions"]
+    )
