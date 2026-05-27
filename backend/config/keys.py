@@ -11,6 +11,7 @@ from pydantic import Field
 
 class Settings(BaseSettings):
     gemini_api_key: str
+    anthropic_api_key: str | None = None
     pipewright_encryption_key: str | None = None
     target_repo_path: str | None = None
     test_command: str | None = None
