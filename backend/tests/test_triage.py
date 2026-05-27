@@ -6,12 +6,16 @@ No API calls. Gemini is mocked.
 
 import json
 import uuid
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import text
 
 from backend.db.database import engine
+from backend.llm.base import LLMResponse
+from backend.llm.errors import LLMError
+from backend.llm.role_config import Role
 from backend.memory.memory_store import add_fact, archive_fact
 from backend.models.chunk import ChunkDefinition, TriageResult
 from backend.pipeline import triage
@@ -63,6 +67,20 @@ def patch_triage_dependencies(monkeypatch, tmp_repo, relevant_files=None):
     )
 
 
+def patch_triage_llm(monkeypatch, responder):
+    async def fake_complete_for_role(role, request):
+        return LLMResponse(
+            text=responder(role, request),
+            provider="fake",
+            model=request.model,
+            input_tokens=10,
+            output_tokens=5,
+            finish_reason="stop",
+        )
+
+    monkeypatch.setattr(triage, "complete_for_role", fake_complete_for_role)
+
+
 def cleanup_memory(project_id: str):
     with engine.begin() as conn:
         conn.execute(text("""
@@ -75,10 +93,9 @@ async def test_valid_mocked_ai_json_parses_into_triage_result(monkeypatch, tmp_r
     run_id = str(uuid.uuid4())
     project_id = "proj-test"
     patch_triage_dependencies(monkeypatch, tmp_repo)
-    monkeypatch.setattr(
-        triage,
-        "_call_gemini",
-        lambda prompt, run_id: valid_triage_json(run_id, project_id),
+    patch_triage_llm(
+        monkeypatch,
+        lambda role, request: valid_triage_json(run_id, project_id),
     )
 
     result = await triage.run_triage(run_id, project_id, "Add chunk planning")
@@ -90,19 +107,69 @@ async def test_valid_mocked_ai_json_parses_into_triage_result(monkeypatch, tmp_r
 
 
 @pytest.mark.asyncio
+async def test_triage_uses_provider_abstraction(monkeypatch, tmp_repo):
+    run_id = str(uuid.uuid4())
+    project_id = "proj-test"
+    captured = {}
+    patch_triage_dependencies(monkeypatch, tmp_repo)
+
+    async def fake_complete_for_role(role, request):
+        captured["role"] = role
+        captured["request"] = request
+        return LLMResponse(
+            text=valid_triage_json(run_id, project_id),
+            provider="fake",
+            model=request.model,
+        )
+
+    monkeypatch.setattr(triage, "complete_for_role", fake_complete_for_role)
+
+    result = await triage.run_triage(run_id, project_id, "Add chunk planning")
+
+    assert result.total_chunks == 1
+    assert captured["role"] == Role.TRIAGE
+
+
+@pytest.mark.asyncio
+async def test_triage_llm_request_uses_messages(monkeypatch, tmp_repo):
+    run_id = str(uuid.uuid4())
+    project_id = "proj-test"
+    captured = {}
+    patch_triage_dependencies(monkeypatch, tmp_repo)
+
+    def fake_call(role, request):
+        captured["request"] = request
+        return valid_triage_json(run_id, project_id)
+
+    patch_triage_llm(monkeypatch, fake_call)
+
+    await triage.run_triage(run_id, project_id, "Add chunk planning")
+
+    request = captured["request"]
+    assert request.messages[0].role == "system"
+    assert request.messages[0].content == triage.TRIAGE_SYSTEM_PROMPT
+    assert request.messages[1].role == "user"
+    assert "FEATURE REQUEST:\nAdd chunk planning" in request.messages[1].content
+    assert request.model == triage.TRIAGE_MODEL
+    assert request.temperature == triage.TRIAGE_TEMPERATURE
+    assert request.max_output_tokens == triage.TRIAGE_MAX_TOKENS
+    assert request.response_format == "json_object"
+
+
+@pytest.mark.asyncio
 async def test_malformed_json_retries_once(monkeypatch, tmp_repo):
     run_id = str(uuid.uuid4())
     project_id = "proj-test"
     calls = {"count": 0}
     patch_triage_dependencies(monkeypatch, tmp_repo)
 
-    def fake_call(prompt, run_id):
+    def fake_call(role, request):
         calls["count"] += 1
         if calls["count"] == 1:
             return "not json"
         return valid_triage_json(run_id, project_id)
 
-    monkeypatch.setattr(triage, "_call_gemini", fake_call)
+    patch_triage_llm(monkeypatch, fake_call)
 
     result = await triage.run_triage(run_id, project_id, "Add chunk planning")
 
@@ -113,10 +180,32 @@ async def test_malformed_json_retries_once(monkeypatch, tmp_repo):
 @pytest.mark.asyncio
 async def test_malformed_twice_raises_runtime_error(monkeypatch, tmp_repo):
     patch_triage_dependencies(monkeypatch, tmp_repo)
-    monkeypatch.setattr(triage, "_call_gemini", lambda prompt, run_id: "nope")
+    patch_triage_llm(monkeypatch, lambda role, request: "nope")
 
     with pytest.raises(RuntimeError):
         await triage.run_triage(str(uuid.uuid4()), "proj-test", "Feature")
+
+
+@pytest.mark.asyncio
+async def test_triage_provider_error_does_not_leak_secret(monkeypatch, tmp_repo):
+    raw_key = "AIzaSyA123456789012345678901234567890"
+    patch_triage_dependencies(monkeypatch, tmp_repo)
+
+    async def fake_complete_for_role(role, request):
+        raise LLMError(
+            f"Provider failed with key {raw_key}",
+            provider="gemini",
+            model="gemini-2.5-flash-lite",
+            retryable=False,
+        )
+
+    monkeypatch.setattr(triage, "complete_for_role", fake_complete_for_role)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await triage.run_triage(str(uuid.uuid4()), "proj-test", "Feature")
+
+    assert raw_key not in str(exc_info.value)
+    assert "[REDACTED]" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -126,11 +215,11 @@ async def test_prompt_includes_core_chunking_rules(monkeypatch, tmp_repo):
     captured = {}
     patch_triage_dependencies(monkeypatch, tmp_repo)
 
-    def fake_call(prompt, run_id):
-        captured["prompt"] = prompt
+    def fake_call(role, request):
+        captured["prompt"] = request.messages[1].content
         return valid_triage_json(run_id, project_id)
 
-    monkeypatch.setattr(triage, "_call_gemini", fake_call)
+    patch_triage_llm(monkeypatch, fake_call)
 
     await triage.run_triage(run_id, project_id, "Add chunk planning")
 
@@ -157,11 +246,11 @@ async def test_prompt_includes_relevant_file_index_paths(monkeypatch, tmp_repo):
         }],
     )
 
-    def fake_call(prompt, run_id):
-        captured["prompt"] = prompt
+    def fake_call(role, request):
+        captured["prompt"] = request.messages[1].content
         return valid_triage_json(run_id, project_id)
 
-    monkeypatch.setattr(triage, "_call_gemini", fake_call)
+    patch_triage_llm(monkeypatch, fake_call)
 
     await triage.run_triage(run_id, project_id, "workflow approvals")
 
@@ -176,11 +265,11 @@ async def test_triage_prompt_includes_project_memory(monkeypatch, tmp_repo):
     patch_triage_dependencies(monkeypatch, tmp_repo)
     add_fact(project_id, "Backend uses FastAPI memory", category="stack", scope="backend")
 
-    def fake_call(prompt, run_id):
-        captured["prompt"] = prompt
+    def fake_call(role, request):
+        captured["prompt"] = request.messages[1].content
         return valid_triage_json(run_id, project_id)
 
-    monkeypatch.setattr(triage, "_call_gemini", fake_call)
+    patch_triage_llm(monkeypatch, fake_call)
 
     try:
         await triage.run_triage(run_id, project_id, "Add chunk planning")
@@ -199,11 +288,11 @@ async def test_triage_prompt_injection_skips_empty_memory(monkeypatch, tmp_repo)
     captured = {}
     patch_triage_dependencies(monkeypatch, tmp_repo)
 
-    def fake_call(prompt, run_id):
-        captured["prompt"] = prompt
+    def fake_call(role, request):
+        captured["prompt"] = request.messages[1].content
         return valid_triage_json(run_id, project_id)
 
-    monkeypatch.setattr(triage, "_call_gemini", fake_call)
+    patch_triage_llm(monkeypatch, fake_call)
 
     await triage.run_triage(run_id, project_id, "Add chunk planning")
 
@@ -220,11 +309,11 @@ async def test_triage_prompt_injection_is_project_scoped(monkeypatch, tmp_repo):
     add_fact(project_a, "Project A triage memory", category="stack")
     add_fact(project_b, "Project B triage memory", category="stack")
 
-    def fake_call(prompt, run_id):
-        captured["prompt"] = prompt
+    def fake_call(role, request):
+        captured["prompt"] = request.messages[1].content
         return valid_triage_json(run_id, project_a)
 
-    monkeypatch.setattr(triage, "_call_gemini", fake_call)
+    patch_triage_llm(monkeypatch, fake_call)
 
     try:
         await triage.run_triage(run_id, project_a, "Add chunk planning")
@@ -258,11 +347,11 @@ async def test_triage_prompt_injection_excludes_archived_stale_historical(
             UPDATE memory_facts SET status = 'historical' WHERE id = :id
         """), {"id": historical["id"]})
 
-    def fake_call(prompt, run_id):
-        captured["prompt"] = prompt
+    def fake_call(role, request):
+        captured["prompt"] = request.messages[1].content
         return valid_triage_json(run_id, project_id)
 
-    monkeypatch.setattr(triage, "_call_gemini", fake_call)
+    patch_triage_llm(monkeypatch, fake_call)
 
     try:
         await triage.run_triage(run_id, project_id, "Add chunk planning")
@@ -327,3 +416,11 @@ def test_total_chunks_mismatch_fails_validation():
                 rationale="Mismatch",
             )],
         )
+
+
+def test_triage_pipeline_no_longer_imports_gemini_sdk():
+    triage_path = Path(triage.__file__)
+    source = triage_path.read_text(encoding="utf-8")
+
+    assert "google.generativeai" not in source
+    assert "genai" not in source
