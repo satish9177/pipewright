@@ -8,11 +8,13 @@ pipeline_runs rows and it never executes chunks.
 
 import asyncio
 import json
+import logging
 
-import google.generativeai as genai
 from pydantic import ValidationError
 
-from backend.config.keys import settings
+from backend.llm import complete_for_role
+from backend.llm.base import LLMRequest, LLMResponse, Message
+from backend.llm.role_config import Role
 from backend.memory.prompt_builder import build_project_memory_block
 from backend.models.chunk import TriageResult
 from backend.projects.project_store import require_project
@@ -22,6 +24,8 @@ from backend.utils.json_helpers import clean_json_response
 TRIAGE_MODEL = "gemini-2.5-flash-lite"
 TRIAGE_TEMPERATURE = 0.2
 TRIAGE_MAX_TOKENS = 4000
+
+logger = logging.getLogger(__name__)
 
 TRIAGE_SYSTEM_PROMPT = """You are a senior engineering lead.
 Your job is to split a feature request into a small, safe chunk plan.
@@ -116,32 +120,43 @@ def _build_triage_prompt(
     )
 
 
-def _log_token_usage(response, run_id: str) -> None:
-    try:
-        usage = response.usage_metadata
-        print(
-            f"[TRIAGE] Token usage | "
-            f"run_id={run_id} | "
-            f"model={TRIAGE_MODEL} | "
-            f"input={usage.prompt_token_count} | "
-            f"output={usage.candidates_token_count}"
-        )
-    except Exception:
-        print(f"[TRIAGE] Token usage unavailable | run_id={run_id}")
-
-
-def _call_gemini(prompt: str, run_id: str) -> str:
-    genai.configure(api_key=settings.gemini_api_key)
-    generation_config = genai.GenerationConfig(
+def _build_llm_request(prompt: str) -> LLMRequest:
+    return LLMRequest(
+        messages=[
+            Message(role="system", content=TRIAGE_SYSTEM_PROMPT),
+            Message(role="user", content=prompt),
+        ],
+        model=TRIAGE_MODEL,
         temperature=TRIAGE_TEMPERATURE,
         max_output_tokens=TRIAGE_MAX_TOKENS,
+        response_format="json_object",
     )
-    model = genai.GenerativeModel(
-        model_name=TRIAGE_MODEL,
-        generation_config=generation_config,
-        system_instruction=TRIAGE_SYSTEM_PROMPT,
+
+
+def _log_token_usage(response: LLMResponse, run_id: str) -> None:
+    if response.input_tokens is None or response.output_tokens is None:
+        logger.info("[TRIAGE] Token usage unavailable | run_id=%s", run_id)
+        return
+
+    logger.info(
+        "[TRIAGE] Token usage | run_id=%s | model=%s | input=%s | output=%s",
+        run_id,
+        response.model,
+        response.input_tokens,
+        response.output_tokens,
     )
-    response = model.generate_content(prompt)
+
+
+async def _call_llm(prompt: str, run_id: str) -> str:
+    response = await complete_for_role(
+        Role.TRIAGE,
+        _build_llm_request(prompt),
+    )
+    logger.info(
+        "[TRIAGE] LLM provider=%s model=%s",
+        response.provider,
+        response.model,
+    )
     _log_token_usage(response, run_id)
     return response.text
 
@@ -167,9 +182,11 @@ async def _ensure_index_without_blocking(
             target_repo_path,
         )
     except Exception as error:
-        print(
-            f"[TRIAGE] Warning: repo indexing failed; continuing. "
-            f"project_id={project_id} | error={error}"
+        logger.warning(
+            "[TRIAGE] Warning: repo indexing failed; continuing. "
+            "project_id=%s | error=%s",
+            project_id,
+            error,
         )
 
 
@@ -185,7 +202,7 @@ async def run_triage(
     asks Gemini for a JSON-only chunk plan, retries once on invalid output, and
     returns a TriageResult. It performs no database writes.
     """
-    print(f"[TRIAGE] Starting | run_id={run_id} | project_id={project_id}")
+    logger.info("[TRIAGE] Starting | run_id=%s | project_id=%s", run_id, project_id)
 
     try:
         project = require_project(project_id)
@@ -205,9 +222,11 @@ async def run_triage(
             limit=20,
         )
     except Exception as error:
-        print(
-            f"[TRIAGE] Warning: relevant file lookup failed; continuing. "
-            f"project_id={project_id} | error={error}"
+        logger.warning(
+            "[TRIAGE] Warning: relevant file lookup failed; continuing. "
+            "project_id=%s | error=%s",
+            project_id,
+            error,
         )
         relevant_files = []
 
@@ -225,12 +244,12 @@ async def run_triage(
 
     raw_text = ""
     try:
-        print("[TRIAGE] Calling Gemini (attempt 1)...")
-        raw_text = _call_gemini(prompt, run_id)
+        logger.info("[TRIAGE] Calling LLM (attempt 1)...")
+        raw_text = await _call_llm(prompt, run_id)
         result = _parse_triage(raw_text, run_id, project_id)
-        print("[TRIAGE] Triage validated on attempt 1")
+        logger.info("[TRIAGE] Triage validated on attempt 1")
     except (ValidationError, ValueError, json.JSONDecodeError) as first_error:
-        print(f"[TRIAGE] Attempt 1 failed: {first_error}")
+        logger.warning("[TRIAGE] Attempt 1 failed: %s", first_error)
         correction_prompt = (
             f"{prompt}\n\n"
             f"Your previous response was not valid JSON or did not match the "
@@ -241,13 +260,13 @@ async def run_triage(
         )
 
         try:
-            print("[TRIAGE] Calling Gemini (attempt 2)...")
-            raw_text = _call_gemini(correction_prompt, run_id)
+            logger.info("[TRIAGE] Calling LLM (attempt 2)...")
+            raw_text = await _call_llm(correction_prompt, run_id)
             result = _parse_triage(raw_text, run_id, project_id)
-            print("[TRIAGE] Triage validated on attempt 2")
+            logger.info("[TRIAGE] Triage validated on attempt 2")
         except (ValidationError, ValueError, json.JSONDecodeError) as second_error:
             raise RuntimeError(
-                f"triage.py: Gemini failed to return valid triage after "
+                f"triage.py: LLM failed to return valid triage after "
                 f"2 attempts. run_id={run_id} | error={second_error}"
             )
     except Exception as error:
@@ -256,5 +275,5 @@ async def run_triage(
             f"run_id={run_id} | error={error}"
         )
 
-    print(f"[TRIAGE] Complete | run_id={run_id}")
+    logger.info("[TRIAGE] Complete | run_id=%s", run_id)
     return result
