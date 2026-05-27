@@ -5,10 +5,13 @@ Mocked unit tests are fast and local.
 API-marked tests make real Gemini calls.
 """
 import uuid
+from pathlib import Path
 import pytest
-from types import SimpleNamespace
 from backend.config.keys import settings
 from backend.db.database import engine
+from backend.llm.base import LLMResponse
+from backend.llm.errors import LLMError
+from backend.llm.role_config import Role
 from backend.memory.memory_store import add_fact, archive_fact
 from backend.memory.prompt_builder import build_project_memory_block as real_build_memory_block
 from backend.pipeline.planner import run_planner
@@ -17,7 +20,7 @@ from sqlalchemy import text
 
 
 def _planner_response(run_id: str):
-    text = (
+    return (
         "{"
         '"handoff_from": "planner",'
         '"handoff_to": "coder",'
@@ -33,36 +36,37 @@ def _planner_response(run_id: str):
         '"suggested_memory_entries": []'
         "}"
     )
-    usage = SimpleNamespace(prompt_token_count=10, candidates_token_count=20)
-    return SimpleNamespace(text=text, usage_metadata=usage)
 
 
-class _PlannerModel:
+class _PlannerLLM:
     def __init__(self, responses):
         self.responses = list(responses)
-        self.prompts = []
+        self.requests = []
+        self.roles = []
 
-    def generate_content(self, prompt):
-        self.prompts.append(prompt)
+    async def complete(self, role, request):
+        self.roles.append(role)
+        self.requests.append(request)
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
-        return response
+        return LLMResponse(
+            text=response,
+            provider="fake",
+            model=request.model,
+            input_tokens=10,
+            output_tokens=20,
+            finish_reason="stop",
+        )
 
 
-def _patch_planner_dependencies(monkeypatch, model):
+def _patch_planner_dependencies(monkeypatch, llm):
     monkeypatch.setattr(planner, "build_project_memory_block", lambda **kwargs: "")
     monkeypatch.setattr(planner, "save_checkpoint", lambda **kwargs: None)
-    monkeypatch.setattr(planner.genai, "configure", lambda api_key: None)
     monkeypatch.setattr(
-        planner.genai,
-        "GenerationConfig",
-        lambda **kwargs: SimpleNamespace(**kwargs),
-    )
-    monkeypatch.setattr(
-        planner.genai,
-        "GenerativeModel",
-        lambda **kwargs: model,
+        planner,
+        "complete_for_role",
+        llm.complete,
     )
 
 
@@ -82,7 +86,7 @@ def _skip_without_gemini_key():
 @pytest.mark.asyncio
 async def test_planner_429_retry_uses_asyncio_sleep(monkeypatch):
     run_id = str(uuid.uuid4())
-    model = _PlannerModel([
+    llm = _PlannerLLM([
         RuntimeError("429 rate limit"),
         _planner_response(run_id),
     ])
@@ -91,7 +95,7 @@ async def test_planner_429_retry_uses_asyncio_sleep(monkeypatch):
     async def fake_sleep(seconds):
         sleeps.append(seconds)
 
-    _patch_planner_dependencies(monkeypatch, model)
+    _patch_planner_dependencies(monkeypatch, llm)
     checkpoint_calls = []
     monkeypatch.setattr(
         planner,
@@ -105,6 +109,7 @@ async def test_planner_429_retry_uses_asyncio_sleep(monkeypatch):
     assert result.run_id == run_id
     assert sleeps == [60]
     assert not hasattr(planner, "time")
+    assert llm.roles == [Role.PLANNER, Role.PLANNER]
     assert checkpoint_calls[0]["step"] == "plan"
     assert checkpoint_calls[0]["tests_passed"] is False
     assert checkpoint_calls[0]["step_completed"] is True
@@ -114,7 +119,7 @@ async def test_planner_429_retry_uses_asyncio_sleep(monkeypatch):
 @pytest.mark.asyncio
 async def test_planner_429_retry_failure_raises_runtime_error(monkeypatch):
     run_id = str(uuid.uuid4())
-    model = _PlannerModel([
+    llm = _PlannerLLM([
         RuntimeError("429 rate limit"),
         RuntimeError("still rate limited"),
     ])
@@ -122,7 +127,7 @@ async def test_planner_429_retry_failure_raises_runtime_error(monkeypatch):
     async def fake_sleep(seconds):
         return None
 
-    _patch_planner_dependencies(monkeypatch, model)
+    _patch_planner_dependencies(monkeypatch, llm)
     monkeypatch.setattr(planner.asyncio, "sleep", fake_sleep)
 
     with pytest.raises(RuntimeError) as error:
@@ -133,11 +138,100 @@ async def test_planner_429_retry_failure_raises_runtime_error(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_planner_uses_provider_abstraction(monkeypatch):
+    run_id = str(uuid.uuid4())
+    llm = _PlannerLLM([_planner_response(run_id)])
+    _patch_planner_dependencies(monkeypatch, llm)
+
+    result = await run_planner("Add ping endpoint", run_id)
+
+    assert result.run_id == run_id
+    assert llm.roles == [Role.PLANNER]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_planner_llm_request_uses_messages(monkeypatch):
+    run_id = str(uuid.uuid4())
+    llm = _PlannerLLM([_planner_response(run_id)])
+    _patch_planner_dependencies(monkeypatch, llm)
+
+    await run_planner("Add ping endpoint", run_id)
+
+    request = llm.requests[0]
+    assert request.messages[0].role == "system"
+    assert request.messages[0].content == planner.SYSTEM_PROMPT
+    assert request.messages[1].role == "user"
+    assert "FEATURE REQUEST:\nAdd ping endpoint" in request.messages[1].content
+    assert request.model == planner.PLANNER_MODEL
+    assert request.temperature == planner.PLANNER_TEMPERATURE
+    assert request.max_output_tokens == planner.PLANNER_MAX_TOKENS
+    assert request.response_format == "json_object"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_planner_parses_same_response_shape(monkeypatch):
+    run_id = str(uuid.uuid4())
+    llm = _PlannerLLM([_planner_response(run_id)])
+    _patch_planner_dependencies(monkeypatch, llm)
+
+    result = await run_planner("Add ping endpoint", run_id)
+
+    assert result.handoff_from == "planner"
+    assert result.handoff_to == "coder"
+    assert result.goal == "Create a ping endpoint."
+    assert result.files_to_modify == ["backend/main.py"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_planner_retry_correction_uses_provider_abstraction(monkeypatch):
+    run_id = str(uuid.uuid4())
+    llm = _PlannerLLM(["not json", _planner_response(run_id)])
+    _patch_planner_dependencies(monkeypatch, llm)
+
+    result = await run_planner("Add ping endpoint", run_id)
+
+    assert result.run_id == run_id
+    assert llm.roles == [Role.PLANNER, Role.PLANNER]
+    correction_request = llm.requests[1]
+    assert correction_request.messages[0].role == "system"
+    assert correction_request.messages[1].role == "user"
+    assert correction_request.messages[2].role == "assistant"
+    assert correction_request.messages[2].content == "not json"
+    assert correction_request.messages[3].role == "user"
+    assert "Your previous response was not valid JSON" in correction_request.messages[3].content
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_planner_provider_error_does_not_leak_secret(monkeypatch):
+    raw_key = "AIzaSyA123456789012345678901234567890"
+    llm = _PlannerLLM([
+        LLMError(
+            f"Provider failed with key {raw_key}",
+            provider="gemini",
+            model="gemini-2.5-flash-lite",
+            retryable=False,
+        )
+    ])
+    _patch_planner_dependencies(monkeypatch, llm)
+
+    with pytest.raises(RuntimeError) as error:
+        await run_planner("Add ping endpoint", str(uuid.uuid4()))
+
+    assert raw_key not in str(error.value)
+    assert "[REDACTED]" in str(error.value)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_planner_prompt_includes_project_memory(monkeypatch):
     run_id = str(uuid.uuid4())
     project_id = f"planner-project-{uuid.uuid4().hex}"
-    model = _PlannerModel([_planner_response(run_id)])
-    _patch_planner_dependencies(monkeypatch, model)
+    llm = _PlannerLLM([_planner_response(run_id)])
+    _patch_planner_dependencies(monkeypatch, llm)
     monkeypatch.setattr(planner, "build_project_memory_block", real_build_memory_block)
     add_fact(project_id, "Backend uses FastAPI memory", category="stack", scope="backend")
 
@@ -146,7 +240,7 @@ async def test_planner_prompt_includes_project_memory(monkeypatch):
     finally:
         _cleanup_memory(project_id)
 
-    prompt = model.prompts[0]
+    prompt = llm.requests[0].messages[1].content
     assert "=== PROJECT MEMORY" in prompt
     assert "[stack/backend] Backend uses FastAPI memory" in prompt
     assert "source code and explicit user instructions win" in prompt
@@ -157,13 +251,13 @@ async def test_planner_prompt_includes_project_memory(monkeypatch):
 async def test_planner_prompt_injection_skips_empty_memory(monkeypatch):
     run_id = str(uuid.uuid4())
     project_id = f"planner-empty-{uuid.uuid4().hex}"
-    model = _PlannerModel([_planner_response(run_id)])
-    _patch_planner_dependencies(monkeypatch, model)
+    llm = _PlannerLLM([_planner_response(run_id)])
+    _patch_planner_dependencies(monkeypatch, llm)
     monkeypatch.setattr(planner, "build_project_memory_block", real_build_memory_block)
 
     await run_planner("Add ping endpoint", run_id, project_id=project_id)
 
-    assert "=== PROJECT MEMORY" not in model.prompts[0]
+    assert "=== PROJECT MEMORY" not in llm.requests[0].messages[1].content
 
 
 @pytest.mark.unit
@@ -172,8 +266,8 @@ async def test_planner_prompt_injection_is_project_scoped(monkeypatch):
     run_id = str(uuid.uuid4())
     project_a = f"planner-a-{uuid.uuid4().hex}"
     project_b = f"planner-b-{uuid.uuid4().hex}"
-    model = _PlannerModel([_planner_response(run_id)])
-    _patch_planner_dependencies(monkeypatch, model)
+    llm = _PlannerLLM([_planner_response(run_id)])
+    _patch_planner_dependencies(monkeypatch, llm)
     monkeypatch.setattr(planner, "build_project_memory_block", real_build_memory_block)
     add_fact(project_a, "Project A planner memory", category="stack")
     add_fact(project_b, "Project B planner memory", category="stack")
@@ -184,8 +278,9 @@ async def test_planner_prompt_injection_is_project_scoped(monkeypatch):
         _cleanup_memory(project_a)
         _cleanup_memory(project_b)
 
-    assert "Project A planner memory" in model.prompts[0]
-    assert "Project B planner memory" not in model.prompts[0]
+    prompt = llm.requests[0].messages[1].content
+    assert "Project A planner memory" in prompt
+    assert "Project B planner memory" not in prompt
 
 
 @pytest.mark.unit
@@ -193,8 +288,8 @@ async def test_planner_prompt_injection_is_project_scoped(monkeypatch):
 async def test_planner_prompt_injection_excludes_archived_stale_historical(monkeypatch):
     run_id = str(uuid.uuid4())
     project_id = f"planner-status-{uuid.uuid4().hex}"
-    model = _PlannerModel([_planner_response(run_id)])
-    _patch_planner_dependencies(monkeypatch, model)
+    llm = _PlannerLLM([_planner_response(run_id)])
+    _patch_planner_dependencies(monkeypatch, llm)
     monkeypatch.setattr(planner, "build_project_memory_block", real_build_memory_block)
     active = add_fact(project_id, "Active planner memory", category="stack")
     archived = add_fact(project_id, "Archived planner memory", category="stack")
@@ -214,7 +309,7 @@ async def test_planner_prompt_injection_excludes_archived_stale_historical(monke
     finally:
         _cleanup_memory(project_id)
 
-    prompt = model.prompts[0]
+    prompt = llm.requests[0].messages[1].content
     assert "Active planner memory" in prompt
     assert "Archived planner memory" not in prompt
     assert "Stale planner memory" not in prompt
@@ -225,14 +320,23 @@ async def test_planner_prompt_injection_excludes_archived_stale_historical(monke
 @pytest.mark.asyncio
 async def test_pipeline_still_works_without_project_id(monkeypatch):
     run_id = str(uuid.uuid4())
-    model = _PlannerModel([_planner_response(run_id)])
-    _patch_planner_dependencies(monkeypatch, model)
+    llm = _PlannerLLM([_planner_response(run_id)])
+    _patch_planner_dependencies(monkeypatch, llm)
     monkeypatch.setattr(planner, "build_project_memory_block", real_build_memory_block)
 
     result = await run_planner("Add ping endpoint", run_id)
 
     assert result.run_id == run_id
-    assert "=== PROJECT MEMORY" not in model.prompts[0]
+    assert "=== PROJECT MEMORY" not in llm.requests[0].messages[1].content
+
+
+@pytest.mark.unit
+def test_planner_pipeline_no_longer_imports_gemini_or_uses_print():
+    source = Path(planner.__file__).read_text(encoding="utf-8")
+
+    assert "google.generativeai" not in source
+    assert "genai" not in source
+    assert "print(" not in source
 
 
 @pytest.mark.api

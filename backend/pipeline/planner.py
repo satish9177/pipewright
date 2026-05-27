@@ -15,12 +15,14 @@ Rules:
 """
 
 import json
-import uuid
 import asyncio
-import google.generativeai as genai
+import logging
 from pydantic import ValidationError
 
-from backend.config.keys import settings
+from backend.llm import complete_for_role
+from backend.llm.base import LLMRequest, LLMResponse, Message
+from backend.llm.errors import ProviderRateLimitError
+from backend.llm.role_config import Role
 from backend.models.handoff import PlannerHandoff
 from backend.memory.prompt_builder import build_project_memory_block
 from backend.checkpoint.checkpoint_store import save_checkpoint
@@ -29,6 +31,8 @@ from backend.utils.json_helpers import clean_json_response
 PLANNER_MODEL = "gemini-2.5-flash-lite"
 PLANNER_TEMPERATURE = 0.2
 PLANNER_MAX_TOKENS = 2000
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are a senior engineering planner.
 Your job is to analyze a feature request and produce
@@ -80,21 +84,69 @@ def _build_user_prompt(
     )
 
 
-def _log_token_usage(response, run_id: str) -> None:
-    try:
-        usage = response.usage_metadata
-        print(
-            f"[PLANNER] Token usage | "
-            f"run_id={run_id} | "
-            f"model={PLANNER_MODEL} | "
-            f"input={usage.prompt_token_count} | "
-            f"output={usage.candidates_token_count}"
-        )
-    except Exception:
-        print(
-            f"[PLANNER] Token usage unavailable | "
-            f"run_id={run_id}"
-        )
+def _build_llm_request(prompt: str) -> LLMRequest:
+    return LLMRequest(
+        messages=[
+            Message(role="system", content=SYSTEM_PROMPT),
+            Message(role="user", content=prompt),
+        ],
+        model=PLANNER_MODEL,
+        temperature=PLANNER_TEMPERATURE,
+        max_output_tokens=PLANNER_MAX_TOKENS,
+        response_format="json_object",
+    )
+
+
+def _build_correction_request(
+    user_prompt: str,
+    raw_text: str,
+    first_error: Exception,
+) -> LLMRequest:
+    correction_prompt = (
+        f"Your previous response was not valid JSON "
+        f"or did not match the required schema.\n\n"
+        f"Previous response was:\n{raw_text}\n\n"
+        f"Error: {first_error}\n\n"
+        f"Please respond again with ONLY the raw JSON. "
+        f"No markdown. No explanation. Just the JSON object."
+    )
+    return LLMRequest(
+        messages=[
+            Message(role="system", content=SYSTEM_PROMPT),
+            Message(role="user", content=user_prompt),
+            Message(role="assistant", content=raw_text),
+            Message(role="user", content=correction_prompt),
+        ],
+        model=PLANNER_MODEL,
+        temperature=PLANNER_TEMPERATURE,
+        max_output_tokens=PLANNER_MAX_TOKENS,
+        response_format="json_object",
+    )
+
+
+def _log_token_usage(response: LLMResponse, run_id: str) -> None:
+    if response.input_tokens is None or response.output_tokens is None:
+        logger.info("[PLANNER] Token usage unavailable | run_id=%s", run_id)
+        return
+
+    logger.info(
+        "[PLANNER] Token usage | run_id=%s | model=%s | input=%s | output=%s",
+        run_id,
+        response.model,
+        response.input_tokens,
+        response.output_tokens,
+    )
+
+
+async def _call_llm(request: LLMRequest, run_id: str) -> str:
+    response = await complete_for_role(Role.PLANNER, request)
+    logger.info(
+        "[PLANNER] LLM provider=%s model=%s",
+        response.provider,
+        response.model,
+    )
+    _log_token_usage(response, run_id)
+    return response.text
 
 
 def _parse_handoff(raw_text: str, run_id: str) -> PlannerHandoff:
@@ -125,7 +177,7 @@ async def run_planner(
     Retries once if Gemini returns invalid JSON or
     schema mismatch. Raises RuntimeError after 2 failures.
     """
-    print(f"[PLANNER] Starting | run_id={run_id}")
+    logger.info("[PLANNER] Starting | run_id=%s", run_id)
 
     project_memory_block = build_project_memory_block(
         project_id=project_id,
@@ -136,61 +188,39 @@ async def run_planner(
         line for line in project_memory_block.splitlines()
         if line.startswith("[")
     ])
-    print(f"[PLANNER] Loaded {fact_count} memory facts")
-
-    # Configure Gemini client
-    genai.configure(api_key=settings.gemini_api_key)
-
-    generation_config = genai.GenerationConfig(
-        temperature=PLANNER_TEMPERATURE,
-        max_output_tokens=PLANNER_MAX_TOKENS
-    )
-
-    model = genai.GenerativeModel(
-        model_name=PLANNER_MODEL,
-        generation_config=generation_config,
-        system_instruction=SYSTEM_PROMPT
-    )
+    logger.info("[PLANNER] Loaded %s memory facts", fact_count)
 
     user_prompt = _build_user_prompt(
         feature_description, run_id, project_memory_block
     )
+    request = _build_llm_request(user_prompt)
 
     raw_text = ""
 
     # First attempt
     try:
-        print(f"[PLANNER] Calling Gemini (attempt 1)...")
-        response = model.generate_content(user_prompt)
-        raw_text = response.text
-        _log_token_usage(response, run_id)
+        logger.info("[PLANNER] Calling LLM (attempt 1)...")
+        raw_text = await _call_llm(request, run_id)
         handoff = _parse_handoff(raw_text, run_id)
-        print(f"[PLANNER] Plan validated on attempt 1")
+        logger.info("[PLANNER] Plan validated on attempt 1")
 
     except (ValidationError, ValueError, json.JSONDecodeError) as first_error:
-        print(f"[PLANNER] Attempt 1 failed: {first_error}")
-        print(f"[PLANNER] Retrying with correction prompt...")
-
-        correction_prompt = (
-            f"{user_prompt}\n\n"
-            f"Your previous response was not valid JSON "
-            f"or did not match the required schema.\n\n"
-            f"Previous response was:\n{raw_text}\n\n"
-            f"Error: {first_error}\n\n"
-            f"Please respond again with ONLY the raw JSON. "
-            f"No markdown. No explanation. Just the JSON object."
+        logger.warning("[PLANNER] Attempt 1 failed: %s", first_error)
+        logger.info("[PLANNER] Retrying with correction prompt...")
+        correction_request = _build_correction_request(
+            user_prompt,
+            raw_text,
+            first_error,
         )
 
         try:
-            response = model.generate_content(correction_prompt)
-            raw_text = response.text
-            _log_token_usage(response, run_id)
+            raw_text = await _call_llm(correction_request, run_id)
             handoff = _parse_handoff(raw_text, run_id)
-            print(f"[PLANNER] Plan validated on attempt 2")
+            logger.info("[PLANNER] Plan validated on attempt 2")
 
         except (ValidationError, ValueError, json.JSONDecodeError) as second_error:
             raise RuntimeError(
-                f"planner.py: Gemini failed to return valid plan "
+                f"planner.py: LLM failed to return valid plan "
                 f"after 2 attempts. "
                 f"run_id={run_id} | "
                 f"error={second_error}"
@@ -198,26 +228,24 @@ async def run_planner(
 
     except Exception as unexpected:
         error_str = str(unexpected)
-        if "429" in error_str:
-           print(f"[PLANNER] Rate limited by Gemini. Waiting 60 seconds...")
-           await asyncio.sleep(60)
-           print(f"[PLANNER] Retrying after rate limit wait...")
-           try:
-              response = model.generate_content(user_prompt)
-              raw_text = response.text
-              _log_token_usage(response, run_id)
-              handoff = _parse_handoff(raw_text, run_id)
-              print(f"[PLANNER] Plan validated after rate limit retry")
-           except Exception as retry_error:
-              raise RuntimeError(
-                f"planner.py: Failed after rate limit retry. "
-                f"run_id={run_id} | error={retry_error}"
-            )
+        if isinstance(unexpected, ProviderRateLimitError) or "429" in error_str:
+            logger.warning("[PLANNER] Rate limited by LLM. Waiting 60 seconds...")
+            await asyncio.sleep(60)
+            logger.info("[PLANNER] Retrying after rate limit wait...")
+            try:
+                raw_text = await _call_llm(request, run_id)
+                handoff = _parse_handoff(raw_text, run_id)
+                logger.info("[PLANNER] Plan validated after rate limit retry")
+            except Exception as retry_error:
+                raise RuntimeError(
+                    f"planner.py: Failed after rate limit retry. "
+                    f"run_id={run_id} | error={retry_error}"
+                )
         else:
-             raise RuntimeError(
+            raise RuntimeError(
                 f"planner.py: Unexpected error during planning. "
                 f"run_id={run_id} | error={unexpected}"
-             )
+            )
 
     # Save checkpoint after successful plan
     try:
@@ -231,12 +259,12 @@ async def run_planner(
             step_completed=True,
             chunk_number=chunk_number
         )
-        print(f"[PLANNER] Checkpoint saved | run_id={run_id}")
+        logger.info("[PLANNER] Checkpoint saved | run_id=%s", run_id)
     except Exception as cp_error:
         raise RuntimeError(
             f"planner.py: Failed to save checkpoint. "
             f"run_id={run_id} | error={cp_error}"
         )
 
-    print(f"[PLANNER] Complete | run_id={run_id}")
+    logger.info("[PLANNER] Complete | run_id=%s", run_id)
     return handoff
