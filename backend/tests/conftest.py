@@ -20,6 +20,22 @@ from pathlib import Path
 from sqlalchemy import text
 from backend.db.database import init_db, engine
 
+_LLM_ENV_VARS = (
+    "DEFAULT_LLM_PROVIDER", "DEFAULT_LLM_MODEL",
+    "TRIAGE_LLM_PROVIDER", "TRIAGE_LLM_MODEL",
+    "PLANNER_LLM_PROVIDER", "PLANNER_LLM_MODEL",
+    "CODER_LLM_PROVIDER", "CODER_LLM_MODEL",
+    "REVIEWER_LLM_PROVIDER", "REVIEWER_LLM_MODEL",
+    "SUMMARY_LLM_PROVIDER", "SUMMARY_LLM_MODEL",
+)
+
+
+@pytest.fixture()
+def clear_llm_env(monkeypatch):
+    """Remove all LLM provider/model env vars so shell config cannot leak into tests."""
+    for name in _LLM_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
 LOCAL_TMP = Path(__file__).parent.parent / ".pytest_tmp"
 
 

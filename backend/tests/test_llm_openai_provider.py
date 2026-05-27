@@ -341,7 +341,7 @@ def test_default_registry_includes_openai():
 
 # ─── role config routing ──────────────────────────────────────────────────────
 
-def test_role_config_can_resolve_openai_provider(monkeypatch):
+def test_role_config_can_resolve_openai_provider(monkeypatch, clear_llm_env):
     for attr in (
         "default_llm_provider", "default_llm_model",
         "triage_llm_provider", "triage_llm_model",
@@ -356,7 +356,7 @@ def test_role_config_can_resolve_openai_provider(monkeypatch):
     assert config.model == "gpt-4o-mini"
 
 
-def test_pipeline_role_can_route_to_openai_with_mocked_provider(monkeypatch):
+def test_pipeline_role_can_route_to_openai_with_mocked_provider(monkeypatch, clear_llm_env):
     """get_provider_for_role resolves openai when env selects it."""
     from backend.llm import get_provider_for_role
 

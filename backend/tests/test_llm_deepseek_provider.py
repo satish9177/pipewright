@@ -319,7 +319,7 @@ def test_default_registry_includes_deepseek():
 
 # ─── role config routing ──────────────────────────────────────────────────────
 
-def test_role_config_can_resolve_deepseek_provider(monkeypatch):
+def test_role_config_can_resolve_deepseek_provider(monkeypatch, clear_llm_env):
     for attr in (
         "default_llm_provider", "default_llm_model",
         "triage_llm_provider", "triage_llm_model",
@@ -334,7 +334,7 @@ def test_role_config_can_resolve_deepseek_provider(monkeypatch):
     assert config.model == "deepseek-v4-flash"
 
 
-def test_pipeline_role_can_route_to_deepseek_with_mocked_provider(monkeypatch):
+def test_pipeline_role_can_route_to_deepseek_with_mocked_provider(monkeypatch, clear_llm_env):
     """get_provider_for_role resolves deepseek when env selects it."""
     from backend.llm import get_provider_for_role
 
