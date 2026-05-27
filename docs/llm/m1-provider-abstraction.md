@@ -25,6 +25,7 @@ modes.
 | LLM-M1-D | `feature/llm-m1-provider-audit` | Consolidated token usage logging via shared `log_token_usage` |
 | LLM-M2-A | `feature/llm-m2-anthropic-provider` | AnthropicProvider adapter (`claude-*` models) |
 | LLM-M2-B | `feature/llm-m2-openai-provider` | OpenAIProvider adapter (`gpt-*` and `o`-series models) |
+| LLM-M2-C | `feature/llm-m2-deepseek-provider` | DeepSeekProvider adapter (`deepseek-*` models via OpenAI-compatible API) |
 
 ## Files and Responsibilities
 
@@ -94,11 +95,20 @@ include `claude-3-5-haiku-latest`, `claude-3-5-sonnet-latest`, `claude-sonnet-4-
 
 ### `backend/llm/providers/openai.py`
 
-The only runtime file that imports the `openai` SDK. Wraps `AsyncOpenAI` with
+One of two runtime files that import the `openai` SDK. Wraps `AsyncOpenAI` with
 the `BaseLLMProvider` interface. Reads `OPENAI_API_KEY` from settings. Passes
 messages through as-is (OpenAI natively supports system/user/assistant roles).
 Accepts any model whose name starts with `gpt-` or matches the o-series pattern
 (`o1`, `o3`, `o4-mini`, etc.).
+
+### `backend/llm/providers/deepseek.py`
+
+One of two runtime files that import the `openai` SDK. DeepSeek exposes an
+OpenAI-compatible chat completions API, so the adapter reuses `AsyncOpenAI`
+with `base_url` pointing at `https://api.deepseek.com`. Reads `DEEPSEEK_API_KEY`
+from settings; `DEEPSEEK_BASE_URL` is optional. Passes messages through as-is.
+Accepts any model whose name starts with `deepseek-` (e.g. `deepseek-v4-flash`,
+`deepseek-v4-pro`, `deepseek-chat`, `deepseek-reasoner`).
 
 ### `backend/llm/providers/fake.py`
 
@@ -204,6 +214,7 @@ and the next level in the precedence chain is checked.
 | Gemini | `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash-lite` | **Default** when no LLM env vars are set |
 | Anthropic/Claude | `anthropic` | `ANTHROPIC_API_KEY` | `claude-3-5-haiku-latest` | Real production provider |
 | OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` | Real production provider |
+| DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-v4-flash` | OpenAI-compatible API; reuses `openai` SDK |
 | FakeProvider | `fake` | none | `fake-model` | Tests and local dev only — not production |
 
 ### Example Configurations
@@ -228,6 +239,14 @@ DEFAULT_LLM_MODEL=claude-3-5-haiku-latest
 OPENAI_API_KEY=sk-...
 DEFAULT_LLM_PROVIDER=openai
 DEFAULT_LLM_MODEL=gpt-4o-mini
+```
+
+**All DeepSeek:**
+
+```
+DEEPSEEK_API_KEY=sk-...
+DEFAULT_LLM_PROVIDER=deepseek
+DEFAULT_LLM_MODEL=deepseek-v4-flash
 ```
 
 **Mixed roles (Gemini default, Anthropic planner, OpenAI coder):**
@@ -293,7 +312,8 @@ These constraints are enforced by guard tests in
 - Only `backend/llm/providers/gemini.py` may import `google.generativeai`; all
   other runtime files are scanned and must have no such import
 - Only `backend/llm/providers/anthropic.py` may import the `anthropic` SDK
-- Only `backend/llm/providers/openai.py` may import the `openai` SDK
+- Only `backend/llm/providers/openai.py` and `backend/llm/providers/deepseek.py`
+  may import the `openai` SDK (DeepSeek reuses the OpenAI-compatible client)
 - Pipeline roles (triage, planner, coder) must call `complete_for_role` from
   `backend.llm`; direct provider SDK calls are prohibited
 - Pipeline roles must not use `print(...)` — use the module-level logger instead

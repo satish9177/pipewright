@@ -39,3 +39,4 @@ def test_default_registry_registers_all_providers():
     assert "fake" in registry.list()
     assert "anthropic" in registry.list()
     assert "openai" in registry.list()
+    assert "deepseek" in registry.list()

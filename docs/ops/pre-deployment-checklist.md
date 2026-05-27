@@ -58,6 +58,8 @@ Optional provider API keys (required only when their provider is selected):
 
 - `ANTHROPIC_API_KEY`: required if any role is routed to `provider=anthropic`.
 - `OPENAI_API_KEY`: required if any role is routed to `provider=openai`.
+- `DEEPSEEK_API_KEY`: required if any role is routed to `provider=deepseek`.
+- `DEEPSEEK_BASE_URL`: optional; defaults to `https://api.deepseek.com`.
 
 Recommended safe app config:
 
@@ -72,8 +74,8 @@ Recommended safe app config:
 
 Optional LLM provider config:
 
-Supported provider names: `gemini` (default), `anthropic`, `openai`, `fake`
-(tests/dev only).
+Supported provider names: `gemini` (default), `anthropic`, `openai`, `deepseek`,
+`fake` (tests/dev only).
 
 - `DEFAULT_LLM_PROVIDER`: default provider for all roles. Default: `gemini`.
 - `DEFAULT_LLM_MODEL`: default model for all roles. Default:
@@ -83,6 +85,12 @@ Supported provider names: `gemini` (default), `anthropic`, `openai`, `fake`
 - `CODER_LLM_PROVIDER` / `CODER_LLM_MODEL`: coder role override.
 - `REVIEWER_LLM_PROVIDER` / `REVIEWER_LLM_MODEL`: reviewer role override.
 - `SUMMARY_LLM_PROVIDER` / `SUMMARY_LLM_MODEL`: summary role override.
+
+DeepSeek-specific:
+
+- `DEEPSEEK_API_KEY`: required when any role uses `provider=deepseek`.
+- `DEEPSEEK_BASE_URL`: override DeepSeek API base URL. Default:
+  `https://api.deepseek.com`.
 
 Role-specific vars take precedence over `DEFAULT_LLM_*`. If all vars are unset,
 Pipewright uses Gemini with `gemini-2.5-flash-lite`. See
@@ -175,7 +183,7 @@ Confirm the frontend origin is present in both `CORS_ALLOWED_ORIGINS` and
 - Live logs are not durable; restarting the backend clears buffered events.
 - Background pipeline tasks run inside the API process. A process restart can
   interrupt active work.
-- LLM provider API calls (Gemini, Anthropic, OpenAI) are external and
+- LLM provider API calls (Gemini, Anthropic, OpenAI, DeepSeek) are external and
   rate-limited. Gemini API tests can hit quota limits.
 - GitHub PR creation is non-fatal; a failed PR create can still leave the run
   completed or ready for retry depending on the stored run status.

@@ -28,7 +28,7 @@ npm.cmd run dev
 Run LLM abstraction layer and all provider tests:
 
 ```powershell
-venv\Scripts\python.exe -m pytest backend\tests\test_llm_base.py backend\tests\test_llm_registry.py backend\tests\test_llm_role_config.py backend\tests\test_llm_fake_provider.py backend\tests\test_llm_gemini_provider.py backend\tests\test_llm_anthropic_provider.py backend\tests\test_llm_openai_provider.py -v -m unit
+venv\Scripts\python.exe -m pytest backend\tests\test_llm_base.py backend\tests\test_llm_registry.py backend\tests\test_llm_role_config.py backend\tests\test_llm_fake_provider.py backend\tests\test_llm_gemini_provider.py backend\tests\test_llm_anthropic_provider.py backend\tests\test_llm_openai_provider.py backend\tests\test_llm_deepseek_provider.py -v -m unit
 ```
 
 Run pipeline role migration and guard tests:
@@ -149,6 +149,30 @@ Remove-Item Env:\CODER_LLM_PROVIDER
 Remove-Item Env:\CODER_LLM_MODEL
 ```
 
+## DeepSeek Provider Smoke
+
+Requires `DEEPSEEK_API_KEY`. Set planner to use DeepSeek:
+
+```powershell
+$env:PLANNER_LLM_PROVIDER = "deepseek"
+$env:PLANNER_LLM_MODEL = "deepseek-v4-flash"
+```
+
+Run a small chunked flow (triage and coder remain on Gemini default).
+
+Confirm the planner log line shows the DeepSeek provider:
+
+```
+[LLM] role=planner provider=deepseek model=deepseek-v4-flash input_tokens=... output_tokens=... finish_reason=stop run_id=...
+```
+
+Clear when done:
+
+```powershell
+Remove-Item Env:\PLANNER_LLM_PROVIDER
+Remove-Item Env:\PLANNER_LLM_MODEL
+```
+
 ## Default Gemini Smoke
 
 Ensure no LLM provider overrides are set:
@@ -224,9 +248,13 @@ Confirm each SDK import exists only in its own provider adapter:
 Select-String -Path backend\llm\providers\gemini.py -Pattern "google\.generativeai"
 Select-String -Path backend\llm\providers\anthropic.py -Pattern "import anthropic"
 Select-String -Path backend\llm\providers\openai.py -Pattern "import openai"
+Select-String -Path backend\llm\providers\deepseek.py -Pattern "import openai"
 ```
 
 Expected result: at least one match per file.
+
+Note: both `openai.py` and `deepseek.py` are expected to match `import openai`
+— DeepSeek reuses the OpenAI-compatible client with a different `base_url`.
 
 Run the full isolation guard test suite:
 
@@ -283,6 +311,7 @@ provider. Check each adapter's `supports_model` list:
 - Gemini: `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-2.5-pro`, etc.
 - Anthropic: `claude-3-5-haiku-latest`, `claude-3-5-sonnet-latest`, `claude-sonnet-4-5`, etc.
 - OpenAI: any `gpt-*` name, or o-series (`o1`, `o3`, `o4-mini`, etc.)
+- DeepSeek: any `deepseek-*` name (`deepseek-v4-flash`, `deepseek-chat`, etc.)
 - Fake: `fake-model` only
 
 ### Role Override Not Taking Effect

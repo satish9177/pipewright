@@ -6,6 +6,7 @@ Rules enforced:
   - google.generativeai may only be imported in backend/llm/providers/gemini.py
   - anthropic SDK may only be imported in backend/llm/providers/anthropic.py
   - openai SDK may only be imported in backend/llm/providers/openai.py
+    and backend/llm/providers/deepseek.py (DeepSeek uses the OpenAI-compatible API)
   - All listed pipeline files must not import provider SDKs directly
   - triage, planner, coder must call complete_for_role from backend.llm
 """
@@ -21,6 +22,7 @@ PIPELINE_ROOT = BACKEND_ROOT / "pipeline"
 GEMINI_PROVIDER = BACKEND_ROOT / "llm" / "providers" / "gemini.py"
 ANTHROPIC_PROVIDER = BACKEND_ROOT / "llm" / "providers" / "anthropic.py"
 OPENAI_PROVIDER = BACKEND_ROOT / "llm" / "providers" / "openai.py"
+DEEPSEEK_PROVIDER = BACKEND_ROOT / "llm" / "providers" / "deepseek.py"
 
 
 @pytest.mark.unit
@@ -115,17 +117,26 @@ def test_pipeline_files_do_not_import_anthropic_sdk(pipeline_file):
 
 
 @pytest.mark.unit
-def test_openai_sdk_import_only_in_provider_adapter():
-    """Only backend/llm/providers/openai.py may import the openai SDK at runtime."""
+def test_openai_sdk_import_only_in_provider_adapters():
+    """Only openai.py and deepseek.py provider adapters may import the openai SDK at runtime.
+    DeepSeek uses the OpenAI-compatible API and reuses the openai SDK client."""
     openai_source = OPENAI_PROVIDER.read_text(encoding="utf-8")
     assert "import openai" in openai_source, (
         "backend/llm/providers/openai.py no longer imports openai. "
         "Update this guard if the SDK was intentionally removed from the adapter."
     )
 
+    deepseek_source = DEEPSEEK_PROVIDER.read_text(encoding="utf-8")
+    assert "import openai" in deepseek_source, (
+        "backend/llm/providers/deepseek.py no longer imports openai. "
+        "Update this guard if the DeepSeek adapter no longer uses the OpenAI-compatible client."
+    )
+
+    _openai_adapters = {OPENAI_PROVIDER, DEEPSEEK_PROVIDER}
+
     violations = []
     for py_file in sorted(BACKEND_ROOT.rglob("*.py")):
-        if py_file == OPENAI_PROVIDER:
+        if py_file in _openai_adapters:
             continue
         if py_file.is_relative_to(BACKEND_ROOT / "tests"):
             continue
@@ -134,7 +145,7 @@ def test_openai_sdk_import_only_in_provider_adapter():
             violations.append(str(py_file.relative_to(BACKEND_ROOT)))
 
     assert violations == [], (
-        "Runtime backend files outside backend/llm/providers/openai.py "
+        "Runtime backend files outside openai/deepseek provider adapters "
         "import openai SDK:\n"
         + "\n".join(f"  {v}" for v in violations)
     )
