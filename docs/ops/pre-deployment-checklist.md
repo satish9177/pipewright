@@ -62,6 +62,19 @@ Recommended safe app config:
   Default:
   `http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000`.
 
+Optional LLM provider config:
+
+- `DEFAULT_LLM_PROVIDER`: default provider for all roles. Default: `gemini`.
+- `DEFAULT_LLM_MODEL`: default model for all roles. Default:
+  `gemini-2.5-flash-lite`.
+- `TRIAGE_LLM_PROVIDER` / `TRIAGE_LLM_MODEL`: triage role override.
+- `PLANNER_LLM_PROVIDER` / `PLANNER_LLM_MODEL`: planner role override.
+- `CODER_LLM_PROVIDER` / `CODER_LLM_MODEL`: coder role override.
+- `REVIEWER_LLM_PROVIDER` / `REVIEWER_LLM_MODEL`: reviewer role override.
+- `SUMMARY_LLM_PROVIDER` / `SUMMARY_LLM_MODEL`: summary role override.
+
+If these are unset, Pipewright keeps the current Gemini default behavior.
+
 GitHub configuration:
 
 - Project-level GitHub credentials are stored through the project API, not

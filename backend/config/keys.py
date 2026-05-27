@@ -14,6 +14,20 @@ class Settings(BaseSettings):
     pipewright_encryption_key: str | None = None
     target_repo_path: str | None = None
     test_command: str | None = None
+    default_llm_provider: str | None = None
+    default_llm_model: str | None = None
+    triage_llm_provider: str | None = None
+    triage_llm_model: str | None = None
+    planner_llm_provider: str | None = None
+    planner_llm_model: str | None = None
+    coder_llm_provider: str | None = None
+    coder_llm_model: str | None = None
+    reviewer_llm_provider: str | None = None
+    reviewer_llm_model: str | None = None
+    summary_llm_provider: str | None = None
+    summary_llm_model: str | None = None
+    architect_llm_provider: str | None = None
+    architect_llm_model: str | None = None
 
     model_config = {
         "env_file": ".env",
