@@ -35,9 +35,11 @@ def default_registry() -> ProviderRegistry:
     from backend.llm.providers.anthropic import AnthropicProvider
     from backend.llm.providers.fake import FakeProvider
     from backend.llm.providers.gemini import GeminiProvider
+    from backend.llm.providers.openai import OpenAIProvider
 
     registry = ProviderRegistry()
     registry.register(GeminiProvider())
     registry.register(AnthropicProvider())
+    registry.register(OpenAIProvider())
     registry.register(FakeProvider())
     return registry

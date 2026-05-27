@@ -5,6 +5,7 @@ Static source guards for LLM provider isolation.
 Rules enforced:
   - google.generativeai may only be imported in backend/llm/providers/gemini.py
   - anthropic SDK may only be imported in backend/llm/providers/anthropic.py
+  - openai SDK may only be imported in backend/llm/providers/openai.py
   - All listed pipeline files must not import provider SDKs directly
   - triage, planner, coder must call complete_for_role from backend.llm
 """
@@ -19,6 +20,7 @@ BACKEND_ROOT = Path(__file__).parent.parent
 PIPELINE_ROOT = BACKEND_ROOT / "pipeline"
 GEMINI_PROVIDER = BACKEND_ROOT / "llm" / "providers" / "gemini.py"
 ANTHROPIC_PROVIDER = BACKEND_ROOT / "llm" / "providers" / "anthropic.py"
+OPENAI_PROVIDER = BACKEND_ROOT / "llm" / "providers" / "openai.py"
 
 
 @pytest.mark.unit
@@ -109,6 +111,50 @@ def test_pipeline_files_do_not_import_anthropic_sdk(pipeline_file):
     source = (PIPELINE_ROOT / pipeline_file).read_text(encoding="utf-8")
     assert "import anthropic" not in source, (
         f"{pipeline_file} must not import the anthropic SDK directly"
+    )
+
+
+@pytest.mark.unit
+def test_openai_sdk_import_only_in_provider_adapter():
+    """Only backend/llm/providers/openai.py may import the openai SDK at runtime."""
+    openai_source = OPENAI_PROVIDER.read_text(encoding="utf-8")
+    assert "import openai" in openai_source, (
+        "backend/llm/providers/openai.py no longer imports openai. "
+        "Update this guard if the SDK was intentionally removed from the adapter."
+    )
+
+    violations = []
+    for py_file in sorted(BACKEND_ROOT.rglob("*.py")):
+        if py_file == OPENAI_PROVIDER:
+            continue
+        if py_file.is_relative_to(BACKEND_ROOT / "tests"):
+            continue
+        source = py_file.read_text(encoding="utf-8")
+        if "import openai" in source:
+            violations.append(str(py_file.relative_to(BACKEND_ROOT)))
+
+    assert violations == [], (
+        "Runtime backend files outside backend/llm/providers/openai.py "
+        "import openai SDK:\n"
+        + "\n".join(f"  {v}" for v in violations)
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "pipeline_file",
+    [
+        pytest.param("triage.py", id="triage"),
+        pytest.param("planner.py", id="planner"),
+        pytest.param("coder.py", id="coder"),
+        pytest.param("orchestrator.py", id="orchestrator"),
+        pytest.param("chunked_orchestrator.py", id="chunked_orchestrator"),
+    ],
+)
+def test_pipeline_files_do_not_import_openai_sdk(pipeline_file):
+    source = (PIPELINE_ROOT / pipeline_file).read_text(encoding="utf-8")
+    assert "import openai" not in source, (
+        f"{pipeline_file} must not import the openai SDK directly"
     )
 
 
