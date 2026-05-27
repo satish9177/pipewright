@@ -19,8 +19,8 @@ import asyncio
 import logging
 from pydantic import ValidationError
 
-from backend.llm import complete_for_role
-from backend.llm.base import LLMRequest, LLMResponse, Message
+from backend.llm import complete_for_role, log_token_usage
+from backend.llm.base import LLMRequest, Message
 from backend.llm.errors import ProviderRateLimitError
 from backend.llm.role_config import Role
 from backend.models.handoff import PlannerHandoff
@@ -124,28 +124,9 @@ def _build_correction_request(
     )
 
 
-def _log_token_usage(response: LLMResponse, run_id: str) -> None:
-    if response.input_tokens is None or response.output_tokens is None:
-        logger.info("[PLANNER] Token usage unavailable | run_id=%s", run_id)
-        return
-
-    logger.info(
-        "[PLANNER] Token usage | run_id=%s | model=%s | input=%s | output=%s",
-        run_id,
-        response.model,
-        response.input_tokens,
-        response.output_tokens,
-    )
-
-
 async def _call_llm(request: LLMRequest, run_id: str) -> str:
     response = await complete_for_role(Role.PLANNER, request)
-    logger.info(
-        "[PLANNER] LLM provider=%s model=%s",
-        response.provider,
-        response.model,
-    )
-    _log_token_usage(response, run_id)
+    log_token_usage(response, run_id=run_id, role=Role.PLANNER)
     return response.text
 
 

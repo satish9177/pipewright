@@ -12,8 +12,8 @@ import logging
 
 from pydantic import ValidationError
 
-from backend.llm import complete_for_role
-from backend.llm.base import LLMRequest, LLMResponse, Message
+from backend.llm import complete_for_role, log_token_usage
+from backend.llm.base import LLMRequest, Message
 from backend.llm.role_config import Role
 from backend.memory.prompt_builder import build_project_memory_block
 from backend.models.chunk import TriageResult
@@ -133,31 +133,12 @@ def _build_llm_request(prompt: str) -> LLMRequest:
     )
 
 
-def _log_token_usage(response: LLMResponse, run_id: str) -> None:
-    if response.input_tokens is None or response.output_tokens is None:
-        logger.info("[TRIAGE] Token usage unavailable | run_id=%s", run_id)
-        return
-
-    logger.info(
-        "[TRIAGE] Token usage | run_id=%s | model=%s | input=%s | output=%s",
-        run_id,
-        response.model,
-        response.input_tokens,
-        response.output_tokens,
-    )
-
-
 async def _call_llm(prompt: str, run_id: str) -> str:
     response = await complete_for_role(
         Role.TRIAGE,
         _build_llm_request(prompt),
     )
-    logger.info(
-        "[TRIAGE] LLM provider=%s model=%s",
-        response.provider,
-        response.model,
-    )
-    _log_token_usage(response, run_id)
+    log_token_usage(response, run_id=run_id, role=Role.TRIAGE)
     return response.text
 
 

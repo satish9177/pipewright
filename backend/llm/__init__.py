@@ -41,18 +41,25 @@ async def complete_for_role(
 def log_token_usage(
     response: LLMResponse,
     *,
-    run_id: str,
+    run_id: str | None = None,
     role: Role,
 ) -> None:
+    input_tokens = (
+        response.input_tokens if response.input_tokens is not None else "unavailable"
+    )
+    output_tokens = (
+        response.output_tokens if response.output_tokens is not None else "unavailable"
+    )
     logger.info(
-        "[LLM] Token usage | run_id=%s | role=%s | provider=%s | "
-        "model=%s | input=%s | output=%s",
-        run_id,
+        "[LLM] role=%s provider=%s model=%s input_tokens=%s output_tokens=%s "
+        "finish_reason=%s run_id=%s",
         role.value,
         response.provider,
         response.model,
-        response.input_tokens,
-        response.output_tokens,
+        input_tokens,
+        output_tokens,
+        response.finish_reason or "unknown",
+        run_id or "none",
     )
 
 
