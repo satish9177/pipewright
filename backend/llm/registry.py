@@ -33,6 +33,7 @@ class ProviderRegistry:
 
 def default_registry() -> ProviderRegistry:
     from backend.llm.providers.anthropic import AnthropicProvider
+    from backend.llm.providers.deepseek import DeepSeekProvider
     from backend.llm.providers.fake import FakeProvider
     from backend.llm.providers.gemini import GeminiProvider
     from backend.llm.providers.openai import OpenAIProvider
@@ -41,5 +42,6 @@ def default_registry() -> ProviderRegistry:
     registry.register(GeminiProvider())
     registry.register(AnthropicProvider())
     registry.register(OpenAIProvider())
+    registry.register(DeepSeekProvider())
     registry.register(FakeProvider())
     return registry
