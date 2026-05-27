@@ -97,8 +97,14 @@ Phase 2C - Live logs complete.
 ## Backend LLM Provider Rules
 
 - Provider SDK imports belong only in `backend/llm/providers/` adapters.
-- After the pipeline migration, pipeline modules should call the public
-  `backend.llm` API instead of importing provider SDKs directly.
+  `backend/llm/providers/gemini.py` is the only runtime file that may import
+  `google.generativeai`. Adding the import anywhere else will break the guard
+  tests in `test_guards_provider_isolation.py`.
+- Migrated pipeline roles (triage, planner, coder) must call the public
+  `backend.llm` API (`complete_for_role`) instead of importing provider SDKs
+  directly.
+- Migrated pipeline roles must not contain `print(...)`. Use the module-level
+  logger (`logging.getLogger(__name__)`) for all diagnostic output.
 - `LLMResponse.raw` is audit-only metadata. Do not store prompts, secrets, or
   full provider response bodies there.
 - Provider errors must be sanitized before logging or raising.
