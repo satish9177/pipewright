@@ -49,7 +49,15 @@ venv\Scripts\python.exe -m pytest backend\tests\ -v -m api -s
 
 Required:
 
-- `GEMINI_API_KEY`: Gemini API key used by planner, coder, and triage.
+- `GEMINI_API_KEY`: required at backend startup (the hardcoded fallback provider
+  is Gemini). If all roles are configured to use a different provider via
+  `DEFAULT_LLM_PROVIDER`, you may set a placeholder value, but removing the field
+  entirely will cause `Settings` validation to fail on startup.
+
+Optional provider API keys (required only when their provider is selected):
+
+- `ANTHROPIC_API_KEY`: required if any role is routed to `provider=anthropic`.
+- `OPENAI_API_KEY`: required if any role is routed to `provider=openai`.
 
 Recommended safe app config:
 
@@ -64,6 +72,9 @@ Recommended safe app config:
 
 Optional LLM provider config:
 
+Supported provider names: `gemini` (default), `anthropic`, `openai`, `fake`
+(tests/dev only).
+
 - `DEFAULT_LLM_PROVIDER`: default provider for all roles. Default: `gemini`.
 - `DEFAULT_LLM_MODEL`: default model for all roles. Default:
   `gemini-2.5-flash-lite`.
@@ -73,7 +84,13 @@ Optional LLM provider config:
 - `REVIEWER_LLM_PROVIDER` / `REVIEWER_LLM_MODEL`: reviewer role override.
 - `SUMMARY_LLM_PROVIDER` / `SUMMARY_LLM_MODEL`: summary role override.
 
-If these are unset, Pipewright keeps the current Gemini default behavior.
+Role-specific vars take precedence over `DEFAULT_LLM_*`. If all vars are unset,
+Pipewright uses Gemini with `gemini-2.5-flash-lite`. See
+`docs/llm/m1-provider-abstraction.md` for the full precedence chain and example
+configs.
+
+Do not commit API keys to the repository. Use `.env` (gitignored) or a secrets
+manager.
 
 GitHub configuration:
 
@@ -158,7 +175,8 @@ Confirm the frontend origin is present in both `CORS_ALLOWED_ORIGINS` and
 - Live logs are not durable; restarting the backend clears buffered events.
 - Background pipeline tasks run inside the API process. A process restart can
   interrupt active work.
-- Gemini API tests and provider calls are external and rate-limited.
+- LLM provider API calls (Gemini, Anthropic, OpenAI) are external and
+  rate-limited. Gemini API tests can hit quota limits.
 - GitHub PR creation is non-fatal; a failed PR create can still leave the run
   completed or ready for retry depending on the stored run status.
 
