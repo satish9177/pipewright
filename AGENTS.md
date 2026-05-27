@@ -19,6 +19,7 @@ Backend lives in `backend/`.
 - `backend/repo/repo_indexer.py` - deterministic zero-AI repo indexing.
 - `backend/events/` - process-local event bus and event schema.
 - `backend/projects/` - project CRUD and active runtime project context.
+- `backend/llm/` - provider abstraction scaffolding for future LLM calls.
 - `backend/db/` - SQLite schema and idempotent migration helpers.
 - `backend/tests/` - backend unit tests.
 
@@ -92,6 +93,16 @@ Phase 2C - Live logs complete.
 - Do not name Pydantic models starting with `Test*`; pytest may collect them.
 - Use exact model names and explicit temperatures for AI calls. Do not use `"latest"` model names.
 - Use plain ASCII in logs/docs where possible for Windows compatibility.
+
+## Backend LLM Provider Rules
+
+- Provider SDK imports belong only in `backend/llm/providers/` adapters.
+- After the pipeline migration, pipeline modules should call the public
+  `backend.llm` API instead of importing provider SDKs directly.
+- `LLMResponse.raw` is audit-only metadata. Do not store prompts, secrets, or
+  full provider response bodies there.
+- Provider errors must be sanitized before logging or raising.
+- Do not add direct provider SDK imports outside provider adapters.
 
 ## Current Known Risks
 
