@@ -23,6 +23,8 @@ modes.
 | LLM-M1-B4 | `chore/llm-provider-guards` | Provider isolation guard tests; AGENTS.md rules |
 | LLM-M1-C | `feature/llm-m1-role-config-validation` | Env-based role config validation tests |
 | LLM-M1-D | `feature/llm-m1-provider-audit` | Consolidated token usage logging via shared `log_token_usage` |
+| LLM-M2-A | `feature/llm-m2-anthropic-provider` | AnthropicProvider adapter (`claude-*` models) |
+| LLM-M2-B | `feature/llm-m2-openai-provider` | OpenAIProvider adapter (`gpt-*` and `o`-series models) |
 
 ## Files and Responsibilities
 
@@ -65,8 +67,8 @@ Anthropic keys (`sk-ant-...`), OpenAI keys (`sk-...`), Bearer tokens, and
 ### `backend/llm/registry.py`
 
 `ProviderRegistry` maps provider name strings to `BaseLLMProvider` instances.
-`default_registry()` returns a registry pre-registered with `GeminiProvider` and
-`FakeProvider`.
+`default_registry()` returns a registry pre-registered with `GeminiProvider`,
+`AnthropicProvider`, `OpenAIProvider`, and `FakeProvider`.
 
 ### `backend/llm/role_config.py`
 
@@ -80,6 +82,23 @@ The only runtime file that imports `google.generativeai`. Wraps the Gemini
 `genai.Client` with the `BaseLLMProvider` interface. Reads `GEMINI_API_KEY` from
 settings. All other pipeline files must not import this module or the Gemini SDK
 directly.
+
+### `backend/llm/providers/anthropic.py`
+
+The only runtime file that imports the `anthropic` SDK. Wraps `AsyncAnthropic`
+with the `BaseLLMProvider` interface. Reads `ANTHROPIC_API_KEY` from settings.
+Translates `system` messages into Anthropic's top-level `system=` parameter
+(multiple system messages are concatenated with `"\n\n"`). Supported models
+include `claude-3-5-haiku-latest`, `claude-3-5-sonnet-latest`, `claude-sonnet-4-5`,
+`claude-sonnet-4-6`, `claude-opus-4-1`, and versioned variants.
+
+### `backend/llm/providers/openai.py`
+
+The only runtime file that imports the `openai` SDK. Wraps `AsyncOpenAI` with
+the `BaseLLMProvider` interface. Reads `OPENAI_API_KEY` from settings. Passes
+messages through as-is (OpenAI natively supports system/user/assistant roles).
+Accepts any model whose name starts with `gpt-` or matches the o-series pattern
+(`o1`, `o3`, `o4-mini`, etc.).
 
 ### `backend/llm/providers/fake.py`
 
@@ -178,14 +197,64 @@ Resolution runs in this order for each role. The first non-empty value wins:
 If an env variable is set to an empty string or whitespace, it is treated as unset
 and the next level in the precedence chain is checked.
 
-## Current Supported Providers
+## Supported Providers
 
-| Provider | Name string | Notes |
-|----------|-------------|-------|
-| Gemini | `gemini` | Production provider; requires `GEMINI_API_KEY` |
-| Fake | `fake` | Tests and local scaffolding only; supports `fake-model` only |
+| Provider | Name string | API key env | Example model | Notes |
+|----------|-------------|-------------|---------------|-------|
+| Gemini | `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash-lite` | **Default** when no LLM env vars are set |
+| Anthropic/Claude | `anthropic` | `ANTHROPIC_API_KEY` | `claude-3-5-haiku-latest` | Real production provider |
+| OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` | Real production provider |
+| FakeProvider | `fake` | none | `fake-model` | Tests and local dev only — not production |
 
-No Anthropic, OpenAI, or Ollama providers exist yet.
+### Example Configurations
+
+**All Gemini (default — no LLM env vars required):**
+
+```
+GEMINI_API_KEY=AIza...
+```
+
+**All Anthropic:**
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+DEFAULT_LLM_PROVIDER=anthropic
+DEFAULT_LLM_MODEL=claude-3-5-haiku-latest
+```
+
+**All OpenAI:**
+
+```
+OPENAI_API_KEY=sk-...
+DEFAULT_LLM_PROVIDER=openai
+DEFAULT_LLM_MODEL=gpt-4o-mini
+```
+
+**Mixed roles (Gemini default, Anthropic planner, OpenAI coder):**
+
+```
+GEMINI_API_KEY=AIza...
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+DEFAULT_LLM_PROVIDER=gemini
+DEFAULT_LLM_MODEL=gemini-2.5-flash-lite
+PLANNER_LLM_PROVIDER=anthropic
+PLANNER_LLM_MODEL=claude-3-5-haiku-latest
+CODER_LLM_PROVIDER=openai
+CODER_LLM_MODEL=gpt-4o-mini
+```
+
+**FakeProvider (unit/dev only):**
+
+```
+DEFAULT_LLM_PROVIDER=fake
+DEFAULT_LLM_MODEL=fake-model
+```
+
+> **Warning:** FakeProvider returns a hardcoded string. It is not suitable for
+> real pipeline runs unless test fixtures supply valid role JSON via
+> `request.extras["response_text"]`. Running triage/planner/coder with
+> FakeProvider without that fixture will fail JSON parsing.
 
 ## Logging and Audit
 
@@ -223,6 +292,8 @@ These constraints are enforced by guard tests in
 
 - Only `backend/llm/providers/gemini.py` may import `google.generativeai`; all
   other runtime files are scanned and must have no such import
+- Only `backend/llm/providers/anthropic.py` may import the `anthropic` SDK
+- Only `backend/llm/providers/openai.py` may import the `openai` SDK
 - Pipeline roles (triage, planner, coder) must call `complete_for_role` from
   `backend.llm`; direct provider SDK calls are prohibited
 - Pipeline roles must not use `print(...)` — use the module-level logger instead
@@ -235,9 +306,6 @@ These constraints are enforced by guard tests in
 
 ## Known Limitations
 
-- Only Gemini is available as a real production provider
-- No Anthropic/Claude provider yet
-- No OpenAI provider yet
 - No streaming support
 - No tool calling / function calling support
 - No cost dashboard or token cost tracking
@@ -246,12 +314,14 @@ These constraints are enforced by guard tests in
   in a real triage/planner/coder role path without test fixtures providing valid
   JSON via `extras["response_text"]`
 - No frontend model settings UI yet
+- No DB project-level model config yet — provider/model selection is env-only
+- No provider fallback chains — if the selected provider fails, the error
+  propagates normally; no automatic retry to a different provider
 
 ## Future Phases
 
-- Anthropic/Claude provider adapter
-- OpenAI provider adapter
 - Provider/model selection UI in project settings
 - Per-run provider/model audit persistence (`llm_calls` table)
 - Execution modes (streaming, batch) — deferred
 - Auto provider selection based on cost or capability — deferred
+- Ollama or local provider adapter — not planned for current phase

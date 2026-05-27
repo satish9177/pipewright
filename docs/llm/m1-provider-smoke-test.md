@@ -3,7 +3,9 @@
 ## Prerequisites
 
 - Backend env configured (`.env` or equivalent environment variables)
-- `GEMINI_API_KEY` set if running against the real Gemini provider
+- `GEMINI_API_KEY` set if running against the Gemini provider (required for default path)
+- `ANTHROPIC_API_KEY` set if running against the Anthropic provider (optional)
+- `OPENAI_API_KEY` set if running against the OpenAI provider (optional)
 - `PIPEWRIGHT_ENCRYPTION_KEY` set if the run includes a GitHub PR push step
 - Backend running if performing API or UI smoke
 - Frontend running if performing UI smoke
@@ -23,10 +25,10 @@ npm.cmd run dev
 
 ## Unit Test Commands
 
-Run LLM abstraction layer tests:
+Run LLM abstraction layer and all provider tests:
 
 ```powershell
-venv\Scripts\python.exe -m pytest backend\tests\test_llm_base.py backend\tests\test_llm_registry.py backend\tests\test_llm_role_config.py backend\tests\test_llm_fake_provider.py backend\tests\test_llm_gemini_provider.py -v -m unit
+venv\Scripts\python.exe -m pytest backend\tests\test_llm_base.py backend\tests\test_llm_registry.py backend\tests\test_llm_role_config.py backend\tests\test_llm_fake_provider.py backend\tests\test_llm_gemini_provider.py backend\tests\test_llm_anthropic_provider.py backend\tests\test_llm_openai_provider.py -v -m unit
 ```
 
 Run pipeline role migration and guard tests:
@@ -94,6 +96,59 @@ Remove-Item Env:\TRIAGE_LLM_PROVIDER
 Remove-Item Env:\TRIAGE_LLM_MODEL
 ```
 
+## Anthropic Provider Smoke
+
+Requires `ANTHROPIC_API_KEY`. Set planner to use Anthropic:
+
+```powershell
+$env:PLANNER_LLM_PROVIDER = "anthropic"
+$env:PLANNER_LLM_MODEL = "claude-3-5-haiku-latest"
+```
+
+Run a small chunked flow (triage and coder remain on Gemini default).
+
+Confirm the planner log line shows the Anthropic provider:
+
+```
+[LLM] role=planner provider=anthropic model=claude-3-5-haiku-latest input_tokens=... output_tokens=... finish_reason=end_turn run_id=...
+```
+
+Clear when done:
+
+```powershell
+Remove-Item Env:\PLANNER_LLM_PROVIDER
+Remove-Item Env:\PLANNER_LLM_MODEL
+```
+
+## OpenAI Provider Smoke
+
+Requires `OPENAI_API_KEY`. Set planner and coder to use OpenAI:
+
+```powershell
+$env:PLANNER_LLM_PROVIDER = "openai"
+$env:PLANNER_LLM_MODEL = "gpt-4o-mini"
+$env:CODER_LLM_PROVIDER = "openai"
+$env:CODER_LLM_MODEL = "gpt-4o-mini"
+```
+
+Run a small chunked flow (triage remains on Gemini default).
+
+Confirm the planner and coder log lines show the OpenAI provider:
+
+```
+[LLM] role=planner provider=openai model=gpt-4o-mini input_tokens=... output_tokens=... finish_reason=stop run_id=...
+[LLM] role=coder provider=openai model=gpt-4o-mini input_tokens=... output_tokens=... finish_reason=stop run_id=...
+```
+
+Clear when done:
+
+```powershell
+Remove-Item Env:\PLANNER_LLM_PROVIDER
+Remove-Item Env:\PLANNER_LLM_MODEL
+Remove-Item Env:\CODER_LLM_PROVIDER
+Remove-Item Env:\CODER_LLM_MODEL
+```
+
 ## Default Gemini Smoke
 
 Ensure no LLM provider overrides are set:
@@ -158,18 +213,20 @@ Remove-Item Env:\TRIAGE_LLM_MODEL
 Scan pipeline files for prohibited SDK imports or `print()` calls:
 
 ```powershell
-Select-String -Path backend\pipeline\*.py -Pattern "google\.generativeai|genai\.|print\("
+Select-String -Path backend\pipeline\*.py -Pattern "google\.generativeai|genai\.|import anthropic|import openai|print\("
 ```
 
 Expected result: no matches in `triage.py`, `planner.py`, or `coder.py`.
 
-Confirm the Gemini SDK import exists only in the provider adapter:
+Confirm each SDK import exists only in its own provider adapter:
 
 ```powershell
 Select-String -Path backend\llm\providers\gemini.py -Pattern "google\.generativeai"
+Select-String -Path backend\llm\providers\anthropic.py -Pattern "import anthropic"
+Select-String -Path backend\llm\providers\openai.py -Pattern "import openai"
 ```
 
-Expected result: at least one match in `gemini.py`.
+Expected result: at least one match per file.
 
 Run the full isolation guard test suite:
 
@@ -193,14 +250,18 @@ venv\Scripts\python.exe -m pytest backend\tests\test_guards_provider_isolation.p
 
 ## Troubleshooting
 
-### Missing GEMINI_API_KEY
+### Missing API Key
 
 ```
-ProviderConfigurationError: ... key ...
+ProviderConfigurationError: GEMINI_API_KEY is not configured
+ProviderConfigurationError: ANTHROPIC_API_KEY is not configured
+ProviderConfigurationError: OPENAI_API_KEY is not configured
 ```
 
-Set `GEMINI_API_KEY` in your `.env` file or shell environment before starting the
-backend. The key is read at startup from `backend/config/keys.py` (`Settings`).
+Set the required key in your `.env` file or shell environment before starting the
+backend. Keys are loaded at startup from `backend/config/keys.py` (`Settings`).
+`GEMINI_API_KEY` is required at startup (no default); `ANTHROPIC_API_KEY` and
+`OPENAI_API_KEY` are optional and only validated when their provider is selected.
 
 ### Unknown Provider
 
@@ -208,19 +269,31 @@ backend. The key is read at startup from `backend/config/keys.py` (`Settings`).
 UnsupportedProviderError: Unsupported LLM provider: <name>
 ```
 
-The provider name set in env (e.g. `TRIAGE_LLM_PROVIDER=anthropic`) is not
-registered in `default_registry()`. Only `gemini` and `fake` are registered in
-LLM-M1. Check for typos.
+The provider name set in env is not registered in `default_registry()`. Registered
+providers are: `gemini`, `anthropic`, `openai`, `fake`. Check for typos.
 
 ### Unsupported Model
 
 ```
-UnsupportedModelError: Provider gemini does not support model <name>
+UnsupportedModelError: Provider <name> does not support model <model>
 ```
 
-The model name set in env does not match the models declared in
-`GeminiProvider.supports_model`. Check the model name against the Gemini provider
-adapter.
+The model name set in env does not match the models supported by the selected
+provider. Check each adapter's `supports_model` list:
+- Gemini: `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-2.5-pro`, etc.
+- Anthropic: `claude-3-5-haiku-latest`, `claude-3-5-sonnet-latest`, `claude-sonnet-4-5`, etc.
+- OpenAI: any `gpt-*` name, or o-series (`o1`, `o3`, `o4-mini`, etc.)
+- Fake: `fake-model` only
+
+### Role Override Not Taking Effect
+
+If setting `PLANNER_LLM_PROVIDER=anthropic` has no effect, verify:
+1. The env var was set in the same terminal session where the backend is running.
+2. The backend was **restarted** after changing the env var — `pydantic-settings`
+   reads env vars at startup, not on each request.
+3. No existing `.env` file entry overrides the shell var.
+4. Check backend logs for `[LLM] role=planner provider=...` to confirm the
+   actual resolved provider.
 
 ### FakeProvider Returns Invalid JSON in Real Role Path
 
