@@ -32,8 +32,9 @@ def test_registry_unknown_provider_raises():
         registry.get("missing")
 
 
-def test_default_registry_registers_gemini_and_fake():
+def test_default_registry_registers_gemini_fake_and_anthropic():
     registry = default_registry()
 
     assert "gemini" in registry.list()
     assert "fake" in registry.list()
+    assert "anthropic" in registry.list()
