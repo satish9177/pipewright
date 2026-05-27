@@ -3,7 +3,11 @@ test_local_git.py
 Tests for safe local Git helper.
 """
 
+import os
+import shutil
+import stat
 import subprocess
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -32,6 +36,39 @@ from backend.git.local_git import (
 
 pytestmark = pytest.mark.unit
 
+_GIT_TEST_TMP = Path(__file__).parent.parent / ".pytest_tmp" / "git_tests"
+
+
+def _force_rmtree(path: Path) -> None:
+    """Remove a directory tree, clearing Windows read-only bits before each deletion.
+
+    Git objects are created with read-only permissions on Windows. A plain
+    shutil.rmtree fails on those files with PermissionError, which eventually
+    corrupts pytest's tmp_path base directory so that subsequent sessions
+    cannot create any tmp_path at all.  This helper resets the write bit
+    before retrying the failed removal callback.
+    """
+    def _on_error(func, fpath, _exc_info):
+        os.chmod(fpath, stat.S_IWRITE)
+        func(fpath)
+
+    shutil.rmtree(path, onerror=_on_error)
+
+
+@pytest.fixture()
+def local_tmp() -> Path:
+    """Windows-safe temp dir under project .pytest_tmp/git_tests/.
+
+    Avoids pytest's AppData temp base directory, which can become
+    permanently inaccessible when a previous git test run fails to clean
+    up read-only .git objects.  Each test gets a unique subdirectory;
+    teardown uses _force_rmtree so read-only git objects are deleted cleanly.
+    """
+    folder = _GIT_TEST_TMP / str(uuid.uuid4())
+    folder.mkdir(parents=True, exist_ok=True)
+    yield folder
+    _force_rmtree(folder)
+
 
 def git(repo_path: Path, args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -45,12 +82,12 @@ def git(repo_path: Path, args: list[str]) -> subprocess.CompletedProcess:
 
 
 @pytest.fixture()
-def git_repo(tmp_path: Path) -> Path:
-    result = git(tmp_path, ["init"])
+def git_repo(local_tmp: Path) -> Path:
+    result = git(local_tmp, ["init"])
     assert result.returncode == 0, result.stderr
-    assert git(tmp_path, ["config", "user.email", "test@example.com"]).returncode == 0
-    assert git(tmp_path, ["config", "user.name", "Pipewright Test"]).returncode == 0
-    return tmp_path
+    assert git(local_tmp, ["config", "user.email", "test@example.com"]).returncode == 0
+    assert git(local_tmp, ["config", "user.name", "Pipewright Test"]).returncode == 0
+    return local_tmp
 
 
 def initial_commit(repo_path: Path) -> str:
@@ -65,9 +102,9 @@ def test_ensure_git_repo_passes_for_real_git_repo(git_repo):
     ensure_git_repo(str(git_repo))
 
 
-def test_ensure_git_repo_fails_for_non_git_directory(tmp_path):
+def test_ensure_git_repo_fails_for_non_git_directory(local_tmp):
     with pytest.raises(RuntimeError, match=r"\[GIT\]"):
-        ensure_git_repo(str(tmp_path))
+        ensure_git_repo(str(local_tmp))
 
 
 def test_ensure_git_repo_rejects_subdirectory_inside_git_repo(git_repo):
