@@ -1,7 +1,7 @@
 """
 coder.py
 Second pipeline stage. Receives a PlannerHandoff,
-reads relevant target repo files, calls Gemini, and
+reads relevant target repo files, calls the configured LLM provider, and
 returns a validated CoderHandoff Pydantic object.
 
 Rules:
@@ -17,11 +17,14 @@ Rules:
 
 import json
 import asyncio
+import logging
 from pathlib import Path
 from pydantic import ValidationError
-import google.generativeai as genai
 
-from backend.config.keys import settings
+from backend.llm import complete_for_role
+from backend.llm.base import LLMRequest, LLMResponse, Message
+from backend.llm.errors import ProviderRateLimitError
+from backend.llm.role_config import Role
 from backend.models.handoff import PlannerHandoff, CoderHandoff
 from backend.memory.prompt_builder import build_project_memory_block
 from backend.checkpoint.checkpoint_store import save_checkpoint
@@ -34,6 +37,8 @@ CODER_TEMPERATURE = 0.2
 CODER_MAX_TOKENS = 8000
 CODER_TIMEOUT_SECONDS = 120
 MAX_FILE_LINES = 200
+
+logger = logging.getLogger(__name__)
 
 CODER_SYSTEM_PROMPT = """You are a senior software engineer.
 Your job is to implement a precise plan by writing
@@ -87,11 +92,11 @@ def _read_target_file(
         file_path = validate_safe_relative_path(relative_path, root)
 
         if not file_path.exists():
-            print(f"[CODER] Warning: target file missing, skipping {relative_path}")
+            logger.warning("[CODER] Warning: target file missing, skipping %s", relative_path)
             return None
 
         if not file_path.is_file():
-            print(f"[CODER] Warning: target path is not a file, skipping {relative_path}")
+            logger.warning("[CODER] Warning: target path is not a file, skipping %s", relative_path)
             return None
 
         lines = file_path.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -209,21 +214,71 @@ Return only the JSON response.
 """
 
 
-def _log_token_usage(response, run_id: str) -> None:
-    try:
-        usage = response.usage_metadata
-        print(
-            f"[CODER] Token usage | "
-            f"run_id={run_id} | "
-            f"model={CODER_MODEL} | "
-            f"input={usage.prompt_token_count} | "
-            f"output={usage.candidates_token_count}"
-        )
-    except Exception:
-        print(
-            f"[CODER] Token usage unavailable | "
-            f"run_id={run_id}"
-        )
+def _build_llm_request(user_prompt: str) -> LLMRequest:
+    return LLMRequest(
+        messages=[
+            Message(role="system", content=CODER_SYSTEM_PROMPT),
+            Message(role="user", content=user_prompt),
+        ],
+        model=CODER_MODEL,
+        temperature=CODER_TEMPERATURE,
+        max_output_tokens=CODER_MAX_TOKENS,
+        timeout_seconds=CODER_TIMEOUT_SECONDS,
+        response_format="json_object",
+    )
+
+
+def _build_correction_request(
+    user_prompt: str,
+    raw_text: str,
+    first_error: Exception,
+) -> LLMRequest:
+    correction_prompt = (
+        f"Your previous response was not valid JSON "
+        f"or did not match the required schema.\n\n"
+        f"Previous response was:\n{raw_text}\n\n"
+        f"Error: {first_error}\n\n"
+        f"Please respond again with ONLY the raw JSON. "
+        f"No markdown. No explanation. Just the JSON object."
+    )
+    return LLMRequest(
+        messages=[
+            Message(role="system", content=CODER_SYSTEM_PROMPT),
+            Message(role="user", content=user_prompt),
+            Message(role="assistant", content=raw_text),
+            Message(role="user", content=correction_prompt),
+        ],
+        model=CODER_MODEL,
+        temperature=CODER_TEMPERATURE,
+        max_output_tokens=CODER_MAX_TOKENS,
+        timeout_seconds=CODER_TIMEOUT_SECONDS,
+        response_format="json_object",
+    )
+
+
+def _log_token_usage(response: LLMResponse, run_id: str) -> None:
+    if response.input_tokens is None or response.output_tokens is None:
+        logger.info("[CODER] Token usage unavailable | run_id=%s", run_id)
+        return
+
+    logger.info(
+        "[CODER] Token usage | run_id=%s | model=%s | input=%s | output=%s",
+        run_id,
+        response.model,
+        response.input_tokens,
+        response.output_tokens,
+    )
+
+
+async def _call_llm(request: LLMRequest, run_id: str) -> str:
+    response = await complete_for_role(Role.CODER, request)
+    logger.info(
+        "[CODER] LLM provider=%s model=%s",
+        response.provider,
+        response.model,
+    )
+    _log_token_usage(response, run_id)
+    return response.text
 
 
 def _parse_handoff(raw_text: str, run_id: str) -> CoderHandoff:
@@ -252,7 +307,7 @@ async def run_coder(
     response as CoderHandoff, saves checkpoint, and returns
     the handoff object.
     """
-    print(f"[CODER] Starting | run_id={run_id}")
+    logger.info("[CODER] Starting | run_id=%s", run_id)
 
     try:
         project_memory_block = build_project_memory_block(
@@ -264,57 +319,40 @@ async def run_coder(
             line for line in project_memory_block.splitlines()
             if line.startswith("[")
         ])
-        print(f"[CODER] Loaded {fact_count} memory facts")
+        logger.info("[CODER] Loaded %s memory facts", fact_count)
 
         target_repo = get_target_repo_path()
-        print(f"[CODER] Reading target repo files from {target_repo}")
+        logger.info("[CODER] Reading target repo files from %s", target_repo)
         file_contents_block = _build_file_contents_block(
             plan.files_to_read,
             plan.files_to_modify,
             target_repo
         )
 
-        genai.configure(api_key=settings.gemini_api_key)
-
-        generation_config = genai.GenerationConfig(
-            temperature=CODER_TEMPERATURE,
-            max_output_tokens=CODER_MAX_TOKENS
-        )
-
-        model = genai.GenerativeModel(
-            model_name=CODER_MODEL,
-            generation_config=generation_config,
-            system_instruction=CODER_SYSTEM_PROMPT
-        )
-
         user_prompt = _build_user_prompt(
             plan, run_id, project_memory_block, file_contents_block
         )
+        request = _build_llm_request(user_prompt)
 
         raw_text = ""
 
         try:
-            print("[CODER] Calling Gemini (attempt 1)...")
-            response = model.generate_content(
-                user_prompt,
-                request_options={"timeout": CODER_TIMEOUT_SECONDS}
-            )
-            raw_text = response.text
-            _log_token_usage(response, run_id)
+            logger.info("[CODER] Calling LLM (attempt 1)...")
+            raw_text = await _call_llm(request, run_id)
             handoff = _parse_handoff(raw_text, run_id)
-            print("[CODER] Handoff validated on attempt 1")
+            logger.info("[CODER] Handoff validated on attempt 1")
 
         except ValidationError as first_error:
             handoff = await _retry_after_parse_failure(
-                model, user_prompt, raw_text, first_error, run_id
+                user_prompt, raw_text, first_error, run_id
             )
         except json.JSONDecodeError as first_error:
             handoff = await _retry_after_parse_failure(
-                model, user_prompt, raw_text, first_error, run_id
+                user_prompt, raw_text, first_error, run_id
             )
         except ValueError as first_error:
             handoff = await _retry_after_parse_failure(
-                model, user_prompt, raw_text, first_error, run_id
+                user_prompt, raw_text, first_error, run_id
             )
 
     except RuntimeError:
@@ -336,77 +374,61 @@ async def run_coder(
             step_completed=True,
             chunk_number=chunk_number
         )
-        print(f"[CODER] Checkpoint saved | run_id={run_id}")
+        logger.info("[CODER] Checkpoint saved | run_id=%s", run_id)
     except Exception as cp_error:
         raise RuntimeError(
             f"coder.py: Failed to save checkpoint. "
             f"run_id={run_id} | error={cp_error}"
         )
 
-    print(f"[CODER] Complete | run_id={run_id}")
+    logger.info("[CODER] Complete | run_id=%s", run_id)
     return handoff
 
 
 async def _retry_after_parse_failure(
-    model,
     user_prompt: str,
     raw_text: str,
     first_error: Exception,
     run_id: str
 ) -> CoderHandoff:
-    print(f"[CODER] Attempt 1 failed: {first_error}")
-    print("[CODER] Retrying with correction prompt...")
-
-    correction_prompt = (
-        f"{user_prompt}\n\n"
-        f"Your previous response was not valid JSON "
-        f"or did not match the required schema.\n\n"
-        f"Previous response was:\n{raw_text}\n\n"
-        f"Error: {first_error}\n\n"
-        f"Please respond again with ONLY the raw JSON. "
-        f"No markdown. No explanation. Just the JSON object."
+    logger.warning("[CODER] Attempt 1 failed: %s", first_error)
+    logger.info("[CODER] Retrying with correction prompt...")
+    correction_request = _build_correction_request(
+        user_prompt,
+        raw_text,
+        first_error,
     )
 
     try:
-        response = model.generate_content(
-            correction_prompt,
-            request_options={"timeout": CODER_TIMEOUT_SECONDS}
-        )
-        raw_text = response.text
-        _log_token_usage(response, run_id)
+        raw_text = await _call_llm(correction_request, run_id)
         handoff = _parse_handoff(raw_text, run_id)
-        print("[CODER] Handoff validated on attempt 2")
+        logger.info("[CODER] Handoff validated on attempt 2")
         return handoff
     except ValidationError as second_error:
         raise RuntimeError(
-            f"coder.py: Gemini failed to return valid code handoff "
+            f"coder.py: LLM failed to return valid code handoff "
             f"after 2 attempts. run_id={run_id} | error={second_error}"
         )
     except json.JSONDecodeError as second_error:
         raise RuntimeError(
-            f"coder.py: Gemini failed to return valid code handoff "
+            f"coder.py: LLM failed to return valid code handoff "
             f"after 2 attempts. run_id={run_id} | error={second_error}"
         )
     except ValueError as second_error:
         raise RuntimeError(
-            f"coder.py: Gemini failed to return valid code handoff "
+            f"coder.py: LLM failed to return valid code handoff "
             f"after 2 attempts. run_id={run_id} | error={second_error}"
         )
     except Exception as unexpected:
         error_str = str(unexpected)
-        if "429" in error_str:
-            print(f"[CODER] Rate limited by Gemini. Waiting 60 seconds...")
+        if isinstance(unexpected, ProviderRateLimitError) or "429" in error_str:
+            logger.warning("[CODER] Rate limited by LLM. Waiting 60 seconds...")
             await asyncio.sleep(60)
-            print(f"[CODER] Retrying after rate limit wait...")
+            logger.info("[CODER] Retrying after rate limit wait...")
             try:
-                response = model.generate_content(
-                    user_prompt,
-                    request_options={"timeout": CODER_TIMEOUT_SECONDS}
-                )
-                raw_text = response.text
-                _log_token_usage(response, run_id)
+                raw_text = await _call_llm(_build_llm_request(user_prompt), run_id)
                 handoff = _parse_handoff(raw_text, run_id)
-                print(f"[CODER] Handoff validated after rate limit retry")
+                logger.info("[CODER] Handoff validated after rate limit retry")
                 return handoff
             except Exception as retry_error:
                 raise RuntimeError(
