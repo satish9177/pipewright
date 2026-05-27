@@ -6,6 +6,7 @@
 - `GEMINI_API_KEY` set if running against the Gemini provider (required for default path)
 - `ANTHROPIC_API_KEY` set if running against the Anthropic provider (optional)
 - `OPENAI_API_KEY` set if running against the OpenAI provider (optional)
+- `DEEPSEEK_API_KEY` set if running against the DeepSeek provider (optional)
 - `PIPEWRIGHT_ENCRYPTION_KEY` set if the run includes a GitHub PR push step
 - Backend running if performing API or UI smoke
 - Frontend running if performing UI smoke
