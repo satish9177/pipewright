@@ -418,9 +418,11 @@ def test_total_chunks_mismatch_fails_validation():
         )
 
 
-def test_triage_pipeline_no_longer_imports_gemini_sdk():
+@pytest.mark.unit
+def test_triage_pipeline_no_longer_imports_gemini_or_uses_print():
     triage_path = Path(triage.__file__)
     source = triage_path.read_text(encoding="utf-8")
 
     assert "google.generativeai" not in source
     assert "genai" not in source
+    assert "print(" not in source
