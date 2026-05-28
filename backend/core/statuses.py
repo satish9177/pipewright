@@ -16,6 +16,8 @@ class RunStatus:
     REJECTED = "rejected"
     COMPLETE = "complete"
     STARTED = "started"
+    REPORT_READY = "report_ready"
+    PLAN_READY = "plan_ready"
     AWAITING_CHUNK_PLAN_APPROVAL = "awaiting_chunk_plan_approval"
     CHUNK_PLAN_APPROVED = "chunk_plan_approved"
     AWAITING_CHUNK_APPROVAL = "awaiting_chunk_approval"

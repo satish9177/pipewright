@@ -176,7 +176,7 @@ def test_legacy_run_route_returns_409_when_project_locked(tmp_repo):
     with project_repo_lock_sync(project["id"]):
         response = client.post("/run", json={
             "project_id": project["id"],
-            "feature_description": "Locked run",
+            "feature_description": "Add locked run feature",
         })
 
     assert response.status_code == 409

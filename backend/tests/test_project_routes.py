@@ -366,6 +366,33 @@ def test_run_rejects_too_long_feature_description(tmp_repo):
     assert response.status_code == 422
 
 
+def test_run_rejects_read_only_intent_before_scheduling(tmp_repo, monkeypatch):
+    client = TestClient(app)
+    create_response = client.post("/projects", json={
+        "name": "Run Intent Project",
+        "repo_path": str(tmp_repo),
+        "test_command": "python --version",
+    })
+    project_id = create_response.json()["id"]
+    monkeypatch.setattr(
+        "backend.main.project_repo_lock_sync",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("repo lock should not be reserved")
+        ),
+    )
+
+    response = client.post("/run", json={
+        "project_id": project_id,
+        "feature_description": "review the repo",
+    })
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "This request is read-only. Use /runs/chunked or rephrase as "
+        "an implementation request."
+    )
+
+
 def test_gate_reject_rejects_too_long_reason():
     client = TestClient(app)
 

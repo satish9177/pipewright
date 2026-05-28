@@ -97,6 +97,100 @@ def test_post_runs_chunked_returns_awaiting_approval_plan(
     assert len(data["chunks"]) == 1
 
 
+def test_report_only_chunked_run_creates_read_only_run_without_triage(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    project = make_project(tmp_repo)
+    monkeypatch.setattr(
+        "backend.routes.chunks.run_triage",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("triage should not be called")
+        ),
+    )
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "find bugs in the codebase",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert data["chunk_plan_status"] == "none"
+    assert data["total_chunks"] == 0
+    assert data["triage"] is None
+    assert data["chunks"] == []
+    with engine.connect() as conn:
+        run = conn.execute(text("""
+            SELECT status, current_step, intent, plain_english_summary
+            FROM pipeline_runs
+            WHERE id = :run_id
+        """), {"run_id": data["run_id"]}).fetchone()
+        chunk_count = conn.execute(text("""
+            SELECT COUNT(*) FROM chunks WHERE run_id = :run_id
+        """), {"run_id": data["run_id"]}).fetchone()[0]
+        gate_count = conn.execute(text("""
+            SELECT COUNT(*) FROM approval_gates WHERE run_id = :run_id
+        """), {"run_id": data["run_id"]}).fetchone()[0]
+    assert run[0] == "report_ready"
+    assert run[1] == "report_ready"
+    assert run[2] == "report_only"
+    assert "No code changes" in run[3]
+    assert chunk_count == 0
+    assert gate_count == 0
+
+
+def test_plan_only_chunked_run_stores_plan_without_executable_chunks(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    project = make_project(tmp_repo)
+    calls = []
+
+    async def fake_triage(run_id, project_id, feature_description):
+        calls.append((run_id, project_id, feature_description))
+        return make_triage(run_id, project_id)
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "give me a plan to add route chunks",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert len(calls) == 1
+    assert data["chunk_plan_status"] == "none"
+    assert data["total_chunks"] == 1
+    assert data["triage"]["total_chunks"] == 1
+    assert data["chunks"] == []
+    with engine.connect() as conn:
+        run = conn.execute(text("""
+            SELECT status, current_step, intent, chunk_plan
+            FROM pipeline_runs
+            WHERE id = :run_id
+        """), {"run_id": data["run_id"]}).fetchone()
+        chunk_count = conn.execute(text("""
+            SELECT COUNT(*) FROM chunks WHERE run_id = :run_id
+        """), {"run_id": data["run_id"]}).fetchone()[0]
+        gate_count = conn.execute(text("""
+            SELECT COUNT(*) FROM approval_gates WHERE run_id = :run_id
+        """), {"run_id": data["run_id"]}).fetchone()[0]
+    assert run[0] == "plan_ready"
+    assert run[1] == "plan_ready"
+    assert run[2] == "plan_only"
+    assert "Route chunk" in run[3]
+    assert chunk_count == 0
+    assert gate_count == 0
+
+
 def test_triage_failure_does_not_create_parent_run(monkeypatch, tmp_repo):
     project = make_project(tmp_repo)
     feature = f"Failure feature {uuid.uuid4()}"
@@ -162,6 +256,95 @@ def test_chunked_run_rejects_too_long_feature_description(tmp_repo):
     })
 
     assert response.status_code == 422
+
+
+def _insert_read_only_run(run_id: str, project_id: str, intent: str):
+    status = "report_ready" if intent == "report_only" else "plan_ready"
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO pipeline_runs
+            (
+                id, project_id, feature_description, status, current_step,
+                intent, chunk_plan_status, total_chunks, current_chunk_number
+            )
+            VALUES
+            (
+                :run_id, :project_id, 'Read-only run', :status, :status,
+                :intent, 'none', 0, 0
+            )
+        """), {
+            "run_id": run_id,
+            "project_id": project_id,
+            "status": status,
+            "intent": intent,
+        })
+
+
+@pytest.mark.parametrize("intent", ["report_only", "plan_only"])
+@pytest.mark.parametrize("path,body", [
+    ("/runs/{run_id}/chunks/approve", None),
+    ("/runs/{run_id}/chunks/reject", {"reason": "no"}),
+    ("/runs/{run_id}/chunks/execute", None),
+    ("/runs/{run_id}/chunks/resume", None),
+    ("/runs/{run_id}/chunks/1/approve", None),
+    ("/runs/{run_id}/chunks/1/reject", {"reason": "no"}),
+    ("/runs/{run_id}/final-approval/approve", None),
+    ("/runs/{run_id}/final-approval/reject", {"reason": "no"}),
+    ("/runs/{run_id}/push-pr", None),
+])
+def test_read_only_runs_reject_mutating_routes(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+    intent,
+    path,
+    body,
+):
+    project = make_project(tmp_repo)
+    run_id = str(uuid.uuid4())
+    tracked_runs.append(run_id)
+    _insert_read_only_run(run_id, project["id"], intent)
+
+    monkeypatch.setattr(
+        "backend.routes.chunks.approve_chunk_plan",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("approve called")),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.reject_chunk_plan",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("reject called")),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.execute_approved_chunks",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("execute called")),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.resume_chunked_pipeline",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("resume called")),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.approve_chunk_and_commit",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("chunk approve called")),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.reject_chunk_and_rollback",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("chunk reject called")),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks._decide_final_gate",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("final gate called")),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.push_and_create_pr",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("push called")),
+    )
+    client = TestClient(app)
+
+    response = client.post(path.format(run_id=run_id), json=body) if body else client.post(
+        path.format(run_id=run_id)
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "This run is read-only and cannot execute code changes."
 
 
 def test_get_chunks_route_returns_plan(tmp_repo, tracked_runs):
