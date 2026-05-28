@@ -17,6 +17,8 @@ import EventLog from '@/components/EventLog'
 import ChunkPlanPanel from '@/components/ChunkPlanPanel'
 import FinalApprovalPanel from '@/components/FinalApprovalPanel'
 import PushPrPanel from '@/components/PushPrPanel'
+import ReportView from '@/components/ReportView'
+import PlanView from '@/components/PlanView'
 import useRunEvents from '@/hooks/useRunEvents'
 
 const STEPS = ['plan', 'code', 'patch', 'test', 'approval', 'github_pr']
@@ -406,6 +408,20 @@ export default function RunDetailPage() {
       <div className="flex items-center justify-center h-64">
         <p className="text-muted-foreground">Loading run...</p>
       </div>
+    )
+  }
+
+  if (run.intent === 'report_only' || run.status === 'report_ready') {
+    return <ReportView run={run} onBack={() => navigate(-1)} />
+  }
+
+  if (run.intent === 'plan_only' || run.status === 'plan_ready') {
+    return (
+      <PlanView
+        run={run}
+        chunkPlan={chunkPlan}
+        onBack={() => navigate(-1)}
+      />
     )
   }
 

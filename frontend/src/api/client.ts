@@ -28,6 +28,14 @@ export type RunStatus =
   | 'final_rejected'
   | 'pushing'
   | 'push_failed'
+  | 'report_ready'
+  | 'plan_ready'
+  | (string & {})
+
+export type RunIntent =
+  | 'report_only'
+  | 'plan_only'
+  | 'implementation'
   | (string & {})
 
 export type ChunkStatusValue =
@@ -106,6 +114,7 @@ export interface Run extends ExtraFields {
   plain_english_summary?: string | null
   status: RunStatus
   current_step: string | null
+  intent?: RunIntent | null
   chunk_plan_status?: ChunkPlanStatus | null
   chunk_plan?: string | null
   total_chunks?: number | null
