@@ -281,6 +281,27 @@ def push_branch(
         raise RuntimeError(f"[GIT] git push failed: {result.stderr.strip()}")
 
 
+def commits_ahead(base_branch: str, branch_name: str, repo_path: str) -> int:
+    if not base_branch or not base_branch.strip():
+        raise RuntimeError("[GIT] base branch is required")
+    if not branch_name or not branch_name.strip():
+        raise RuntimeError("[GIT] branch name is required")
+
+    result = run_git(
+        ["rev-list", "--count", f"{base_branch.strip()}..{branch_name.strip()}"],
+        repo_path,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"[GIT] git rev-list failed: {result.stderr.strip()}")
+
+    try:
+        return int(result.stdout.strip())
+    except ValueError as error:
+        raise RuntimeError(
+            f"[GIT] git rev-list returned invalid count: {result.stdout.strip()}"
+        ) from error
+
+
 def get_remote_url(repo_path: str, remote: str = "origin") -> str:
     result = run_git(["remote", "get-url", remote], repo_path)
     if result.returncode != 0:

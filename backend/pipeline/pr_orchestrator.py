@@ -254,6 +254,14 @@ def _create_pr(repo, run_id: str, feature_description: str, branch_name: str, ba
     )
 
 
+def _ensure_branch_has_commits_ahead(repo_path: str, branch_name: str, base_branch: str) -> None:
+    ahead_count = local_git.commits_ahead(base_branch, branch_name, repo_path)
+    if ahead_count <= 0:
+        raise RuntimeError(
+            "Branch has no commits ahead of base; cannot push or create PR."
+        )
+
+
 def _push_and_create_pr_locked(run_id: str, run: dict) -> dict:
     branch_name = f"pipewright/{run_id[:8]}"
     if run.get("pr_url"):
@@ -279,6 +287,7 @@ def _push_and_create_pr_locked(run_id: str, run: dict) -> dict:
     try:
         _mark_pushing(run_id, branch_name)
         _verify_local_branch(repo_path, branch_name, owner, repo_name)
+        _ensure_branch_has_commits_ahead(repo_path, branch_name, base_branch)
         if not local_git.branch_exists_remote(repo_path, branch_name):
             local_git.push_branch(branch_name, repo_path)
         _save_pushed(run_id, branch_name)

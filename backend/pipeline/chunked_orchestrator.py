@@ -43,6 +43,7 @@ from backend.projects.project_store import require_project
 from backend.repo.repo_indexer import get_relevant_files
 
 logger = logging.getLogger(__name__)
+NO_CHANGES_MESSAGE = "Coder produced no file changes."
 
 
 def _utc_now() -> str:
@@ -339,6 +340,11 @@ def _commit_and_complete_chunk(
 ) -> None:
     chunk_number = chunk.chunk_number
     touched_files = _files_touched(coder_output)
+    if not touched_files:
+        update_chunk_status(run_id, chunk_number, "failed", NO_CHANGES_MESSAGE)
+        _update_run_status(run_id, "failed", f"chunk_{chunk_number}_failed", chunk_number)
+        raise RuntimeError(NO_CHANGES_MESSAGE)
+
     commit_message = f"chunk {chunk_number}: {chunk.title}"
     local_git.commit_files(touched_files, commit_message, target_repo_path)
 
@@ -648,6 +654,9 @@ async def _execute_single_chunk(
         chunk_number=chunk_number,
         project_id=project_id,
     )
+    if not code.files_changed:
+        return _fail_chunk(run_id, chunk_number, NO_CHANGES_MESSAGE)
+
     patch = apply_patch(code, run_id, chunk_number=chunk_number)
     test_result = run_tests(patch, run_id, chunk_number=chunk_number)
 

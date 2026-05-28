@@ -47,6 +47,36 @@ def make_coder_output(run_id: str) -> CoderHandoff:
     )
 
 
+def test_apply_empty_files_changed_returns_failed_without_checkpoint(tmp_repo, monkeypatch):
+    from backend.config import keys
+    import backend.pipeline.patch_applier as patch_applier
+
+    monkeypatch.setattr(keys.settings, "target_repo_path", str(tmp_repo))
+    checkpoint_calls = []
+    monkeypatch.setattr(
+        patch_applier,
+        "save_checkpoint",
+        lambda **kwargs: checkpoint_calls.append(kwargs),
+    )
+
+    run_id = str(uuid.uuid4())
+    output = CoderHandoff(
+        run_id=run_id,
+        feature_description="No-op",
+        files_changed=[],
+        summary="No changes",
+    )
+
+    result = apply_patch(output, run_id)
+
+    assert result.success is False
+    assert result.diff == ""
+    assert result.files_applied == []
+    assert result.rollback_available is False
+    assert checkpoint_calls == []
+    assert not (BACKUP_DIR / run_id / "manifest.json").exists()
+
+
 def test_apply_creates_new_file(tmp_repo, monkeypatch):
     from backend.config import keys
     monkeypatch.setattr(keys.settings, "target_repo_path", str(tmp_repo))

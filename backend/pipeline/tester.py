@@ -98,6 +98,18 @@ def run_tests(
     print(f"[TESTER] Starting | run_id={run_id}")
 
     start = time.perf_counter()
+    if not patch_result.success or not patch_result.files_applied:
+        print("[TESTER] No patch was applied; tests skipped.")
+        return PipelineTestResult(
+            run_id=run_id,
+            passed=False,
+            total_tests=0,
+            passed_tests=0,
+            failed_tests=0,
+            output="No patch was applied; tests skipped.",
+            duration_seconds=time.perf_counter() - start,
+        )
+
     command = get_test_command()
     resolved_command = _resolve_command(command)
     target_repo_path = get_target_repo_path()

@@ -26,6 +26,43 @@ def make_patch_result(run_id: str) -> PatchResult:
     )
 
 
+def test_empty_or_failed_patch_skips_subprocess_and_checkpoint(monkeypatch):
+    import backend.pipeline.tester as tester
+
+    run_id = str(uuid.uuid4())
+    patch = PatchResult(
+        run_id=run_id,
+        success=False,
+        diff="",
+        pre_patch_git_hash="abc123",
+        post_patch_git_hash="abc123",
+        files_applied=[],
+        rollback_available=False,
+    )
+    monkeypatch.setattr(
+        tester.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("subprocess should not run")
+        ),
+    )
+    monkeypatch.setattr(
+        tester,
+        "save_checkpoint",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("checkpoint should not be saved")
+        ),
+    )
+
+    result = run_tests(patch, run_id)
+
+    assert result.passed is False
+    assert result.output == "No patch was applied; tests skipped."
+    assert result.total_tests == 0
+    assert result.passed_tests == 0
+    assert result.failed_tests == 0
+
+
 def test_passing_command_returns_passed(monkeypatch):
     """
     Use 'python --version' as test command.
