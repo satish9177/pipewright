@@ -315,6 +315,30 @@ async def test_coder_prompt_injection_skips_empty_memory(monkeypatch, tmp_repo):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_coder_passes_project_id_to_memory_builder(monkeypatch, tmp_repo):
+    run_id = str(uuid.uuid4())
+    project_id = f"coder-spy-{uuid.uuid4().hex}"
+    plan = make_test_plan(run_id)
+    llm = _CoderLLM([_coder_response(run_id)])
+    _patch_coder_dependencies(monkeypatch, llm, tmp_repo)
+
+    calls = []
+
+    def spy_builder(**kwargs):
+        calls.append(kwargs)
+        return ""
+
+    monkeypatch.setattr(coder, "build_project_memory_block", spy_builder)
+
+    await run_coder(plan=plan, run_id=run_id, project_id=project_id)
+
+    assert len(calls) == 1
+    assert calls[0]["project_id"] == project_id
+    assert calls[0]["role"] == "coder"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_coder_prompt_injection_is_project_scoped(monkeypatch, tmp_repo):
     run_id = str(uuid.uuid4())
     project_a = f"coder-a-{uuid.uuid4().hex}"

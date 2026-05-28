@@ -352,9 +352,11 @@ def load_hard_facts(
 ) -> str:
     """
     Load active project-scoped facts for prompt context.
-    Missing project_id deliberately returns no memory to prevent global leaks.
+
+    project_id is required; None, empty, or whitespace deliberately returns
+    no memory to prevent cross-project or legacy-row leaks.
     """
-    if not project_id:
+    if not project_id or not str(project_id).strip():
         try:
             _archive_unscoped_pre_m1_memory()
         except Exception as error:
