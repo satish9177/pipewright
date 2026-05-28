@@ -24,6 +24,7 @@ from backend.pipeline.chunk_store import (
     get_chunk_plan_status,
     reject_chunk_plan,
 )
+from backend.models.chunk import TriageResult
 from backend.pipeline.chunked_orchestrator import (
     approve_chunk_and_commit,
     execute_approved_chunks,
@@ -222,6 +223,106 @@ def _decide_final_gate(
         if result.rowcount == 0:
             raise ValueError(f"Run not found: {run_id}")
         return {"status": run_status, "run_id": run_id}
+
+
+def _load_plan_run_for_handoff(run_id: str) -> dict:
+    """
+    Return the source plan run row for plan-to-implementation handoff, or
+    raise HTTPException with the precise gating reason. The source run must
+    still be a finished, read-only plan_only run with a usable plan.
+    """
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT * FROM pipeline_runs WHERE id = :id"
+        ), {"id": run_id}).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    run = dict(row._mapping)
+    if (run.get("intent") or "") != PLAN_ONLY:
+        raise HTTPException(
+            status_code=400,
+            detail="Source run is not a plan-only run.",
+        )
+    if (run.get("status") or "") != RunStatus.PLAN_READY:
+        raise HTTPException(
+            status_code=400,
+            detail="Source run is not in plan_ready state.",
+        )
+    if not run.get("project_id"):
+        raise HTTPException(
+            status_code=400,
+            detail="Source plan run has no project_id.",
+        )
+    if not run.get("chunk_plan"):
+        raise HTTPException(
+            status_code=400,
+            detail="Source plan run has no usable plan output.",
+        )
+    return run
+
+
+def _find_existing_implementation_for_plan(run_id: str) -> str | None:
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT id FROM pipeline_runs
+            WHERE source_plan_run_id = :source_plan_run_id
+            ORDER BY created_at ASC
+            LIMIT 1
+        """), {"source_plan_run_id": run_id}).fetchone()
+    return row[0] if row else None
+
+
+@router.post(
+    "/runs/{run_id}/start-implementation",
+    response_model=ChunkPlanResponse,
+)
+async def start_implementation_from_plan_route(run_id: str):
+    """
+    Create (or return) an implementation run seeded from a plan_ready source
+    run. The source run stays read-only; the new run enters the standard
+    awaiting_chunk_plan_approval flow, so every existing safety gate still
+    applies.
+    """
+    source_run = _load_plan_run_for_handoff(run_id)
+
+    project = get_project(source_run["project_id"])
+    if project is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Source plan's project no longer exists.",
+        )
+
+    existing_id = _find_existing_implementation_for_plan(run_id)
+    if existing_id is not None:
+        try:
+            return get_chunk_plan_status(existing_id)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail=str(error))
+
+    try:
+        seed_triage = TriageResult.model_validate_json(source_run["chunk_plan"])
+    except Exception as error:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Source plan output is not parseable: {error}",
+        )
+
+    new_run_id = str(uuid.uuid4())
+    seed_triage = seed_triage.model_copy(update={"run_id": new_run_id})
+    seed_triage = scan_triage_result(seed_triage)
+
+    try:
+        return create_chunked_run(
+            run_id=new_run_id,
+            project_id=source_run["project_id"],
+            feature_description=source_run["feature_description"],
+            triage_result=seed_triage,
+            intent=IMPLEMENTATION,
+            source_plan_run_id=run_id,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=str(error))
 
 
 @router.post("/runs/chunked", response_model=ChunkPlanResponse)

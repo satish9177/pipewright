@@ -125,6 +125,7 @@ export interface Run extends ExtraFields {
   pushed_at?: string | null
   pr_created_at?: string | null
   push_error?: string | null
+  source_plan_run_id?: string | null
   created_at: string
 }
 
@@ -448,6 +449,10 @@ export const runsApi = {
     ).then(r => r.data),
   pushPr: (runId: string) =>
     api.post<PushPrResponse>(`/runs/${runId}/push-pr`).then(r => r.data),
+  startImplementation: (runId: string) =>
+    api.post<ChunkPlanResponse>(
+      `/runs/${runId}/start-implementation`,
+    ).then(r => r.data),
 }
 
 export const gatesApi = {

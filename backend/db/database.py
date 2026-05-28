@@ -181,6 +181,11 @@ def _migrate_db(conn) -> None:
                 "ALTER TABLE pipeline_runs ADD COLUMN push_error TEXT",
             ),
             (
+                "pipeline_runs",
+                "source_plan_run_id",
+                "ALTER TABLE pipeline_runs ADD COLUMN source_plan_run_id TEXT",
+            ),
+            (
                 "projects",
                 "branch",
                 "ALTER TABLE projects ADD COLUMN branch TEXT DEFAULT 'main'",
@@ -284,6 +289,13 @@ def _migrate_db(conn) -> None:
             "CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status "
             "ON pipeline_runs(status)",
             ("status",),
+        )
+        _create_index_if_columns_exist(
+            conn,
+            "pipeline_runs",
+            "CREATE INDEX IF NOT EXISTS idx_pipeline_runs_source_plan "
+            "ON pipeline_runs(source_plan_run_id)",
+            ("source_plan_run_id",),
         )
         _create_index_if_columns_exist(
             conn,
