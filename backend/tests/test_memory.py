@@ -59,6 +59,31 @@ def test_load_hard_facts_requires_project_id(monkeypatch, memory_project_ids):
     assert "FastAPI" not in facts
 
 
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_load_hard_facts_blank_project_id_behaves_like_none(
+    monkeypatch, memory_project_ids, blank
+):
+    project_id = make_project_id(memory_project_ids)
+    add_fact(project_id, "Tech stack uses FastAPI", category="stack")
+    warnings = []
+    monkeypatch.setattr(
+        "backend.memory.memory_store.logger.warning",
+        lambda message, *args: warnings.append(message % args if args else message),
+    )
+
+    facts = load_hard_facts(blank)
+
+    assert facts == ""
+    assert any("without project_id" in warning for warning in warnings)
+    assert "FastAPI" not in facts
+
+
+@pytest.mark.parametrize("project_id", [None, "", "   "])
+def test_add_fact_rejects_blank_project_id(project_id):
+    with pytest.raises(ValueError, match="project_id is required"):
+        add_fact(project_id, "Backend uses FastAPI", category="stack")
+
+
 def test_memory_is_scoped_by_project_id(memory_project_ids):
     project_a = make_project_id(memory_project_ids, "project-a")
     project_b = make_project_id(memory_project_ids, "project-b")

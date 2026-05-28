@@ -262,6 +262,29 @@ async def test_planner_prompt_injection_skips_empty_memory(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_planner_passes_project_id_to_memory_builder(monkeypatch):
+    run_id = str(uuid.uuid4())
+    project_id = f"planner-spy-{uuid.uuid4().hex}"
+    llm = _PlannerLLM([_planner_response(run_id)])
+    _patch_planner_dependencies(monkeypatch, llm)
+
+    calls = []
+
+    def spy_builder(**kwargs):
+        calls.append(kwargs)
+        return ""
+
+    monkeypatch.setattr(planner, "build_project_memory_block", spy_builder)
+
+    await run_planner("Add ping endpoint", run_id, project_id=project_id)
+
+    assert len(calls) == 1
+    assert calls[0]["project_id"] == project_id
+    assert calls[0]["role"] == "planner"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_planner_prompt_injection_is_project_scoped(monkeypatch):
     run_id = str(uuid.uuid4())
     project_a = f"planner-a-{uuid.uuid4().hex}"

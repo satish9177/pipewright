@@ -213,3 +213,29 @@ def test_load_hard_facts_behavior_still_safe(memory_project_ids):
 
     assert "Project A uses FastAPI" in facts
     assert "Project B uses Django" not in facts
+
+
+def test_build_memory_block_excludes_unscoped_legacy_rows(memory_project_ids):
+    project_id = make_project_id(memory_project_ids)
+    add_fact(project_id, "Scoped backend fact", category="stack")
+    legacy_id = str(uuid.uuid4())
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO memory_facts
+            (id, content, category, scope, priority, source, added_by,
+             status, is_stale)
+            VALUES (:id, 'Unscoped legacy memory must not leak', 'stack',
+                    'global', 100, 'legacy', 'test', 'active', 0)
+        """), {"id": legacy_id})
+
+    try:
+        block = build_project_memory_block(project_id)
+
+        assert "Scoped backend fact" in block
+        assert "Unscoped legacy memory must not leak" not in block
+    finally:
+        with engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM memory_facts WHERE id = :id"),
+                {"id": legacy_id},
+            )
