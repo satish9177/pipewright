@@ -303,6 +303,18 @@ def apply_patch(
     pre_patch_git_hash = _get_git_hash(target_repo)
     print(f"[PATCH] Pre-patch hash: {pre_patch_git_hash}")
 
+    if not coder_output.files_changed:
+        print(f"[PATCH] No file changes produced | run_id={run_id}")
+        return PatchResult(
+            run_id=run_id,
+            success=False,
+            diff="",
+            pre_patch_git_hash=pre_patch_git_hash,
+            post_patch_git_hash=pre_patch_git_hash,
+            files_applied=[],
+            rollback_available=False,
+        )
+
     validated_changes: list[tuple[FileChange, Path, str, str]] = []
     manifest: list[dict] = []
 

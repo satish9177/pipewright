@@ -158,6 +158,16 @@ def make_coder_result(run_id: str, chunk_number: int = 1) -> CoderHandoff:
     )
 
 
+def make_empty_coder_result(run_id: str) -> CoderHandoff:
+    return CoderHandoff(
+        run_id=run_id,
+        feature_description="enriched",
+        files_changed=[],
+        summary="No files changed",
+        suggested_memory_entries=[],
+    )
+
+
 def make_patch_result(run_id: str) -> PatchResult:
     return PatchResult(
         run_id=run_id,
@@ -316,6 +326,96 @@ async def test_execute_refuses_when_chunk_plan_not_approved(tmp_repo, tracked_ru
 
     with pytest.raises(RuntimeError):
         await chunked_orchestrator.execute_approved_chunks(run_id)
+
+
+@pytest.mark.asyncio
+async def test_empty_coder_output_fails_before_patch_test_or_commit(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+
+    async def fake_planner(*args, **kwargs):
+        return make_planner_result(run_id)
+
+    async def fake_coder(*args, **kwargs):
+        return make_empty_coder_result(run_id)
+
+    monkeypatch.setattr(chunked_orchestrator, "run_planner", fake_planner)
+    monkeypatch.setattr(chunked_orchestrator, "run_coder", fake_coder)
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "apply_patch",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("apply_patch should not be called")
+        ),
+    )
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "run_tests",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("run_tests should not be called")
+        ),
+    )
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    assert result["error"] == chunked_orchestrator.NO_CHANGES_MESSAGE
+    assert not any(call[0] == "commit" for call in calls)
+    with engine.connect() as conn:
+        chunk = conn.execute(text("""
+            SELECT status, error_message
+            FROM chunks
+            WHERE run_id = :run_id AND chunk_number = 1
+        """), {"run_id": run_id}).fetchone()
+        run = conn.execute(text("""
+            SELECT status, current_step
+            FROM pipeline_runs
+            WHERE id = :run_id
+        """), {"run_id": run_id}).fetchone()
+    assert chunk[0] == "failed"
+    assert chunk[1] == chunked_orchestrator.NO_CHANGES_MESSAGE
+    assert run[0] == "failed"
+    assert run[1] == "chunk_1_failed"
+
+
+def test_commit_and_complete_chunk_refuses_empty_touched_files(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    plan_status = get_chunk_plan_status(run_id)
+    chunk = plan_status.triage.chunks[0]
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "commit_files",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("commit_files should not be called")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match=chunked_orchestrator.NO_CHANGES_MESSAGE):
+        chunked_orchestrator._commit_and_complete_chunk(
+            run_id,
+            chunk,
+            make_empty_coder_result(run_id),
+            str(tmp_repo),
+            make_planner_result(run_id),
+        )
+
+    with engine.connect() as conn:
+        chunk_row = conn.execute(text("""
+            SELECT status, error_message
+            FROM chunks
+            WHERE run_id = :run_id AND chunk_number = 1
+        """), {"run_id": run_id}).fetchone()
+    assert chunk_row[0] == "failed"
+    assert chunk_row[1] == chunked_orchestrator.NO_CHANGES_MESSAGE
 
 
 @pytest.mark.asyncio

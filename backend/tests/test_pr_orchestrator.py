@@ -170,6 +170,11 @@ def patch_git(monkeypatch, calls, remote_exists=False, current_branch=None, dirt
         "push_branch",
         lambda branch, repo: calls.append(("push", branch, repo)),
     )
+    monkeypatch.setattr(
+        pr_orchestrator.local_git,
+        "commits_ahead",
+        lambda base, branch, repo: calls.append(("ahead", base, branch, repo)) or 1,
+    )
 
     class Result:
         returncode = 0
@@ -255,6 +260,43 @@ def test_push_pr_verifies_expected_branch_and_pushes_when_remote_missing(
     assert result["status"] == "complete"
     assert ("push", branch_name, str(tmp_repo)) in calls
     assert fake_repo.created[0]["head"] == branch_name
+
+
+def test_push_pr_rejects_branch_with_no_commits_ahead(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_final_approved_run(tmp_repo, tracked_runs)
+    branch_name = f"pipewright/{run_id[:8]}"
+    calls = []
+    patch_git_for_branch(monkeypatch, calls, branch_name, remote_exists=False)
+    monkeypatch.setattr(
+        pr_orchestrator.local_git,
+        "commits_ahead",
+        lambda base, branch, repo: calls.append(("ahead", base, branch, repo)) or 0,
+    )
+    monkeypatch.setattr(
+        pr_orchestrator,
+        "_get_github_repo",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("GitHub should not be called")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="Branch has no commits ahead of base"):
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    assert ("ahead", "main", branch_name, str(tmp_repo)) in calls
+    assert not any(call[0] == "push" for call in calls)
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT status, push_error
+            FROM pipeline_runs
+            WHERE id = :run_id
+        """), {"run_id": run_id}).fetchone()
+    assert row[0] == "push_failed"
+    assert "Branch has no commits ahead of base" in row[1]
 
 
 def test_push_pr_rejects_dirty_worktree(monkeypatch, tmp_repo, tracked_runs):
