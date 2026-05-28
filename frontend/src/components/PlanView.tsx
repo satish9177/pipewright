@@ -14,6 +14,9 @@ interface PlanViewProps {
   run: Run
   chunkPlan: ChunkPlanResponse | null | undefined
   onBack: () => void
+  onStartImplementation?: () => void
+  isStartingImplementation?: boolean
+  startImplementationError?: string | null
 }
 
 function riskClassName(risk: string) {
@@ -27,7 +30,7 @@ function ChunkCard({ chunk }: { chunk: ChunkDefinition }) {
     <Card className="border-muted-foreground/20">
       <CardHeader>
         <CardTitle className="text-sm">
-          Chunk {chunk.chunk_number}: {chunk.title}
+          Planned chunk {chunk.chunk_number}: {chunk.title}
         </CardTitle>
         <CardDescription>{chunk.description}</CardDescription>
       </CardHeader>
@@ -86,16 +89,24 @@ function ChunkCard({ chunk }: { chunk: ChunkDefinition }) {
   )
 }
 
-export default function PlanView({ run, chunkPlan, onBack }: PlanViewProps) {
+export default function PlanView({
+  run,
+  chunkPlan,
+  onBack,
+  onStartImplementation,
+  isStartingImplementation = false,
+  startImplementationError = null,
+}: PlanViewProps) {
   const triage = chunkPlan?.triage ?? null
   const reasoning = run.plain_english_summary?.trim() ?? ''
   const chunks = triage?.chunks ?? []
+  const showHandoff = run.status === 'plan_ready' && !!onStartImplementation
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
       <div className="mb-6 flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold">Plan</h2>
+          <h2 className="text-2xl font-bold">Plan Ready</h2>
           <p className="text-xs text-muted-foreground font-mono mt-1">
             {run.id}
           </p>
@@ -107,8 +118,8 @@ export default function PlanView({ run, chunkPlan, onBack }: PlanViewProps) {
         <CardHeader>
           <CardTitle className="text-base">Request</CardTitle>
           <CardDescription>
-            This run was classified as plan-only. No code changes, tests, Git
-            operations, or pull requests were performed.
+            This run is read-only. No code was changed, no tests were run, and
+            no commits were created.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
@@ -139,9 +150,10 @@ export default function PlanView({ run, chunkPlan, onBack }: PlanViewProps) {
 
       <section className="mb-6">
         <div className="mb-3">
-          <h3 className="text-sm font-semibold">Chunks</h3>
+          <h3 className="text-sm font-semibold">Planned chunks</h3>
           <p className="text-xs text-muted-foreground">
-            Proposed breakdown. Plan-only runs cannot be executed or approved.
+            Proposed breakdown only. Plan-only runs cannot be executed or
+            approved.
           </p>
         </div>
 
@@ -154,7 +166,7 @@ export default function PlanView({ run, chunkPlan, onBack }: PlanViewProps) {
         ) : (
           <Card className="border-dashed">
             <CardContent className="py-6">
-              <p className="text-sm font-medium">No chunk plan available</p>
+              <p className="text-sm font-medium">No planned chunks available</p>
               <p className="mt-1 text-sm text-muted-foreground">
                 The plan was not stored for this run.
               </p>
@@ -162,6 +174,34 @@ export default function PlanView({ run, chunkPlan, onBack }: PlanViewProps) {
           </Card>
         )}
       </section>
+
+      {showHandoff && (
+        <Card className="mb-6 border-blue-400/40">
+          <CardHeader>
+            <CardTitle className="text-base">Next step</CardTitle>
+            <CardDescription>
+              This creates a new implementation run using this plan as context.
+              The original plan remains read-only. Normal risk, scope, test,
+              and approval gates still apply.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-3">
+            <div>
+              <Button
+                onClick={() => onStartImplementation?.()}
+                disabled={isStartingImplementation}
+              >
+                {isStartingImplementation
+                  ? 'Starting implementation...'
+                  : 'Start implementation from this plan'}
+              </Button>
+            </div>
+            {startImplementationError && (
+              <p className="text-sm text-red-500">{startImplementationError}</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {run.created_at && (
         <>

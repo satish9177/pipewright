@@ -73,8 +73,10 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     pushed_at DATETIME,
     pr_created_at DATETIME,
     push_error TEXT,
+    source_plan_run_id TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (project_id) REFERENCES projects(id)
+    FOREIGN KEY (project_id) REFERENCES projects(id),
+    FOREIGN KEY (source_plan_run_id) REFERENCES pipeline_runs(id)
 );
 
 CREATE TABLE IF NOT EXISTS checkpoints (

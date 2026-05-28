@@ -151,6 +151,9 @@ export default function RunDetailPage() {
   )
   const [pushPrMessage, setPushPrMessage] = useState<string | null>(null)
   const [pushPrError, setPushPrError] = useState<string | null>(null)
+  const [startImplementationError, setStartImplementationError] = useState<
+    string | null
+  >(null)
 
   const { data: run } = useQuery({
     queryKey: ['run', runId],
@@ -403,6 +406,19 @@ export default function RunDetailPage() {
     },
   })
 
+  const startImplementationMutation = useMutation({
+    mutationFn: () => runsApi.startImplementation(runId!),
+    onSuccess: (response) => {
+      setStartImplementationError(null)
+      navigate(`/runs/${response.run_id}`)
+    },
+    onError: (error: unknown) => {
+      setStartImplementationError(
+        getErrorMessage(error, 'Failed to start implementation.'),
+      )
+    },
+  })
+
   if (!run) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -421,6 +437,9 @@ export default function RunDetailPage() {
         run={run}
         chunkPlan={chunkPlan}
         onBack={() => navigate(-1)}
+        onStartImplementation={() => startImplementationMutation.mutate()}
+        isStartingImplementation={startImplementationMutation.isPending}
+        startImplementationError={startImplementationError}
       />
     )
   }

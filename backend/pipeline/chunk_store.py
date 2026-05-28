@@ -105,9 +105,16 @@ def create_chunked_run(
     project_id: str,
     feature_description: str,
     triage_result: TriageResult,
+    *,
+    intent: str | None = None,
+    source_plan_run_id: str | None = None,
 ) -> ChunkPlanResponse:
     """
     Create one parent pipeline run and its proposed chunks transactionally.
+
+    ``intent`` and ``source_plan_run_id`` are optional. ``source_plan_run_id``
+    is set when this run is derived from a prior plan_only run via the
+    plan-to-implementation handoff, so it can be looked up for idempotency.
     """
     try:
         init_db()
@@ -116,24 +123,27 @@ def create_chunked_run(
                 INSERT INTO pipeline_runs
                 (
                     id, project_id, feature_description, status,
-                    current_step, chunk_plan_status, chunk_plan,
-                    total_chunks, current_chunk_number, created_at
+                    current_step, intent, chunk_plan_status, chunk_plan,
+                    total_chunks, current_chunk_number,
+                    source_plan_run_id, created_at
                 )
                 VALUES
                 (
                     :id, :project_id, :feature_description,
-                    :status, 'chunk_plan',
+                    :status, 'chunk_plan', :intent,
                     :chunk_plan_status, :chunk_plan, :total_chunks,
-                    0, :created_at
+                    0, :source_plan_run_id, :created_at
                 )
             """), {
                 "id": run_id,
                 "project_id": project_id,
                 "feature_description": feature_description,
                 "status": RunStatus.AWAITING_CHUNK_PLAN_APPROVAL,
+                "intent": intent or "implementation",
                 "chunk_plan_status": ChunkPlanStatus.AWAITING_APPROVAL,
                 "chunk_plan": triage_result.model_dump_json(),
                 "total_chunks": triage_result.total_chunks,
+                "source_plan_run_id": source_plan_run_id,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             })
             _insert_chunks(conn, run_id, project_id, triage_result)
