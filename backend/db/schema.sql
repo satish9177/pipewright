@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     plain_english_summary TEXT,
     status TEXT DEFAULT 'running',
     current_step TEXT,
+    intent TEXT DEFAULT 'implementation',
     chunk_plan_status TEXT DEFAULT 'none',
     chunk_plan TEXT,
     total_chunks INTEGER DEFAULT 0,

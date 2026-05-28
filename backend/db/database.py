@@ -130,6 +130,12 @@ def _migrate_db(conn) -> None:
             ),
             (
                 "pipeline_runs",
+                "intent",
+                "ALTER TABLE pipeline_runs ADD COLUMN intent TEXT "
+                "DEFAULT 'implementation'",
+            ),
+            (
+                "pipeline_runs",
                 "chunk_plan",
                 "ALTER TABLE pipeline_runs ADD COLUMN chunk_plan TEXT",
             ),

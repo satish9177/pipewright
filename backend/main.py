@@ -29,6 +29,7 @@ from backend.pipeline.approval_gate import (
     get_gate,
 )
 from backend.pipeline.orchestrator import _run_pipeline_with_id
+from backend.pipeline.intent import IMPLEMENTATION, classify_intent
 from backend.pipeline.run_locks import ProjectRepoLockError, project_repo_lock_sync
 from backend.projects.project_store import (
     get_project,
@@ -112,6 +113,14 @@ async def start_pipeline(request: RunRequest, background_tasks: BackgroundTasks)
     project = get_project(request.project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
+    if classify_intent(request.feature_description) != IMPLEMENTATION:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This request is read-only. Use /runs/chunked or rephrase as "
+                "an implementation request."
+            ),
+        )
 
     run_id = str(uuid.uuid4())
 
