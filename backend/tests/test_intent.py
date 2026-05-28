@@ -1,4 +1,5 @@
 import json
+import logging
 
 import pytest
 
@@ -11,6 +12,21 @@ from backend.pipeline.intent import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture
+def _enable_backend_log_propagation():
+    """
+    configure_logging() sets the ``backend`` logger's propagate=False so its
+    StreamHandler — not the root logger — receives records. pytest's caplog
+    attaches to the root logger, so it cannot see records from
+    backend.pipeline.intent unless we temporarily re-enable propagation.
+    """
+    backend_logger = logging.getLogger("backend")
+    original = backend_logger.propagate
+    backend_logger.propagate = True
+    yield
+    backend_logger.propagate = original
 
 
 @pytest.mark.parametrize("text", [
@@ -54,6 +70,85 @@ def test_plan_only_intents(text):
 ])
 def test_implementation_intents(text):
     assert classify_intent(text) == "implementation"
+
+
+# --------------------------------------------------------------------------
+# Gap 1: Jira / user-story phrasing usually represents implementation work.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "As a user, I want to login so that I can access my account",
+    "As an admin, I want to manage users",
+    "As a customer, I want to checkout faster",
+    "As a developer, I want a CLI command",
+    "User story: login with email and password",
+    "Acceptance criteria: user can log in with email/password",
+])
+def test_user_story_phrasing_is_implementation(text):
+    assert classify_intent(text) == "implementation"
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Review this user story", "report_only"),
+    ("Give me a plan for this user story", "plan_only"),
+])
+def test_user_story_safety_overrides(text, expected):
+    assert classify_intent(text) == expected
+
+
+def test_user_story_with_dont_implement_is_not_implementation():
+    assert (
+        classify_intent("As a user, I want login, don't implement it")
+        != "implementation"
+    )
+
+
+# --------------------------------------------------------------------------
+# Gap 2: improve / cleanup / optimize phrasing usually means implementation
+# work, unless paired with a read-only blocker or a plan-only marker.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "can you check and improve this code base",
+    "improve this codebase",
+    "improve this code",
+    "improve the code",
+    "clean up this module",
+    "cleanup the imports",
+    "optimize this function",
+    "make better the error handling",
+])
+def test_improve_cleanup_phrasing_is_implementation(text):
+    assert classify_intent(text) == "implementation"
+
+
+def test_review_and_suggest_improvements_is_not_implementation():
+    # "improvements" is a noun and must not trigger the \bimprove\b verb match.
+    assert (
+        classify_intent("review and suggest improvements")
+        in {"report_only", "plan_only"}
+    )
+
+
+def test_plan_to_improve_is_plan_only():
+    assert (
+        classify_intent("give me a plan to improve this codebase")
+        == "plan_only"
+    )
+
+
+def test_check_with_dont_change_anything_is_not_implementation():
+    assert (
+        classify_intent("check this code, don't change anything")
+        != "implementation"
+    )
+
+
+def test_dont_improve_blocks_implementation():
+    assert (
+        classify_intent("explain this module but don't improve anything")
+        != "implementation"
+    )
 
 
 @pytest.mark.parametrize("text", [
@@ -339,3 +434,104 @@ async def test_long_description_with_trailing_blocker_skips_llm(monkeypatch):
 
     assert result != "implementation"
     assert spy.calls == []
+
+
+# --------------------------------------------------------------------------
+# Fallback logging: when the LLM path defaults to plan_only, the log must
+# record *why* — never "reason=none".
+# --------------------------------------------------------------------------
+
+def _intent_log_record(caplog):
+    records = [
+        r for r in caplog.records
+        if r.name == "backend.pipeline.intent" and "[INTENT]" in r.getMessage()
+    ]
+    assert records, "expected an [INTENT] log line"
+    return records[-1].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_llm_error_logs_llm_error_reason(
+    monkeypatch, caplog, _enable_backend_log_propagation
+):
+    _install_llm_spy(monkeypatch, RuntimeError("network down"))
+
+    with caplog.at_level("INFO", logger="backend.pipeline.intent"):
+        result = await classify_intent_async("make this production ready")
+
+    assert result == "plan_only"
+    message = _intent_log_record(caplog)
+    assert "source=default" in message
+    assert "reason=llm_error" in message
+    assert "reason=none" not in message
+
+
+@pytest.mark.asyncio
+async def test_invalid_json_logs_invalid_json_reason(
+    monkeypatch, caplog, _enable_backend_log_propagation
+):
+    _install_llm_spy(monkeypatch, "not json at all")
+
+    with caplog.at_level("INFO", logger="backend.pipeline.intent"):
+        result = await classify_intent_async("make this production ready")
+
+    assert result == "plan_only"
+    message = _intent_log_record(caplog)
+    assert "source=default" in message
+    assert "reason=invalid_json" in message
+
+
+@pytest.mark.asyncio
+async def test_invalid_schema_logs_invalid_schema_reason(
+    monkeypatch, caplog, _enable_backend_log_propagation
+):
+    _install_llm_spy(
+        monkeypatch,
+        json.dumps({"intent": "go_for_it", "confidence": 0.9, "reason": "x"}),
+    )
+
+    with caplog.at_level("INFO", logger="backend.pipeline.intent"):
+        result = await classify_intent_async("make this production ready")
+
+    assert result == "plan_only"
+    message = _intent_log_record(caplog)
+    assert "source=default" in message
+    assert "reason=invalid_schema" in message
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_implementation_logs_downgrade_reason(
+    monkeypatch, caplog, _enable_backend_log_propagation
+):
+    _install_llm_spy(
+        monkeypatch,
+        json.dumps({"intent": "implementation", "confidence": 0.5, "reason": "maybe"}),
+    )
+
+    with caplog.at_level("INFO", logger="backend.pipeline.intent"):
+        result = await classify_intent_async("make this production ready")
+
+    assert result == "plan_only"
+    message = _intent_log_record(caplog)
+    assert "source=llm_downgraded" in message
+    assert "reason=low_confidence_implementation" in message
+
+
+@pytest.mark.asyncio
+async def test_no_provider_logs_no_provider_reason(
+    monkeypatch, caplog, _enable_backend_log_propagation
+):
+    from backend.llm.errors import ProviderConfigurationError
+
+    _install_llm_spy(
+        monkeypatch,
+        ProviderConfigurationError("no provider", provider="none"),
+    )
+
+    with caplog.at_level("INFO", logger="backend.pipeline.intent"):
+        result = await classify_intent_async("make this production ready")
+
+    assert result == "plan_only"
+    message = _intent_log_record(caplog)
+    assert "source=default" in message
+    assert "reason=no_provider" in message

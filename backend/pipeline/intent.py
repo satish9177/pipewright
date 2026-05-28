@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Literal
 
 from backend.llm import Role, complete_for_role
 from backend.llm.base import LLMRequest, Message
+from backend.llm.errors import ProviderConfigurationError, UnsupportedProviderError
 
 Intent = Literal["report_only", "plan_only", "implementation"]
 
@@ -107,12 +109,35 @@ _IMPLEMENTATION_PHRASES = [
     "upgrade",
     "integrate",
     "write",
+    # User-story / Jira phrasing usually represents implementation work.
+    "as a user, i want",
+    "as an admin, i want",
+    "as a customer, i want",
+    "as a developer, i want",
+    "user story:",
+    "acceptance criteria:",
+    # Improve / cleanup phrasing (multi-word forms).
+    "make better",
+    "clean up",
+    "cleanup",
+]
+
+# Implementation patterns that need word boundaries to avoid matching
+# nominal forms like "improvements" (a noun the user wants reported on).
+_IMPLEMENTATION_REGEXES = [
+    re.compile(r"\bimprove\b"),
+    re.compile(r"\boptimize\b"),
+    # General "as a <role>, i want" pattern (single-word role).
+    re.compile(r"\bas an? \w+, i want\b"),
 ]
 
 _READ_ONLY_SAFETY_PHRASES = [
     "don't change code",
     "do not change code",
     "dont change code",
+    "don't change anything",
+    "do not change anything",
+    "dont change anything",
     "don't edit",
     "do not edit",
     "dont edit",
@@ -131,6 +156,15 @@ _READ_ONLY_SAFETY_PHRASES = [
     "don't implement",
     "do not implement",
     "dont implement",
+    "don't improve",
+    "do not improve",
+    "dont improve",
+    "don't clean",
+    "do not clean",
+    "dont clean",
+    "don't optimize",
+    "do not optimize",
+    "dont optimize",
     "only explain",
     "only review",
     "only audit",
@@ -172,6 +206,13 @@ def _contains_any(text: str, phrases: list[str]) -> tuple[bool, list[str]]:
     return bool(matched), matched
 
 
+def _matches_any_regex(
+    text: str, patterns: list[re.Pattern[str]]
+) -> tuple[bool, list[str]]:
+    matched = [p.search(text).group(0) for p in patterns if p.search(text)]
+    return bool(matched), matched
+
+
 def _deterministic_classify(
     text: str,
 ) -> tuple[Intent | None, str, dict[str, list[str]]]:
@@ -189,7 +230,14 @@ def _deterministic_classify(
     has_report, report_matches = _contains_any(text, _REPORT_PHRASES)
     has_strong_plan, strong_plan_matches = _contains_any(text, _STRONG_PLAN_PHRASES)
     has_soft_plan, soft_plan_matches = _contains_any(text, _SOFT_PLAN_PHRASES)
-    has_implementation, impl_matches = _contains_any(text, _IMPLEMENTATION_PHRASES)
+    has_impl_phrase, impl_phrase_matches = _contains_any(
+        text, _IMPLEMENTATION_PHRASES
+    )
+    has_impl_regex, impl_regex_matches = _matches_any_regex(
+        text, _IMPLEMENTATION_REGEXES
+    )
+    has_implementation = has_impl_phrase or has_impl_regex
+    impl_matches = impl_phrase_matches + impl_regex_matches
 
     matched: dict[str, list[str]] = {}
     if has_safety:
@@ -271,29 +319,36 @@ def classify_intent(feature_description: str) -> Intent:
 
 def _parse_llm_intent_payload(
     text: str,
-) -> tuple[Intent, float, str | None] | None:
+) -> tuple[tuple[Intent, float, str | None] | None, str | None]:
+    """
+    Parse an LLM payload into (intent, confidence, reason).
+
+    Returns ``(parsed, error_code)``. On success ``error_code`` is ``None``.
+    On failure ``parsed`` is ``None`` and ``error_code`` is one of
+    ``"invalid_json"`` or ``"invalid_schema"``.
+    """
     try:
         parsed = json.loads(text)
     except (TypeError, ValueError):
-        return None
+        return None, "invalid_json"
     if not isinstance(parsed, dict):
-        return None
+        return None, "invalid_schema"
 
     raw_intent = parsed.get("intent")
     if not isinstance(raw_intent, str) or raw_intent not in _ALLOWED_INTENTS:
-        return None
+        return None, "invalid_schema"
 
     raw_confidence = parsed.get("confidence")
     if isinstance(raw_confidence, bool) or not isinstance(raw_confidence, (int, float)):
-        return None
+        return None, "invalid_schema"
     confidence = float(raw_confidence)
     if not (0.0 <= confidence <= 1.0):
-        return None
+        return None, "invalid_schema"
 
     reason = parsed.get("reason")
     reason_text = reason if isinstance(reason, str) else None
 
-    return raw_intent, confidence, reason_text  # type: ignore[return-value]
+    return (raw_intent, confidence, reason_text), None  # type: ignore[return-value]
 
 
 async def _llm_fallback_classify(
@@ -324,23 +379,35 @@ async def _llm_fallback_classify(
 
     try:
         response = await complete_for_role(Role.TRIAGE, request)
+    except (ProviderConfigurationError, UnsupportedProviderError) as error:
+        logger.warning(
+            "[INTENT] LLM fallback unavailable (no provider); "
+            "defaulting to plan_only. error=%s",
+            error,
+        )
+        return PLAN_ONLY, "default", None, "no_provider"
     except Exception as error:
         logger.warning(
             "[INTENT] LLM fallback failed; defaulting to plan_only. error=%s",
             error,
         )
-        return PLAN_ONLY, "default", None, None
+        return PLAN_ONLY, "default", None, "llm_error"
 
-    parsed = _parse_llm_intent_payload(response.text or "")
+    parsed, parse_error = _parse_llm_intent_payload(response.text or "")
     if parsed is None:
-        return PLAN_ONLY, "default", None, None
+        return PLAN_ONLY, "default", None, parse_error
 
     llm_intent, confidence, reason = parsed
     if (
         llm_intent == IMPLEMENTATION
         and confidence < LLM_IMPLEMENTATION_MIN_CONFIDENCE
     ):
-        return PLAN_ONLY, "llm_downgraded", confidence, reason
+        return (
+            PLAN_ONLY,
+            "llm_downgraded",
+            confidence,
+            "low_confidence_implementation",
+        )
     return llm_intent, "llm", confidence, reason
 
 
