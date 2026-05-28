@@ -35,7 +35,7 @@ from backend.pipeline.intent import (
     IMPLEMENTATION,
     PLAN_ONLY,
     REPORT_ONLY,
-    classify_intent,
+    classify_intent_async,
 )
 from backend.pipeline.risk_scanner import scan_triage_result
 from backend.pipeline.run_locks import ProjectRepoLockError
@@ -231,7 +231,7 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
         raise HTTPException(status_code=404, detail="Project not found")
 
     run_id = str(uuid.uuid4())
-    intent = classify_intent(request.feature_description)
+    intent = await classify_intent_async(request.feature_description)
     try:
         if intent == REPORT_ONLY:
             report = _build_read_only_report(project, request.feature_description)
