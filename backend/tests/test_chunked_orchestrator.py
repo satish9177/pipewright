@@ -75,7 +75,11 @@ def make_triage(
             chunk_number=number,
             title=f"Chunk {number}",
             description=f"Do chunk {number}",
-            files_expected=[f"file_{number}.py"],
+            files_expected=[
+                f"created_{number}.py",
+                f"modified_{number}.py",
+                f"deleted_{number}.py",
+            ],
             depends_on=[] if number == 1 else [number - 1],
             risk_level="high" if needs_review else "low",
             token_estimate=100,
@@ -1715,3 +1719,65 @@ def test_resume_route_calls_resume_chunked_pipeline(monkeypatch):
     assert response.status_code == 200
     assert response.json()["resumed"] is True
     assert called["run_id"] == "run-123"
+
+
+@pytest.mark.asyncio
+async def test_scope_drift_fails_chunk_before_apply_patch_or_commit(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+
+    async def fake_planner(*args, **kwargs):
+        return make_planner_result(run_id)
+
+    async def fake_coder(*args, **kwargs):
+        return CoderHandoff(
+            run_id=run_id,
+            feature_description="enriched",
+            files_changed=[
+                FileChange(
+                    path="src/out_of_scope.py",
+                    action="modify",
+                    content="print('drift')\n",
+                    reason="drift",
+                ),
+            ],
+            summary="drifted",
+            suggested_memory_entries=[],
+        )
+
+    monkeypatch.setattr(chunked_orchestrator, "run_planner", fake_planner)
+    monkeypatch.setattr(chunked_orchestrator, "run_coder", fake_coder)
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "apply_patch",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("apply_patch must not be called on scope drift")
+        ),
+    )
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "run_tests",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("run_tests must not be called on scope drift")
+        ),
+    )
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    assert "src/out_of_scope.py" in result["error"]
+    assert "files_expected" in result["error"]
+    assert not any(call[0] == "commit" for call in calls)
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT status, error_message
+            FROM chunks
+            WHERE run_id = :run_id AND chunk_number = 1
+        """), {"run_id": run_id}).fetchone()
+    assert row[0] == "failed"
+    assert "src/out_of_scope.py" in (row[1] or "")

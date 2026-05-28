@@ -37,6 +37,7 @@ from backend.pipeline.intent import (
     REPORT_ONLY,
     classify_intent,
 )
+from backend.pipeline.risk_scanner import scan_triage_result
 from backend.pipeline.run_locks import ProjectRepoLockError
 from backend.pipeline.triage import run_triage
 from backend.projects.project_store import get_project
@@ -257,6 +258,7 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
             project_id=request.project_id,
             feature_description=request.feature_description,
         )
+        triage_result = scan_triage_result(triage_result)
         if intent == PLAN_ONLY:
             _create_read_only_run(
                 run_id=run_id,
