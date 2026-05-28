@@ -28,21 +28,40 @@ _REPORT_PHRASES = [
     "describe",
     "summarize",
     "inspect",
+    "is there any issue",
+    "any issue",
+    "any issues",
+    "any bug",
+    "any bugs",
+    "any problem",
+    "any problems",
+    "issues in code",
+    "bugs in code",
+    "problems in code",
+    "what is wrong",
+    "what's wrong",
+    "just explain",
+    "just describe",
+    "just review",
+    "just analyze",
 ]
 
-_PLAN_PHRASES = [
+_STRONG_PLAN_PHRASES = [
     "give me a plan",
     "plan",
-    "design",
-    "architect",
-    "propose",
-    "outline",
-    "break down",
     "chunk plan",
     "break into chunks",
     "how would you",
     "what would it take",
     "suggest an approach",
+]
+
+_SOFT_PLAN_PHRASES = [
+    "design",
+    "architect",
+    "propose",
+    "outline",
+    "break down",
 ]
 
 _IMPLEMENTATION_PHRASES = [
@@ -93,6 +112,8 @@ _READ_ONLY_SAFETY_PHRASES = [
     "change any single line",
     "read only",
     "read-only",
+    "without changing",
+    "without modifying",
 ]
 
 
@@ -110,7 +131,9 @@ def classify_intent(feature_description: str) -> Intent:
         return PLAN_ONLY
 
     has_report = _contains_any(text, _REPORT_PHRASES)
-    has_plan = _contains_any(text, _PLAN_PHRASES)
+    has_strong_plan = _contains_any(text, _STRONG_PLAN_PHRASES)
+    has_soft_plan = _contains_any(text, _SOFT_PLAN_PHRASES)
+    has_plan = has_strong_plan or has_soft_plan
     has_implementation = _contains_any(text, _IMPLEMENTATION_PHRASES)
     has_read_only_safety = _contains_any(text, _READ_ONLY_SAFETY_PHRASES)
 
@@ -122,10 +145,13 @@ def classify_intent(feature_description: str) -> Intent:
     if has_report and not has_implementation:
         return REPORT_ONLY
 
-    if has_plan:
+    if has_strong_plan:
         return PLAN_ONLY
 
     if has_implementation:
         return IMPLEMENTATION
+
+    if has_soft_plan:
+        return PLAN_ONLY
 
     return PLAN_ONLY
