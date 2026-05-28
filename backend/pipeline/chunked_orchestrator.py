@@ -37,6 +37,7 @@ from backend.pipeline.coder import run_coder
 from backend.pipeline.patch_applier import apply_patch, rollback_patch
 from backend.pipeline.planner import run_planner
 from backend.pipeline.run_locks import project_repo_lock, project_repo_lock_sync
+from backend.pipeline.scope_guard import ScopeDriftError, assert_files_in_scope
 from backend.pipeline.tester import run_tests
 from backend.projects.project_context import ProjectRuntimeConfig, active_project
 from backend.projects.project_store import require_project
@@ -656,6 +657,11 @@ async def _execute_single_chunk(
     )
     if not code.files_changed:
         return _fail_chunk(run_id, chunk_number, NO_CHANGES_MESSAGE)
+
+    try:
+        assert_files_in_scope(code, chunk.files_expected)
+    except ScopeDriftError as drift:
+        return _fail_chunk(run_id, chunk_number, str(drift))
 
     patch = apply_patch(code, run_id, chunk_number=chunk_number)
     test_result = run_tests(patch, run_id, chunk_number=chunk_number)

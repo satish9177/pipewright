@@ -685,3 +685,55 @@ def test_push_pr_route_maps_project_lock_conflict_to_409(monkeypatch):
 
     assert response.status_code == 409
     assert response.json()["detail"] == PROJECT_LOCK_CONFLICT_MESSAGE
+
+
+def test_post_runs_chunked_upgrades_low_risk_route_chunk_to_high(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    project = make_project(tmp_repo)
+
+    async def fake_triage(run_id, project_id, feature_description):
+        return TriageResult(
+            run_id=run_id,
+            project_id=project_id,
+            feature_description=feature_description,
+            complexity="easy",
+            total_chunks=1,
+            reasoning="Adjust a route handler.",
+            chunks=[ChunkDefinition(
+                chunk_number=1,
+                title="Tweak route",
+                description="Adjust handler logic.",
+                files_expected=["backend/routes/foo.py"],
+                depends_on=[],
+                risk_level="low",
+                token_estimate=100,
+                requires_human_review=False,
+                rationale="Marked low by triage.",
+            )],
+        )
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "Modify backend/routes/foo.py handler",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    chunk = data["chunks"][0]
+    assert chunk["risk_level"] == "high"
+    assert chunk["requires_human_review"] is True
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT risk_level, requires_human_review
+            FROM chunks
+            WHERE run_id = :run_id AND chunk_number = 1
+        """), {"run_id": data["run_id"]}).fetchone()
+    assert row[0] == "high"
+    assert int(row[1]) == 1
