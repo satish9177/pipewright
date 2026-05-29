@@ -22,7 +22,7 @@ import json
 import logging
 from pathlib import Path
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import text
 
 from backend.db.database import engine
@@ -64,10 +64,12 @@ before or after. The JSON must match this exact schema:
   "findings": [
     {
       "title": "short finding title",
-      "severity": "low | medium | high | info",
+      "severity": "info | low | medium | high | critical",
       "confidence": "low | medium | high",
       "file": "relative/path.py or null if general",
+      "line": "line number or range hint, or null",
       "evidence": "what in the code/context supports this finding",
+      "reasoning": "why this matters (advisory)",
       "recommendation": "what a human could consider doing (advisory only)"
     }
   ],
@@ -82,6 +84,77 @@ Rules:
 - Respond with nothing except the JSON object."""
 
 
+# Allowed structured values. Anything the LLM returns outside these sets is
+# normalized to a safe default rather than crashing the read-only report.
+SEVERITY_VALUES = {"info", "low", "medium", "high", "critical"}
+CONFIDENCE_VALUES = {"low", "medium", "high"}
+DEFAULT_SEVERITY = "info"
+DEFAULT_CONFIDENCE = "low"
+
+# Lightweight discovery vs. analysis heuristic for report_kind. Discovery is the
+# PR #9A read-only "what could we add / improve" style request; everything else
+# is treated as an analysis/review report.
+_DISCOVERY_HINTS = (
+    "what feature",
+    "what features",
+    "suggest feature",
+    "suggest improvement",
+    "what can we improve",
+    "how can we improve",
+    "what should we build",
+    "add to this project",
+    "features can we add",
+)
+
+
+def _normalize_severity(value: str | None) -> str:
+    if value and value.strip().lower() in SEVERITY_VALUES:
+        return value.strip().lower()
+    return DEFAULT_SEVERITY
+
+
+def _normalize_confidence(value: str | None) -> str:
+    if value and value.strip().lower() in CONFIDENCE_VALUES:
+        return value.strip().lower()
+    return DEFAULT_CONFIDENCE
+
+
+def _classify_report_kind(feature_description: str) -> str:
+    text_value = (feature_description or "").lower()
+    if any(hint in text_value for hint in _DISCOVERY_HINTS):
+        return "discovery"
+    return "analysis"
+
+
+class ReportFinding(BaseModel):
+    """One structured, read-only finding rendered in ReportView."""
+
+    title: str
+    severity: str = DEFAULT_SEVERITY
+    confidence: str = DEFAULT_CONFIDENCE
+    file_path: str | None = None
+    line_hint: str | None = None
+    evidence: str = ""
+    reasoning: str = ""
+    suggested_next_action: str = ""
+
+
+class ReportResult(BaseModel):
+    """
+    Structured source of truth for a read-only report. Stored as report_json
+    on the run and rendered by ReportView. Intentionally permissive so a thin
+    or partial analysis still serializes cleanly.
+    """
+
+    summary: str = ""
+    findings: list[ReportFinding] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    files_reviewed: list[str] = Field(default_factory=list)
+    implementation_recommended: bool = False
+    next_action: str = ""
+    report_kind: str | None = None
+
+
 class ReportAnalysisResult(BaseModel):
     """Public result of a read-only report analysis."""
 
@@ -89,6 +162,9 @@ class ReportAnalysisResult(BaseModel):
     markdown_report: str
     files_reviewed: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
+    # Structured form for ReportView. None when only a limited/fallback report
+    # could be produced; callers then persist plain_english_summary only.
+    report_result: ReportResult | None = None
 
 
 class _Finding(BaseModel):
@@ -96,8 +172,17 @@ class _Finding(BaseModel):
     severity: str = "info"
     confidence: str = "unknown"
     file: str | None = None
+    line: str | None = None
     evidence: str = ""
+    reasoning: str = ""
     recommendation: str = ""
+
+    @field_validator("line", mode="before")
+    @classmethod
+    def _coerce_line(cls, value):
+        if value is None:
+            return None
+        return str(value)
 
 
 class _AnalyzerOutput(BaseModel):
@@ -390,6 +475,42 @@ def _build_markdown_report(
     return "\n".join(lines)
 
 
+def _build_report_result(
+    feature_description: str,
+    output: _AnalyzerOutput,
+    files_reviewed: list[str],
+    extra_limitations: list[str],
+) -> ReportResult:
+    """
+    Map the validated analyzer output into the structured ReportResult that is
+    persisted as report_json and rendered by ReportView. Severity/confidence
+    are normalized so an out-of-range LLM value never crashes the report.
+    """
+    findings: list[ReportFinding] = []
+    for finding in output.findings:
+        findings.append(ReportFinding(
+            title=finding.title,
+            severity=_normalize_severity(finding.severity),
+            confidence=_normalize_confidence(finding.confidence),
+            file_path=finding.file or None,
+            line_hint=finding.line or None,
+            evidence=finding.evidence,
+            reasoning=finding.reasoning,
+            suggested_next_action=finding.recommendation,
+        ))
+    return ReportResult(
+        summary=output.summary,
+        findings=findings,
+        limitations=list(output.limitations) + list(extra_limitations),
+        files_reviewed=files_reviewed,
+        # Read-only report: implementation is never auto-recommended. The
+        # next_action below is advisory only; there is no handoff in this PR.
+        implementation_recommended=False,
+        next_action=output.suggested_next_action,
+        report_kind=_classify_report_kind(feature_description),
+    )
+
+
 def build_limited_report(feature_description: str, reason: str) -> str:
     """
     Build a safe, limited read-only report when full analysis is unavailable.
@@ -540,6 +661,12 @@ async def run_report_analysis(
         files_reviewed=files_reviewed,
         extra_limitations=extra_limitations,
     )
+    report_result = _build_report_result(
+        feature_description=feature_description,
+        output=output,
+        files_reviewed=files_reviewed,
+        extra_limitations=extra_limitations,
+    )
     logger.info(
         "[REPORT] Analysis complete | run_id=%s | files_reviewed=%s | findings=%s",
         run_id,
@@ -551,4 +678,5 @@ async def run_report_analysis(
         markdown_report=markdown_report,
         files_reviewed=files_reviewed,
         limitations=list(output.limitations) + extra_limitations,
+        report_result=report_result,
     )

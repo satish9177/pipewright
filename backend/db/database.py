@@ -124,6 +124,11 @@ def _migrate_db(conn) -> None:
             ),
             (
                 "pipeline_runs",
+                "report_json",
+                "ALTER TABLE pipeline_runs ADD COLUMN report_json TEXT",
+            ),
+            (
+                "pipeline_runs",
                 "chunk_plan_status",
                 "ALTER TABLE pipeline_runs ADD COLUMN chunk_plan_status TEXT "
                 "DEFAULT 'none'",

@@ -210,7 +210,8 @@ def test_report_only_chunked_run_creates_read_only_run_without_triage(
     assert data["chunks"] == []
     with engine.connect() as conn:
         run = conn.execute(text("""
-            SELECT status, current_step, intent, plain_english_summary
+            SELECT status, current_step, intent, plain_english_summary,
+                   report_json
             FROM pipeline_runs
             WHERE id = :run_id
         """), {"run_id": data["run_id"]}).fetchone()
@@ -232,6 +233,22 @@ def test_report_only_chunked_run_creates_read_only_run_without_triage(
         "No code was changed, no tests were run, no commits or PRs were created"
         in summary
     )
+    # Structured report_json persisted alongside the markdown summary.
+    report_json = run[4]
+    assert report_json
+    structured = json.loads(report_json)
+    assert structured["summary"]
+    assert isinstance(structured["findings"], list) and structured["findings"]
+    finding = structured["findings"][0]
+    assert finding["title"] == "Broad exception handling in routes"
+    assert finding["severity"] == "medium"
+    assert finding["confidence"] == "medium"
+    assert finding["file_path"] == "backend/routes/chunks.py"
+    assert finding["evidence"]
+    assert finding["suggested_next_action"]
+    assert isinstance(structured["files_reviewed"], list)
+    assert isinstance(structured["limitations"], list)
+    assert structured["next_action"]
     assert chunk_count == 0
     assert gate_count == 0
 
@@ -273,7 +290,7 @@ def test_report_only_malformed_analyzer_fails_safely_no_implementation(
     assert data["chunks"] == []
     with engine.connect() as conn:
         run = conn.execute(text("""
-            SELECT status, intent, plain_english_summary
+            SELECT status, intent, plain_english_summary, report_json
             FROM pipeline_runs
             WHERE id = :run_id
         """), {"run_id": data["run_id"]}).fetchone()
@@ -285,6 +302,73 @@ def test_report_only_malformed_analyzer_fails_safely_no_implementation(
         "No code was changed, no tests were run, no commits or PRs were created"
         in run[2]
     )
+    # Malformed analyzer output: no structured report_json is persisted, so the
+    # run falls back to plain_english_summary and never reaches implementation.
+    assert run[3] is None
+
+
+def test_report_only_run_fetch_exposes_report_json(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    project = make_project(tmp_repo)
+    monkeypatch.setattr(
+        "backend.pipeline.report_analyzer.complete_for_role",
+        _fake_analyzer_llm_response(VALID_ANALYZER_JSON),
+    )
+    client = TestClient(app)
+
+    create = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "review this repo",
+    })
+    assert create.status_code == 200
+    run_id = create.json()["run_id"]
+    tracked_runs.append(run_id)
+
+    # The run-status endpoint surfaces report_json for ReportView to render.
+    fetched = client.get(f"/runs/{run_id}")
+    assert fetched.status_code == 200
+    body = fetched.json()
+    assert body["plain_english_summary"]
+    assert body["report_json"]
+    structured = json.loads(body["report_json"])
+    assert structured["findings"]
+
+
+def test_old_report_without_report_json_remains_compatible(
+    tmp_repo,
+    tracked_runs,
+):
+    """An existing report_ready row predating PR #8B has report_json = NULL and
+    must still be fetchable, rendering via plain_english_summary."""
+    project = make_project(tmp_repo)
+    run_id = str(uuid.uuid4())
+    tracked_runs.append(run_id)
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO pipeline_runs
+            (
+                id, project_id, feature_description, plain_english_summary,
+                status, current_step, intent, chunk_plan_status,
+                total_chunks, current_chunk_number
+            )
+            VALUES
+            (
+                :run_id, :project_id, 'old report', 'legacy markdown report',
+                'report_ready', 'report_ready', 'report_only', 'none', 0, 0
+            )
+        """), {"run_id": run_id, "project_id": project["id"]})
+    client = TestClient(app)
+
+    fetched = client.get(f"/runs/{run_id}")
+
+    assert fetched.status_code == 200
+    body = fetched.json()
+    assert body["status"] == "report_ready"
+    assert body["plain_english_summary"] == "legacy markdown report"
+    assert body.get("report_json") is None
 
 
 VAGUE_IMPLEMENTATION_REQUESTS = [

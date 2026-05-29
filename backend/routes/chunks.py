@@ -180,26 +180,28 @@ def _create_read_only_run(
     summary: str | None = None,
     chunk_plan: str | None = None,
     total_chunks: int = 0,
+    report_json: str | None = None,
 ) -> None:
     with engine.begin() as conn:
         conn.execute(text("""
             INSERT INTO pipeline_runs
             (
                 id, project_id, feature_description, plain_english_summary,
-                status, current_step, intent, chunk_plan_status, chunk_plan,
-                total_chunks, current_chunk_number, created_at
+                report_json, status, current_step, intent, chunk_plan_status,
+                chunk_plan, total_chunks, current_chunk_number, created_at
             )
             VALUES
             (
                 :id, :project_id, :feature_description, :summary,
-                :status, :current_step, :intent, 'none', :chunk_plan,
-                :total_chunks, 0, :created_at
+                :report_json, :status, :current_step, :intent, 'none',
+                :chunk_plan, :total_chunks, 0, :created_at
             )
         """), {
             "id": run_id,
             "project_id": project_id,
             "feature_description": feature_description,
             "summary": summary,
+            "report_json": report_json,
             "status": status,
             "current_step": status,
             "intent": intent,
@@ -413,6 +415,7 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
 
     try:
         if intent == REPORT_ONLY:
+            report_json: str | None = None
             try:
                 analysis = await run_report_analysis(
                     run_id=run_id,
@@ -420,6 +423,10 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
                     feature_description=request.feature_description,
                 )
                 report = analysis.markdown_report
+                # Structured source for ReportView. Absent on a limited/fallback
+                # analysis; the run then renders plain_english_summary only.
+                if analysis.report_result is not None:
+                    report_json = analysis.report_result.model_dump_json()
             except Exception as analysis_error:
                 # Defense in depth: the analyzer degrades internally, but if it
                 # ever raises we still keep this run strictly read-only and
@@ -441,6 +448,7 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
                 intent=REPORT_ONLY,
                 status=RunStatus.REPORT_READY,
                 summary=report,
+                report_json=report_json,
             )
             return ChunkPlanResponse(
                 run_id=run_id,

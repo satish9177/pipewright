@@ -112,6 +112,7 @@ export interface Run extends ExtraFields {
   project_id?: string | null
   feature_description: string
   plain_english_summary?: string | null
+  report_json?: string | null
   status: RunStatus
   current_step: string | null
   intent?: RunIntent | null
