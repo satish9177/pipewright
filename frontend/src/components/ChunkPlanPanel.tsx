@@ -248,6 +248,15 @@ export default function ChunkPlanPanel({
                     <p className="text-muted-foreground break-words">
                       {formatList(filesExpected)}
                     </p>
+                    {filesExpected.length === 0 && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Pipewright could not confidently map this chunk to
+                        indexed repository files, so no target files were
+                        approved. It is marked high-risk and requires human
+                        review — confirm the real target files before
+                        executing.
+                      </p>
+                    )}
                   </div>
 
                   <div>
