@@ -677,6 +677,46 @@ def test_discovery_questions_route_to_report_only(
     assert row[1] == "report_only"
 
 
+# PR #8C: report intent specialization persists a specialized report_kind.
+@pytest.mark.parametrize("feature,expected_kind", [
+    ("explain this project", "project_explanation"),
+    ("is there any issue in the code", "issue_review"),
+    ("what features can we add to this project", "feature_discovery"),
+])
+def test_report_only_persists_specialized_report_kind(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+    feature,
+    expected_kind,
+):
+    project = make_project(tmp_repo)
+    monkeypatch.setattr(
+        "backend.pipeline.report_analyzer.complete_for_role",
+        _fake_analyzer_llm_response(VALID_ANALYZER_JSON),
+    )
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": feature,
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT status, intent, report_json
+            FROM pipeline_runs WHERE id = :rid
+        """), {"rid": data["run_id"]}).fetchone()
+    assert row[0] == "report_ready"
+    assert row[1] == "report_only"
+    assert row[2]
+    structured = json.loads(row[2])
+    assert structured["report_kind"] == expected_kind
+
+
 VALID_IMPLEMENTATION_REQUESTS = [
     "implement login feature",
     "add CSV export feature",

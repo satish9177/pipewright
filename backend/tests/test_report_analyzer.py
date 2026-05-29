@@ -20,8 +20,11 @@ from backend.pipeline import report_analyzer
 from backend.pipeline.report_analyzer import (
     READ_ONLY_NOTE,
     ReportAnalysisResult,
+    ReportKind,
     ReportResult,
+    _build_system_prompt,
     build_limited_report,
+    classify_report_kind,
     run_report_analysis,
 )
 
@@ -304,7 +307,8 @@ async def test_returns_structured_report_result(monkeypatch, tmp_repo):
     assert report.files_reviewed == ["app.py"]
     assert report.limitations  # analyzer + extra limitations merged
     assert report.next_action
-    assert report.report_kind == "analysis"
+    # "review repo" matches no specialized intent -> general_analysis fallback.
+    assert report.report_kind == "general_analysis"
     assert len(report.findings) == 1
     finding = report.findings[0]
     assert finding.title == "Broad exception handling"
@@ -368,7 +372,9 @@ async def test_empty_findings_still_structured(monkeypatch, tmp_repo):
 
 
 @pytest.mark.asyncio
-async def test_discovery_request_sets_report_kind_discovery(monkeypatch, tmp_repo):
+async def test_discovery_request_sets_report_kind_feature_discovery(
+    monkeypatch, tmp_repo
+):
     _patch_dependencies(monkeypatch, tmp_repo)
     _patch_llm(monkeypatch, VALID_ANALYZER_JSON)
 
@@ -377,7 +383,7 @@ async def test_discovery_request_sets_report_kind_discovery(monkeypatch, tmp_rep
     )
 
     assert result.report_result is not None
-    assert result.report_result.report_kind == "discovery"
+    assert result.report_result.report_kind == "feature_discovery"
 
 
 @pytest.mark.asyncio
@@ -400,6 +406,140 @@ async def test_missing_project_has_no_structured_result(monkeypatch, tmp_repo):
     result = await run_report_analysis(str(uuid.uuid4()), "proj-missing", "review")
 
     assert result.report_result is None
+
+
+# ---------------------------------------------------------------------------
+# PR #8C: report intent specialization
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("feature_text,expected", [
+    # project_explanation
+    ("explain this project", ReportKind.PROJECT_EXPLANATION),
+    ("what does this project do", ReportKind.PROJECT_EXPLANATION),
+    ("explain the architecture", ReportKind.PROJECT_EXPLANATION),
+    ("how does this project work", ReportKind.PROJECT_EXPLANATION),
+    ("summarize this repo", ReportKind.PROJECT_EXPLANATION),
+    ("walk me through the codebase", ReportKind.PROJECT_EXPLANATION),
+    # issue_review
+    ("is there any issue in the code", ReportKind.ISSUE_REVIEW),
+    ("find bugs", ReportKind.ISSUE_REVIEW),
+    ("review for bugs", ReportKind.ISSUE_REVIEW),
+    ("any security issues?", ReportKind.ISSUE_REVIEW),
+    ("what is broken", ReportKind.ISSUE_REVIEW),
+    ("identify problems", ReportKind.ISSUE_REVIEW),
+    # feature_discovery
+    ("what features can we add", ReportKind.FEATURE_DISCOVERY),
+    ("what feature kind can we add", ReportKind.FEATURE_DISCOVERY),
+    ("suggest features", ReportKind.FEATURE_DISCOVERY),
+    ("suggest improvements for this project", ReportKind.FEATURE_DISCOVERY),
+    ("what can we improve", ReportKind.FEATURE_DISCOVERY),
+    ("what should we build next", ReportKind.FEATURE_DISCOVERY),
+    ("how can we improve this app", ReportKind.FEATURE_DISCOVERY),
+    # general_analysis fallback
+    ("tell me about widgets", ReportKind.GENERAL_ANALYSIS),
+    ("review repo", ReportKind.GENERAL_ANALYSIS),
+    ("", ReportKind.GENERAL_ANALYSIS),
+])
+def test_classify_report_kind(feature_text, expected):
+    assert classify_report_kind(feature_text) == expected
+
+
+def test_classify_report_kind_issue_wins_over_explain():
+    # A clear ask for issues beats a generic "explain" verb.
+    assert classify_report_kind("explain any bugs") == ReportKind.ISSUE_REVIEW
+
+
+def test_project_explanation_prompt_focuses_on_architecture_not_audit():
+    prompt = _build_system_prompt(ReportKind.PROJECT_EXPLANATION).lower()
+    assert "architecture" in prompt
+    assert "execution" in prompt or "data flow" in prompt
+    assert "explain" in prompt
+    # Informational, not a code audit.
+    assert "do not turn this into a code audit" in prompt
+    assert "severity must be" in prompt or 'severity must be "info"' in prompt
+
+
+def test_issue_review_prompt_focuses_on_bugs_and_risks():
+    prompt = _build_system_prompt(ReportKind.ISSUE_REVIEW).lower()
+    assert "bug" in prompt
+    assert "security" in prompt
+    assert "risk" in prompt or "edge case" in prompt
+    assert "evidence" in prompt
+
+
+def test_feature_discovery_prompt_focuses_on_ideas_value_difficulty():
+    prompt = _build_system_prompt(ReportKind.FEATURE_DISCOVERY).lower()
+    assert "feature" in prompt
+    assert "value" in prompt
+    assert "difficulty" in prompt or "risk" in prompt
+    # Must avoid presenting already-implemented features as new.
+    assert "already exist" in prompt
+
+
+def test_all_kind_prompts_share_output_contract():
+    for kind in ReportKind:
+        prompt = _build_system_prompt(kind)
+        assert '"findings"' in prompt
+        assert "valid JSON object" in prompt
+
+
+@pytest.mark.asyncio
+async def test_explanation_request_uses_explanation_prompt(monkeypatch, tmp_repo):
+    captured = {"system": ""}
+
+    async def capture(role, request):
+        captured["system"] = request.messages[0].content
+        return LLMResponse(text=VALID_ANALYZER_JSON, provider="fake", model="m")
+
+    _patch_dependencies(monkeypatch, tmp_repo)
+    monkeypatch.setattr(report_analyzer, "complete_for_role", capture)
+
+    result = await run_report_analysis(
+        str(uuid.uuid4()), "proj-x", "explain this project"
+    )
+
+    assert result.report_result.report_kind == "project_explanation"
+    system_prompt = captured["system"].lower()
+    assert "architecture" in system_prompt
+    assert "do not turn this into a code audit" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_issue_request_uses_issue_review_prompt(monkeypatch, tmp_repo):
+    captured = {"system": ""}
+
+    async def capture(role, request):
+        captured["system"] = request.messages[0].content
+        return LLMResponse(text=VALID_ANALYZER_JSON, provider="fake", model="m")
+
+    _patch_dependencies(monkeypatch, tmp_repo)
+    monkeypatch.setattr(report_analyzer, "complete_for_role", capture)
+
+    result = await run_report_analysis(
+        str(uuid.uuid4()), "proj-x", "is there any issue in the code"
+    )
+
+    assert result.report_result.report_kind == "issue_review"
+    assert "bug" in captured["system"].lower()
+
+
+@pytest.mark.asyncio
+async def test_feature_request_uses_feature_discovery_prompt(monkeypatch, tmp_repo):
+    captured = {"system": ""}
+
+    async def capture(role, request):
+        captured["system"] = request.messages[0].content
+        return LLMResponse(text=VALID_ANALYZER_JSON, provider="fake", model="m")
+
+    _patch_dependencies(monkeypatch, tmp_repo)
+    monkeypatch.setattr(report_analyzer, "complete_for_role", capture)
+
+    result = await run_report_analysis(
+        str(uuid.uuid4()), "proj-x", "what features can we add to this project"
+    )
+
+    assert result.report_result.report_kind == "feature_discovery"
+    assert "feature" in captured["system"].lower()
 
 
 def test_build_limited_report_is_read_only_and_sanitized():
