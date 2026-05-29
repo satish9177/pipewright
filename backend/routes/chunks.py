@@ -53,6 +53,7 @@ from backend.pipeline.intent import (
     SPECIFIC,
     classify_intent_details_async,
 )
+from backend.pipeline.plan_path_grounding import ground_triage_result_paths
 from backend.pipeline.report_analyzer import (
     build_limited_report,
     run_report_analysis,
@@ -356,6 +357,11 @@ async def start_implementation_from_plan_route(run_id: str):
 
     new_run_id = str(uuid.uuid4())
     seed_triage = seed_triage.model_copy(update={"run_id": new_run_id})
+    # Re-ground against the index (idempotent: the source plan_only run was
+    # already grounded at creation) so the handoff never carries invented paths.
+    seed_triage = ground_triage_result_paths(
+        source_run["project_id"], seed_triage
+    )
     seed_triage = scan_triage_result(seed_triage)
 
     try:
@@ -498,6 +504,12 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
             run_id=run_id,
             project_id=request.project_id,
             feature_description=request.feature_description,
+        )
+        # PR #9B: ground files_expected against the real repo index before the
+        # risk scan and before persisting. Removes invented paths and hardens
+        # affected chunks. Applies to both implementation and plan_only.
+        triage_result = ground_triage_result_paths(
+            request.project_id, triage_result
         )
         triage_result = scan_triage_result(triage_result)
         if intent == PLAN_ONLY:

@@ -73,6 +73,54 @@ def make_triage(run_id: str, project_id: str) -> TriageResult:
     )
 
 
+def seed_file_index(project_id: str, paths: list[str]) -> None:
+    """Seed the repo index for a project (PR #9B grounding tests)."""
+    with engine.begin() as conn:
+        for path in paths:
+            conn.execute(text("""
+                INSERT INTO file_index
+                (id, project_id, path, file_type, summary, key_imports,
+                 last_modified, token_estimate, line_count, size_bytes)
+                VALUES
+                (:id, :project_id, :path, 'unknown', NULL, '[]',
+                 NULL, 100, 10, 100)
+            """), {
+                "id": str(uuid.uuid4()),
+                "project_id": project_id,
+                "path": path,
+            })
+
+
+def make_triage_with_files(
+    run_id: str,
+    project_id: str,
+    files_expected: list[str],
+    *,
+    title: str = "Neutral chunk",
+    description: str = "Adjust the layout area.",
+    feature_description: str = "do the work",
+) -> TriageResult:
+    return TriageResult(
+        run_id=run_id,
+        project_id=project_id,
+        feature_description=feature_description,
+        complexity="easy",
+        total_chunks=1,
+        reasoning="One chunk is enough.",
+        chunks=[ChunkDefinition(
+            chunk_number=1,
+            title=title,
+            description=description,
+            files_expected=files_expected,
+            depends_on=[],
+            risk_level="low",
+            token_estimate=100,
+            requires_human_review=False,
+            rationale="base rationale",
+        )],
+    )
+
+
 def test_post_runs_chunked_returns_awaiting_approval_plan(
     monkeypatch,
     tmp_repo,
@@ -1353,3 +1401,196 @@ def test_post_runs_chunked_upgrades_low_risk_route_chunk_to_high(
         """), {"run_id": data["run_id"]}).fetchone()
     assert row[0] == "high"
     assert int(row[1]) == 1
+
+
+# --------------------------------------------------------------------------
+# PR #9B: repo-aware files_expected grounding (route/integration).
+# --------------------------------------------------------------------------
+
+def test_implementation_grounds_out_fake_paths(monkeypatch, tmp_repo, tracked_runs):
+    project = make_project(tmp_repo)
+    # Real frontend area uses .tsx.
+    seed_file_index(project["id"], ["frontend/src/App.tsx"])
+
+    async def fake_triage(run_id, project_id, feature_description):
+        return make_triage_with_files(
+            run_id,
+            project_id,
+            files_expected=[
+                "frontend/src/components/HomePage.js",  # .js in tsx area -> drop
+                "backend/src/routes/home.py",           # backend/src absent -> drop
+                "frontend/src/App.tsx",                 # real -> keep
+            ],
+            title="Home view",
+            description="Adjust the home view layout.",
+        )
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "implement the home page",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    chunk = data["chunks"][0]
+    assert chunk["files_expected"] == ["frontend/src/App.tsx"]
+    assert chunk["risk_level"] == "high"
+    assert chunk["requires_human_review"] is True
+    # Persisted chunk row matches the grounded scope.
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT files_expected, risk_level, requires_human_review
+            FROM chunks WHERE run_id = :rid AND chunk_number = 1
+        """), {"rid": data["run_id"]}).fetchone()
+    assert "HomePage.js" not in row[0]
+    assert "backend/src" not in row[0]
+    assert "frontend/src/App.tsx" in row[0]
+
+
+def test_implementation_empty_when_all_paths_fake(monkeypatch, tmp_repo, tracked_runs):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["frontend/src/App.tsx"])
+
+    async def fake_triage(run_id, project_id, feature_description):
+        return make_triage_with_files(
+            run_id,
+            project_id,
+            files_expected=[
+                "src/features/extraordinary_feature.py",
+                "backend/src/services/auth_service.py",
+            ],
+            title="New view",
+            description="Build the view.",
+        )
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "implement the home page",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    chunk = data["chunks"][0]
+    # No invented fallback path; empty and hardened for human review.
+    assert chunk["files_expected"] == []
+    assert chunk["risk_level"] == "high"
+    assert chunk["requires_human_review"] is True
+
+
+def test_implementation_preserves_indexed_readme(monkeypatch, tmp_repo, tracked_runs):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["README.md"])
+
+    async def fake_triage(run_id, project_id, feature_description):
+        return make_triage_with_files(
+            run_id,
+            project_id,
+            files_expected=["README.md"],
+            title="Docs fix",
+            description="Fix a typo.",
+        )
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "fix typo in README",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    chunk = data["chunks"][0]
+    assert chunk["files_expected"] == ["README.md"]
+
+
+def test_plan_only_output_is_grounded(monkeypatch, tmp_repo, tracked_runs):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["backend/routes/users.py"])
+
+    async def fake_triage(run_id, project_id, feature_description):
+        return make_triage_with_files(
+            run_id,
+            project_id,
+            files_expected=[
+                "src/models/user.py",       # fake -> drop
+                "src/api/auth.py",          # fake -> drop
+                "backend/routes/users.py",  # real -> keep
+            ],
+            title="Login plan",
+            description="Plan the login work.",
+        )
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "give me a plan to add login",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    planned_chunk = data["triage"]["chunks"][0]
+    assert planned_chunk["files_expected"] == ["backend/routes/users.py"]
+    assert "src/models/user.py" not in planned_chunk["files_expected"]
+    assert planned_chunk["risk_level"] == "high"
+    # Stored plan JSON is grounded too: the fake path is gone from
+    # files_expected (it may still be named in the rationale note).
+    with engine.connect() as conn:
+        chunk_plan = conn.execute(text("""
+            SELECT chunk_plan FROM pipeline_runs WHERE id = :rid
+        """), {"rid": data["run_id"]}).fetchone()[0]
+    stored = json.loads(chunk_plan)
+    stored_files = stored["chunks"][0]["files_expected"]
+    assert stored_files == ["backend/routes/users.py"]
+    assert "src/models/user.py" not in stored_files
+
+
+def test_handoff_uses_grounded_plan(monkeypatch, tmp_repo, tracked_runs):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["backend/routes/users.py"])
+
+    async def fake_triage(run_id, project_id, feature_description):
+        return make_triage_with_files(
+            run_id,
+            project_id,
+            files_expected=[
+                "frontend/src/components/LoginPage.js",  # fake -> drop
+                "backend/routes/users.py",               # real -> keep
+            ],
+            title="Login plan",
+            description="Plan the login work.",
+        )
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    # 1) Create a grounded plan_only run.
+    plan_resp = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "give me a plan to add login",
+    })
+    assert plan_resp.status_code == 200
+    plan_run_id = plan_resp.json()["run_id"]
+    tracked_runs.append(plan_run_id)
+
+    # 2) Hand off to implementation (PR #7).
+    impl_resp = client.post(f"/runs/{plan_run_id}/start-implementation")
+    assert impl_resp.status_code == 200
+    impl_data = impl_resp.json()
+    tracked_runs.append(impl_data["run_id"])
+
+    chunk = impl_data["chunks"][0]
+    assert chunk["files_expected"] == ["backend/routes/users.py"]
+    assert "LoginPage.js" not in " ".join(chunk["files_expected"])

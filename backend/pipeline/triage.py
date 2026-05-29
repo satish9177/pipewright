@@ -46,6 +46,22 @@ Chunking rules:
 9. For medium tasks, use 2-3 chunks.
 10. For hard tasks, use 3-6 chunks.
 
+files_expected grounding rules (CRITICAL — these paths are enforced as hard
+scope by a later guard, so they must be precise, never guessed):
+A. Use ONLY paths that appear in "RELEVANT INDEXED FILES", or a new file placed
+   inside a directory that already contains an indexed file and uses the same
+   file extension/language as that directory.
+B. NEVER emit generic or invented paths such as src/models/user.py,
+   src/api/auth.py, src/app.py, backend/src/..., frontend/src/components/X.js,
+   or src/features/<feature_name>.py when those exact paths are not in the
+   indexed files.
+C. If you cannot determine the exact target files from the indexed files,
+   return "files_expected": [] for that chunk, set risk_level="high",
+   requires_human_review=true, and state in the rationale that the exact files
+   could not be determined from the current repository index.
+D. Prefer fewer, real files over many plausible-sounding ones. An empty
+   files_expected is safer than an invented path.
+
 The JSON must match this exact schema:
 {
   "run_id": "<the run_id provided>",
@@ -115,7 +131,13 @@ def _build_triage_prompt(
         f"3. DB migrations must always be isolated in their own chunk.\n"
         f"4. Security/auth/permissions/encryption must always be isolated "
         f"and requires_human_review=true.\n"
-        f"5. Each chunk must fit context window using token_estimate.\n\n"
+        f"5. Each chunk must fit context window using token_estimate.\n"
+        f"6. files_expected must use ONLY paths from RELEVANT INDEXED FILES "
+        f"above (or a new file inside a directory that already contains one of "
+        f"those files, using the same extension). Do NOT invent generic paths "
+        f"like src/..., backend/src/..., or frontend/src/...X.js. If the exact "
+        f"files are unknown, use \"files_expected\": [], risk_level \"high\", "
+        f"requires_human_review true, and say so in the rationale.\n\n"
         f"Respond with the JSON chunk plan only."
     )
 
