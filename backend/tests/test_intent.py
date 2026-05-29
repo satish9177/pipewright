@@ -72,6 +72,44 @@ def test_implementation_intents(text):
     assert classify_intent(text) == "implementation"
 
 
+@pytest.mark.parametrize("text", [
+    "what features can we add to this project",
+    "what feature kind can we add to this project",
+    "suggest features for this project",
+    "suggest improvements for this project",
+    "what can we improve in this project",
+    "how can we improve this app",
+    "what should we build next",
+])
+def test_discovery_questions_are_report_only(text):
+    # Discovery/advisory questions are read-only even though they contain
+    # implementation verbs like "add" / "build" / "improve".
+    assert classify_intent(text) == "report_only"
+
+
+@pytest.mark.asyncio
+async def test_discovery_questions_do_not_call_llm(monkeypatch):
+    spy = _install_llm_spy(
+        monkeypatch,
+        json.dumps({"intent": "implementation", "confidence": 0.99, "reason": "x"}),
+    )
+
+    result = await classify_intent_async("what features can we add to this project")
+
+    assert result == "report_only"
+    assert spy.calls == []
+
+
+@pytest.mark.parametrize("text", [
+    "make the app better",
+    "make it better",
+])
+def test_make_x_better_is_implementation(text):
+    # Non-contiguous "make ... better" stays on the implementation path so the
+    # specificity guard can deterministically block it.
+    assert classify_intent(text) == "implementation"
+
+
 # --------------------------------------------------------------------------
 # Gap 1: Jira / user-story phrasing usually represents implementation work.
 # --------------------------------------------------------------------------

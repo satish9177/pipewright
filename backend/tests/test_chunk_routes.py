@@ -239,6 +239,524 @@ def test_report_only_malformed_analyzer_fails_safely_no_implementation(
     )
 
 
+VAGUE_IMPLEMENTATION_REQUESTS = [
+    "implement a small safe change",
+    "implement a big feature",
+    "implement a medium feature",
+    "implement a feature",
+    "implement one extraordinary feature",
+    "implement one extra ordinary feature",
+    "implement one extra-ordinary feature",
+    "implement an amazing feature",
+    "create a cool feature",
+    "build something useful",
+    "add a nice improvement",
+    "add a feature",
+    "make the app better",
+    "fix something",
+    "change the code",
+    "clean up the code",
+    "update something",
+    "do some cleanup",
+]
+
+
+@pytest.mark.parametrize("feature", VAGUE_IMPLEMENTATION_REQUESTS)
+def test_vague_implementation_returns_needs_clarification_without_run(
+    monkeypatch,
+    tmp_repo,
+    feature,
+):
+    project = make_project(tmp_repo)
+
+    # None of the implementation/plan/report paths may be touched.
+    monkeypatch.setattr(
+        "backend.routes.chunks.run_triage",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("run_triage must not be called for vague requests")
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.create_chunked_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("create_chunked_run must not be called")
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.run_report_analysis",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("report analyzer must not be called")
+        ),
+    )
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": feature,
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert data["intent"] == "implementation"
+    assert data["message"]
+    assert isinstance(data["missing_details"], list) and data["missing_details"]
+    assert isinstance(data["examples"], list) and data["examples"]
+    # No run row, chunks, or gates may be created.
+    assert "run_id" not in data
+    with engine.connect() as conn:
+        run_count = conn.execute(text("""
+            SELECT COUNT(*) FROM pipeline_runs
+            WHERE project_id = :project_id
+        """), {"project_id": project["id"]}).fetchone()[0]
+    assert run_count == 0
+
+
+def test_valid_short_implementation_still_proceeds_to_chunk_plan(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    project = make_project(tmp_repo)
+    calls = []
+
+    async def fake_triage(run_id, project_id, feature_description):
+        calls.append((run_id, project_id, feature_description))
+        return make_triage(run_id, project_id)
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "fix typo in README",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert len(calls) == 1
+    assert data["chunk_plan_status"] == "awaiting_approval"
+    assert data["total_chunks"] == 1
+
+
+NON_ACTIONABLE_INPUTS = [
+    "hello", "hello bro", "hi", "hey", "yo", "test", "ok", "thanks", "thank you",
+]
+
+
+@pytest.mark.parametrize("feature", NON_ACTIONABLE_INPUTS)
+def test_non_actionable_request_returns_clarification_without_run(
+    monkeypatch,
+    tmp_repo,
+    feature,
+):
+    project = make_project(tmp_repo)
+
+    # The pre-intent guard must short-circuit BEFORE classification or any
+    # report/plan/implementation path.
+    monkeypatch.setattr(
+        "backend.routes.chunks.classify_intent_details_async",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("intent classifier must not be called")
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.run_report_analysis",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("report analyzer must not be called")
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.run_triage",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("triage must not be called")
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.create_chunked_run",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("create_chunked_run must not be called")
+        ),
+    )
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": feature,
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert data["intent"] == "unknown"
+    assert "run_id" not in data
+    with engine.connect() as conn:
+        count = conn.execute(text("""
+            SELECT COUNT(*) FROM pipeline_runs WHERE project_id = :pid
+        """), {"pid": project["id"]}).fetchone()[0]
+    assert count == 0
+
+
+def test_split_adjective_implementation_blocks_before_triage(
+    monkeypatch,
+    tmp_repo,
+):
+    project = make_project(tmp_repo)
+    monkeypatch.setattr(
+        "backend.routes.chunks.run_triage",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("triage called")),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.create_chunked_run",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("create called")),
+    )
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "implement one extra ordinary feature",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert data["intent"] == "implementation"
+    with engine.connect() as conn:
+        count = conn.execute(text("""
+            SELECT COUNT(*) FROM pipeline_runs WHERE project_id = :pid
+        """), {"pid": project["id"]}).fetchone()[0]
+    assert count == 0
+
+
+def test_plan_request_to_add_login_still_creates_plan_ready(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    project = make_project(tmp_repo)
+
+    async def fake_triage(run_id, project_id, feature_description):
+        return make_triage(run_id, project_id)
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "give me a plan to add login",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert data.get("status") != "needs_clarification"
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT status, intent FROM pipeline_runs WHERE id = :rid
+        """), {"rid": data["run_id"]}).fetchone()
+    assert row[0] == "plan_ready"
+    assert row[1] == "plan_only"
+
+
+def test_explain_project_still_creates_report_ready(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    project = make_project(tmp_repo)
+    monkeypatch.setattr(
+        "backend.pipeline.report_analyzer.complete_for_role",
+        _fake_analyzer_llm_response(VALID_ANALYZER_JSON),
+    )
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "explain this project",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert data.get("status") != "needs_clarification"
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT status, intent FROM pipeline_runs WHERE id = :rid
+        """), {"rid": data["run_id"]}).fetchone()
+    assert row[0] == "report_ready"
+    assert row[1] == "report_only"
+
+
+DISCOVERY_QUESTIONS = [
+    "what features can we add to this project",
+    "what feature kind can we add to this project",
+    "suggest features for this project",
+    "suggest improvements for this project",
+    "what can we improve in this project",
+    "how can we improve this app",
+    "what should we build next",
+]
+
+
+@pytest.mark.parametrize("feature", DISCOVERY_QUESTIONS)
+def test_discovery_questions_route_to_report_only(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+    feature,
+):
+    project = make_project(tmp_repo)
+    # Discovery is read-only: it must reach the report analyzer, never triage
+    # or implementation.
+    monkeypatch.setattr(
+        "backend.routes.chunks.run_triage",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("triage must not be called for discovery")
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.create_chunked_run",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("create_chunked_run must not be called for discovery")
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.pipeline.report_analyzer.complete_for_role",
+        _fake_analyzer_llm_response(VALID_ANALYZER_JSON),
+    )
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": feature,
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert data.get("status") != "needs_clarification"
+    assert data["chunk_plan_status"] == "none"
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT status, intent FROM pipeline_runs WHERE id = :rid
+        """), {"rid": data["run_id"]}).fetchone()
+    assert row[0] == "report_ready"
+    assert row[1] == "report_only"
+
+
+VALID_IMPLEMENTATION_REQUESTS = [
+    "implement login feature",
+    "add CSV export feature",
+    "add health check endpoint",
+    "fix typo in README",
+    "update retry limit from 3 to 5",
+]
+
+
+@pytest.mark.parametrize("feature", VALID_IMPLEMENTATION_REQUESTS)
+def test_valid_implementation_requests_reach_chunk_plan(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+    feature,
+):
+    project = make_project(tmp_repo)
+    calls = []
+
+    async def fake_triage(run_id, project_id, feature_description):
+        calls.append(run_id)
+        return make_triage(run_id, project_id)
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": feature,
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert len(calls) == 1
+    assert data["chunk_plan_status"] == "awaiting_approval"
+
+
+def _install_intent_llm(monkeypatch, payload):
+    """
+    Force the intent LLM fallback to return ``payload`` (a JSON string). The
+    request used with this helper must be deterministically ambiguous so the
+    fallback actually fires.
+    """
+    text = payload if isinstance(payload, str) else json.dumps(payload)
+
+    async def fake_complete_for_role(role, request, overrides=None):
+        return LLMResponse(
+            text=text,
+            provider="fake",
+            model="fake-model",
+            input_tokens=10,
+            output_tokens=10,
+            finish_reason="stop",
+        )
+
+    monkeypatch.setattr(
+        "backend.pipeline.intent.complete_for_role", fake_complete_for_role
+    )
+
+
+# "take care of the auth flow" matches no deterministic rule, so the intent
+# LLM fallback fires; the deterministic implementation guard alone would let it
+# pass (concrete tokens "auth"/"flow"), so the LLM specificity verdict decides.
+_AMBIGUOUS_IMPLEMENTATION_TEXT = "take care of the auth flow"
+
+
+def test_llm_fallback_implementation_needs_clarification_blocks(
+    monkeypatch,
+    tmp_repo,
+):
+    project = make_project(tmp_repo)
+    _install_intent_llm(monkeypatch, {
+        "intent": "implementation",
+        "confidence": 0.95,
+        "specificity": "needs_clarification",
+        "specificity_confidence": 0.9,
+        "reason": "too vague",
+        "clarification_message": "Which auth behavior should change?",
+        "missing_details": ["target auth behavior"],
+    })
+    monkeypatch.setattr(
+        "backend.routes.chunks.run_triage",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("triage called")),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.create_chunked_run",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("create called")),
+    )
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": _AMBIGUOUS_IMPLEMENTATION_TEXT,
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    # LLM-provided clarification copy is surfaced when present.
+    assert data["message"] == "Which auth behavior should change?"
+    assert data["missing_details"] == ["target auth behavior"]
+    with engine.connect() as conn:
+        count = conn.execute(text("""
+            SELECT COUNT(*) FROM pipeline_runs WHERE project_id = :pid
+        """), {"pid": project["id"]}).fetchone()[0]
+    assert count == 0
+
+
+def test_llm_fallback_implementation_specific_proceeds(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    project = make_project(tmp_repo)
+    _install_intent_llm(monkeypatch, {
+        "intent": "implementation",
+        "confidence": 0.95,
+        "specificity": "specific",
+        "specificity_confidence": 0.9,
+        "reason": "clear enough",
+        "clarification_message": None,
+        "missing_details": [],
+    })
+    calls = []
+
+    async def fake_triage(run_id, project_id, feature_description):
+        calls.append(run_id)
+        return make_triage(run_id, project_id)
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": _AMBIGUOUS_IMPLEMENTATION_TEXT,
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert len(calls) == 1
+    assert data["chunk_plan_status"] == "awaiting_approval"
+
+
+def test_llm_fallback_implementation_low_specificity_confidence_blocks(
+    monkeypatch,
+    tmp_repo,
+):
+    project = make_project(tmp_repo)
+    _install_intent_llm(monkeypatch, {
+        "intent": "implementation",
+        "confidence": 0.95,
+        "specificity": "specific",
+        "specificity_confidence": 0.4,
+        "reason": "unsure",
+    })
+    monkeypatch.setattr(
+        "backend.routes.chunks.run_triage",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("triage called")),
+    )
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": _AMBIGUOUS_IMPLEMENTATION_TEXT,
+    })
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "needs_clarification"
+
+
+def test_uncertain_classification_returns_needs_clarification_not_plan(
+    monkeypatch,
+    tmp_repo,
+):
+    project = make_project(tmp_repo)
+    # Invalid LLM JSON => uncertain. The router must NOT fall into the
+    # plan_only bucket and fabricate a plan; it returns needs_clarification
+    # and creates no run.
+    _install_intent_llm(monkeypatch, "not json at all")
+    monkeypatch.setattr(
+        "backend.routes.chunks.run_triage",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("triage must not be called for uncertain input")
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.create_chunked_run",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("create_chunked_run must not be called")
+        ),
+    )
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": _AMBIGUOUS_IMPLEMENTATION_TEXT,
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert data["intent"] == "unknown"
+    assert "run_id" not in data
+    with engine.connect() as conn:
+        count = conn.execute(text("""
+            SELECT COUNT(*) FROM pipeline_runs WHERE project_id = :pid
+        """), {"pid": project["id"]}).fetchone()[0]
+    assert count == 0
+
+
 def test_plan_only_chunked_run_stores_plan_without_executable_chunks(
     monkeypatch,
     tmp_repo,
@@ -289,7 +807,9 @@ def test_plan_only_chunked_run_stores_plan_without_executable_chunks(
 
 def test_triage_failure_does_not_create_parent_run(monkeypatch, tmp_repo):
     project = make_project(tmp_repo)
-    feature = f"Failure feature {uuid.uuid4()}"
+    # A specific implementation request so it reaches triage (not the
+    # actionability / uncertain / vague guards).
+    feature = f"add health check endpoint {uuid.uuid4()}"
 
     async def failing_triage(run_id, project_id, feature_description):
         raise RuntimeError("triage failed")
