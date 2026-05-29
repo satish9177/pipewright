@@ -3,6 +3,7 @@ chunks.py
 Routes for Phase 2B chunk planning, approval, execution, and manual resume.
 """
 
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -38,10 +39,16 @@ from backend.pipeline.intent import (
     REPORT_ONLY,
     classify_intent_async,
 )
+from backend.pipeline.report_analyzer import (
+    build_limited_report,
+    run_report_analysis,
+)
 from backend.pipeline.risk_scanner import scan_triage_result
 from backend.pipeline.run_locks import ProjectRepoLockError
 from backend.pipeline.triage import run_triage
 from backend.projects.project_store import get_project
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 READ_ONLY_EXECUTION_MESSAGE = "This run is read-only and cannot execute code changes."
@@ -107,21 +114,6 @@ def _update_run_final_status(run_id: str, status: str) -> None:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _build_read_only_report(project: dict, feature_description: str) -> str:
-    lines = [
-        "Read-only report request recorded.",
-        "",
-        f"Project: {project.get('name') or project.get('id')}",
-        f"Repository path: {project.get('repo_path')}",
-        "",
-        "Request:",
-        feature_description,
-        "",
-        "No code changes, tests, Git operations, push, or PR creation were run.",
-    ]
-    return "\n".join(lines)
 
 
 def _create_read_only_run(
@@ -335,7 +327,27 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
     intent = await classify_intent_async(request.feature_description)
     try:
         if intent == REPORT_ONLY:
-            report = _build_read_only_report(project, request.feature_description)
+            try:
+                analysis = await run_report_analysis(
+                    run_id=run_id,
+                    project_id=request.project_id,
+                    feature_description=request.feature_description,
+                )
+                report = analysis.markdown_report
+            except Exception as analysis_error:
+                # Defense in depth: the analyzer degrades internally, but if it
+                # ever raises we still keep this run strictly read-only and
+                # never fall through to triage/planner/coder.
+                logger.warning(
+                    "[REPORT] Analyzer raised; storing limited report. "
+                    "run_id=%s | error=%s",
+                    run_id,
+                    analysis_error,
+                )
+                report = build_limited_report(
+                    request.feature_description,
+                    "analysis failed unexpectedly",
+                )
             _create_read_only_run(
                 run_id=run_id,
                 project_id=request.project_id,
