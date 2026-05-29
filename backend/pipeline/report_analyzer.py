@@ -20,6 +20,7 @@ into triage, planning, or implementation.
 import asyncio
 import json
 import logging
+from enum import Enum
 from pathlib import Path
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -51,14 +52,11 @@ READ_ONLY_NOTE = (
     "no commits or PRs were created."
 )
 
-ANALYZER_SYSTEM_PROMPT = """You are a senior staff engineer performing a \
-READ-ONLY code review. You may only read and reason about the provided \
-repository context. You cannot and must not propose to run commands, you are \
-not writing or applying any code, and no changes will be made as a result of \
-your answer.
-
-Respond ONLY with a valid JSON object. No markdown. No backticks. No text \
-before or after. The JSON must match this exact schema:
+# Shared output contract appended to every kind-specific prompt. The schema is
+# identical across report kinds (PR #8B ReportResult), only the analytic focus
+# changes.
+_SCHEMA_AND_RULES = """Respond ONLY with a valid JSON object. No markdown. No \
+backticks. No text before or after. The JSON must match this exact schema:
 {
   "summary": "a short paragraph answering the user's request",
   "findings": [
@@ -84,6 +82,87 @@ Rules:
 - Respond with nothing except the JSON object."""
 
 
+# project_explanation: explain how the system works; informational sections,
+# not a bug audit.
+_PROJECT_EXPLANATION_GUIDANCE = """You are a senior staff engineer writing a \
+READ-ONLY explanation of a codebase for someone who wants to understand how it \
+works. You may only read and reason about the provided repository context. You \
+are NOT reviewing for bugs and you are not writing or applying any code.
+
+Your job is to EXPLAIN the project, not to audit it. The "summary" should give \
+a clear overview of what the project does and how it is structured. Each \
+"finding" is an INFORMATIONAL SECTION describing one aspect of the system. Use \
+sections such as (only those the context actually supports):
+- Project overview
+- Backend architecture / modules
+- Frontend architecture / modules
+- Execution / data flow
+- Storage / database
+- Integrations / external tools
+- Tests / dev workflow
+- Important files / modules
+
+For these informational findings:
+- severity MUST be "info".
+- confidence should reflect how strongly the context supports the explanation.
+- Put the explanation in "evidence" and "reasoning"; cite real files in "file".
+- "recommendation" is learning/exploration oriented (e.g. "read X to go \
+deeper"), never "fix this".
+Only mention a bug or risk if it is obvious and important; do not turn this \
+into a code audit.
+"suggested_next_action" should help the reader learn more about the system, \
+not fix it."""
+
+
+# issue_review: hunt for grounded bugs/risks with severity and confidence.
+_ISSUE_REVIEW_GUIDANCE = """You are a senior staff engineer performing a \
+READ-ONLY code review looking for problems. You may only read and reason about \
+the provided repository context. You are not writing or applying any code.
+
+Find concrete bugs, security risks, validation gaps, error-handling problems, \
+missing tests, and risky edge cases. For each "finding":
+- Ground it in specific evidence from the context; cite the real "file".
+- Set "severity" (info|low|medium|high|critical) and "confidence" \
+(low|medium|high) honestly.
+- "recommendation" is an advisory suggested fix (no code, no commands).
+Avoid generic or speculative "maybe" findings with no supporting evidence. If \
+you cannot find well-grounded issues, return few or no findings and explain \
+why in limitations rather than inventing problems.
+"suggested_next_action" should point at the most important issue to look \
+into."""
+
+
+# feature_discovery: grounded ideas for what to build/improve next.
+_FEATURE_DISCOVERY_GUIDANCE = """You are a product-minded senior staff \
+engineer suggesting READ-ONLY ideas for what could be built or improved next. \
+You may only read and reason about the provided repository context. You are \
+not writing or applying any code.
+
+Suggest feature ideas and improvements that are GROUNDED in what the \
+repository already is. Each "finding" is one idea. For each:
+- "title" names the idea (e.g. "Add X", "Enhance Y", "Improve Z").
+- Use severity "info" or "low"; confidence reflects how well the context \
+supports the idea.
+- In "evidence"/"reasoning", explain the user/business value, the likely area \
+or files involved (cite real files where visible), and the difficulty/risk.
+- "recommendation" describes a sensible first step (advisory only).
+Do NOT suggest a feature as new if the context shows it already exists. If a \
+capability is partially present, frame it as "enhance/complete/improve", not \
+"add from scratch".
+If the project is tiny or the context is minimal, say so in limitations and \
+note that suggestions are based on limited context.
+Mark the single best first idea in "suggested_next_action"."""
+
+
+# general_analysis: the original balanced read-only review (PR #8A/#8B).
+_GENERAL_ANALYSIS_GUIDANCE = """You are a senior staff engineer performing a \
+READ-ONLY analysis. You may only read and reason about the provided \
+repository context. You cannot and must not propose to run commands, you are \
+not writing or applying any code, and no changes will be made as a result of \
+your answer. Answer the user's request directly and ground every finding in \
+the provided context."""
+
+
 # Allowed structured values. Anything the LLM returns outside these sets is
 # normalized to a safe default rather than crashing the read-only report.
 SEVERITY_VALUES = {"info", "low", "medium", "high", "critical"}
@@ -91,20 +170,114 @@ CONFIDENCE_VALUES = {"low", "medium", "high"}
 DEFAULT_SEVERITY = "info"
 DEFAULT_CONFIDENCE = "low"
 
-# Lightweight discovery vs. analysis heuristic for report_kind. Discovery is the
-# PR #9A read-only "what could we add / improve" style request; everything else
-# is treated as an analysis/review report.
-_DISCOVERY_HINTS = (
-    "what feature",
-    "what features",
-    "suggest feature",
-    "suggest improvement",
-    "what can we improve",
-    "how can we improve",
-    "what should we build",
-    "add to this project",
-    "features can we add",
+class ReportKind(str, Enum):
+    """
+    Read-only report specialization (PR #8C). The value is what gets stored in
+    ReportResult.report_kind / report_json and read by ReportView.
+    """
+
+    PROJECT_EXPLANATION = "project_explanation"
+    ISSUE_REVIEW = "issue_review"
+    FEATURE_DISCOVERY = "feature_discovery"
+    GENERAL_ANALYSIS = "general_analysis"
+
+
+# Deterministic intent hints. Order of evaluation is fixed in
+# classify_report_kind below so the user's clear intent always wins.
+_ISSUE_REVIEW_HINTS = (
+    "issue",
+    "bug",
+    "security",
+    "vulnerab",
+    "risk",
+    "problem",
+    "broken",
+    "what is broken",
+    "whats broken",
+    "what's broken",
+    "what is wrong",
+    "what's wrong",
+    "whats wrong",
+    "review code",
+    "review the code",
+    "code review",
+    "review for",
+    "error handling",
+    "identify problem",
+    "find flaws",
 )
+
+_FEATURE_DISCOVERY_HINTS = (
+    "feature",
+    "suggest",
+    "improve",
+    "improvement",
+    "enhance",
+    "build next",
+    "what should we build",
+    "can we add",
+    "what to add",
+    "next feature",
+)
+
+_PROJECT_EXPLANATION_HINTS = (
+    "explain",
+    "architecture",
+    "how does this",
+    "how does it",
+    "how it works",
+    "how this works",
+    "how the project works",
+    "how the app works",
+    "summarize",
+    "summarise",
+    "walk me through",
+    "walk through",
+    "what does this project do",
+    "what does this do",
+    "what does it do",
+    "overview",
+    "understand the codebase",
+    "understand this project",
+    "describe this project",
+    "describe the project",
+)
+
+
+def classify_report_kind(feature_description: str) -> ReportKind:
+    """
+    Deterministically classify a read-only report request into a ReportKind.
+
+    Rules are checked in priority order so a clear user intent wins for the
+    common cases: an explicit ask for issues/bugs (issue_review) or for feature
+    ideas (feature_discovery) takes precedence over a generic "explain" verb,
+    and an explanation request maps to project_explanation. Anything that does
+    not clearly match falls back to general_analysis. This is intentionally
+    rule-first; no LLM call is made to decide the kind.
+    """
+    text_value = (feature_description or "").lower()
+
+    if any(hint in text_value for hint in _ISSUE_REVIEW_HINTS):
+        return ReportKind.ISSUE_REVIEW
+    if any(hint in text_value for hint in _FEATURE_DISCOVERY_HINTS):
+        return ReportKind.FEATURE_DISCOVERY
+    if any(hint in text_value for hint in _PROJECT_EXPLANATION_HINTS):
+        return ReportKind.PROJECT_EXPLANATION
+    return ReportKind.GENERAL_ANALYSIS
+
+
+_KIND_GUIDANCE: dict[ReportKind, str] = {
+    ReportKind.PROJECT_EXPLANATION: _PROJECT_EXPLANATION_GUIDANCE,
+    ReportKind.ISSUE_REVIEW: _ISSUE_REVIEW_GUIDANCE,
+    ReportKind.FEATURE_DISCOVERY: _FEATURE_DISCOVERY_GUIDANCE,
+    ReportKind.GENERAL_ANALYSIS: _GENERAL_ANALYSIS_GUIDANCE,
+}
+
+
+def _build_system_prompt(kind: ReportKind) -> str:
+    """Compose the kind-specific guidance with the shared output contract."""
+    guidance = _KIND_GUIDANCE.get(kind, _GENERAL_ANALYSIS_GUIDANCE)
+    return f"{guidance}\n\n{_SCHEMA_AND_RULES}"
 
 
 def _normalize_severity(value: str | None) -> str:
@@ -117,13 +290,6 @@ def _normalize_confidence(value: str | None) -> str:
     if value and value.strip().lower() in CONFIDENCE_VALUES:
         return value.strip().lower()
     return DEFAULT_CONFIDENCE
-
-
-def _classify_report_kind(feature_description: str) -> str:
-    text_value = (feature_description or "").lower()
-    if any(hint in text_value for hint in _DISCOVERY_HINTS):
-        return "discovery"
-    return "analysis"
 
 
 class ReportFinding(BaseModel):
@@ -367,10 +533,10 @@ def _build_user_prompt(
     )
 
 
-def _build_llm_request(prompt: str) -> LLMRequest:
+def _build_llm_request(prompt: str, kind: ReportKind) -> LLMRequest:
     return LLMRequest(
         messages=[
-            Message(role="system", content=ANALYZER_SYSTEM_PROMPT),
+            Message(role="system", content=_build_system_prompt(kind)),
             Message(role="user", content=prompt),
         ],
         model="",
@@ -380,8 +546,10 @@ def _build_llm_request(prompt: str) -> LLMRequest:
     )
 
 
-async def _call_llm(prompt: str, run_id: str) -> str:
-    response = await complete_for_role(Role.SUMMARY, _build_llm_request(prompt))
+async def _call_llm(prompt: str, run_id: str, kind: ReportKind) -> str:
+    response = await complete_for_role(
+        Role.SUMMARY, _build_llm_request(prompt, kind)
+    )
     log_token_usage(response, run_id=run_id, role=Role.SUMMARY)
     return response.text
 
@@ -476,7 +644,7 @@ def _build_markdown_report(
 
 
 def _build_report_result(
-    feature_description: str,
+    report_kind: ReportKind,
     output: _AnalyzerOutput,
     files_reviewed: list[str],
     extra_limitations: list[str],
@@ -507,7 +675,7 @@ def _build_report_result(
         # next_action below is advisory only; there is no handoff in this PR.
         implementation_recommended=False,
         next_action=output.suggested_next_action,
-        report_kind=_classify_report_kind(feature_description),
+        report_kind=report_kind.value,
     )
 
 
@@ -579,6 +747,15 @@ async def run_report_analysis(
             limitations=["Project could not be loaded."],
         )
 
+    # Deterministic, rule-first specialization (PR #8C). Drives both the
+    # analyzer prompt focus and the stored report_kind.
+    report_kind = classify_report_kind(feature_description)
+    logger.info(
+        "[REPORT] Report kind classified | run_id=%s | report_kind=%s",
+        run_id,
+        report_kind.value,
+    )
+
     repo_path = project.get("repo_path")
     await _ensure_index_without_blocking(project_id, repo_path)
 
@@ -606,7 +783,7 @@ async def run_report_analysis(
     raw_text = ""
     output: _AnalyzerOutput | None = None
     try:
-        raw_text = await _call_llm(prompt, run_id)
+        raw_text = await _call_llm(prompt, run_id, report_kind)
         output = _parse_analyzer_output(raw_text)
     except (ValidationError, ValueError, json.JSONDecodeError) as first_error:
         logger.warning(
@@ -622,7 +799,7 @@ async def run_report_analysis(
             f"Respond again with ONLY the raw JSON object."
         )
         try:
-            raw_text = await _call_llm(correction_prompt, run_id)
+            raw_text = await _call_llm(correction_prompt, run_id, report_kind)
             output = _parse_analyzer_output(raw_text)
         except Exception as second_error:
             logger.warning(
@@ -662,7 +839,7 @@ async def run_report_analysis(
         extra_limitations=extra_limitations,
     )
     report_result = _build_report_result(
-        feature_description=feature_description,
+        report_kind=report_kind,
         output=output,
         files_reviewed=files_reviewed,
         extra_limitations=extra_limitations,

@@ -95,6 +95,18 @@ function severityBadgeVariant(
   return 'outline'
 }
 
+const REPORT_KIND_LABELS: Record<string, string> = {
+  project_explanation: 'Project explanation',
+  issue_review: 'Issue review',
+  feature_discovery: 'Feature discovery',
+  general_analysis: 'General analysis',
+}
+
+function reportKindLabel(kind: string | null | undefined): string | null {
+  if (!kind) return null
+  return REPORT_KIND_LABELS[kind] ?? null
+}
+
 function ReadOnlyBanner() {
   return (
     <div className="mb-6 rounded-md border border-muted-foreground/20 bg-muted px-4 py-3">
@@ -173,8 +185,15 @@ function FindingCard({ finding }: { finding: ReportFinding }) {
 }
 
 function StructuredReport({ report }: { report: ReportResult }) {
+  const kindLabel = reportKindLabel(report.report_kind)
   return (
     <>
+      {kindLabel && (
+        <div className="mb-3">
+          <Badge variant="outline">{kindLabel}</Badge>
+        </div>
+      )}
+
       {report.summary && (
         <Card className="mb-6 border-muted-foreground/20">
           <CardHeader>
