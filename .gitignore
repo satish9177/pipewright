@@ -41,3 +41,4 @@ frontend/tsconfig.tsbuildinfo
 .tmp_pytest_fresh/
 UsersHppipewright.tmp_pytest_freshbasetemp/
 .claude/
+CLAUDE.md

@@ -63,7 +63,11 @@ function ChunkCard({ chunk }: { chunk: ChunkDefinition }) {
               ))}
             </ul>
           ) : (
-            <p className="text-muted-foreground">none</p>
+            <p className="text-muted-foreground">
+              none — Pipewright could not confidently map this chunk to indexed
+              repository files. A human must confirm the real target files
+              before implementation.
+            </p>
           )}
         </div>
 
