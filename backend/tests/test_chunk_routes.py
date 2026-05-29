@@ -4,6 +4,7 @@ Tests for Phase 2B chunk planning routes.
 No API calls. Triage is mocked.
 """
 
+import json
 import uuid
 
 import pytest
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from backend.db.database import engine
+from backend.llm.base import LLMResponse
 from backend.main import app
 from backend.models.chunk import ChunkDefinition, TriageResult
 from backend.pipeline.approval_gate import create_final_approval_gate
@@ -97,6 +99,37 @@ def test_post_runs_chunked_returns_awaiting_approval_plan(
     assert len(data["chunks"]) == 1
 
 
+def _fake_analyzer_llm_response(text_payload: str):
+    async def fake_complete_for_role(role, request):
+        return LLMResponse(
+            text=text_payload,
+            provider="fake",
+            model=request.model or "fake-model",
+            input_tokens=10,
+            output_tokens=5,
+            finish_reason="stop",
+        )
+
+    return fake_complete_for_role
+
+
+VALID_ANALYZER_JSON = json.dumps({
+    "summary": "The repository is a small FastAPI service with chunked runs.",
+    "findings": [
+        {
+            "title": "Broad exception handling in routes",
+            "severity": "medium",
+            "confidence": "medium",
+            "file": "backend/routes/chunks.py",
+            "evidence": "Several handlers catch bare Exception.",
+            "recommendation": "Narrow exception types where practical.",
+        }
+    ],
+    "limitations": ["Only a bounded sample of files was reviewed."],
+    "suggested_next_action": "Request a plan for the highest-severity finding.",
+})
+
+
 def test_report_only_chunked_run_creates_read_only_run_without_triage(
     monkeypatch,
     tmp_repo,
@@ -108,6 +141,10 @@ def test_report_only_chunked_run_creates_read_only_run_without_triage(
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("triage should not be called")
         ),
+    )
+    monkeypatch.setattr(
+        "backend.pipeline.report_analyzer.complete_for_role",
+        _fake_analyzer_llm_response(VALID_ANALYZER_JSON),
     )
     client = TestClient(app)
 
@@ -138,9 +175,68 @@ def test_report_only_chunked_run_creates_read_only_run_without_triage(
     assert run[0] == "report_ready"
     assert run[1] == "report_ready"
     assert run[2] == "report_only"
-    assert "No code changes" in run[3]
+    summary = run[3]
+    # Useful, non-canned report content from the analyzer.
+    assert "Broad exception handling in routes" in summary
+    assert "## Findings" in summary
+    # Read-only / no-mutation messaging is always present.
+    assert (
+        "No code was changed, no tests were run, no commits or PRs were created"
+        in summary
+    )
     assert chunk_count == 0
     assert gate_count == 0
+
+
+def test_report_only_malformed_analyzer_fails_safely_no_implementation(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    project = make_project(tmp_repo)
+    monkeypatch.setattr(
+        "backend.routes.chunks.run_triage",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("triage should not be called")
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.create_chunked_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("implementation path should not be reached")
+        ),
+    )
+    # Analyzer LLM returns unparseable garbage on every attempt.
+    monkeypatch.setattr(
+        "backend.pipeline.report_analyzer.complete_for_role",
+        _fake_analyzer_llm_response("this is not json at all"),
+    )
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "review this repo",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert data["chunk_plan_status"] == "none"
+    assert data["chunks"] == []
+    with engine.connect() as conn:
+        run = conn.execute(text("""
+            SELECT status, intent, plain_english_summary
+            FROM pipeline_runs
+            WHERE id = :run_id
+        """), {"run_id": data["run_id"]}).fetchone()
+    assert run[0] == "report_ready"
+    assert run[1] == "report_only"
+    # A safe, limited read-only report is stored; still carries the no-mutation note.
+    assert "limited" in run[2].lower()
+    assert (
+        "No code was changed, no tests were run, no commits or PRs were created"
+        in run[2]
+    )
 
 
 def test_plan_only_chunked_run_stores_plan_without_executable_chunks(

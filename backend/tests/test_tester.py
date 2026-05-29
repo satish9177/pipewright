@@ -63,7 +63,7 @@ def test_empty_or_failed_patch_skips_subprocess_and_checkpoint(monkeypatch):
     assert result.failed_tests == 0
 
 
-def test_passing_command_returns_passed(monkeypatch):
+def test_passing_command_returns_passed(monkeypatch, tmp_path):
     """
     Use 'python --version' as test command.
     Always exits 0. Should return passed=True.
@@ -77,7 +77,7 @@ def test_passing_command_returns_passed(monkeypatch):
     monkeypatch.setattr(
         keys.settings,
         "target_repo_path",
-        "C:\\Users\\Hp\\pipewright"
+        str(tmp_path)
     )
 
     run_id = str(uuid.uuid4())
@@ -91,7 +91,7 @@ def test_passing_command_returns_passed(monkeypatch):
     assert result.output is not None
 
 
-def test_failing_command_returns_failed(monkeypatch):
+def test_failing_command_returns_failed(monkeypatch, tmp_path):
     """
     Use a command that always fails.
     Should return passed=False and trigger rollback attempt.
@@ -105,7 +105,7 @@ def test_failing_command_returns_failed(monkeypatch):
     monkeypatch.setattr(
         keys.settings,
         "target_repo_path",
-        "C:\\Users\\Hp\\pipewright"
+        str(tmp_path)
     )
 
     run_id = str(uuid.uuid4())
@@ -118,7 +118,7 @@ def test_failing_command_returns_failed(monkeypatch):
     assert result.run_id == run_id
 
 
-def test_result_contains_output(monkeypatch):
+def test_result_contains_output(monkeypatch, tmp_path):
     """
     Output field must always contain something.
     """
@@ -131,7 +131,7 @@ def test_result_contains_output(monkeypatch):
     monkeypatch.setattr(
         keys.settings,
         "target_repo_path",
-        "C:\\Users\\Hp\\pipewright"
+        str(tmp_path)
     )
 
     run_id = str(uuid.uuid4())
@@ -143,7 +143,7 @@ def test_result_contains_output(monkeypatch):
     assert len(result.output) > 0
 
 
-def test_duration_is_recorded(monkeypatch):
+def test_duration_is_recorded(monkeypatch, tmp_path):
     """
     duration_seconds must be greater than zero.
     """
@@ -156,7 +156,7 @@ def test_duration_is_recorded(monkeypatch):
     monkeypatch.setattr(
         keys.settings,
         "target_repo_path",
-        "C:\\Users\\Hp\\pipewright"
+        str(tmp_path)
     )
 
     run_id = str(uuid.uuid4())
@@ -167,7 +167,7 @@ def test_duration_is_recorded(monkeypatch):
     assert result.duration_seconds > 0
 
 
-def test_failing_command_rolls_back_chunk(monkeypatch):
+def test_failing_command_rolls_back_chunk(monkeypatch, tmp_path):
     from backend.config import keys
     import backend.pipeline.tester as tester
 
@@ -179,7 +179,7 @@ def test_failing_command_rolls_back_chunk(monkeypatch):
     monkeypatch.setattr(
         keys.settings,
         "target_repo_path",
-        "C:\\Users\\Hp\\pipewright"
+        str(tmp_path)
     )
 
     calls = []
