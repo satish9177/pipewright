@@ -20,6 +20,7 @@ from backend.pipeline import report_analyzer
 from backend.pipeline.report_analyzer import (
     READ_ONLY_NOTE,
     ReportAnalysisResult,
+    ReportResult,
     build_limited_report,
     run_report_analysis,
 )
@@ -283,6 +284,122 @@ async def test_file_contents_are_truncated(monkeypatch, tmp_repo):
 
     assert "truncated for read-only analysis" in captured["prompt"]
     assert "line 999" not in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_returns_structured_report_result(monkeypatch, tmp_repo):
+    (tmp_repo / "app.py").write_text("def main():\n    pass\n", encoding="utf-8")
+    _patch_dependencies(
+        monkeypatch,
+        tmp_repo,
+        relevant_files=[{"path": "app.py", "file_type": "unknown", "line_count": 2}],
+    )
+    _patch_llm(monkeypatch, VALID_ANALYZER_JSON)
+
+    result = await run_report_analysis(str(uuid.uuid4()), "proj-x", "review repo")
+
+    assert isinstance(result.report_result, ReportResult)
+    report = result.report_result
+    assert report.summary
+    assert report.files_reviewed == ["app.py"]
+    assert report.limitations  # analyzer + extra limitations merged
+    assert report.next_action
+    assert report.report_kind == "analysis"
+    assert len(report.findings) == 1
+    finding = report.findings[0]
+    assert finding.title == "Broad exception handling"
+    assert finding.severity == "medium"
+    assert finding.confidence == "high"
+    assert finding.file_path == "backend/app.py"
+    assert finding.evidence
+    assert finding.suggested_next_action
+    # Read-only report never auto-recommends implementation.
+    assert report.implementation_recommended is False
+
+
+@pytest.mark.asyncio
+async def test_unknown_severity_confidence_normalized_to_defaults(
+    monkeypatch, tmp_repo
+):
+    payload = json.dumps({
+        "summary": "Summary.",
+        "findings": [{
+            "title": "Odd finding",
+            "severity": "catastrophic",   # not an allowed value
+            "confidence": "certain",      # not an allowed value
+            "file": "app.py",
+            "line": 42,                   # int -> coerced to str
+            "evidence": "evidence",
+            "reasoning": "reasoning",
+            "recommendation": "consider it",
+        }],
+        "limitations": [],
+        "suggested_next_action": "look closer",
+    })
+    _patch_dependencies(monkeypatch, tmp_repo)
+    _patch_llm(monkeypatch, payload)
+
+    result = await run_report_analysis(str(uuid.uuid4()), "proj-x", "review repo")
+
+    finding = result.report_result.findings[0]
+    # Unknown values normalized to safe defaults rather than crashing.
+    assert finding.severity == "info"
+    assert finding.confidence == "low"
+    assert finding.line_hint == "42"
+    assert finding.reasoning == "reasoning"
+
+
+@pytest.mark.asyncio
+async def test_empty_findings_still_structured(monkeypatch, tmp_repo):
+    payload = json.dumps({
+        "summary": "Nothing notable.",
+        "findings": [],
+        "limitations": ["thin context"],
+        "suggested_next_action": "no action needed",
+    })
+    _patch_dependencies(monkeypatch, tmp_repo)
+    _patch_llm(monkeypatch, payload)
+
+    result = await run_report_analysis(str(uuid.uuid4()), "proj-x", "review repo")
+
+    assert isinstance(result.report_result, ReportResult)
+    assert result.report_result.findings == []
+    assert "thin context" in result.report_result.limitations
+
+
+@pytest.mark.asyncio
+async def test_discovery_request_sets_report_kind_discovery(monkeypatch, tmp_repo):
+    _patch_dependencies(monkeypatch, tmp_repo)
+    _patch_llm(monkeypatch, VALID_ANALYZER_JSON)
+
+    result = await run_report_analysis(
+        str(uuid.uuid4()), "proj-x", "what features can we add to this project"
+    )
+
+    assert result.report_result is not None
+    assert result.report_result.report_kind == "discovery"
+
+
+@pytest.mark.asyncio
+async def test_limited_report_has_no_structured_result(monkeypatch, tmp_repo):
+    # Analyzer returns garbage on every attempt -> limited fallback report.
+    _patch_dependencies(monkeypatch, tmp_repo)
+    _patch_llm(monkeypatch, ["garbage", "still garbage"])
+
+    result = await run_report_analysis(str(uuid.uuid4()), "proj-x", "review repo")
+
+    # No structured result: callers fall back to plain_english_summary.
+    assert result.report_result is None
+    assert "limited" in result.markdown_report.lower()
+
+
+@pytest.mark.asyncio
+async def test_missing_project_has_no_structured_result(monkeypatch, tmp_repo):
+    monkeypatch.setattr(report_analyzer, "get_project", lambda project_id: None)
+
+    result = await run_report_analysis(str(uuid.uuid4()), "proj-missing", "review")
+
+    assert result.report_result is None
 
 
 def test_build_limited_report_is_read_only_and_sanitized():

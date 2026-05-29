@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     project_id TEXT,
     feature_description TEXT NOT NULL,
     plain_english_summary TEXT,
+    report_json TEXT,
     status TEXT DEFAULT 'running',
     current_step TEXT,
     intent TEXT DEFAULT 'implementation',
