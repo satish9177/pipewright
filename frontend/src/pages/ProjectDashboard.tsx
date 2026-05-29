@@ -1,7 +1,13 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { projectsApi, runsApi, PipelineRun } from '@/api/client'
+import {
+  projectsApi,
+  runsApi,
+  isNeedsClarification,
+  PipelineRun,
+  NeedsClarificationResponse,
+} from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
@@ -22,6 +28,8 @@ export default function ProjectDashboard() {
   const [feature, setFeature] = useState('')
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [lastRunId, setLastRunId] = useState<string | null>(null)
+  const [clarification, setClarification] =
+    useState<NeedsClarificationResponse | null>(null)
 
   const { data: project, isLoading: projectLoading } = useQuery({
     queryKey: ['project', projectId],
@@ -58,13 +66,22 @@ export default function ProjectDashboard() {
   const runMutation = useMutation({
     mutationFn: () => runsApi.createChunkedRun(projectId!, feature),
     onSuccess: (data) => {
+      setSubmitError(null)
+      if (isNeedsClarification(data)) {
+        // Vague implementation request: no run was created. Ask for details
+        // instead of navigating to a run that does not exist.
+        setClarification(data)
+        setLastRunId(null)
+        return
+      }
+      setClarification(null)
       setLastRunId(data.run_id)
       setFeature('')
-      setSubmitError(null)
       queryClient.invalidateQueries({ queryKey: ['runs'] })
       navigate(`/runs/${data.run_id}`)
     },
     onError: (error: unknown) => {
+      setClarification(null)
       setSubmitError(getSubmitError(error))
     },
   })
@@ -151,6 +168,32 @@ export default function ProjectDashboard() {
             {submitError && (
               <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
                 {submitError}
+              </div>
+            )}
+            {clarification && (
+              <div className="rounded border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+                <p className="font-semibold">Needs clarification</p>
+                <p className="mt-1">{clarification.message}</p>
+                {clarification.missing_details.length > 0 && (
+                  <>
+                    <p className="mt-2 font-medium">Please specify:</p>
+                    <ul className="mt-1 list-disc pl-5">
+                      {clarification.missing_details.map((detail) => (
+                        <li key={detail}>{detail}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {clarification.examples.length > 0 && (
+                  <>
+                    <p className="mt-2 font-medium">Example valid requests:</p>
+                    <ul className="mt-1 list-disc pl-5">
+                      {clarification.examples.map((example) => (
+                        <li key={example}>{example}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
               </div>
             )}
             {lastRunId && (

@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
@@ -33,11 +34,24 @@ from backend.pipeline.chunked_orchestrator import (
     resume_chunked_pipeline,
 )
 from backend.pipeline.pr_orchestrator import push_and_create_pr
+from backend.pipeline.implementation_guard import (
+    DEFAULT_EXAMPLES,
+    DEFAULT_MISSING_DETAILS,
+    NEEDS_CLARIFICATION_MESSAGE,
+    NON_ACTIONABLE_EXAMPLES,
+    NON_ACTIONABLE_MESSAGE,
+    NON_ACTIONABLE_MISSING_DETAILS,
+    assess_implementation_specificity,
+    is_non_actionable_request,
+)
 from backend.pipeline.intent import (
     IMPLEMENTATION,
+    LLM_SPECIFICITY_MIN_CONFIDENCE,
+    NEEDS_CLARIFICATION,
     PLAN_ONLY,
     REPORT_ONLY,
-    classify_intent_async,
+    SPECIFIC,
+    classify_intent_details_async,
 )
 from backend.pipeline.report_analyzer import (
     build_limited_report,
@@ -52,6 +66,46 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 READ_ONLY_EXECUTION_MESSAGE = "This run is read-only and cannot execute code changes."
+
+
+def _needs_clarification_response(
+    message: str | None = None,
+    missing_details: list[str] | None = None,
+    examples: list[str] | None = None,
+) -> JSONResponse:
+    """
+    Build the read-only needs_clarification envelope (HTTP 200). No run row is
+    created and no triage/coder/patch/git/PR path is touched.
+    """
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "needs_clarification",
+            "intent": IMPLEMENTATION,
+            "message": message or NEEDS_CLARIFICATION_MESSAGE,
+            "missing_details": missing_details or DEFAULT_MISSING_DETAILS,
+            "examples": examples or DEFAULT_EXAMPLES,
+        },
+    )
+
+
+def _non_actionable_response() -> JSONResponse:
+    """
+    Build the needs_clarification envelope for a non-work input (greeting /
+    noise). Intent is "unknown" because no report/plan/implementation decision
+    has been made. No run row is created and intent classification is not even
+    reached.
+    """
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "needs_clarification",
+            "intent": "unknown",
+            "message": NON_ACTIONABLE_MESSAGE,
+            "missing_details": NON_ACTIONABLE_MISSING_DETAILS,
+            "examples": NON_ACTIONABLE_EXAMPLES,
+        },
+    )
 
 
 class ChunkedRunRequest(BaseModel):
@@ -323,8 +377,34 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # Pre-intent actionability guard: a greeting / noise-only message is not a
+    # work request. Stop before intent classification so it never becomes a
+    # plan_ready / report_ready / implementation run.
+    if is_non_actionable_request(request.feature_description):
+        logger.info(
+            "[GUARD] Non-actionable request; needs clarification before "
+            "intent classification. project_id=%s",
+            request.project_id,
+        )
+        return _non_actionable_response()
+
     run_id = str(uuid.uuid4())
-    intent = await classify_intent_async(request.feature_description)
+    decision = await classify_intent_details_async(request.feature_description)
+    intent = decision.intent
+
+    # Uncertain classification must not fall into the plan_only bucket and
+    # fabricate a plan. If the request is not clearly report / plan /
+    # implementation, ask for clarification instead of inventing scope.
+    if decision.uncertain:
+        logger.info(
+            "[GUARD] Uncertain classification; needs clarification instead of "
+            "a plan_only fallback. project_id=%s | source=%s | reason=%s",
+            request.project_id,
+            decision.source,
+            decision.reason,
+        )
+        return _non_actionable_response()
+
     try:
         if intent == REPORT_ONLY:
             try:
@@ -365,6 +445,54 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
                 triage=None,
                 chunks=[],
             )
+
+        if intent == IMPLEMENTATION:
+            # Ambiguous-implementation guard (PR #9A): a vague implementation
+            # request must not invent scope. We stop here, before triage /
+            # chunk planning / run creation, and ask for details. Two signals,
+            # combined conservatively (block if either says vague):
+            #   1. deterministic guard on the raw text (no LLM)
+            #   2. the LLM fallback's specificity verdict, but ONLY when the
+            #      intent itself came from that same LLM call (no extra call)
+            specificity = assess_implementation_specificity(
+                request.feature_description
+            )
+            needs_clarification = not specificity.is_specific_enough
+            block_reason = specificity.reason
+            llm_message: str | None = None
+            llm_missing: list[str] | None = None
+
+            if decision.from_llm:
+                if decision.specificity == NEEDS_CLARIFICATION:
+                    needs_clarification = True
+                    block_reason = "llm_specificity=needs_clarification"
+                    llm_message = decision.clarification_message
+                    llm_missing = decision.missing_details or None
+                elif decision.specificity == SPECIFIC:
+                    if (
+                        decision.specificity_confidence or 0.0
+                    ) < LLM_SPECIFICITY_MIN_CONFIDENCE:
+                        needs_clarification = True
+                        block_reason = "llm_specificity_confidence_low"
+                else:
+                    # LLM upgraded an ambiguous request to implementation but
+                    # gave no usable specificity verdict — fail safe.
+                    needs_clarification = True
+                    block_reason = "llm_specificity_missing"
+
+            if needs_clarification:
+                logger.info(
+                    "[GUARD] Blocked vague implementation request before "
+                    "triage. run_id=%s | from_llm=%s | reason=%s",
+                    run_id,
+                    decision.from_llm,
+                    block_reason,
+                )
+                return _needs_clarification_response(
+                    message=llm_message,
+                    missing_details=llm_missing or specificity.missing_details,
+                    examples=specificity.examples,
+                )
 
         triage_result = await run_triage(
             run_id=run_id,

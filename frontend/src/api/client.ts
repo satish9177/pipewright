@@ -214,6 +214,22 @@ export interface ChunkedRunRequest {
   feature_description: string
 }
 
+export interface NeedsClarificationResponse extends ExtraFields {
+  status: 'needs_clarification'
+  intent: RunIntent
+  message: string
+  missing_details: string[]
+  examples: string[]
+}
+
+export type ChunkedRunResult = ChunkPlanResponse | NeedsClarificationResponse
+
+export function isNeedsClarification(
+  value: ChunkedRunResult,
+): value is NeedsClarificationResponse {
+  return (value as NeedsClarificationResponse).status === 'needs_clarification'
+}
+
 export type ChunkedRunResponse = ChunkPlanResponse
 
 export interface RejectRequest {
@@ -419,7 +435,7 @@ export const runsApi = {
       feature_description: featureDescription,
     }).then(r => r.data),
   createChunkedRun: (projectId: string, featureDescription: string) =>
-    api.post<ChunkedRunResponse>('/runs/chunked', {
+    api.post<ChunkedRunResult>('/runs/chunked', {
       project_id: projectId,
       feature_description: featureDescription,
     }).then(r => r.data),
