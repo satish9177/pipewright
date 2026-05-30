@@ -122,9 +122,9 @@ model is supported, and the required API key is present:
 venv\Scripts\python.exe scripts\print_role_config.py --validate
 ```
 
-The script imports `backend.config.keys`, which loads settings at import time
-and therefore requires `GEMINI_API_KEY` to be set (a placeholder value is fine
-if no role actually uses Gemini). This matches backend startup behavior.
+The script imports `backend.config.keys`, which loads settings at import time.
+Provider keys are optional, so this works without `GEMINI_API_KEY`; `--validate`
+will report a missing key only for a provider that a role actually selects.
 
 You can also confirm resolution from a Python shell:
 
@@ -141,15 +141,27 @@ error rather than a silent fallback.
 ## API keys
 
 Provider API keys are read from environment variables / `.env` only — never from
-the database. A provider's key is validated only when that provider is actually
-invoked.
+the database. **All provider keys are optional at startup.** A key is required
+only when its provider is actually *selected* for a role that is validated or
+invoked — so you can run an Anthropic/OpenAI/DeepSeek-only config without ever
+setting `GEMINI_API_KEY`.
 
-| Variable | Required | Notes |
-|----------|----------|-------|
-| `GEMINI_API_KEY` | **Yes, always** | Loaded at startup by `Settings`. Required even if no role uses Gemini; a placeholder value is acceptable in that case. |
-| `ANTHROPIC_API_KEY` | Only if a role uses `anthropic` | |
-| `OPENAI_API_KEY` | Only if a role uses `openai` | |
-| `DEEPSEEK_API_KEY` | Only if a role uses `deepseek` | Optional `DEEPSEEK_BASE_URL`; defaults to `https://api.deepseek.com`. |
+| Variable | Required when | Notes |
+|----------|---------------|-------|
+| `GEMINI_API_KEY` | A role resolves to `gemini` — **including the default fallback** when no provider config is set | Optional otherwise; the app starts without it. |
+| `ANTHROPIC_API_KEY` | A role resolves to `anthropic` | |
+| `OPENAI_API_KEY` | A role resolves to `openai` | |
+| `DEEPSEEK_API_KEY` | A role resolves to `deepseek` | Optional `DEEPSEEK_BASE_URL`; defaults to `https://api.deepseek.com`. |
+
+Because the hardcoded fallback is Gemini (`gemini-2.5-flash-lite`), a config with
+**no** provider env vars at all still selects Gemini for every role and therefore
+still needs `GEMINI_API_KEY`. Point at least one provider away from Gemini to drop
+that requirement.
+
+A missing key for a *selected* provider surfaces as a clear
+`ProviderConfigurationError` naming the variable (e.g.
+`ANTHROPIC_API_KEY is not configured`) when the role is validated or called — it
+does not fail application startup, and no secret values are printed.
 
 Do not commit API keys. Use `.env` (gitignored) or a secrets manager.
 
@@ -163,8 +175,8 @@ Do not commit API keys. Use `.env` (gitignored) or a secrets manager.
   propagates; Pipewright does not auto-retry on a different provider.
 - **No per-run or per-project override via UI/DB.** Configuration is global,
   via env vars, for the whole backend process.
-- **`GEMINI_API_KEY` is mandatory at startup** even for an all-Anthropic or
-  all-OpenAI setup (use a placeholder).
+- **The default fallback is Gemini.** With no provider env vars set, every role
+  resolves to `gemini`, so `GEMINI_API_KEY` is still required in that case.
 - **`FakeProvider` (`fake` / `fake-model`)** is for tests and local scaffolding
   only; it returns a hardcoded string and will break JSON-parsing roles unless a
   fixture supplies valid JSON.

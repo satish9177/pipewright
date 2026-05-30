@@ -13,8 +13,8 @@ Usage:
 model is supported, and the required API key is present (the same checks the
 backend runs via validate_all_roles at startup).
 
-Note: importing backend.config.keys loads settings at import time, so
-GEMINI_API_KEY must be set (a placeholder value is fine if no role uses Gemini).
+Note: provider API keys are optional, so this runs without GEMINI_API_KEY.
+With --validate, a missing key is reported only for a provider a role selects.
 """
 
 import argparse

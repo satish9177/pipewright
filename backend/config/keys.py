@@ -10,7 +10,11 @@ from pydantic import Field
 
 
 class Settings(BaseSettings):
-    gemini_api_key: str
+    # Provider API keys are optional at startup. A key is required only when its
+    # provider is actually selected for a role and that provider is invoked or
+    # validated (see backend/llm/providers/*.validate_config). This lets users
+    # run an Anthropic/OpenAI/DeepSeek-only config without setting GEMINI_API_KEY.
+    gemini_api_key: str | None = None
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     deepseek_api_key: str | None = None
