@@ -412,12 +412,15 @@ async def test_coder_returns_valid_handoff():
     assert result.summary and len(result.summary) > 10
 
     for fc in result.files_changed:
-        assert fc.action in ["create", "modify", "delete"]
+        assert fc.action in ["create", "modify", "delete", "edit"]
         assert fc.path and len(fc.path) > 0
         assert fc.reason and len(fc.reason) > 0
-        if fc.action != "delete":
+        if fc.action in ["create", "modify"]:
             assert fc.content is not None
             assert len(fc.content) > 0
+        if fc.action == "edit":
+            assert fc.old_string is not None
+            assert fc.new_string is not None
 
 
 @pytest.mark.api

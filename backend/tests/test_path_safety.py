@@ -64,14 +64,42 @@ def test_windows_separators_are_normalized_safely(tmp_repo):
     assert full_path == tmp_repo.resolve() / "src" / "app.py"
 
 
-def test_coder_refuses_large_file_for_modify(tmp_repo):
+def test_coder_allows_large_modify_target_as_edit_context(tmp_repo):
+    """
+    A modify target over MAX_FILE_LINES is no longer refused outright. It is
+    returned in full so the model can ground a targeted action="edit".
+    Wholesale full-content rewrite is blocked downstream in patch_applier.
+    """
     large_file = tmp_repo / "src" / "large.py"
     large_file.parent.mkdir(parents=True)
-    large_file.write_text("\n".join("line" for _ in range(coder.MAX_FILE_LINES + 1)), encoding="utf-8")
+    large_file.write_text(
+        "\n".join("line" for _ in range(coder.MAX_FILE_LINES + 1)),
+        encoding="utf-8",
+    )
 
-    with pytest.raises(RuntimeError, match="Refusing to modify large file"):
+    content = coder._read_target_file(
+        "src/large.py",
+        str(tmp_repo),
+        coder.MAX_FILE_LINES,
+        "modify",
+    )
+
+    assert content is not None
+    assert content.count("line") == coder.MAX_FILE_LINES + 1
+
+
+def test_coder_refuses_modify_target_over_absolute_cap(tmp_repo):
+    """Beyond the absolute context cap we refuse rather than truncate."""
+    huge_file = tmp_repo / "src" / "huge.py"
+    huge_file.parent.mkdir(parents=True)
+    huge_file.write_text(
+        "\n".join("line" for _ in range(coder.LARGE_FILE_CONTEXT_LINE_CAP + 1)),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="too large for full context"):
         coder._read_target_file(
-            "src/large.py",
+            "src/huge.py",
             str(tmp_repo),
             coder.MAX_FILE_LINES,
             "modify",

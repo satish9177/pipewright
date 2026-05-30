@@ -6,7 +6,7 @@ Every downstream module receives one of these.
 Never use raw dicts between pipeline modules.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Optional
 
 from backend.projects.pr_modes import (
@@ -48,9 +48,23 @@ class PlannerHandoff(BaseModel):
 
 class FileChange(BaseModel):
     path: str
-    action: str  # create / modify / delete
+    action: str  # create / modify / delete / edit
     content: Optional[str] = None
+    # Targeted-edit fields. Used only when action == "edit".
+    # An edit replaces exactly one occurrence of old_string with new_string,
+    # so the model never has to return full file content for an existing file.
+    old_string: Optional[str] = None
+    new_string: Optional[str] = None
     reason: str
+
+    @model_validator(mode="after")
+    def edit_requires_old_and_new_string(self) -> "FileChange":
+        if self.action == "edit":
+            if self.old_string is None or self.new_string is None:
+                raise ValueError(
+                    "edit action requires both old_string and new_string"
+                )
+        return self
 
 
 class CoderHandoff(BaseModel):

@@ -37,6 +37,11 @@ CODER_TEMPERATURE = 0.2
 CODER_MAX_TOKENS = 8000
 CODER_TIMEOUT_SECONDS = 120
 MAX_FILE_LINES = 200
+# Absolute cap for including a modify target as edit grounding context. A file
+# between MAX_FILE_LINES and this cap may not be rewritten wholesale, but is
+# still small enough to include in full so the model can locate the exact text
+# to target with action="edit". Beyond this cap we refuse rather than truncate.
+LARGE_FILE_CONTEXT_LINE_CAP = 1500
 
 logger = logging.getLogger(__name__)
 
@@ -56,22 +61,44 @@ The JSON must match this exact schema:
   "feature_description": "<the feature>",
   "files_changed": [
     {
-      "path": "relative/path/to/file.py",
+      "path": "relative/path/to/new_file.py",
       "action": "create",
       "content": "full file content here as a string",
-      "reason": "why this file is created or modified"
+      "reason": "why this file is created"
+    },
+    {
+      "path": "relative/path/to/existing_file.py",
+      "action": "edit",
+      "old_string": "the exact text to find (must appear exactly once)",
+      "new_string": "the replacement text",
+      "reason": "why this change is made"
     }
   ],
   "summary": "one paragraph describing what was implemented",
   "suggested_memory_entries": ["fact worth storing"]
 }
 
-Action must be one of: create / modify / delete
-For delete action content should be null.
+Action must be one of: create / modify / delete / edit
 All file paths must be relative to the project root.
-File content must be the complete file content.
-Never return partial file content.
-Never truncate with comments like # rest of file here.
+
+Choosing the action:
+- create: a brand new file. Provide complete "content".
+- edit: a targeted change to an EXISTING file. Provide "old_string" and
+  "new_string" instead of "content". This is the PREFERRED way to change an
+  existing file. old_string must be copied verbatim from the file shown to you
+  and must match EXACTLY ONE location (include enough surrounding text to make
+  it unique). Do not provide "content" for an edit.
+- modify: full-file replacement of a SMALL existing file (200 lines or fewer).
+  Provide complete "content". For files over 200 lines you MUST use "edit";
+  full-content "modify" of a large file will be rejected.
+- delete: remove a file. content should be null.
+
+Rules:
+- For a small change to an existing file, prefer "edit" over "modify".
+- For any file marked LARGE FILE in the context, you MUST use "edit".
+- File "content" must always be the complete file content, never partial.
+- Never truncate with comments like # rest of file here.
+- Never return partial file content as "content".
 Respond with nothing except the JSON object."""
 
 
@@ -100,17 +127,25 @@ def _read_target_file(
             return None
 
         lines = file_path.read_text(encoding="utf-8").splitlines(keepends=True)
-        if len(lines) > max_lines:
-            if purpose == "read":
-                raise RuntimeError(
-                    f"Refusing to read large file {relative_path}: "
-                    f"{len(lines)} lines exceeds safe limit {max_lines}. "
-                    "Large-file reading requires explicit summarization."
-                )
+
+        if purpose == "read" and len(lines) > max_lines:
             raise RuntimeError(
-                f"Refusing to modify large file {relative_path}: "
+                f"Refusing to read large file {relative_path}: "
                 f"{len(lines)} lines exceeds safe limit {max_lines}. "
-                "Large-file editing requires diff-based patching."
+                "Large-file reading requires explicit summarization."
+            )
+
+        # Modify targets larger than max_lines are NOT refused outright. They are
+        # still included as context so the model can ground a targeted
+        # action="edit" (old_string/new_string). Wholesale full-content rewrites
+        # of these files are blocked downstream in patch_applier. We only refuse
+        # when the file is too large to include safely at all.
+        if purpose != "read" and len(lines) > LARGE_FILE_CONTEXT_LINE_CAP:
+            raise RuntimeError(
+                f"File is too large for full context. Use a more specific "
+                f"request or targeted search context. "
+                f"({relative_path}: {len(lines)} lines exceeds "
+                f"{LARGE_FILE_CONTEXT_LINE_CAP})"
             )
 
         return "".join(lines)
@@ -155,16 +190,25 @@ def _build_file_contents_block(
 
         blocks = []
         for path in ordered_paths:
+            purpose = path_purposes.get(path, "modify")
             content = _read_target_file(
                 path,
                 target_repo,
                 MAX_FILE_LINES,
-                path_purposes.get(path, "modify"),
+                purpose,
             )
             if content is None:
                 continue
+            header = f"--- FILE: {path} ---"
+            if purpose == "modify" and len(content.splitlines()) > MAX_FILE_LINES:
+                header = (
+                    f"--- FILE: {path} "
+                    f'(LARGE FILE, over {MAX_FILE_LINES} lines — you MUST change '
+                    f'this file with action="edit" using old_string/new_string; '
+                    f"do NOT return full file content) ---"
+                )
             blocks.append(
-                f"--- FILE: {path} ---\n"
+                f"{header}\n"
                 f"{content}\n"
                 f"--- END FILE ---"
             )

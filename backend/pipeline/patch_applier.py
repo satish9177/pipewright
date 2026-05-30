@@ -22,6 +22,12 @@ from backend.utils.path_safety import (
 
 BACKUP_DIR = Path(__file__).parent.parent / "backups"
 
+# Mirror of coder.MAX_FILE_LINES. Defined locally so patch_applier stays a pure
+# file-ops module with no dependency on the AI/coder import graph. Files larger
+# than this may not be modified by wholesale full-content replacement; they must
+# be changed with targeted action="edit" instead.
+MAX_MODIFY_FILE_LINES = 200
+
 FORBIDDEN_PATHS = [
     ".env",
     ".env.local",
@@ -165,6 +171,41 @@ def _read_existing_content(full_path: Path) -> str:
         )
 
 
+def _apply_edit_to_text(
+    relative_path: str,
+    content: str,
+    old_string: str | None,
+    new_string: str | None,
+) -> str:
+    """
+    Apply a single targeted edit to file text and return the new text.
+
+    Requires old_string to appear exactly once. Fails safely with a clear
+    error if old_string is missing (0 occurrences) or ambiguous (>1).
+    No fuzzy matching: matching is exact substring matching.
+    """
+    if old_string is None or new_string is None:
+        raise RuntimeError(
+            f"patch_applier.py: edit requires old_string and new_string: "
+            f"{relative_path}"
+        )
+
+    occurrences = content.count(old_string)
+    if occurrences == 0:
+        raise RuntimeError(
+            f"patch_applier.py: edit old_string not found in {relative_path}. "
+            "The text to replace must match the file exactly."
+        )
+    if occurrences > 1:
+        raise RuntimeError(
+            f"patch_applier.py: edit old_string is not unique in {relative_path} "
+            f"(found {occurrences} occurrences). Provide a larger, unique "
+            "old_string so exactly one location matches."
+        )
+
+    return content.replace(old_string, new_string, 1)
+
+
 def _generate_file_diff(
     relative_path: str,
     original_content: str,
@@ -233,6 +274,18 @@ def _apply_file_change(change: FileChange, full_path: Path) -> None:
                     f"patch_applier.py: modify requires content: {change.path}"
                 )
             full_path.write_text(change.content, encoding="utf-8")
+            return
+
+        if change.action == "edit":
+            print(f"[PATCH] Applying edit: {change.path}")
+            current_content = full_path.read_text(encoding="utf-8")
+            updated_content = _apply_edit_to_text(
+                change.path,
+                current_content,
+                change.old_string,
+                change.new_string,
+            )
+            full_path.write_text(updated_content, encoding="utf-8")
             return
 
         if change.action == "delete":
@@ -322,7 +375,7 @@ def apply_patch(
         for change in coder_output.files_changed:
             full_path = _validate_path(change.path, target_repo)
 
-            if change.action not in ["create", "modify", "delete"]:
+            if change.action not in ["create", "modify", "delete", "edit"]:
                 raise RuntimeError(
                     f"patch_applier.py: invalid action '{change.action}' "
                     f"for {change.path}"
@@ -334,14 +387,38 @@ def apply_patch(
                     f"{change.path}"
                 )
 
-            if change.action in ["modify", "delete"] and not full_path.exists():
+            if change.action in ["modify", "delete", "edit"] and not full_path.exists():
                 raise RuntimeError(
                     f"patch_applier.py: {change.action} target missing: "
                     f"{change.path}"
                 )
 
             original_content = _read_existing_content(full_path)
-            new_content = "" if change.action == "delete" else change.content or ""
+
+            if change.action == "modify":
+                original_line_count = len(original_content.splitlines())
+                if original_line_count > MAX_MODIFY_FILE_LINES:
+                    raise RuntimeError(
+                        f"patch_applier.py: Large files cannot be replaced "
+                        f"wholesale automatically. Use targeted edits. "
+                        f"({change.path}: {original_line_count} lines exceeds "
+                        f"{MAX_MODIFY_FILE_LINES})"
+                    )
+
+            if change.action == "delete":
+                new_content = ""
+            elif change.action == "edit":
+                # Validate the edit up front (fails before any backup/write) and
+                # capture the resulting content so the diff reflects the edit.
+                new_content = _apply_edit_to_text(
+                    change.path,
+                    original_content,
+                    change.old_string,
+                    change.new_string,
+                )
+            else:
+                new_content = change.content or ""
+
             validated_changes.append((
                 change,
                 full_path,
@@ -350,7 +427,7 @@ def apply_patch(
             ))
 
         for change, full_path, _original_content, _new_content in validated_changes:
-            if change.action in ["modify", "delete"]:
+            if change.action in ["modify", "delete", "edit"]:
                 _backup_file(change.path, full_path, run_id, chunk_number)
 
             manifest.append({
