@@ -11,7 +11,9 @@ from pathlib import Path
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
+from backend.db.database import engine
 from backend.main import app
 from backend.projects.project_store import get_project
 from backend.security.secrets import decrypt_secret
@@ -332,65 +334,44 @@ def test_project_update_rejects_blank_branch_when_provided(tmp_repo):
     assert response.status_code == 422
 
 
-def test_run_rejects_empty_feature_description(tmp_repo):
+def test_legacy_run_endpoint_is_disabled(tmp_repo):
+    """
+    The legacy POST /run single-shot pipeline is permanently disabled (410).
+
+    It must short-circuit before any pipeline work: no run row is created, so no
+    patch / test / commit / PR path can be reached. /runs/chunked is the only
+    supported implementation path.
+    """
     client = TestClient(app)
     create_response = client.post("/projects", json={
-        "name": "Run Validation Project",
+        "name": "Legacy Run Disabled Project",
         "repo_path": str(tmp_repo),
         "test_command": "python --version",
     })
     project_id = create_response.json()["id"]
 
+    with engine.connect() as conn:
+        runs_before = conn.execute(text(
+            "SELECT COUNT(*) FROM pipeline_runs WHERE project_id = :p"
+        ), {"p": project_id}).fetchone()[0]
+
+    # A legacy client body is ignored; the endpoint is gone regardless of input.
     response = client.post("/run", json={
         "project_id": project_id,
-        "feature_description": "",
+        "feature_description": "Add ping endpoint",
     })
 
-    assert response.status_code == 422
-
-
-def test_run_rejects_too_long_feature_description(tmp_repo):
-    client = TestClient(app)
-    create_response = client.post("/projects", json={
-        "name": "Run Validation Project",
-        "repo_path": str(tmp_repo),
-        "test_command": "python --version",
-    })
-    project_id = create_response.json()["id"]
-
-    response = client.post("/run", json={
-        "project_id": project_id,
-        "feature_description": "x" * 12001,
-    })
-
-    assert response.status_code == 422
-
-
-def test_run_rejects_read_only_intent_before_scheduling(tmp_repo, monkeypatch):
-    client = TestClient(app)
-    create_response = client.post("/projects", json={
-        "name": "Run Intent Project",
-        "repo_path": str(tmp_repo),
-        "test_command": "python --version",
-    })
-    project_id = create_response.json()["id"]
-    monkeypatch.setattr(
-        "backend.main.project_repo_lock_sync",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("repo lock should not be reserved")
-        ),
-    )
-
-    response = client.post("/run", json={
-        "project_id": project_id,
-        "feature_description": "review the repo",
-    })
-
-    assert response.status_code == 400
+    assert response.status_code == 410
     assert response.json()["detail"] == (
-        "This request is read-only. Use /runs/chunked or rephrase as "
-        "an implementation request."
+        "Legacy run endpoint is disabled. Use /runs/chunked."
     )
+
+    with engine.connect() as conn:
+        runs_after = conn.execute(text(
+            "SELECT COUNT(*) FROM pipeline_runs WHERE project_id = :p"
+        ), {"p": project_id}).fetchone()[0]
+    # No pipeline run was created, so no patch/test/commit/PR path was reached.
+    assert runs_after == runs_before == 0
 
 
 def test_gate_reject_rejects_too_long_reason():
@@ -401,14 +382,3 @@ def test_gate_reject_rejects_too_long_reason():
     })
 
     assert response.status_code == 422
-
-
-def test_run_requires_existing_project():
-    client = TestClient(app)
-
-    response = client.post("/run", json={
-        "project_id": "proj-missing",
-        "feature_description": "Add ping endpoint",
-    })
-
-    assert response.status_code == 404

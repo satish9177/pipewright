@@ -132,13 +132,6 @@ export interface Run extends ExtraFields {
 
 export type PipelineRun = Run
 
-export interface LegacyRunStartResponse extends ExtraFields {
-  run_id: string
-  project_id: string
-  status: RunStatus
-  message: string
-}
-
 export interface Gate extends ExtraFields {
   id: string
   run_id: string
@@ -430,11 +423,6 @@ export const runsApi = {
   list: () => api.get<Run[]>('/runs').then(r => r.data),
   get: (id: string) =>
     api.get<Run>(`/runs/${id}`).then(r => r.data),
-  start: (projectId: string, featureDescription: string) =>
-    api.post<LegacyRunStartResponse>('/run', {
-      project_id: projectId,
-      feature_description: featureDescription,
-    }).then(r => r.data),
   createChunkedRun: (projectId: string, featureDescription: string) =>
     api.post<ChunkedRunResult>('/runs/chunked', {
       project_id: projectId,

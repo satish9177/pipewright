@@ -169,7 +169,9 @@ def test_sync_lock_blocks_same_project_and_allows_different_projects():
     assert not is_project_locked(other_project_id)
 
 
-def test_legacy_run_route_returns_409_when_project_locked(tmp_repo):
+def test_legacy_run_route_is_disabled_even_when_project_locked(tmp_repo):
+    # The legacy /run route is retired (410) and no longer participates in
+    # repo locking; it short-circuits before any lock is reserved.
     project = _project(tmp_repo)
     client = TestClient(app)
 
@@ -179,8 +181,10 @@ def test_legacy_run_route_returns_409_when_project_locked(tmp_repo):
             "feature_description": "Add locked run feature",
         })
 
-    assert response.status_code == 409
-    assert response.json()["detail"] == PROJECT_LOCK_CONFLICT_MESSAGE
+    assert response.status_code == 410
+    assert response.json()["detail"] == (
+        "Legacy run endpoint is disabled. Use /runs/chunked."
+    )
 
 
 async def test_execute_refuses_when_same_project_locked(tmp_repo, tracked_runs):

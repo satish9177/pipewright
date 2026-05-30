@@ -5,10 +5,8 @@ Initializes database on startup.
 """
 
 import logging
-import uuid
 from contextlib import asynccontextmanager
-from pydantic import BaseModel, Field, field_validator
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from backend.core.config import get_config
@@ -17,22 +15,12 @@ from backend.db.database import init_db
 from backend.db.database import engine
 from backend.runtime.approval_gate_recovery import timeout_stale_approval_gates
 from backend.runtime.startup_recovery import recover_interrupted_runs
-from backend.models.handoff import (
-    RejectRequest,
-    FEATURE_DESCRIPTION_MAX_LENGTH,
-    _is_blank,
-)
+from backend.models.handoff import RejectRequest
 from backend.pipeline.approval_gate import (
     approve_gate,
     reject_gate,
     get_pending_gates,
     get_gate,
-)
-from backend.pipeline.orchestrator import _run_pipeline_with_id
-from backend.pipeline.intent import IMPLEMENTATION, classify_intent_async
-from backend.pipeline.run_locks import ProjectRepoLockError, project_repo_lock_sync
-from backend.projects.project_store import (
-    get_project,
 )
 from backend.routes.chunks import router as chunks_router
 from backend.routes.memory import router as memory_router
@@ -44,20 +32,6 @@ configure_logging()
 logger = logging.getLogger(__name__)
 app_config = get_config()
 
-
-class RunRequest(BaseModel):
-    project_id: str
-    feature_description: str = Field(
-        min_length=1,
-        max_length=FEATURE_DESCRIPTION_MAX_LENGTH,
-    )
-
-    @field_validator("feature_description")
-    @classmethod
-    def feature_description_must_not_be_blank(cls, value: str) -> str:
-        if _is_blank(value):
-            raise ValueError("Field must not be blank")
-        return value
 
 @asynccontextmanager
 async def lifespan(app):
@@ -103,52 +77,23 @@ def health():
 
 
 @app.post("/run")
-async def start_pipeline(request: RunRequest, background_tasks: BackgroundTasks):
+async def start_pipeline_disabled():
     """
-    Start a new pipeline run.
-    Runs in background so HTTP response
-    returns immediately with run_id.
-    Pipeline continues in background.
+    Legacy single-shot pipeline endpoint — permanently disabled (HTTP 410).
+
+    The legacy /run path bypassed the Phase 2 chunked safety flow: chunk-plan
+    approval, the files_expected scope guard, deterministic high-risk gating,
+    the ambiguous-implementation guard, and final approval — and it auto-created
+    a PR after a single approval. It is disabled to preserve those guards. The
+    only supported implementation path is POST /runs/chunked.
+
+    This handler takes no request body and starts no pipeline work; it returns
+    410 immediately so no patch / test / commit / PR path is ever reached.
     """
-    project = get_project(request.project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    if await classify_intent_async(request.feature_description) != IMPLEMENTATION:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "This request is read-only. Use /runs/chunked or rephrase as "
-                "an implementation request."
-            ),
-        )
-
-    run_id = str(uuid.uuid4())
-
-    try:
-        reservation = project_repo_lock_sync(request.project_id)
-        reservation.__enter__()
-    except ProjectRepoLockError as error:
-        raise HTTPException(status_code=409, detail=str(error))
-
-    async def pipeline_task():
-        try:
-            await _run_pipeline_with_id(
-                request.feature_description,
-                run_id,
-                request.project_id,
-                lock_already_held=True,
-            )
-        finally:
-            reservation.__exit__(None, None, None)
-
-    background_tasks.add_task(pipeline_task)
-
-    return {
-        "run_id": run_id,
-        "project_id": request.project_id,
-        "status": "started",
-        "message": "Pipeline started. Watch terminal for progress."
-    }
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy run endpoint is disabled. Use /runs/chunked.",
+    )
 
 
 @app.get("/runs/{run_id}")
