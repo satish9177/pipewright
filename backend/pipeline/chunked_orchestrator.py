@@ -219,7 +219,9 @@ def _build_completion_summary(
         path = change.path.replace("\\", "/")
         if change.action == "create":
             files_created.append(path)
-        elif change.action == "modify":
+        elif change.action in ("modify", "edit"):
+            # A targeted edit (PR #12A) changes an existing file in place, so it
+            # is a modification, not a create or delete.
             files_modified.append(path)
         elif change.action == "delete":
             files_deleted.append(path)

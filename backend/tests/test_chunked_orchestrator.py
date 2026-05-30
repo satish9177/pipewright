@@ -1083,6 +1083,57 @@ async def test_completion_summary_stored(monkeypatch, tmp_repo, tracked_runs):
     assert "Coder summary" in summary["summary"]
 
 
+def test_completion_summary_classifies_edit_as_modified():
+    chunk = ChunkDefinition(
+        chunk_number=1,
+        title="Fix typo",
+        description="Correct a README typo",
+        token_estimate=10,
+    )
+    plan = make_planner_result("run-summary")
+    coder_output = CoderHandoff(
+        run_id="run-summary",
+        feature_description="fix typo",
+        files_changed=[
+            FileChange(
+                path="README.md",
+                action="edit",
+                old_string="waht si this englsh?",
+                new_string="what is this english?",
+                reason="fix typo",
+            ),
+            FileChange(
+                path="new.py",
+                action="create",
+                content="x = 1\n",
+                reason="new file",
+            ),
+            FileChange(
+                path="old.py",
+                action="modify",
+                content="y = 2\n",
+                reason="modify file",
+            ),
+            FileChange(
+                path="gone.py",
+                action="delete",
+                content=None,
+                reason="delete file",
+            ),
+        ],
+        summary="Mixed actions",
+    )
+
+    summary = chunked_orchestrator._build_completion_summary(
+        chunk, plan, coder_output
+    )
+
+    # Targeted edit is counted as a modification, alongside modify.
+    assert summary["files_modified"] == ["README.md", "old.py"]
+    assert summary["files_created"] == ["new.py"]
+    assert summary["files_deleted"] == ["gone.py"]
+
+
 @pytest.mark.asyncio
 async def test_all_chunks_complete_marks_run_awaiting_final_approval(
     monkeypatch,

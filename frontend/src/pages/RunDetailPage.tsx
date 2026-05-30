@@ -660,12 +660,41 @@ export default function RunDetailPage() {
       {run.status === 'complete' && (
         <Card className="mb-4 border-green-500">
           <CardContent className="py-4">
-            <p className="text-sm font-medium text-green-600">
-              Pipeline completed successfully.
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">
-              Check GitHub for the Pull Request.
-            </p>
+            {run.current_step === 'local_only_complete' ? (
+              <>
+                <p className="text-sm font-medium text-green-600">
+                  Pipeline completed locally.
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  No GitHub PR was created because this project is in Local-only
+                  mode. Your changes were committed to the local Pipewright
+                  branch
+                  {run.branch_name ? ` (${run.branch_name})` : ''}. Push the
+                  branch manually if you want to open a PR.
+                </p>
+              </>
+            ) : run.pr_url ? (
+              <>
+                <p className="text-sm font-medium text-green-600">
+                  Pipeline completed successfully.
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Check GitHub for the Pull Request:{' '}
+                  <a
+                    href={run.pr_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline"
+                  >
+                    {run.pr_url}
+                  </a>
+                </p>
+              </>
+            ) : (
+              <p className="text-sm font-medium text-green-600">
+                Pipeline completed successfully.
+              </p>
+            )}
           </CardContent>
         </Card>
       )}
