@@ -6,10 +6,45 @@ single-user tool today — there is no Docker, no deployment, and no hosted auth
 ## Prerequisites
 
 - Python 3.11+
-- Node.js 18+ (for the frontend / Vite)
+- Node.js 18+ and npm (for the frontend / Vite)
 - Git
 - At least one LLM provider API key (Gemini by default)
-- Optional: GitHub CLI (`gh`) if you want the `github_cli` PR mode
+- Optional: GitHub CLI (`gh`) — only needed for the `github_cli` PR mode
+
+The dev scripts ([below](#one-command-local-dev)) check for these and print
+install guidance if anything is missing. **They never auto-install system tools,
+never modify your PATH or shell profile, and never require admin/root.** Install
+the tools yourself with the commands below, then re-open your terminal so PATH
+refreshes.
+
+**Windows:**
+
+```powershell
+winget install Python.Python.3.11
+winget install OpenJS.NodeJS.LTS
+winget install Git.Git
+# Optional (github_cli PR mode):
+winget install GitHub.cli
+gh auth login
+```
+
+Or download installers: [Python](https://www.python.org/downloads/),
+[Node.js](https://nodejs.org/), [Git](https://git-scm.com/downloads).
+
+**macOS (Homebrew):**
+
+```bash
+brew install python node git
+# Optional (github_cli PR mode): https://cli.github.com/
+```
+
+**Ubuntu/Debian:**
+
+```bash
+sudo apt update
+sudo apt install python3 python3-venv python3-pip nodejs npm git
+# Optional (github_cli PR mode): https://cli.github.com/
+```
 
 ## One-command local dev
 

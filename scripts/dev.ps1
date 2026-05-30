@@ -48,14 +48,25 @@ function Write-Info($message) {
     Write-Host "      $message" -ForegroundColor Gray
 }
 
-function Assert-Command($name, $hint) {
-    $command = Get-Command $name -ErrorAction SilentlyContinue
-    if (-not $command) {
-        Write-Host "[dev] ERROR: '$name' was not found on PATH." -ForegroundColor Red
-        Write-Host "      $hint" -ForegroundColor Red
-        exit 1
+function Write-Guidance($lines) {
+    foreach ($line in $lines) {
+        Write-Host "      $line" -ForegroundColor Yellow
     }
-    return $command
+}
+
+# Track whether any required prerequisite is missing so we can report all of
+# them together (instead of failing on the first) and then exit once.
+$script:MissingPrereq = $false
+
+function Test-RequiredCommand($name, $guidanceLines) {
+    if (Get-Command $name -ErrorAction SilentlyContinue) {
+        return $true
+    }
+    Write-Host "[dev] ERROR: '$name' was not found on PATH." -ForegroundColor Red
+    Write-Guidance $guidanceLines
+    Write-Host ""
+    $script:MissingPrereq = $true
+    return $false
 }
 
 # Resolve the repo root from this script's location (scripts\ -> repo root),
@@ -69,18 +80,86 @@ $RequirementsFile = Join-Path $RepoRoot "backend\requirements.txt"
 Write-Step "Repo root: $RepoRoot"
 
 # --- Prerequisite checks -----------------------------------------------------
-Write-Step "Checking prerequisites (python, node, npm)..."
-Assert-Command "python" "Install Python 3.11+ from https://www.python.org/downloads/ and re-open the terminal." | Out-Null
-Assert-Command "node" "Install Node.js (LTS) from https://nodejs.org/ and re-open the terminal." | Out-Null
+Write-Step "Checking prerequisites (python, node, npm, git)..."
 
-# Prefer npm.cmd on Windows to avoid the PowerShell npm.ps1 execution-policy
-# error. Fall back to whatever 'npm' resolves to if npm.cmd is unavailable.
+Test-RequiredCommand "python" @(
+    "Python not found.",
+    "Install Python 3.11+:",
+    "  winget install Python.Python.3.11",
+    "or download from:",
+    "  https://www.python.org/downloads/"
+) | Out-Null
+
+Test-RequiredCommand "node" @(
+    "Node.js not found.",
+    "Install Node.js LTS:",
+    "  winget install OpenJS.NodeJS.LTS",
+    "or download from:",
+    "  https://nodejs.org/"
+) | Out-Null
+
+# npm ships with Node.js. Prefer npm.cmd on Windows to avoid the PowerShell
+# npm.ps1 execution-policy error; fall back to whatever 'npm' resolves to.
 $NpmCommand = "npm.cmd"
 if (-not (Get-Command $NpmCommand -ErrorAction SilentlyContinue)) {
-    Assert-Command "npm" "Install Node.js (which bundles npm) and re-open the terminal." | Out-Null
-    $NpmCommand = "npm"
+    if (Get-Command "npm" -ErrorAction SilentlyContinue) {
+        $NpmCommand = "npm"
+    } else {
+        Write-Host "[dev] ERROR: 'npm' was not found on PATH." -ForegroundColor Red
+        Write-Guidance @(
+            "npm not found.",
+            "npm ships with Node.js LTS:",
+            "  winget install OpenJS.NodeJS.LTS",
+            "or download from:",
+            "  https://nodejs.org/"
+        )
+        Write-Host ""
+        $script:MissingPrereq = $true
+    }
 }
+
+Test-RequiredCommand "git" @(
+    "Git not found.",
+    "Install Git:",
+    "  winget install Git.Git",
+    "or download from:",
+    "  https://git-scm.com/downloads"
+) | Out-Null
+
+if ($script:MissingPrereq) {
+    Write-Host "[dev] One or more required tools are missing." -ForegroundColor Red
+    Write-Host "      Install them using the suggestions above (this script never installs" -ForegroundColor Red
+    Write-Host "      anything for you and does not require admin rights), re-open the" -ForegroundColor Red
+    Write-Host "      terminal so PATH refreshes, then re-run this script." -ForegroundColor Red
+    exit 1
+}
+
 Write-Info "Using npm command: $NpmCommand"
+
+# GitHub CLI is optional: only needed for the 'github_cli' PR mode.
+if (-not (Get-Command "gh" -ErrorAction SilentlyContinue)) {
+    Write-Info "GitHub CLI (gh) not found - optional, only for the 'github_cli' PR mode:"
+    Write-Info "  winget install GitHub.cli"
+    Write-Info "  gh auth login"
+}
+
+# --- Version checks (informational) -----------------------------------------
+$PythonVersion = (& python --version | Out-String).Trim()
+if ($PythonVersion) {
+    Write-Info "Detected $PythonVersion"
+    if ($PythonVersion -match "(\d+)\.(\d+)") {
+        $pyMajor = [int]$Matches[1]
+        $pyMinor = [int]$Matches[2]
+        if ($pyMajor -lt 3 -or ($pyMajor -eq 3 -and $pyMinor -lt 11)) {
+            Write-Host "[dev] WARNING: Python 3.11+ is recommended (found $PythonVersion)." -ForegroundColor Yellow
+        }
+    }
+}
+
+$NodeVersion = (& node --version | Out-String).Trim()
+if ($NodeVersion) {
+    Write-Info "Detected Node.js $NodeVersion"
+}
 
 # --- Backend venv + dependencies --------------------------------------------
 if (-not (Test-Path $VenvPython)) {

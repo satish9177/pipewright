@@ -23,7 +23,7 @@ SKIP_INSTALL=0
 for arg in "$@"; do
     case "$arg" in
         -h|--help)
-            sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         --skip-install)
@@ -39,13 +39,53 @@ done
 step() { printf '[dev] %s\n' "$1"; }
 info() { printf '      %s\n' "$1"; }
 
+# Track whether any required prerequisite is missing so we can report all of
+# them together (instead of failing on the first) and then exit once.
+MISSING_PREREQ=0
+
 require_command() {
-    local name="$1" hint="$2"
-    if ! command -v "$name" >/dev/null 2>&1; then
-        echo "[dev] ERROR: '$name' was not found on PATH." >&2
-        echo "      $hint" >&2
-        exit 1
+    local name="$1"
+    if command -v "$name" >/dev/null 2>&1; then
+        return 0
     fi
+    MISSING_PREREQ=1
+    echo "[dev] ERROR: '$name' was not found on PATH." >&2
+    case "$name" in
+        python3) echo "      Python 3.11+ is required." >&2 ;;
+        node)    echo "      Node.js LTS is required." >&2 ;;
+        npm)     echo "      npm is required (it ships with Node.js LTS)." >&2 ;;
+        git)     echo "      Git is required." >&2 ;;
+    esac
+    return 0
+}
+
+print_install_help() {
+    echo "" >&2
+    echo "[dev] Install the missing tool(s), re-open your terminal so PATH refreshes," >&2
+    echo "      then re-run this script. It never installs anything for you and does" >&2
+    echo "      not require root." >&2
+    echo "" >&2
+    case "$(uname -s)" in
+        Darwin)
+            echo "      macOS (Homebrew):" >&2
+            echo "        brew install python node git" >&2
+            ;;
+        Linux)
+            echo "      Ubuntu/Debian:" >&2
+            echo "        sudo apt update" >&2
+            echo "        sudo apt install python3 python3-venv python3-pip nodejs npm git" >&2
+            ;;
+        *)
+            echo "      macOS (Homebrew):" >&2
+            echo "        brew install python node git" >&2
+            echo "      Ubuntu/Debian:" >&2
+            echo "        sudo apt update" >&2
+            echo "        sudo apt install python3 python3-venv python3-pip nodejs npm git" >&2
+            ;;
+    esac
+    echo "" >&2
+    echo "      GitHub CLI is optional (only for the 'github_cli' PR mode):" >&2
+    echo "        https://cli.github.com/" >&2
 }
 
 # Resolve the repo root from this script's location (scripts/ -> repo root),
@@ -60,10 +100,39 @@ REQUIREMENTS_FILE="$REPO_ROOT/backend/requirements.txt"
 step "Repo root: $REPO_ROOT"
 
 # --- Prerequisite checks -----------------------------------------------------
-step "Checking prerequisites (python3, node, npm)..."
-require_command python3 "Install Python 3.11+ from https://www.python.org/downloads/ and re-open the terminal."
-require_command node "Install Node.js (LTS) from https://nodejs.org/ and re-open the terminal."
-require_command npm "Install Node.js (which bundles npm) and re-open the terminal."
+step "Checking prerequisites (python3, node, npm, git)..."
+require_command python3
+require_command node
+require_command npm
+require_command git
+
+if [ "$MISSING_PREREQ" -ne 0 ]; then
+    print_install_help
+    exit 1
+fi
+
+# GitHub CLI is optional: only needed for the 'github_cli' PR mode.
+if ! command -v gh >/dev/null 2>&1; then
+    info "GitHub CLI (gh) not found - optional, only for the 'github_cli' PR mode: https://cli.github.com/"
+fi
+
+# --- Version checks (informational) -----------------------------------------
+PYTHON_VERSION="$(python3 --version 2>&1 | awk '{print $2}')"
+if [ -n "$PYTHON_VERSION" ]; then
+    info "Detected Python $PYTHON_VERSION"
+    py_major="$(printf '%s' "$PYTHON_VERSION" | cut -d. -f1)"
+    py_minor="$(printf '%s' "$PYTHON_VERSION" | cut -d. -f2)"
+    # Guarded inside the if-condition so a non-numeric version never trips set -e.
+    if [ "${py_major:-0}" -lt 3 ] 2>/dev/null \
+        || { [ "${py_major:-0}" -eq 3 ] && [ "${py_minor:-0}" -lt 11 ]; } 2>/dev/null; then
+        info "WARNING: Python 3.11+ is recommended (found $PYTHON_VERSION)."
+    fi
+fi
+
+NODE_VERSION="$(node --version 2>&1)"
+if [ -n "$NODE_VERSION" ]; then
+    info "Detected Node.js $NODE_VERSION"
+fi
 
 # --- Backend venv + dependencies --------------------------------------------
 if [ ! -x "$VENV_PYTHON" ]; then
