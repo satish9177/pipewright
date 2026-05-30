@@ -72,6 +72,7 @@ def make_project(
     owner="acme",
     repo="demo",
     github_base_branch="pipewright-staging",
+    pr_mode="manual_token",
 ):
     if monkeypatch is not None:
         monkeypatch.setenv("PIPEWRIGHT_ENCRYPTION_KEY", Fernet.generate_key().decode())
@@ -83,6 +84,7 @@ def make_project(
         github_owner=owner,
         github_repo=repo,
         github_base_branch=github_base_branch,
+        pr_mode=pr_mode,
     )
 
 
@@ -126,8 +128,13 @@ def create_final_approved_run(
     tracked_runs,
     status="final_approved",
     github_base_branch="pipewright-staging",
+    pr_mode="manual_token",
 ):
-    project = make_project(tmp_repo, github_base_branch=github_base_branch)
+    project = make_project(
+        tmp_repo,
+        github_base_branch=github_base_branch,
+        pr_mode=pr_mode,
+    )
     run_id = str(uuid.uuid4())
     tracked_runs.append(run_id)
     create_chunked_run(
@@ -664,3 +671,279 @@ def test_no_dangerous_git_or_github_scope():
     assert "push --force" not in source
     assert "branch -d" not in source.lower()
     assert "delete_branch" not in source
+
+
+# ---------------------------------------------------------------------------
+# local_only mode
+# ---------------------------------------------------------------------------
+
+def _forbid_all_remote_action(monkeypatch):
+    """Any push or GitHub/gh call must fail the test loudly."""
+    monkeypatch.setattr(
+        pr_orchestrator.local_git,
+        "push_branch",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("push must not happen in local_only mode")
+        ),
+    )
+    monkeypatch.setattr(
+        pr_orchestrator,
+        "_get_github_repo",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("PyGithub must not be called in local_only mode")
+        ),
+    )
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr,
+        "create_pr",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("gh pr create must not be called in local_only mode")
+        ),
+    )
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr,
+        "find_open_pr",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("gh pr list must not be called in local_only mode")
+        ),
+    )
+
+
+def test_local_only_does_not_push_or_create_pr(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, pr_mode="local_only"
+    )
+    branch_name = f"pipewright/{run_id[:8]}"
+    monkeypatch.setattr(pr_orchestrator.local_git, "ensure_git_repo", lambda repo: None)
+    monkeypatch.setattr(
+        pr_orchestrator.local_git, "branch_exists", lambda branch, repo: True
+    )
+    _forbid_all_remote_action(monkeypatch)
+
+    result = pr_orchestrator.push_and_create_pr(run_id)
+
+    assert result["status"] == "complete"
+    assert result["pr_mode"] == "local_only"
+    assert result["remote_action"] is False
+    assert result["pr_url"] is None
+    assert result["pr_number"] is None
+    assert result["branch_name"] == branch_name
+
+    row = _read_run_row(run_id)
+    assert row[0] == "complete"
+    assert row[1] is None  # no PR url
+    assert row[2] is None  # no PR number
+    assert row[3] is None  # no push_error: this is a safe outcome, not a failure
+
+
+def test_local_only_returns_manual_pr_instructions(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, pr_mode="local_only"
+    )
+    branch_name = f"pipewright/{run_id[:8]}"
+    monkeypatch.setattr(pr_orchestrator.local_git, "ensure_git_repo", lambda repo: None)
+    monkeypatch.setattr(
+        pr_orchestrator.local_git, "branch_exists", lambda branch, repo: True
+    )
+    _forbid_all_remote_action(monkeypatch)
+
+    result = pr_orchestrator.push_and_create_pr(run_id)
+
+    instructions = result["manual_instructions"]
+    assert any("git checkout" in line for line in instructions)
+    assert any(f"git push origin {branch_name}" in line for line in instructions)
+    assert any("pull request" in line.lower() for line in instructions)
+    assert "Local-only" in result["message"]
+
+
+def test_local_only_does_not_require_github_token(monkeypatch, tmp_repo, tracked_runs):
+    # A project with NO github_token / owner / repo still completes in local_only.
+    project = create_project(
+        name=f"Local Only {uuid.uuid4()}",
+        repo_path=str(tmp_repo),
+        test_command="python --version",
+        pr_mode="local_only",
+    )
+    run_id = str(uuid.uuid4())
+    tracked_runs.append(run_id)
+    create_chunked_run(run_id, project["id"], "Local only feature", make_triage(run_id, project["id"]))
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE pipeline_runs SET status = 'final_approved' WHERE id = :run_id
+        """), {"run_id": run_id})
+
+    monkeypatch.setattr(pr_orchestrator.local_git, "ensure_git_repo", lambda repo: None)
+    monkeypatch.setattr(
+        pr_orchestrator.local_git, "branch_exists", lambda branch, repo: True
+    )
+    _forbid_all_remote_action(monkeypatch)
+
+    result = pr_orchestrator.push_and_create_pr(run_id)
+
+    assert result["status"] == "complete"
+    assert result["pr_mode"] == "local_only"
+
+
+# ---------------------------------------------------------------------------
+# github_cli mode
+# ---------------------------------------------------------------------------
+
+def _patch_gh_ready(monkeypatch, installed=True, authenticated=True):
+    monkeypatch.setattr(pr_orchestrator.gh_pr, "is_gh_installed", lambda: installed)
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr, "is_gh_authenticated", lambda: authenticated
+    )
+
+
+def test_github_cli_fails_safely_if_gh_missing(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, pr_mode="github_cli"
+    )
+    branch_name = f"pipewright/{run_id[:8]}"
+    calls = []
+    patch_git_for_branch(monkeypatch, calls, branch_name)
+    _patch_gh_ready(monkeypatch, installed=False, authenticated=False)
+    # gh PR helpers must never be reached when gh is not ready.
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr,
+        "create_pr",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("create_pr called")),
+    )
+
+    with pytest.raises(RuntimeError, match="gh is not installed or not authenticated"):
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    assert not any(call[0] == "push" for call in calls)
+    row = _read_run_row(run_id)
+    assert row[0] == "push_failed"
+    assert "gh auth login" in row[3]
+
+
+def test_github_cli_fails_safely_if_gh_unauthenticated(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, pr_mode="github_cli"
+    )
+    branch_name = f"pipewright/{run_id[:8]}"
+    calls = []
+    patch_git_for_branch(monkeypatch, calls, branch_name)
+    _patch_gh_ready(monkeypatch, installed=True, authenticated=False)
+
+    with pytest.raises(RuntimeError, match="gh is not installed or not authenticated"):
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    assert not any(call[0] == "push" for call in calls)
+    assert _read_run_row(run_id)[0] == "push_failed"
+
+
+def test_github_cli_creates_pr_when_none_exists(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, pr_mode="github_cli"
+    )
+    branch_name = f"pipewright/{run_id[:8]}"
+    calls = []
+    patch_git_for_branch(monkeypatch, calls, branch_name, remote_exists=False)
+    _patch_gh_ready(monkeypatch)
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr, "find_open_pr", lambda repo, branch, base: None
+    )
+    created = {}
+
+    def fake_create(repo, branch, base, title, body):
+        created.update({"repo": repo, "branch": branch, "base": base, "title": title})
+        return {"url": "https://github.com/acme/demo/pull/321", "number": 321, "title": title}
+
+    monkeypatch.setattr(pr_orchestrator.gh_pr, "create_pr", fake_create)
+
+    result = pr_orchestrator.push_and_create_pr(run_id)
+
+    assert result["status"] == "complete"
+    assert result["pr_number"] == 321
+    assert created["branch"] == branch_name
+    assert created["base"] == "pipewright-staging"
+    assert ("push", branch_name, str(tmp_repo)) in calls
+    row = _read_run_row(run_id)
+    assert row[0] == "complete"
+    assert row[2] == 321
+
+
+def test_github_cli_reuses_existing_pr(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, pr_mode="github_cli"
+    )
+    branch_name = f"pipewright/{run_id[:8]}"
+    calls = []
+    patch_git_for_branch(monkeypatch, calls, branch_name, remote_exists=True)
+    _patch_gh_ready(monkeypatch)
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr,
+        "find_open_pr",
+        lambda repo, branch, base: {
+            "url": "https://github.com/acme/demo/pull/55",
+            "number": 55,
+            "title": "Existing",
+        },
+    )
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr,
+        "create_pr",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("create_pr must not be called when a PR exists")
+        ),
+    )
+
+    result = pr_orchestrator.push_and_create_pr(run_id)
+
+    assert result["pr_number"] == 55
+    row = _read_run_row(run_id)
+    assert row[0] == "complete"
+    assert row[1].endswith("/55")
+
+
+def test_github_cli_errors_are_sanitized(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, pr_mode="github_cli"
+    )
+    branch_name = f"pipewright/{run_id[:8]}"
+    calls = []
+    patch_git_for_branch(monkeypatch, calls, branch_name, remote_exists=True)
+    _patch_gh_ready(monkeypatch)
+    secret = "ghp_" + "A1b2C3d4e5" * 4  # token-like, > 32 chars
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr,
+        "find_open_pr",
+        lambda *a, **k: (_ for _ in ()).throw(
+            pr_orchestrator.gh_pr.GhCliError(f"gh failed token={secret}")
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    assert secret not in str(exc_info.value)
+    push_error = _read_run_row(run_id)[3]
+    assert secret not in push_error
+    assert "[REDACTED]" in push_error
+
+
+def test_github_cli_rejects_forbidden_base_branch(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, pr_mode="github_cli", github_base_branch="main"
+    )
+    # gh and push must never be reached for a forbidden base branch.
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr,
+        "ensure_gh_ready",
+        lambda: (_ for _ in ()).throw(AssertionError("gh must not be probed")),
+    )
+    monkeypatch.setattr(
+        pr_orchestrator.local_git,
+        "push_branch",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("push must not happen")),
+    )
+
+    with pytest.raises(RuntimeError, match="forbidden base branch"):
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    row = _read_run_row(run_id)
+    assert row[0] == "push_failed"
+    assert row[1] is None

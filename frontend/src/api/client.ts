@@ -66,6 +66,8 @@ export interface HealthResponse extends ExtraFields {
   version: string
 }
 
+export type PrMode = 'local_only' | 'github_cli' | 'manual_token'
+
 export interface Project extends ExtraFields {
   id: string
   name: string
@@ -76,6 +78,7 @@ export interface Project extends ExtraFields {
   github_owner?: string | null
   github_repo?: string | null
   github_base_branch?: string | null
+  pr_mode: PrMode | (string & {})
   has_github_token: boolean
   status: string
   created_at?: string | null
@@ -88,6 +91,7 @@ export interface ProjectCreateRequest {
   test_command: string
   branch?: string
   description?: string
+  pr_mode?: PrMode
   github_token?: string
   github_owner?: string
   github_repo?: string
@@ -99,10 +103,31 @@ export interface ProjectUpdateRequest {
   test_command?: string | null
   branch?: string | null
   description?: string | null
+  pr_mode?: PrMode | null
   github_token?: string | null
   github_owner?: string | null
   github_repo?: string | null
   github_base_branch?: string | null
+}
+
+export interface ProjectDetectRequest {
+  repo_path: string
+}
+
+export interface ProjectDetectResponse {
+  repo_path_input: string
+  is_git_repo: boolean
+  git_root?: string | null
+  path_is_git_root: boolean
+  current_branch?: string | null
+  origin_url?: string | null
+  is_github_remote: boolean
+  github_owner?: string | null
+  github_repo?: string | null
+  gh_installed: boolean
+  gh_authenticated: boolean
+  recommended_pr_mode: PrMode | (string & {})
+  warnings: string[]
 }
 
 export type ProjectCreate = ProjectCreateRequest
@@ -417,6 +442,12 @@ export const projectsApi = {
     api.patch<Project>(`/projects/${id}`, data).then(r => r.data),
   delete: (id: string) =>
     api.delete(`/projects/${id}`).then(r => r.data),
+  detect: (repo_path: string) =>
+    api
+      .post<ProjectDetectResponse>('/projects/detect', {
+        repo_path,
+      } satisfies ProjectDetectRequest)
+      .then(r => r.data),
 }
 
 export const runsApi = {

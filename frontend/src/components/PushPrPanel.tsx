@@ -21,6 +21,9 @@ interface PushPrPanelProps {
 
 function hasGithubConfigWarning(project?: Project) {
   if (!project) return false
+  // Only the manual token mode needs a stored token + owner/repo. local_only
+  // creates no PR, and github_cli authenticates through the gh CLI.
+  if (project.pr_mode !== 'manual_token') return false
   return (
     !project.has_github_token ||
     !project.github_owner ||

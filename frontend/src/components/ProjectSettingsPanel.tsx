@@ -1,7 +1,13 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import type { Project, ProjectUpdateRequest } from '@/api/client'
+import type {
+  PrMode,
+  Project,
+  ProjectDetectResponse,
+  ProjectUpdateRequest,
+} from '@/api/client'
 import { projectsApi } from '@/api/client'
+import PrModeSetup, { type GithubFields } from '@/components/PrModeSetup'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -24,53 +30,66 @@ interface ProjectSettingsForm {
   description: string
   test_command: string
   branch: string
-  github_owner: string
-  github_repo: string
-  github_base_branch: string
-  github_token: string
 }
 
-function formFromProject(project: Project): ProjectSettingsForm {
+function basicFromProject(project: Project): ProjectSettingsForm {
   return {
     name: project.name ?? '',
     description: project.description ?? '',
     test_command: project.test_command ?? '',
     branch: project.branch ?? '',
+  }
+}
+
+function githubFromProject(project: Project): GithubFields {
+  return {
     github_owner: project.github_owner ?? '',
     github_repo: project.github_repo ?? '',
-    github_base_branch: project.github_base_branch ?? '',
+    github_base_branch: project.github_base_branch ?? 'pipewright-staging',
     github_token: '',
   }
 }
 
 function getErrorMessage(error: unknown) {
-  if (
-    typeof error === 'object' &&
-    error !== null &&
-    'response' in error
-  ) {
+  if (typeof error === 'object' && error !== null && 'response' in error) {
     const response = (error as { response?: { data?: { detail?: unknown } } })
       .response
     if (typeof response?.data?.detail === 'string') {
       return response.data.detail
     }
   }
-
   return 'Failed to update project settings'
+}
+
+function normalizeMode(value: string | undefined): PrMode {
+  if (value === 'github_cli' || value === 'manual_token') return value
+  return 'local_only'
 }
 
 export default function ProjectSettingsPanel({
   project,
 }: ProjectSettingsPanelProps) {
   const queryClient = useQueryClient()
-  const [form, setForm] = useState<ProjectSettingsForm>(
-    formFromProject(project)
+  const [basic, setBasic] = useState<ProjectSettingsForm>(
+    basicFromProject(project),
+  )
+  const [github, setGithub] = useState<GithubFields>(githubFromProject(project))
+  const [mode, setMode] = useState<PrMode>(normalizeMode(project.pr_mode))
+  const [advancedOpen, setAdvancedOpen] = useState(
+    normalizeMode(project.pr_mode) === 'manual_token',
   )
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  const [detection, setDetection] = useState<ProjectDetectResponse | null>(null)
+  const [detecting, setDetecting] = useState(false)
+  const [detectError, setDetectError] = useState<string | null>(null)
+
   useEffect(() => {
-    setForm(formFromProject(project))
+    setBasic(basicFromProject(project))
+    setGithub(githubFromProject(project))
+    setMode(normalizeMode(project.pr_mode))
+    setAdvancedOpen(normalizeMode(project.pr_mode) === 'manual_token')
   }, [project])
 
   const mutation = useMutation({
@@ -79,7 +98,7 @@ export default function ProjectSettingsPanel({
     onSuccess: () => {
       setMessage('Project settings saved.')
       setError(null)
-      setForm(previous => ({ ...previous, github_token: '' }))
+      setGithub(previous => ({ ...previous, github_token: '' }))
       queryClient.invalidateQueries({ queryKey: ['project', project.id] })
       queryClient.invalidateQueries({ queryKey: ['projects'] })
     },
@@ -89,10 +108,27 @@ export default function ProjectSettingsPanel({
     },
   })
 
-  const update = (field: keyof ProjectSettingsForm) =>
+  const updateBasic = (field: keyof ProjectSettingsForm) =>
     (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-      setForm(previous => ({ ...previous, [field]: event.target.value }))
+      setBasic(previous => ({ ...previous, [field]: event.target.value }))
     }
+
+  const updateGithub = (field: keyof GithubFields, value: string) =>
+    setGithub(previous => ({ ...previous, [field]: value }))
+
+  const runDetection = async () => {
+    setDetecting(true)
+    setDetectError(null)
+    try {
+      const result = await projectsApi.detect(project.repo_path)
+      setDetection(result)
+    } catch {
+      setDetection(null)
+      setDetectError('Detection failed. Settings can still be edited manually.')
+    } finally {
+      setDetecting(false)
+    }
+  }
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault()
@@ -100,17 +136,18 @@ export default function ProjectSettingsPanel({
     setError(null)
 
     const data: ProjectUpdateRequest = {
-      name: form.name,
-      description: form.description,
-      test_command: form.test_command,
-      branch: form.branch,
-      github_owner: form.github_owner,
-      github_repo: form.github_repo,
-      github_base_branch: form.github_base_branch,
+      name: basic.name,
+      description: basic.description,
+      test_command: basic.test_command,
+      branch: basic.branch,
+      pr_mode: mode,
+      github_owner: github.github_owner,
+      github_repo: github.github_repo,
+      github_base_branch: github.github_base_branch,
     }
 
-    if (form.github_token.trim()) {
-      data.github_token = form.github_token
+    if (github.github_token.trim()) {
+      data.github_token = github.github_token
     }
 
     mutation.mutate(data)
@@ -123,19 +160,10 @@ export default function ProjectSettingsPanel({
           <div>
             <CardTitle className="text-base">Project Settings</CardTitle>
             <CardDescription>
-              Configure the local repo, test command, and GitHub PR settings.
+              Configure the local repo, test command, and PR creation mode.
             </CardDescription>
           </div>
-          <Badge
-            variant="outline"
-            className={
-              project.has_github_token
-                ? 'border-green-200 bg-green-100 text-green-700'
-                : 'border-yellow-200 bg-yellow-100 text-yellow-800'
-            }
-          >
-            {project.has_github_token ? 'TOKEN CONFIGURED' : 'NO TOKEN'}
-          </Badge>
+          <Badge variant="outline">{`Saved PR mode: ${project.pr_mode}`}</Badge>
         </div>
       </CardHeader>
       <CardContent>
@@ -147,29 +175,9 @@ export default function ProjectSettingsPanel({
             </p>
           </div>
           <div>
-            <p className="font-medium">Test Command</p>
-            <p className="text-muted-foreground break-words">
-              {project.test_command}
-            </p>
-          </div>
-          <div>
             <p className="font-medium">Branch</p>
             <p className="text-muted-foreground break-words">
               {project.branch || 'Not set'}
-            </p>
-          </div>
-          <div>
-            <p className="font-medium">GitHub Repository</p>
-            <p className="text-muted-foreground break-words">
-              {project.github_owner && project.github_repo
-                ? `${project.github_owner}/${project.github_repo}`
-                : 'Not configured'}
-            </p>
-          </div>
-          <div>
-            <p className="font-medium">GitHub Base Branch</p>
-            <p className="text-muted-foreground break-words">
-              {project.github_base_branch || 'Not set'}
             </p>
           </div>
         </div>
@@ -179,8 +187,8 @@ export default function ProjectSettingsPanel({
             <Label htmlFor="project-name">Name</Label>
             <Input
               id="project-name"
-              value={form.name}
-              onChange={update('name')}
+              value={basic.name}
+              onChange={updateBasic('name')}
             />
           </div>
 
@@ -188,75 +196,64 @@ export default function ProjectSettingsPanel({
             <Label htmlFor="project-description">Description</Label>
             <Textarea
               id="project-description"
-              value={form.description}
-              onChange={update('description')}
+              value={basic.description}
+              onChange={updateBasic('description')}
               rows={3}
             />
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-2">
+            <Label htmlFor="project-branch">Branch</Label>
+            <Input
+              id="project-branch"
+              value={basic.branch}
+              onChange={updateBasic('branch')}
+            />
+          </div>
+
+          <div className="grid gap-3 rounded-md border p-4">
+            <div>
+              <p className="text-sm font-medium">Project checks</p>
+              <p className="text-xs text-muted-foreground">
+                Pipewright runs this command after applying code changes.
+              </p>
+            </div>
             <div className="grid gap-2">
               <Label htmlFor="project-test-command">Test Command</Label>
               <Input
                 id="project-test-command"
-                value={form.test_command}
-                onChange={update('test_command')}
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="project-branch">Branch</Label>
-              <Input
-                id="project-branch"
-                value={form.branch}
-                onChange={update('branch')}
+                value={basic.test_command}
+                onChange={updateBasic('test_command')}
               />
             </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="grid gap-2">
-              <Label htmlFor="project-github-owner">GitHub Owner</Label>
-              <Input
-                id="project-github-owner"
-                value={form.github_owner}
-                onChange={update('github_owner')}
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="project-github-repo">GitHub Repo</Label>
-              <Input
-                id="project-github-repo"
-                value={form.github_repo}
-                onChange={update('github_repo')}
-              />
-            </div>
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-medium">PR creation</p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={runDetection}
+              disabled={detecting}
+            >
+              {detecting ? 'Detecting…' : 'Detect from folder'}
+            </Button>
           </div>
 
-          <div className="grid gap-2">
-            <Label htmlFor="project-github-base-branch">
-              GitHub Base Branch
-            </Label>
-            <Input
-              id="project-github-base-branch"
-              value={form.github_base_branch}
-              onChange={update('github_base_branch')}
-            />
-          </div>
-
-          <div className="grid gap-2">
-            <Label htmlFor="project-github-token">GitHub Token</Label>
-            <Input
-              id="project-github-token"
-              type="password"
-              value={form.github_token}
-              onChange={update('github_token')}
-              placeholder="Leave blank to keep existing token"
-            />
-            <p className="text-xs text-muted-foreground">
-              GitHub token is used for push/PR creation and is never returned
-              by the API.
-            </p>
-          </div>
+          <PrModeSetup
+            detection={detection}
+            detecting={detecting}
+            detectError={detectError}
+            mode={mode}
+            onModeChange={setMode}
+            advancedOpen={advancedOpen}
+            onAdvancedToggle={setAdvancedOpen}
+            fields={github}
+            onFieldChange={updateGithub}
+            hasGithubToken={project.has_github_token}
+            tokenKeepsExisting
+          />
 
           {message && (
             <p className="text-sm font-medium text-green-600">{message}</p>
