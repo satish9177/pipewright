@@ -98,6 +98,20 @@ def initial_commit(repo_path: Path) -> str:
     return get_current_hash(str(repo_path))
 
 
+def test_commit_with_nothing_staged_surfaces_detail(git_repo):
+    initial_commit(git_repo)
+
+    # Nothing staged: git exits non-zero and prints "nothing to commit,
+    # working tree clean" to stdout (not stderr). The error must still carry
+    # a non-empty, actionable detail.
+    with pytest.raises(RuntimeError) as error:
+        commit("empty commit attempt", str(git_repo))
+
+    message = str(error.value).lower()
+    assert "[git] git commit failed:" in message
+    assert "nothing to commit" in message or "working tree clean" in message
+
+
 def test_ensure_git_repo_passes_for_real_git_repo(git_repo):
     ensure_git_repo(str(git_repo))
 

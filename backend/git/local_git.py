@@ -256,7 +256,15 @@ def commit(message: str, repo_path: str) -> str:
 
     result = run_git(["commit", "-m", message.strip()], repo_path)
     if result.returncode != 0:
-        raise RuntimeError(f"[GIT] git commit failed: {result.stderr.strip()}")
+        # git prints "nothing to commit, working tree clean" to stdout, not
+        # stderr, so fall back to stdout (and then a generic message) to avoid
+        # surfacing an empty "git commit failed:" error.
+        detail = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or "unknown git commit error"
+        )
+        raise RuntimeError(f"[GIT] git commit failed: {detail}")
 
     return get_current_hash(repo_path)
 
