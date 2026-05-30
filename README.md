@@ -1,42 +1,290 @@
 # Pipewright
 
-Pipewright is an AI engineering pipeline orchestrator for safely turning feature requests into GitHub pull requests.
+An AI engineering pipeline orchestrator for existing codebases. It plans,
+chunks, patches, tests, requires approval, and creates local commits or PRs
+safely.
 
-It coordinates multiple AI-driven stages: triage, planning, coding, patching, testing, review, and approval around an existing codebase. The goal is not to let an AI freely mutate your repository. The goal is to make AI-assisted engineering **observable, resumable, reviewable, and safe**.
+Pipewright is a workflow and safety layer *around* coding LLMs, not a free-roaming
+agent. It breaks a feature request into reviewable chunks, asks a human to
+approve the plan, applies changes through a guarded patch layer, runs your
+verification command, and only then commits locally or opens a pull request —
+always behind a final human approval gate.
 
-Pipewright is not a fully autonomous coding bot. It is a workflow layer around coding agents: the system that adds chunking, checkpoints, rollback, approval gates, audit trails, and PR safety around LLM-generated code.
+---
+
+## What Pipewright is **not**
+
+- **Not** an IDE autocomplete (it is not Copilot / inline completion).
+- **Not** a fully autonomous AI coder — every run stops for human approval.
+- **Not** a greenfield app generator — it works on repos you already have.
+- **Not** a tool that auto-merges to `main` (or `master` / `develop`).
+
+---
+
+## Current status
+
+Pipewright is **local self-use / demo-ready**. It runs on one developer's
+machine against a local repo and is suitable for a guided demo, not for
+production multi-user use.
+
+Honest scope today:
+
+- ✅ Local single-user self-use and demo flow work end to end.
+- ⏸️ Not a production SaaS.
+- ⏸️ Deployment — paused.
+- ⏸️ Ollama / local-model provider — paused.
+- ⏸️ Provider Settings UI — paused (LLM config is env-based only).
+- ⏸️ BYOK API keys stored in the database — paused (keys come from `.env`).
+- ⏸️ Execution modes (Fast / Balanced / Safe) — paused.
+
+See [`docs/llm/role-based-configuration.md`](docs/llm/role-based-configuration.md)
+(*Intentionally paused*) and `docs/architecture/` for the rationale behind each
+paused item.
 
 ---
 
 ## Why Pipewright exists
 
-Modern AI coding tools help one engineer move quickly, but they still leave a lot of safety and coordination work to the human:
+AI coding tools help one engineer move fast, but they leave three gaps:
 
-- Breaking a large feature into safe, independently testable chunks
-- Keeping each model constrained to the approved scope
-- Applying patches safely instead of letting the model write directly to disk
-- Running tests before saving progress
-- Rolling back failed chunks
-- Pausing for human approval on risky changes
-- Creating a PR only after final approval
-- Remembering project-specific rules across runs
-- Showing a full audit trail of what happened
+- **The copy-paste gap.** People manually shuttle plans and code between
+  ChatGPT, Claude, and Codex. There is no single orchestrated flow.
+- **The memory / context gap.** Tools lose project context between steps and
+  re-ask for the same information.
+- **The trust gap.** Fully autonomous agents can mutate a repo in risky ways
+  without a human in the loop before the dangerous step.
 
-Pipewright is built for that layer.
-
-The long-term vision is a durable background engineering agent that can survive restarts, approval delays, provider failures, and long-running tasks while still keeping humans in control before risky changes and PR creation.
+Pipewright closes these by being the orchestration layer: one flow, chunked
+execution, and mandatory human approval before anything risky happens.
 
 ---
 
-## Core principles
+## Safety & Trust
 
-1. **Human approval is mandatory.** Pipewright does not merge code and does not bypass approval gates.
-2. **Chunk first, execute second.** Large requests are split into smaller chunks. The human approves the chunk plan before execution starts.
-3. **Tests gate progress.** A checkpoint is only trusted when the relevant tests pass.
-4. **Models produce contracts, not loose text.** Inter-stage handoffs are typed Pydantic contracts.
-5. **The coder does not write directly to disk.** File changes are treated as data and applied through the patch layer.
-6. **Rollback is part of the design.** Failed tests, rejected high-risk chunks, and unsafe patches are rolled back.
-7. **Auditability matters.** The system should be able to answer what happened, which model did it, what was approved, and what was pushed.
+Safety is the product. The guarantees below are enforced in backend code and
+locked by tests (see `docs/stabilization/final-smoke-status.md`).
+
+- **Legacy `/run` endpoint disabled.** The old single-shot path returns HTTP 410;
+  `POST /runs/chunked` is the only supported implementation path.
+  (`docs/decisions/legacy-run-endpoint-retired.md`)
+- **Chunk plan approval before execution.** Large requests are split into chunks
+  and a human approves the plan before any code is written.
+- **Scope guard / `files_expected` guard.** Each chunk declares the files it may
+  touch; coder output outside that set is blocked before patch/test/commit.
+- **Out-of-scope edits blocked.** Edits drifting beyond the approved scope are
+  rejected, not silently applied.
+- **Empty / no-change Git safety.** Coder output with no real file changes never
+  reaches patch, test, commit, or push.
+- **No-effective-change commit guard.** A chunk that produces no effective diff
+  does not create an empty commit.
+- **Large-file targeted edits.** Big files get safe targeted edits instead of
+  wholesale rewrites.
+- **Forbidden paths blocked.** `.env` (and any `.env.*`), `secrets.json`, and
+  `credentials.json` can never be read or written by the model; absolute paths and
+  `..` traversal that escapes the repo root are also rejected
+  (`backend/utils/path_safety.py`). `.env.example` / `.env.sample` are allowed.
+- **Branch safety.** Pipewright never opens a PR against `main`, `master`, or
+  `develop`; the default base branch is `pipewright-staging`
+  (`backend/github/branch_safety.py`).
+- **`local_only` by default.** New projects do no remote Git action at all.
+- **No auto-merge.** Pipewright opens PRs; humans merge them.
+- **Final approval before completion.** A run reaches a local commit or a PR only
+  after an explicit final human approval.
+
+---
+
+## Quick local setup
+
+Full details in [`docs/setup/local-dev.md`](docs/setup/local-dev.md). The short
+version:
+
+### 1. Backend
+
+**Windows (PowerShell):**
+
+```powershell
+python -m venv venv
+.\venv\Scripts\activate
+pip install -r backend\requirements.txt
+python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8001
+```
+
+**macOS / Linux:**
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r backend/requirements.txt
+python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8001
+```
+
+> Avoid `--reload` during active pipeline runs — reload can interrupt background
+> execution. Use it only for development.
+
+Before the first run, copy the env template and set an encryption key:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Generate `PIPEWRIGHT_ENCRYPTION_KEY` with:
+
+```powershell
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+### 2. Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+**Windows note:** if PowerShell blocks `npm.ps1` with an execution-policy error,
+use the `.cmd` shims instead:
+
+```powershell
+npm.cmd install
+npm.cmd run dev
+```
+
+---
+
+## LLM configuration
+
+Pipewright resolves an LLM **provider** and **model** independently per pipeline
+role, configured entirely through environment variables — no UI, no database.
+Full reference: [`docs/llm/role-based-configuration.md`](docs/llm/role-based-configuration.md)
+and the support matrix in [`docs/llm/provider-matrix.md`](docs/llm/provider-matrix.md).
+
+Simplest config — one model for everything:
+
+```dotenv
+DEFAULT_LLM_PROVIDER=gemini
+DEFAULT_LLM_MODEL=gemini-2.5-flash-lite
+```
+
+Different model per role (each role falls back to the default if unset):
+
+```dotenv
+DEFAULT_LLM_PROVIDER=gemini
+DEFAULT_LLM_MODEL=gemini-2.5-flash-lite
+
+PLANNER_LLM_PROVIDER=anthropic
+PLANNER_LLM_MODEL=claude-sonnet-4-5
+
+CODER_LLM_PROVIDER=openai
+CODER_LLM_MODEL=gpt-4o-mini
+```
+
+Roles wired into the pipeline today: **triage, planner, coder, summary**.
+`REVIEWER_LLM_*` and `ARCHITECT_LLM_*` are accepted and validated but **not yet
+invoked** by any stage — setting them is harmless but currently inert.
+
+Notes:
+
+- The hardcoded fallback (no LLM env vars set) is **`gemini` / `gemini-2.5-flash-lite`**.
+- Provider API keys are required **only** for providers a role actually selects.
+  A non-Gemini-only config never needs `GEMINI_API_KEY`; the all-default config
+  still does, because the fallback is Gemini.
+- Inspect the resolved config (no secrets, no network):
+
+  ```powershell
+  python scripts\print_role_config.py
+  ```
+
+- Validate selected providers/models/keys:
+
+  ```powershell
+  python scripts\print_role_config.py --validate
+  ```
+
+---
+
+## Create a project
+
+1. Open the frontend and start **New Project**.
+2. Paste the **local repo path** of the codebase you want Pipewright to work on.
+   To find it, open the project folder in a terminal and run `pwd`:
+   - Windows: `C:\Users\satis\Projects\pipewright`
+   - macOS / Linux: `/Users/satish/projects/pipewright`
+3. Click **Detect project**. Detection is read-only — it reports whether the path
+   is a git repo, the current branch, any GitHub remote, and whether `gh` is
+   installed and authenticated. It never mutates git state.
+4. Choose a **verification command** (see below).
+5. Choose a **PR mode** (see below). New projects default to `local_only`.
+
+---
+
+## Verification command
+
+Pipewright runs this command after applying changes, to confirm the repo still
+works. (This is the field historically called the "test command.") Use your test
+suite if you have one; otherwise use a build / typecheck / compile step.
+
+| Stack | Examples |
+|-------|----------|
+| Python | `python -m pytest` or `python -m compileall .` |
+| Node / React | `npm test` or `npm run build` |
+| Spring Boot | `mvn test` or `mvn -DskipTests package` |
+| Go | `go test ./...` |
+| Rust | `cargo test` or `cargo check` |
+
+---
+
+## PR creation modes
+
+Chosen per project; PR creation always happens **only after final human
+approval**, never auto-merged.
+
+- **`local_only` (default).** No GitHub required. After final approval the run is
+  marked complete with `current_step: local_only_complete` and `manual_instructions`
+  (`git checkout <branch>`, `git push origin <branch>`, open a PR by hand). This is
+  a successful, no-remote-action outcome (`remote_action: false`, no `push_failed`).
+- **`github_cli` (recommended when available).** Used when the repo has a GitHub
+  remote and `gh` is installed and authenticated. Pipewright pushes the approved
+  branch and creates / reuses a PR via `gh` — **no token is pasted into
+  Pipewright**. If `gh` is missing or unauthenticated it fails safely *before*
+  pushing.
+- **`manual_token` (advanced fallback only).** The legacy PyGithub path using a
+  stored token + owner/repo. Hidden behind an *Advanced* toggle.
+
+Details: `docs/decisions/project-pr-modes-and-detection.md` and
+`docs/decisions/github-cli-pr-mode.md`.
+
+---
+
+## First demo flow
+
+A complete, copy-pasteable walkthrough (with troubleshooting) lives in
+[`docs/demo/local-self-use-demo.md`](docs/demo/local-self-use-demo.md). The short
+version:
+
+1. Create or select a small test repo.
+2. Introduce a typo in its `README.md`, e.g. `Pipewirght`.
+3. In Pipewright, submit:
+   `Fix the typo "Pipewirght" to "Pipewright" in README.md`
+4. Review the chunk plan.
+5. Approve the chunk.
+6. Execute.
+7. See the `local_only_complete` result.
+8. Verify with `git log` in the target repo.
+
+---
+
+## Known limitations
+
+- Local, single-user tool right now — no hosted auth / multi-tenant.
+- No visual diff editor yet.
+- No per-file approval; approvals are chunk-level and final.
+- `reviewer` / `architect` roles are configurable but **not yet invoked** by the
+  pipeline.
+- Repo indexing and verification-command detection are still improving.
+- SQLite / in-memory live logs / in-process repo locks are single-instance only.
+- GitHub App support is future work (today: `local_only`, `github_cli`,
+  `manual_token`).
+- Docker Compose local setup is future work — there is no Docker in this repo.
 
 ---
 
@@ -44,306 +292,77 @@ The long-term vision is a durable background engineering agent that can survive 
 
 ```text
 Feature request
-    |
-    v
-Triage / chunk planning
-    |
-    v
-Human approves chunk plan
-    |
-    v
-For each chunk:
-    Planner LLM -> structured plan handoff
-        |
-        v
-    Coder LLM -> structured code-change handoff
-        |
-        v
-    Patch applier -> backup, apply, validate diff
-        |
-        v
-    Tester -> run project test command
-        |
-        +--> tests fail -> rollback chunk
-        |
-        v
-    High-risk approval if needed
-        |
-        v
-    Commit chunk checkpoint
-    |
-    v
-Final human approval
-    |
-    v
-Push branch
-    |
-    v
-Create GitHub PR
+   -> Triage / chunk planning
+   -> Human approves chunk plan
+   -> For each chunk:
+        Planner LLM  -> structured plan handoff
+        Coder LLM    -> structured code-change handoff
+        Patch applier-> backup, apply, validate (scope + forbidden-path guards)
+        Tester       -> run the verification command
+                        (tests fail -> rollback chunk)
+        High-risk approval if needed
+        Commit chunk checkpoint
+   -> Final human approval
+   -> local_only commit  OR  push branch + create PR (github_cli / manual_token)
 ```
 
-The current runtime is a custom Pipewright pipeline rather than LangChain or LangGraph. LangGraph may be evaluated later for durable agent orchestration, but the current recommendation is to keep the core runtime custom until the execution, checkpointing, approval, and rollback semantics are stable.
+The runtime is a custom Pipewright pipeline (not LangChain / LangGraph) so the
+execution, checkpoint, approval, and rollback semantics stay explicit.
 
 ---
 
 ## Current stack
 
-- Backend: Python 3.11+, FastAPI
-- Validation: Pydantic v2
-- Database: SQLite with synchronous SQLAlchemy
+- Backend: Python 3.11+, FastAPI, Pydantic v2, SQLite via SQLAlchemy
 - Frontend: React, TypeScript, Vite
-- Current AI provider: Google Gemini
-- GitHub integration: PyGithub
-- Runtime model: custom pipeline with checkpoints, approval gates, local Git operations, live events, and PR creation
-
-Current implementation is Gemini-based. A provider abstraction and role-based model configuration are planned, but multi-provider routing is not fully implemented yet.
+- LLM providers: Gemini (default), Anthropic, OpenAI, DeepSeek — selected per role
+- GitHub integration: `gh` CLI (`github_cli`) or PyGithub (`manual_token`)
 
 ---
 
-## Using different LLMs per role
+## Important files & docs
 
-Pipewright resolves an LLM provider/model independently for each pipeline role
-(triage, planner, coder, summary), so you can run everything on one model or
-assign a different provider/model per role using only environment variables.
-
-```dotenv
-DEFAULT_LLM_PROVIDER=gemini
-DEFAULT_LLM_MODEL=gemini-2.5-flash-lite
-PLANNER_LLM_PROVIDER=anthropic
-PLANNER_LLM_MODEL=claude-sonnet-4-5
-CODER_LLM_PROVIDER=openai
-CODER_LLM_MODEL=gpt-4o-mini
-```
-
-Verify your resolved config locally (no secrets printed):
-
-```powershell
-venv\Scripts\python.exe scripts\print_role_config.py --validate
-```
-
-See [docs/llm/role-based-configuration.md](docs/llm/role-based-configuration.md)
-for the full resolution order, supported roles, and current limitations, and
-[docs/llm/provider-matrix.md](docs/llm/provider-matrix.md) for supported
-providers and models.
-
----
-
-## Current status
-
-Current milestone completed: **Phase 2D Production Readiness + Frontend Stabilization**.
-
-Phase 2D added backend hardening and frontend stabilization, including:
-
-- Project API token response sanitization
-- GitHub token encryption at rest
-- Project/repo execution locks for local repo safety
-- Request validation for high-risk inputs
-- Provider retry fixes
-- Startup recovery for interrupted run state
-- Safer path handling for coder, patching, and repo indexing
-- Checkpoint semantic cleanup
-- Logging/config foundations
-- Chunked run UI, approval UI, final approval, push/PR UI, status badges, and project GitHub config UI
-
-This does not mean Pipewright is fully production-ready. It means the MVP has been hardened enough to continue toward deployment readiness with known limitations documented.
-
----
-
-## Current focus
-
-Before deployment, the current focus is:
-
-1. Memory M1: Project State Memory Lite
-2. LLM-M1: Manual role-based multi-provider/model configuration
-3. Local validation runs
-4. Phase 2E: Deployment readiness / GCP MVP
-
----
-
-## Long-term direction
-
-Pipewright is intended to become:
-
-- An AI engineering pipeline orchestrator
-- A safety layer around LLM-generated code
-- A chunked execution system for existing repositories
-- A human-in-the-loop pull request workflow
-- A durable background runtime for long-running coding tasks
-
-The architecture direction is documented in:
-
-- `docs/architecture/memory-architecture.md`
-- `docs/architecture/multi-llm-architecture.md`
-- `docs/architecture/durable-agent-runtime.md`
-
----
-
-## Important files
-
-- `AGENTS.md`: project rules and operating context for coding agents
-- `DECISIONS.md`: major implementation decisions
-- `backend/main.py`: FastAPI application entry point
-- `backend/routes/`: backend route modules
-- `backend/pipeline/`: planner, coder, patch, tester, approval, chunk execution, and PR orchestration
-- `backend/projects/project_store.py`: project persistence and GitHub config storage
-- `backend/security/secrets.py`: GitHub token encryption helpers
-- `backend/utils/path_safety.py`: path safety validation for repo file access
-- `backend/db/schema.sql`: SQLite schema
-- `frontend/src/api/client.ts`: frontend API client and shared types
-- `frontend/src/pages/`: frontend route pages
-- `docs/ops/pre-deployment-checklist.md`: deployment preparation checklist
-- `docs/frontend/frontend-smoke-checklist.md`: manual frontend smoke checklist
-
----
-
-## Run locally
-
-Create and configure environment variables:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-At minimum, set:
-
-```text
-GEMINI_API_KEY=
-PIPEWRIGHT_ENCRYPTION_KEY=
-```
-
-Generate a local encryption key with:
-
-```powershell
-venv\Scripts\python.exe -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-```
-
-Start the backend:
-
-```powershell
-venv\Scripts\python.exe -m uvicorn backend.main:app --host 0.0.0.0 --port 8001
-```
-
-For development reload only:
-
-```powershell
-venv\Scripts\python.exe -m uvicorn backend.main:app --reload --port 8001
-```
-
-Avoid `--reload` during active pipeline runs because reload can interrupt background execution.
-
-Start the frontend:
-
-```powershell
-cd frontend
-npm.cmd install
-npm.cmd run dev
-```
-
-Build the frontend:
-
-```powershell
-cd frontend
-npm.cmd run build
-```
+- `AGENTS.md` — project rules and operating context for coding agents
+- `DECISIONS.md` — major implementation decisions
+- `backend/main.py` — FastAPI entry point
+- `backend/pipeline/` — planner, coder, patch, tester, approval, chunk execution, PR orchestration
+- `backend/utils/path_safety.py` — forbidden-path / traversal protection
+- `backend/github/branch_safety.py` — protected base-branch rules
+- `docs/setup/local-dev.md` — detailed local setup
+- `docs/demo/local-self-use-demo.md` — full demo walkthrough + troubleshooting
+- `docs/llm/role-based-configuration.md` — per-role LLM configuration
+- `docs/stabilization/final-smoke-status.md` — safety guarantees and their tests
+- `docs/troubleshooting.md` — operational troubleshooting
 
 ---
 
 ## Testing
 
-Run backend unit tests from the repository root:
+Backend unit tests (from the repo root, with the venv active):
 
 ```powershell
-venv\Scripts\python.exe -m pytest backend\tests\ -v -m unit
+python -m pytest backend\tests -q -m unit
 ```
 
-Run API/live provider tests separately. These may call Gemini and may be rate-limited:
+Frontend build validation:
 
-```powershell
-venv\Scripts\python.exe -m pytest backend\tests\ -v -m api -s
-```
-
-Run frontend build validation:
-
-```powershell
+```bash
 cd frontend
-npm.cmd run build
+npm run build
 ```
-
----
-
-## Known limitations
-
-- SQLite/local DB is single-instance only.
-- In-memory live logs are non-durable.
-- In-process repo locks are single-instance only.
-- Worker queue is not introduced yet.
-- PostgreSQL and Alembic are not introduced yet.
-- Multi-provider abstraction is designed but not fully implemented yet.
-- Project memory architecture is designed but Memory M1 is not fully implemented yet.
-- Durable background execution is designed but not implemented yet.
-- GitHub token encryption is local Fernet-based, not KMS-backed.
-- Completion Summary still renders raw JSON in some UI places.
-- Frontend is not fully mobile responsive.
-- LangChain and LangGraph are not used in the current runtime.
-
----
-
-## Roadmap
-
-Near-term:
-
-1. Memory M1: Project State Memory Lite
-2. LLM-M1: Manual role-based provider/model configuration
-3. Local validation runs against real target repositories
-4. Phase 2E: Deployment readiness / GCP MVP
-
-Later:
-
-- PostgreSQL migration and Alembic migrations
-- Durable worker queue and background job runtime
-- Distributed repo locking
-- Durable event/log storage
-- Deeper provider abstraction and routing
-- Slack/email approval integrations
-- Richer project memory and audit views
-- Evaluation of LangGraph or similar tools where they fit Pipewright's safety model
-
----
-
-## What Pipewright is not
-
-Pipewright is not:
-
-- A fully autonomous coding bot
-- A replacement for human review
-- A tool that merges directly to main
-- A general LangChain or LangGraph app
-- A promise that LLM-generated code is safe without tests and approval
-- A production deployment platform yet
-
-Pipewright is the orchestration and safety layer around AI-assisted engineering.
 
 ---
 
 ## Contributing notes
 
-Follow `AGENTS.md` before making code changes.
-
-Important project rules include:
-
-- Keep backend code in `backend/`.
-- Keep frontend code in `frontend/`.
-- Do not store secrets in committed files.
-- Do not bypass human approval gates.
-- Do not let the coder write directly to disk.
-- Use Pydantic contracts for model handoffs.
-- Keep Windows-compatible commands and plain ASCII logs.
-- Prefer small, testable safety improvements over broad refactors.
+Follow `AGENTS.md` before making code changes. Key rules: keep backend code in
+`backend/` and frontend code in `frontend/`, never commit secrets, never bypass
+human approval gates, never let the coder write directly to disk, use Pydantic
+contracts for model handoffs, and prefer small testable safety improvements over
+broad refactors.
 
 ---
 
 ## License
 
-This project is licensed under the MIT License.
-
-See [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE).
