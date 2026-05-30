@@ -67,6 +67,10 @@ in `docs/phase2b-smoke-tests.md`.
 - These invariants are enforced in code (intent routing, `scope_guard`,
   `risk_scanner`, `plan_path_grounding`, the orchestrator's no-change guard) and
   regression-locked by the smoke gate above.
+- The legacy single-shot `POST /run` path is retired (HTTP 410); `POST
+  /runs/chunked` is the only supported implementation path. See
+  `docs/decisions/legacy-run-endpoint-retired.md`. *(Phase 2F, PR #11A — locked
+  by `test_legacy_run_endpoint_is_disabled` in `test_project_routes.py`.)*
 
 ## Paused (out of scope for stabilization)
 
