@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS projects (
     github_owner TEXT,
     github_repo TEXT,
     github_base_branch TEXT DEFAULT 'pipewright-staging',
+    pr_mode TEXT DEFAULT 'local_only',
     status TEXT DEFAULT 'active',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME
