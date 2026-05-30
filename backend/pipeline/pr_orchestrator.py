@@ -14,6 +14,8 @@ from sqlalchemy import text
 from backend.core.statuses import RunStatus
 from backend.db.database import engine, init_db
 from backend.git import local_git
+from backend.github.branch_safety import validate_base_branch
+from backend.llm.sanitize import sanitize_for_log
 from backend.pipeline.chunk_store import get_chunk_plan_status
 from backend.pipeline.run_locks import project_repo_lock_sync
 from backend.projects.project_store import require_project
@@ -53,6 +55,9 @@ def _mark_pushing(run_id: str, branch_name: str) -> None:
 
 
 def _mark_push_failed(run_id: str, error: str, branch_name: str | None = None) -> None:
+    # Sanitize before persistence so /runs and /runs/{id} never surface raw
+    # secret-like values (tokens, bearer credentials) from a push exception.
+    safe_error = sanitize_for_log(error)
     with engine.begin() as conn:
         conn.execute(text("""
             UPDATE pipeline_runs
@@ -64,7 +69,7 @@ def _mark_push_failed(run_id: str, error: str, branch_name: str | None = None) -
         """), {
             "run_id": run_id,
             "branch_name": branch_name,
-            "push_error": error,
+            "push_error": safe_error,
             "status": RunStatus.PUSH_FAILED,
         })
 
@@ -204,7 +209,10 @@ def _require_project_github(project: dict) -> tuple[str, str, str, str]:
     stored_token = project.get("github_token")
     owner = project.get("github_owner")
     repo_name = project.get("github_repo")
-    base_branch = project.get("github_base_branch") or "main"
+    # Do not silently default to main. validate_base_branch (called inside the
+    # push flow) resolves a missing value to the safe default and rejects
+    # forbidden base branches before any push or PR.
+    base_branch = project.get("github_base_branch")
     missing = [
         name for name, value in [
             ("github_token", stored_token),
@@ -285,6 +293,9 @@ def _push_and_create_pr_locked(run_id: str, run: dict) -> dict:
     token, owner, repo_name, base_branch = _require_project_github(project)
 
     try:
+        # Resolve a missing base branch to the safe default and reject
+        # forbidden base branches (main/master/develop) before any push or PR.
+        base_branch = validate_base_branch(base_branch)
         _mark_pushing(run_id, branch_name)
         _verify_local_branch(repo_path, branch_name, owner, repo_name)
         _ensure_branch_has_commits_ahead(repo_path, branch_name, base_branch)
@@ -309,7 +320,9 @@ def _push_and_create_pr_locked(run_id: str, run: dict) -> dict:
             int(pull.number),
         )
     except Exception as error:
-        error_text = str(error)
+        # Sanitize before it is persisted (push_error) and before it is
+        # re-raised into the HTTP response detail.
+        error_text = sanitize_for_log(str(error))
         _mark_push_failed(run_id, error_text, branch_name)
         raise RuntimeError(
             f"pr_orchestrator.py: push-pr failed. "

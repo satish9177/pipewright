@@ -20,13 +20,18 @@ from pathlib import Path
 
 from github import Github, GithubException
 
+from backend.github.branch_safety import (
+    DEFAULT_BASE_BRANCH,
+    FORBIDDEN_BASE_BRANCHES,
+    validate_base_branch,
+)
 from backend.models.handoff import CoderHandoff, PatchResult
 
 
 BRANCH_PREFIX = "pipewright"
-DEFAULT_BASE_BRANCH = "pipewright-staging"
-FORBIDDEN_BASE_BRANCHES = {"main", "master", "develop"}
 MAX_BRANCH_LENGTH = 60
+
+__all__ = ["create_pull_request", "DEFAULT_BASE_BRANCH", "FORBIDDEN_BASE_BRANCHES"]
 
 
 def _get_client(github_token: str) -> Github:
@@ -60,20 +65,6 @@ def _generate_branch_name(feature_description: str) -> str:
     return f"{BRANCH_PREFIX}/{short}{suffix}"
 
 
-def _validate_base_branch(github_base_branch: str) -> str:
-    try:
-        base_branch = github_base_branch or DEFAULT_BASE_BRANCH
-        if base_branch in FORBIDDEN_BASE_BRANCHES:
-            raise RuntimeError(
-                f"github_client.py: forbidden base branch: {base_branch}"
-            )
-        return base_branch
-    except RuntimeError:
-        raise
-    except Exception as error:
-        raise RuntimeError(f"github_client.py: failed to validate base branch: {error}")
-
-
 def create_pull_request(
     github_token: str,
     github_owner: str,
@@ -100,7 +91,7 @@ def create_pull_request(
     Returns dict with:
       pr_url, pr_number, branch_name, status
     """
-    base_branch = _validate_base_branch(github_base_branch)
+    base_branch = validate_base_branch(github_base_branch)
 
     print(f"[GITHUB] Starting PR creation | run_id={run_id}")
     print(f"[GITHUB] Target: {github_owner}/{github_repo}")

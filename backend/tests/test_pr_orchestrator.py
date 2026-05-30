@@ -8,9 +8,11 @@ import uuid
 
 import pytest
 from cryptography.fernet import Fernet
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from backend.db.database import engine
+from backend.main import app
 from backend.models.chunk import ChunkDefinition, TriageResult
 from backend.pipeline import pr_orchestrator
 from backend.pipeline.chunk_store import create_chunked_run, save_chunk_completion_summary
@@ -64,7 +66,13 @@ def tracked_runs():
             })
 
 
-def make_project(tmp_repo, monkeypatch=None, owner="acme", repo="demo"):
+def make_project(
+    tmp_repo,
+    monkeypatch=None,
+    owner="acme",
+    repo="demo",
+    github_base_branch="pipewright-staging",
+):
     if monkeypatch is not None:
         monkeypatch.setenv("PIPEWRIGHT_ENCRYPTION_KEY", Fernet.generate_key().decode())
     return create_project(
@@ -74,7 +82,7 @@ def make_project(tmp_repo, monkeypatch=None, owner="acme", repo="demo"):
         github_token="ghp_test",
         github_owner=owner,
         github_repo=repo,
-        github_base_branch="main",
+        github_base_branch=github_base_branch,
     )
 
 
@@ -113,8 +121,13 @@ def make_triage(run_id: str, project_id: str) -> TriageResult:
     )
 
 
-def create_final_approved_run(tmp_repo, tracked_runs, status="final_approved"):
-    project = make_project(tmp_repo)
+def create_final_approved_run(
+    tmp_repo,
+    tracked_runs,
+    status="final_approved",
+    github_base_branch="pipewright-staging",
+):
+    project = make_project(tmp_repo, github_base_branch=github_base_branch)
     run_id = str(uuid.uuid4())
     tracked_runs.append(run_id)
     create_chunked_run(
@@ -287,7 +300,7 @@ def test_push_pr_rejects_branch_with_no_commits_ahead(
     with pytest.raises(RuntimeError, match="Branch has no commits ahead of base"):
         pr_orchestrator.push_and_create_pr(run_id)
 
-    assert ("ahead", "main", branch_name, str(tmp_repo)) in calls
+    assert ("ahead", "pipewright-staging", branch_name, str(tmp_repo)) in calls
     assert not any(call[0] == "push" for call in calls)
     with engine.connect() as conn:
         row = conn.execute(text("""
@@ -347,7 +360,7 @@ def test_push_pr_checks_existing_github_pr_before_creating(monkeypatch, tmp_repo
     assert fake_repo.last_get_pulls == {
         "state": "open",
         "head": f"acme:{branch_name}",
-        "base": "main",
+        "base": "pipewright-staging",
     }
     with engine.connect() as conn:
         row = conn.execute(text("""
@@ -469,6 +482,179 @@ def test_remote_mismatch_blocks_push(monkeypatch, tmp_repo, tracked_runs):
         pr_orchestrator.push_and_create_pr(run_id)
 
     assert not any(call[0] == "push" for call in calls)
+
+
+def _read_run_row(run_id: str):
+    with engine.connect() as conn:
+        return conn.execute(text("""
+            SELECT status, pr_url, pr_number, push_error
+            FROM pipeline_runs
+            WHERE id = :run_id
+        """), {"run_id": run_id}).fetchone()
+
+
+def _forbid_push_and_github(monkeypatch):
+    """Make any push or GitHub call fail the test loudly."""
+    monkeypatch.setattr(
+        pr_orchestrator.local_git,
+        "push_branch",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("push must not happen for a forbidden base branch")
+        ),
+    )
+    monkeypatch.setattr(
+        pr_orchestrator,
+        "_get_github_repo",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("GitHub must not be called for a forbidden base branch")
+        ),
+    )
+
+
+@pytest.mark.parametrize("base", ["main", "master", "develop"])
+def test_push_pr_rejects_forbidden_base_branch(monkeypatch, tmp_repo, tracked_runs, base):
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, github_base_branch=base
+    )
+    _forbid_push_and_github(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="forbidden base branch"):
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    row = _read_run_row(run_id)
+    assert row[0] == "push_failed"
+    assert row[1] is None  # no PR url
+    assert base in row[3]
+
+
+def test_push_pr_rejects_main_base_branch(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, github_base_branch="main"
+    )
+    _forbid_push_and_github(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="forbidden base branch: main"):
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    assert _read_run_row(run_id)[0] == "push_failed"
+
+
+def test_push_pr_rejects_master_base_branch(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, github_base_branch="master"
+    )
+    _forbid_push_and_github(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="forbidden base branch: master"):
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    assert _read_run_row(run_id)[0] == "push_failed"
+
+
+def test_push_pr_rejects_develop_base_branch(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, github_base_branch="develop"
+    )
+    _forbid_push_and_github(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="forbidden base branch: develop"):
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    assert _read_run_row(run_id)[0] == "push_failed"
+
+
+def test_forbidden_base_branch_does_not_push_or_create_pr(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, github_base_branch="main"
+    )
+    calls = []
+    branch_name = f"pipewright/{run_id[:8]}"
+    patch_git_for_branch(monkeypatch, calls, branch_name, remote_exists=False)
+    # Override push/github to detect any attempt; validation must run first.
+    _forbid_push_and_github(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="forbidden base branch"):
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    assert not any(call[0] == "push" for call in calls)
+    row = _read_run_row(run_id)
+    assert row[1] is None  # no PR url
+    assert row[2] is None  # no PR number
+
+
+def test_push_pr_defaults_to_staging_branch(monkeypatch, tmp_repo, tracked_runs):
+    run_id, project = create_final_approved_run(tmp_repo, tracked_runs)
+    # Force the stored base branch to NULL to exercise the orchestrator default.
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE projects SET github_base_branch = NULL WHERE id = :id
+        """), {"id": project["id"]})
+    branch_name = f"pipewright/{run_id[:8]}"
+    calls = []
+    patch_git_for_branch(monkeypatch, calls, branch_name, remote_exists=False)
+    fake_repo = FakeRepo()
+    patch_github(monkeypatch, fake_repo)
+
+    result = pr_orchestrator.push_and_create_pr(run_id)
+
+    assert result["status"] == "complete"
+    assert fake_repo.created[0]["base"] == "pipewright-staging"
+    assert ("ahead", "pipewright-staging", branch_name, str(tmp_repo)) in calls
+
+
+def test_push_error_is_sanitized(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_final_approved_run(tmp_repo, tracked_runs)
+    branch_name = f"pipewright/{run_id[:8]}"
+    calls = []
+    patch_git_for_branch(monkeypatch, calls, branch_name, remote_exists=True)
+    secret = "ghp_" + "A1b2C3d4e5" * 4  # token-like, > 32 chars
+    monkeypatch.setattr(
+        pr_orchestrator,
+        "_get_github_repo",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError(f"GitHub auth failed token={secret}")
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    # The re-raised HTTP-facing message must not leak the secret.
+    assert secret not in str(exc_info.value)
+
+    push_error = _read_run_row(run_id)[3]
+    assert secret not in push_error
+    assert "[REDACTED]" in push_error
+
+
+def test_run_payloads_never_expose_token(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_final_approved_run(tmp_repo, tracked_runs)
+    branch_name = f"pipewright/{run_id[:8]}"
+    calls = []
+    patch_git_for_branch(monkeypatch, calls, branch_name, remote_exists=True)
+    secret = "ghp_" + "Z9y8X7w6v5" * 4
+    monkeypatch.setattr(
+        pr_orchestrator,
+        "_get_github_repo",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError(f"GitHub credential={secret} rejected")
+        ),
+    )
+    with pytest.raises(RuntimeError):
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    client = TestClient(app)
+
+    detail = client.get(f"/runs/{run_id}")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert "github_token" not in body
+    assert secret not in detail.text
+    assert "[REDACTED]" in body["push_error"]
+
+    listing = client.get("/runs")
+    assert listing.status_code == 200
+    assert secret not in listing.text
 
 
 def test_no_dangerous_git_or_github_scope():
