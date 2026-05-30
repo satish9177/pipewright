@@ -100,6 +100,34 @@ Current implementation is Gemini-based. A provider abstraction and role-based mo
 
 ---
 
+## Using different LLMs per role
+
+Pipewright resolves an LLM provider/model independently for each pipeline role
+(triage, planner, coder, summary), so you can run everything on one model or
+assign a different provider/model per role using only environment variables.
+
+```dotenv
+DEFAULT_LLM_PROVIDER=gemini
+DEFAULT_LLM_MODEL=gemini-2.5-flash-lite
+PLANNER_LLM_PROVIDER=anthropic
+PLANNER_LLM_MODEL=claude-sonnet-4-5
+CODER_LLM_PROVIDER=openai
+CODER_LLM_MODEL=gpt-4o-mini
+```
+
+Verify your resolved config locally (no secrets printed):
+
+```powershell
+venv\Scripts\python.exe scripts\print_role_config.py --validate
+```
+
+See [docs/llm/role-based-configuration.md](docs/llm/role-based-configuration.md)
+for the full resolution order, supported roles, and current limitations, and
+[docs/llm/provider-matrix.md](docs/llm/provider-matrix.md) for supported
+providers and models.
+
+---
+
 ## Current status
 
 Current milestone completed: **Phase 2D Production Readiness + Frontend Stabilization**.
