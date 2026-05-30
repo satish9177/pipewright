@@ -13,11 +13,17 @@ from sqlalchemy import text
 
 from backend.core.statuses import RunStatus
 from backend.db.database import engine, init_db
-from backend.git import local_git
+from backend.git import gh_pr, local_git
 from backend.github.branch_safety import validate_base_branch
 from backend.llm.sanitize import sanitize_for_log
 from backend.pipeline.chunk_store import get_chunk_plan_status
 from backend.pipeline.run_locks import project_repo_lock_sync
+from backend.projects.pr_modes import (
+    PR_MODE_GITHUB_CLI,
+    PR_MODE_LOCAL_ONLY,
+    PR_MODE_MANUAL_TOKEN,
+    normalize_pr_mode,
+)
 from backend.projects.project_store import require_project
 from backend.security.secrets import decrypt_secret
 
@@ -250,12 +256,14 @@ def _find_existing_pr(repo, owner: str, branch_name: str, base_branch: str):
     return None
 
 
+def _pr_title(feature_description: str | None, run_id: str) -> str:
+    feature = (feature_description or "").strip()
+    return feature if feature else f"Pipewright run {run_id[:8]}"
+
+
 def _create_pr(repo, run_id: str, feature_description: str, branch_name: str, base_branch: str):
-    title = feature_description.strip() if feature_description and feature_description.strip() else (
-        f"Pipewright run {run_id[:8]}"
-    )
     return repo.create_pull(
-        title=title,
+        title=_pr_title(feature_description, run_id),
         body=build_pr_body(run_id),
         head=branch_name,
         base=base_branch,
@@ -270,25 +278,170 @@ def _ensure_branch_has_commits_ahead(repo_path: str, branch_name: str, base_bran
         )
 
 
-def _push_and_create_pr_locked(run_id: str, run: dict) -> dict:
-    branch_name = f"pipewright/{run_id[:8]}"
-    if run.get("pr_url"):
-        return {
-            "status": RunStatus.COMPLETE,
-            "run_id": run_id,
-            "branch_name": run.get("branch_name") or branch_name,
-            "pr_url": run["pr_url"],
-            "pr_number": run.get("pr_number"),
-        }
+def _build_local_only_instructions(branch_name: str) -> list[str]:
+    return [
+        f"git checkout {branch_name}",
+        f"git push origin {branch_name}",
+        "Open a pull request on your Git host when you are ready.",
+    ]
 
+
+def _mark_local_only_complete(run_id: str, branch_name: str) -> None:
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE pipeline_runs
+            SET status = :status,
+                current_step = :current_step,
+                branch_name = COALESCE(branch_name, :branch_name),
+                push_error = NULL
+            WHERE id = :run_id
+        """), {
+            "run_id": run_id,
+            "branch_name": branch_name,
+            "status": RunStatus.COMPLETE,
+            "current_step": "local_only_complete",
+        })
+
+
+def _complete_local_only(run_id: str, run: dict, project: dict, branch_name: str) -> dict:
+    """
+    local_only mode: no push, no PR, no GitHub token required.
+
+    This is a safe, successful outcome — the approved changes live on a local
+    branch and the operator finishes the PR by hand. It never marks the run as
+    push_failed.
+    """
     status = run.get("status")
-    if status not in {RunStatus.FINAL_APPROVED, RunStatus.PUSH_FAILED}:
+    if status not in {
+        RunStatus.FINAL_APPROVED,
+        RunStatus.PUSH_FAILED,
+        RunStatus.COMPLETE,
+    }:
         raise RuntimeError(
             f"pr_orchestrator.py: run is not ready for push-pr. "
             f"run_id={run_id} | status={status}"
         )
 
-    project = require_project(run.get("project_id"))
+    branch_name = run.get("branch_name") or branch_name
+    # Read-only verification: confirm the approved branch exists locally. This
+    # never pushes, checks out, or mutates git state.
+    repo_path = project["repo_path"]
+    local_git.ensure_git_repo(repo_path)
+    if not local_git.branch_exists(branch_name, repo_path):
+        raise RuntimeError(
+            f"pr_orchestrator.py: expected local branch missing: {branch_name}"
+        )
+
+    _mark_local_only_complete(run_id, branch_name)
+    return {
+        "status": RunStatus.COMPLETE,
+        "run_id": run_id,
+        "pr_mode": PR_MODE_LOCAL_ONLY,
+        "branch_name": branch_name,
+        "pr_url": None,
+        "pr_number": None,
+        "remote_action": False,
+        "message": (
+            "Local-only mode: no branch was pushed and no pull request was "
+            "created. The approved changes are committed on a local branch."
+        ),
+        "manual_instructions": _build_local_only_instructions(branch_name),
+    }
+
+
+def _verify_local_branch_for_cli(
+    repo_path: str,
+    branch_name: str,
+    owner: str | None,
+    repo_name: str | None,
+) -> None:
+    if owner and repo_name:
+        # When owner/repo are configured, enforce the same origin-match safety
+        # as the manual_token path.
+        _verify_local_branch(repo_path, branch_name, owner, repo_name)
+        return
+
+    # owner/repo not configured: gh resolves the repo from the local remote
+    # itself. Still verify branch presence, checkout, and a clean worktree
+    # before any push happens.
+    local_git.ensure_git_repo(repo_path)
+    if not local_git.branch_exists(branch_name, repo_path):
+        raise RuntimeError(
+            f"pr_orchestrator.py: expected local branch missing: {branch_name}"
+        )
+    current_branch = local_git.get_current_branch(repo_path)
+    if current_branch != branch_name:
+        result = local_git.run_git(["checkout", branch_name], repo_path)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"pr_orchestrator.py: failed to checkout {branch_name}: "
+                f"{result.stderr.strip()}"
+            )
+    local_git.ensure_clean_worktree(repo_path)
+
+
+def _push_and_create_pr_github_cli(
+    run_id: str,
+    run: dict,
+    project: dict,
+    branch_name: str,
+) -> dict:
+    """
+    github_cli mode: push the approved branch with the safe git helper, then
+    find-or-create the PR with gh. Never auto-merges, force-pushes, or deletes
+    branches. gh is only touched after final approval.
+    """
+    repo_path = project["repo_path"]
+    owner = project.get("github_owner")
+    repo_name = project.get("github_repo")
+    base_branch = project.get("github_base_branch")
+
+    try:
+        # Resolve a missing base branch to the safe default and reject
+        # forbidden base branches (main/master/develop) before anything else.
+        base_branch = validate_base_branch(base_branch)
+        # Fail safely with a clear message if gh is unusable, before any push.
+        gh_pr.ensure_gh_ready()
+        _mark_pushing(run_id, branch_name)
+        _verify_local_branch_for_cli(repo_path, branch_name, owner, repo_name)
+        _ensure_branch_has_commits_ahead(repo_path, branch_name, base_branch)
+        if not local_git.branch_exists_remote(repo_path, branch_name):
+            local_git.push_branch(branch_name, repo_path)
+        _save_pushed(run_id, branch_name)
+
+        existing = gh_pr.find_open_pr(repo_path, branch_name, base_branch)
+        if existing is not None:
+            pr = existing
+        else:
+            pr = gh_pr.create_pr(
+                repo_path,
+                branch_name,
+                base_branch,
+                _pr_title(run.get("feature_description"), run_id),
+                build_pr_body(run_id),
+            )
+        return _save_pr_metadata(
+            run_id,
+            branch_name,
+            pr["url"],
+            int(pr["number"]),
+        )
+    except Exception as error:
+        error_text = sanitize_for_log(str(error))
+        _mark_push_failed(run_id, error_text, branch_name)
+        raise RuntimeError(
+            f"pr_orchestrator.py: push-pr failed. "
+            f"run_id={run_id} | error={error_text}"
+        )
+
+
+def _push_and_create_pr_manual_token(
+    run_id: str,
+    run: dict,
+    project: dict,
+    branch_name: str,
+) -> dict:
+    """manual_token mode: the existing PyGithub push + PR flow, unchanged."""
     repo_path = project["repo_path"]
     token, owner, repo_name, base_branch = _require_project_github(project)
 
@@ -328,6 +481,40 @@ def _push_and_create_pr_locked(run_id: str, run: dict) -> dict:
             f"pr_orchestrator.py: push-pr failed. "
             f"run_id={run_id} | error={error_text}"
         )
+
+
+def _push_and_create_pr_locked(run_id: str, run: dict) -> dict:
+    branch_name = f"pipewright/{run_id[:8]}"
+    if run.get("pr_url"):
+        return {
+            "status": RunStatus.COMPLETE,
+            "run_id": run_id,
+            "branch_name": run.get("branch_name") or branch_name,
+            "pr_url": run["pr_url"],
+            "pr_number": run.get("pr_number"),
+        }
+
+    project = require_project(run.get("project_id"))
+    pr_mode = normalize_pr_mode(project.get("pr_mode"))
+
+    if pr_mode == PR_MODE_LOCAL_ONLY:
+        return _complete_local_only(run_id, run, project, branch_name)
+
+    status = run.get("status")
+    if status not in {RunStatus.FINAL_APPROVED, RunStatus.PUSH_FAILED}:
+        raise RuntimeError(
+            f"pr_orchestrator.py: run is not ready for push-pr. "
+            f"run_id={run_id} | status={status}"
+        )
+
+    if pr_mode == PR_MODE_GITHUB_CLI:
+        return _push_and_create_pr_github_cli(run_id, run, project, branch_name)
+    if pr_mode == PR_MODE_MANUAL_TOKEN:
+        return _push_and_create_pr_manual_token(run_id, run, project, branch_name)
+    # normalize_pr_mode guarantees one of the three modes; this is defensive.
+    raise RuntimeError(
+        f"pr_orchestrator.py: unsupported pr_mode for push-pr: {pr_mode}"
+    )
 
 
 def push_and_create_pr(run_id: str) -> dict:

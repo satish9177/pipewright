@@ -1,7 +1,13 @@
 import { useState, type ChangeEvent, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { projectsApi, ProjectCreate } from '@/api/client'
+import {
+  projectsApi,
+  type PrMode,
+  type ProjectCreateRequest,
+  type ProjectDetectResponse,
+} from '@/api/client'
+import PrModeSetup, { type GithubFields } from '@/components/PrModeSetup'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -13,22 +19,38 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 
+interface BasicFields {
+  name: string
+  repo_path: string
+  test_command: string
+  branch: string
+  description: string
+}
+
 export default function NewProjectPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [error, setError] = useState<string | null>(null)
 
-  const [form, setForm] = useState<ProjectCreate>({
+  const [basic, setBasic] = useState<BasicFields>({
     name: '',
     repo_path: '',
     test_command: 'python --version',
     branch: 'main',
     description: '',
-    github_token: '',
+  })
+  const [github, setGithub] = useState<GithubFields>({
     github_owner: '',
     github_repo: '',
     github_base_branch: 'pipewright-staging',
+    github_token: '',
   })
+  const [mode, setMode] = useState<PrMode>('local_only')
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+
+  const [detection, setDetection] = useState<ProjectDetectResponse | null>(null)
+  const [detecting, setDetecting] = useState(false)
+  const [detectError, setDetectError] = useState<string | null>(null)
 
   const mutation = useMutation({
     mutationFn: projectsApi.create,
@@ -36,24 +58,71 @@ export default function NewProjectPage() {
       queryClient.invalidateQueries({ queryKey: ['projects'] })
       navigate(`/projects/${project.id}`)
     },
-    onError: (err: any) => {
-      setError(err.response?.data?.detail ?? 'Failed to create project')
+    onError: (err: unknown) => {
+      const detail =
+        typeof err === 'object' && err !== null && 'response' in err
+          ? (err as { response?: { data?: { detail?: string } } }).response?.data
+              ?.detail
+          : undefined
+      setError(detail ?? 'Failed to create project')
     },
   })
+
+  const updateBasic = (field: keyof BasicFields) =>
+    (e: ChangeEvent<HTMLInputElement>) =>
+      setBasic(prev => ({ ...prev, [field]: e.target.value }))
+
+  const updateGithub = (field: keyof GithubFields, value: string) =>
+    setGithub(prev => ({ ...prev, [field]: value }))
+
+  const runDetection = async () => {
+    const repoPath = basic.repo_path.trim()
+    if (!repoPath) return
+    setDetecting(true)
+    setDetectError(null)
+    try {
+      const result = await projectsApi.detect(repoPath)
+      setDetection(result)
+      // Auto-fill owner/repo from detection without overwriting user edits.
+      setGithub(prev => ({
+        ...prev,
+        github_owner: prev.github_owner || result.github_owner || '',
+        github_repo: prev.github_repo || result.github_repo || '',
+      }))
+    } catch {
+      setDetection(null)
+      setDetectError('Detection failed. You can still configure the project manually.')
+    } finally {
+      setDetecting(false)
+    }
+  }
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
     setError(null)
-    const data = { ...form }
-    if (!data.github_token) delete data.github_token
-    if (!data.github_owner) delete data.github_owner
-    if (!data.github_repo) delete data.github_repo
+
+    const data: ProjectCreateRequest = {
+      name: basic.name,
+      repo_path: basic.repo_path,
+      test_command: basic.test_command,
+      branch: basic.branch,
+      description: basic.description,
+      pr_mode: mode,
+    }
+
+    // Only send GitHub fields for the modes that use them.
+    if (mode !== 'local_only') {
+      if (github.github_owner) data.github_owner = github.github_owner
+      if (github.github_repo) data.github_repo = github.github_repo
+      if (github.github_base_branch)
+        data.github_base_branch = github.github_base_branch
+    }
+    if (mode === 'manual_token' && github.github_token) {
+      data.github_token = github.github_token
+    }
+
     mutation.mutate(data)
   }
-
-  const update = (field: keyof ProjectCreate) =>
-    (e: ChangeEvent<HTMLInputElement>) =>
-      setForm(prev => ({ ...prev, [field]: e.target.value }))
 
   return (
     <div className="max-w-2xl">
@@ -68,9 +137,7 @@ export default function NewProjectPage() {
         <Card className="mb-4">
           <CardHeader>
             <CardTitle className="text-base">Repository</CardTitle>
-            <CardDescription>
-              Basic project configuration
-            </CardDescription>
+            <CardDescription>Basic project configuration</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4">
             <div className="grid gap-2">
@@ -78,102 +145,104 @@ export default function NewProjectPage() {
               <Input
                 id="name"
                 placeholder="AI Workflow Platform"
-                value={form.name}
-                onChange={update('name')}
+                value={basic.name}
+                onChange={updateBasic('name')}
                 required
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="repo_path">Local Repo Path</Label>
-              <Input
-                id="repo_path"
-                placeholder="C:\\Users\\Hp\\ai-workflow-platform"
-                value={form.repo_path}
-                onChange={update('repo_path')}
-                required
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="test_command">Test Command</Label>
-              <Input
-                id="test_command"
-                placeholder="python --version"
-                value={form.test_command}
-                onChange={update('test_command')}
-                required
-              />
+              <Label htmlFor="repo_path">Local repository path</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="repo_path"
+                  placeholder="C:\\Users\\satis\\Projects\\pipewright"
+                  value={basic.repo_path}
+                  onChange={updateBasic('repo_path')}
+                  onBlur={runDetection}
+                  required
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={runDetection}
+                  disabled={detecting || !basic.repo_path.trim()}
+                >
+                  {detecting ? 'Detecting…' : 'Detect from folder'}
+                </Button>
+              </div>
+              <div className="grid gap-1 text-xs text-muted-foreground">
+                <p>
+                  Open your project folder in a terminal and run{' '}
+                  <code>pwd</code>, then paste the output here. This should be
+                  the folder that contains the Git repo.
+                </p>
+                <p>Examples:</p>
+                <ul className="list-disc pl-5">
+                  <li>
+                    Windows PowerShell:{' '}
+                    <code>C:\Users\satis\Projects\pipewright</code>
+                  </li>
+                  <li>
+                    Mac/Linux: <code>/Users/satish/projects/pipewright</code>
+                  </li>
+                </ul>
+              </div>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="branch">Default Branch</Label>
               <Input
                 id="branch"
                 placeholder="main"
-                value={form.branch}
-                onChange={update('branch')}
+                value={basic.branch}
+                onChange={updateBasic('branch')}
               />
+            </div>
+
+            <div className="grid gap-3 rounded-md border p-4">
+              <div>
+                <p className="text-sm font-medium">Project checks</p>
+                <p className="text-xs text-muted-foreground">
+                  Pipewright runs this command after applying code changes.
+                </p>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="test_command">Test Command</Label>
+                <Input
+                  id="test_command"
+                  placeholder="python --version"
+                  value={basic.test_command}
+                  onChange={updateBasic('test_command')}
+                  required
+                />
+              </div>
             </div>
           </CardContent>
         </Card>
 
         <Card className="mb-6">
           <CardHeader>
-            <CardTitle className="text-base">
-              GitHub (Optional)
-            </CardTitle>
+            <CardTitle className="text-base">PR Creation</CardTitle>
             <CardDescription>
-              Required for automatic PR creation after approval
+              Choose how Pipewright handles pull requests after final approval.
             </CardDescription>
           </CardHeader>
-          <CardContent className="grid gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="github_token">
-                Personal Access Token
-              </Label>
-              <Input
-                id="github_token"
-                type="password"
-                placeholder="ghp_..."
-                value={form.github_token}
-                onChange={update('github_token')}
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <Label htmlFor="github_owner">GitHub Owner</Label>
-                <Input
-                  id="github_owner"
-                  placeholder="satish9177"
-                  value={form.github_owner}
-                  onChange={update('github_owner')}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="github_repo">Repository Name</Label>
-                <Input
-                  id="github_repo"
-                  placeholder="ai-workflow-platform"
-                  value={form.github_repo}
-                  onChange={update('github_repo')}
-                />
-              </div>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="github_base_branch">
-                Base Branch for PRs
-              </Label>
-              <Input
-                id="github_base_branch"
-                placeholder="pipewright-staging"
-                value={form.github_base_branch}
-                onChange={update('github_base_branch')}
-              />
-            </div>
+          <CardContent>
+            <PrModeSetup
+              detection={detection}
+              detecting={detecting}
+              detectError={detectError}
+              mode={mode}
+              onModeChange={setMode}
+              advancedOpen={advancedOpen}
+              onAdvancedToggle={setAdvancedOpen}
+              fields={github}
+              onFieldChange={updateGithub}
+            />
           </CardContent>
         </Card>
 
-        {error && (
-          <p className="text-red-500 text-sm mb-4">{error}</p>
-        )}
+        {error && <p className="text-red-500 text-sm mb-4">{error}</p>}
 
         <div className="flex gap-3">
           <Button type="submit" disabled={mutation.isPending}>
