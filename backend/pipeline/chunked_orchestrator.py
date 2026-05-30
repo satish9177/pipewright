@@ -45,6 +45,10 @@ from backend.repo.repo_indexer import get_relevant_files
 
 logger = logging.getLogger(__name__)
 NO_CHANGES_MESSAGE = "Coder produced no file changes."
+NO_EFFECTIVE_CHANGES_MESSAGE = (
+    "Patch produced no effective changes (working tree clean). "
+    "The requested change may already be present; nothing was committed."
+)
 
 
 def _utc_now() -> str:
@@ -345,6 +349,17 @@ def _commit_and_complete_chunk(
         update_chunk_status(run_id, chunk_number, "failed", NO_CHANGES_MESSAGE)
         _update_run_status(run_id, "failed", f"chunk_{chunk_number}_failed", chunk_number)
         raise RuntimeError(NO_CHANGES_MESSAGE)
+
+    # The coder declared file changes, but the patch may have produced no
+    # effective on-disk change (e.g. a no-op edit whose result is byte-identical
+    # to the original). Committing in that state fails with an opaque git error,
+    # so detect it here and fail cleanly before staging. This guard covers both
+    # normal non-review chunks and post-approval high-risk chunks, since both
+    # commit through this function.
+    if local_git.is_working_tree_clean(target_repo_path):
+        update_chunk_status(run_id, chunk_number, "failed", NO_EFFECTIVE_CHANGES_MESSAGE)
+        _update_run_status(run_id, "failed", f"chunk_{chunk_number}_failed", chunk_number)
+        raise RuntimeError(NO_EFFECTIVE_CHANGES_MESSAGE)
 
     commit_message = f"chunk {chunk_number}: {chunk.title}"
     local_git.commit_files(touched_files, commit_message, target_repo_path)

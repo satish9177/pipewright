@@ -381,6 +381,31 @@ def test_edit_windows_separators_remain_safe(tmp_repo, monkeypatch):
     assert nested.read_text(encoding="utf-8") == "config = 'new'\n"
 
 
+def test_edit_noop_applies_with_empty_diff(tmp_repo, monkeypatch):
+    """
+    A no-op edit (new_string identical to old_string) still 'succeeds' at the
+    patch layer and leaves the file byte-identical, producing an empty diff.
+    No effective change is committed here — the commit guard in
+    chunked_orchestrator is responsible for refusing to commit this state.
+    """
+    from backend.config import keys
+    monkeypatch.setattr(keys.settings, "target_repo_path", str(tmp_repo))
+
+    target = tmp_repo / "file.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+
+    run_id = str(uuid.uuid4())
+    result = apply_patch(
+        _edit_output(run_id, "file.py", "value = 1", "value = 1"),
+        run_id,
+    )
+
+    assert result.success is True
+    # File content unchanged and diff is empty -> no effective change.
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+    assert result.diff == ""
+
+
 def test_large_file_modify_with_full_content_rejected(tmp_repo, monkeypatch):
     from backend.config import keys
     monkeypatch.setattr(keys.settings, "target_repo_path", str(tmp_repo))

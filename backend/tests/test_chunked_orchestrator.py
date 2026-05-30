@@ -216,6 +216,15 @@ def patch_git_preflight(monkeypatch, calls=None):
         "commit_files",
         lambda files, message, repo: calls.append(("commit", files, message, repo)) if calls is not None else "hash",
     )
+    # After a real patch the working tree is dirty (effective changes present).
+    # Make this deterministic so the no-effective-change commit guard does not
+    # trip on the fake pipeline. Tests run under .pytest_tmp, which is gitignored,
+    # so the ambient working tree would otherwise look clean in a fresh checkout.
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "is_working_tree_clean",
+        lambda repo_path: False,
+    )
 
 
 def patch_success_pipeline(monkeypatch, run_id: str, calls=None):
@@ -243,6 +252,14 @@ def patch_success_pipeline(monkeypatch, run_id: str, calls=None):
     monkeypatch.setattr(chunked_orchestrator, "run_coder", fake_coder)
     monkeypatch.setattr(chunked_orchestrator, "apply_patch", fake_patch)
     monkeypatch.setattr(chunked_orchestrator, "run_tests", fake_tests)
+    # A successful patch produces effective on-disk changes, so the working
+    # tree is dirty at commit time. Make this deterministic so the
+    # no-effective-change commit guard does not trip on the fake pipeline.
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "is_working_tree_clean",
+        lambda repo_path: False,
+    )
 
 
 def patch_resume_git(monkeypatch, calls=None, branch_exists=True, clean=True):
@@ -420,6 +437,57 @@ def test_commit_and_complete_chunk_refuses_empty_touched_files(
         """), {"run_id": run_id}).fetchone()
     assert chunk_row[0] == "failed"
     assert chunk_row[1] == chunked_orchestrator.NO_CHANGES_MESSAGE
+
+
+def test_commit_and_complete_chunk_skips_commit_when_working_tree_clean(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    plan_status = get_chunk_plan_status(run_id)
+    chunk = plan_status.triage.chunks[0]
+
+    # Coder declared changes (non-empty touched_files) but the patch produced
+    # no effective on-disk change, so git reports a clean working tree.
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "is_working_tree_clean",
+        lambda repo_path: True,
+    )
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "commit_files",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("commit_files should not be called")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="Patch produced no effective changes"):
+        chunked_orchestrator._commit_and_complete_chunk(
+            run_id,
+            chunk,
+            make_coder_result(run_id),
+            str(tmp_repo),
+            make_planner_result(run_id),
+        )
+
+    with engine.connect() as conn:
+        chunk_row = conn.execute(text("""
+            SELECT status, error_message
+            FROM chunks
+            WHERE run_id = :run_id AND chunk_number = 1
+        """), {"run_id": run_id}).fetchone()
+        run_row = conn.execute(text("""
+            SELECT status, current_step
+            FROM pipeline_runs
+            WHERE id = :run_id
+        """), {"run_id": run_id}).fetchone()
+
+    assert chunk_row[0] == "failed"
+    assert chunk_row[1] == chunked_orchestrator.NO_EFFECTIVE_CHANGES_MESSAGE
+    assert run_row[0] == "failed"
+    assert run_row[1] == "chunk_1_failed"
 
 
 @pytest.mark.asyncio
