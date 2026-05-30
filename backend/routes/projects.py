@@ -5,7 +5,13 @@ Project CRUD routes.
 
 from fastapi import APIRouter, HTTPException
 
-from backend.models.handoff import ProjectCreate, ProjectUpdate
+from backend.git.repo_inspect import detect_repo
+from backend.models.handoff import (
+    ProjectCreate,
+    ProjectDetectRequest,
+    ProjectDetectResponse,
+    ProjectUpdate,
+)
 from backend.projects.project_responses import (
     sanitize_project_list_response,
     sanitize_project_response,
@@ -33,12 +39,33 @@ def create_project_route(request: ProjectCreate):
             github_owner=request.github_owner,
             github_repo=request.github_repo,
             github_base_branch=request.github_base_branch,
+            pr_mode=request.pr_mode,
         )
         return sanitize_project_response(project)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except RuntimeError as error:
         raise HTTPException(status_code=500, detail=str(error))
+
+
+@router.post("/projects/detect", response_model=ProjectDetectResponse)
+def detect_project_route(request: ProjectDetectRequest):
+    """
+    Read-only detection for the New Project flow.
+
+    Inspects the repo at repo_path and recommends a pr_mode. This endpoint
+    never saves project settings and never mutates git state: it does not
+    create branches, push, or create PRs.
+    """
+    try:
+        detection = detect_repo(request.repo_path)
+        return ProjectDetectResponse(**detection)
+    except Exception as error:
+        # Detection must never leak raw errors to the frontend.
+        raise HTTPException(
+            status_code=500,
+            detail=f"Project detection failed: {error}",
+        )
 
 
 @router.get("/projects")
@@ -76,6 +103,7 @@ def update_project_endpoint(
             github_owner=request.github_owner,
             github_repo=request.github_repo,
             github_base_branch=request.github_base_branch,
+            pr_mode=request.pr_mode,
         )
     except RuntimeError as error:
         raise HTTPException(status_code=500, detail=str(error))

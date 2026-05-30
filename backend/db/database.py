@@ -222,6 +222,15 @@ def _migrate_db(conn) -> None:
                 "DEFAULT 'pipewright-staging'",
             ),
             (
+                # No DEFAULT here on purpose: existing rows stay NULL so the
+                # backfill below can distinguish them and choose manual_token
+                # vs local_only. Fresh DBs get the default from schema.sql and
+                # the project store always sets pr_mode explicitly on insert.
+                "projects",
+                "pr_mode",
+                "ALTER TABLE projects ADD COLUMN pr_mode TEXT",
+            ),
+            (
                 "checkpoints",
                 "chunk_number",
                 "ALTER TABLE checkpoints ADD COLUMN chunk_number INTEGER DEFAULT 0",
@@ -267,6 +276,23 @@ def _migrate_db(conn) -> None:
                 UPDATE approval_gates
                 SET approval_type = 'legacy'
                 WHERE approval_type IS NULL
+            """))
+        if _column_exists(conn, "projects", "pr_mode"):
+            # One-time backfill: existing projects with a full manual GitHub
+            # config become manual_token; everything else becomes local_only.
+            # Idempotent because it only touches rows still NULL.
+            conn.execute(text("""
+                UPDATE projects
+                SET pr_mode = 'manual_token'
+                WHERE pr_mode IS NULL
+                  AND github_token IS NOT NULL AND TRIM(github_token) != ''
+                  AND github_owner IS NOT NULL AND TRIM(github_owner) != ''
+                  AND github_repo IS NOT NULL AND TRIM(github_repo) != ''
+            """))
+            conn.execute(text("""
+                UPDATE projects
+                SET pr_mode = 'local_only'
+                WHERE pr_mode IS NULL
             """))
         if _column_exists(conn, "memory_facts", "project_id"):
             conn.execute(text("""

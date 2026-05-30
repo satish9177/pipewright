@@ -12,6 +12,7 @@ from pathlib import Path
 from sqlalchemy import text
 
 from backend.db.database import engine, init_db
+from backend.projects.pr_modes import DEFAULT_PR_MODE, normalize_pr_mode
 from backend.security.secrets import encrypt_secret
 
 
@@ -38,6 +39,7 @@ def create_project(
     github_owner: str | None = None,
     github_repo: str | None = None,
     github_base_branch: str = "pipewright-staging",
+    pr_mode: str = DEFAULT_PR_MODE,
 ) -> dict:
     try:
         if not name or not name.strip():
@@ -55,6 +57,7 @@ def create_project(
             if github_base_branch and github_base_branch.strip()
             else "pipewright-staging"
         )
+        normalized_pr_mode = normalize_pr_mode(pr_mode)
         now = datetime.now(timezone.utc).isoformat()
 
         encrypted_github_token = encrypt_secret(github_token)
@@ -66,13 +69,14 @@ def create_project(
                 (
                     id, name, repo_path, test_command, branch, description,
                     github_token, github_owner, github_repo,
-                    github_base_branch, status, created_at
+                    github_base_branch, pr_mode, status, created_at
                 )
                 VALUES
                 (
                     :id, :name, :repo_path, :test_command, :branch,
                     :description, :github_token, :github_owner,
-                    :github_repo, :github_base_branch, 'active', :created_at
+                    :github_repo, :github_base_branch, :pr_mode,
+                    'active', :created_at
                 )
             """), {
                 "id": project_id,
@@ -85,6 +89,7 @@ def create_project(
                 "github_owner": github_owner,
                 "github_repo": github_repo,
                 "github_base_branch": normalized_base_branch,
+                "pr_mode": normalized_pr_mode,
                 "created_at": now,
             })
             conn.commit()
@@ -134,7 +139,8 @@ def update_project(
     github_token: str = None,
     github_owner: str = None,
     github_repo: str = None,
-    github_base_branch: str = None
+    github_base_branch: str = None,
+    pr_mode: str = None,
 ) -> dict | None:
     """
     Update project fields.
@@ -157,6 +163,7 @@ def update_project(
         "github_owner": github_owner if github_owner is not None else project.get("github_owner"),
         "github_repo": github_repo if github_repo is not None else project.get("github_repo"),
         "github_base_branch": github_base_branch if github_base_branch is not None else project.get("github_base_branch", "pipewright-staging"),
+        "pr_mode": normalize_pr_mode(pr_mode) if pr_mode is not None else (project.get("pr_mode") or DEFAULT_PR_MODE),
         "updated_at": now,
         "id": project_id
     }
@@ -173,6 +180,7 @@ def update_project(
                     github_owner = :github_owner,
                     github_repo = :github_repo,
                     github_base_branch = :github_base_branch,
+                    pr_mode = :pr_mode,
                     updated_at = :updated_at
                 WHERE id = :id
             """), updated)
