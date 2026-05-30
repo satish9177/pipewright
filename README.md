@@ -95,10 +95,32 @@ locked by tests (see `docs/stabilization/final-smoke-status.md`).
 
 ## Quick local setup
 
-Full details in [`docs/setup/local-dev.md`](docs/setup/local-dev.md). The short
-version:
+Full details in [`docs/setup/local-dev.md`](docs/setup/local-dev.md).
 
-### 1. Backend
+### Recommended: one command
+
+These scripts verify prerequisites, create the venv, install dependencies (only
+when needed), and start the backend and frontend together:
+
+```powershell
+# Windows (PowerShell)
+.\scripts\dev.ps1
+```
+
+```bash
+# macOS / Linux
+chmod +x scripts/dev.sh   # first time only
+./scripts/dev.sh
+```
+
+They print the URLs (backend `http://127.0.0.1:8001`, frontend
+`http://127.0.0.1:5173`) and how to stop. The scripts do **not** touch `.env` —
+set your keys first (see below). Prefer to run each step yourself? Use the manual
+setup below.
+
+### Manual setup
+
+#### 1. Backend
 
 **Windows (PowerShell):**
 
@@ -133,7 +155,7 @@ Generate `PIPEWRIGHT_ENCRYPTION_KEY` with:
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-### 2. Frontend
+#### 2. Frontend
 
 ```bash
 cd frontend

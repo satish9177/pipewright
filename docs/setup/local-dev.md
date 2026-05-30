@@ -11,6 +11,54 @@ single-user tool today — there is no Docker, no deployment, and no hosted auth
 - At least one LLM provider API key (Gemini by default)
 - Optional: GitHub CLI (`gh`) if you want the `github_cli` PR mode
 
+## One-command local dev
+
+The fastest way to start both servers. The script verifies prerequisites,
+creates the backend venv if missing, installs backend requirements, installs
+frontend deps only on first run, and starts the backend and frontend.
+
+**Windows (PowerShell):**
+
+```powershell
+.\scripts\dev.ps1
+```
+
+The backend and frontend each open in their own PowerShell window. Stop them with
+`Ctrl+C` in each window (or just close the windows). On repeat runs, once
+dependencies are installed, you can skip the install step:
+
+```powershell
+.\scripts\dev.ps1 -SkipInstall
+```
+
+**macOS / Linux:**
+
+```bash
+chmod +x scripts/dev.sh   # first time only
+./scripts/dev.sh
+```
+
+Both servers run in the same terminal; press `Ctrl+C` once to stop both. Use
+`./scripts/dev.sh --skip-install` to skip dependency install on repeat runs.
+
+The script prints the URLs:
+
+- Backend: `http://127.0.0.1:8001` (API docs at `/docs`)
+- Frontend: `http://127.0.0.1:5173` (Vite prints the exact URL)
+
+> **The script does not create or edit `.env`** (it never stores secrets). Before
+> your first *pipeline run*, still do [step 2](#2-configure-environment-variables):
+> set `PIPEWRIGHT_ENCRYPTION_KEY` and your selected provider key (e.g.
+> `GEMINI_API_KEY`). LLM configuration is always via `.env` — see
+> [`role-based-configuration.md`](../llm/role-based-configuration.md).
+
+> **Windows `npm.ps1` issue:** `dev.ps1` already prefers `npm.cmd`, so the
+> PowerShell execution-policy error does not apply when using the script. If you
+> run npm by hand instead, use `npm.cmd` (see step 4).
+
+If a script fails (or you prefer to run each step yourself), use the manual
+fallback below.
+
 ## 1. Clone and create a virtual environment
 
 **Windows (PowerShell):**
