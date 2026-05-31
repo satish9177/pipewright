@@ -41,9 +41,6 @@ experience end to end.
 - `backend/pipeline/approval_gate.py`
   - `[APPROVAL]` gate creation, CLI-style approval instructions, polling,
     timeout, approve, and reject messages.
-- `backend/pipeline/orchestrator.py`
-  - `[PIPELINE]` legacy run progress, rollback, approval, memory suggestion,
-    GitHub PR, and completion messages.
 - `backend/github/github_client.py`
   - `[GITHUB]` legacy PR creation progress and file operation messages.
 - `backend/pipeline/chunk_store.py`

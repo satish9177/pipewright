@@ -84,7 +84,6 @@ def test_anthropic_sdk_import_only_in_provider_adapter():
         pytest.param("triage.py", id="triage"),
         pytest.param("planner.py", id="planner"),
         pytest.param("coder.py", id="coder"),
-        pytest.param("orchestrator.py", id="orchestrator"),
         pytest.param("chunked_orchestrator.py", id="chunked_orchestrator"),
     ],
 )
@@ -105,7 +104,6 @@ def test_pipeline_files_do_not_import_gemini_sdk(pipeline_file):
         pytest.param("triage.py", id="triage"),
         pytest.param("planner.py", id="planner"),
         pytest.param("coder.py", id="coder"),
-        pytest.param("orchestrator.py", id="orchestrator"),
         pytest.param("chunked_orchestrator.py", id="chunked_orchestrator"),
     ],
 )
@@ -158,7 +156,6 @@ def test_openai_sdk_import_only_in_provider_adapters():
         pytest.param("triage.py", id="triage"),
         pytest.param("planner.py", id="planner"),
         pytest.param("coder.py", id="coder"),
-        pytest.param("orchestrator.py", id="orchestrator"),
         pytest.param("chunked_orchestrator.py", id="chunked_orchestrator"),
     ],
 )
