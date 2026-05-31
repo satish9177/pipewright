@@ -399,3 +399,18 @@ def test_no_secret_value_logged_on_rejection(caplog, memory_project_ids):
 
 def test_validate_memory_content_trims_content():
     assert validate_memory_content("  safe memory fact  ") == "safe memory fact"
+
+
+def test_memory_facts_has_project_scoped_read_index():
+    # The hot read path filters on project_id + status. Lock in the existing
+    # project-scoped index (created by _migrate_db) so project-scoped reads stay
+    # cheap as facts grow. No new/duplicate index is added by this PR.
+    with engine.connect() as conn:
+        index_names = {
+            row[0]
+            for row in conn.execute(text("""
+                SELECT name FROM sqlite_master
+                WHERE type = 'index' AND tbl_name = 'memory_facts'
+            """)).fetchall()
+        }
+    assert "idx_memory_facts_project_status" in index_names

@@ -4,6 +4,7 @@ Tests for Phase 2B-4A sequential chunk execution.
 No real AI calls, no real GitHub, no push.
 """
 
+import json
 import uuid
 import inspect
 
@@ -339,6 +340,13 @@ def event_statuses(run_id: str, kind: str) -> list[str]:
         for event in get_buffered_events(run_id)
         if event.kind == kind
     ]
+
+
+def count_memory_facts(project_id: str) -> int:
+    with engine.connect() as conn:
+        return conn.execute(text("""
+            SELECT COUNT(*) FROM memory_facts WHERE project_id = :project_id
+        """), {"project_id": project_id}).fetchone()[0]
 
 
 @pytest.mark.asyncio
@@ -1132,6 +1140,79 @@ def test_completion_summary_classifies_edit_as_modified():
     assert summary["files_modified"] == ["README.md", "old.py"]
     assert summary["files_created"] == ["new.py"]
     assert summary["files_deleted"] == ["gone.py"]
+
+
+# --- PR #15A: AI memory suggestions must never auto-promote to long-term memory ---
+# make_coder_result() emits suggested_memory_entries=["remember chunk"]. A run
+# (failed, unapproved, or even fully successful) may surface these as advisory
+# suggestions, but it must never insert them into memory_facts. Only an explicit
+# human create/approve through the Memory API writes long-term memory.
+
+
+@pytest.mark.asyncio
+async def test_failed_chunk_run_writes_no_long_term_memory(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    def failed_tests(patch, run_id, chunk_number=0):
+        return make_test_result(run_id, False)
+
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", failed_tests)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    # The coder produced suggested_memory_entries, but the failed run must not
+    # auto-promote them into memory_facts.
+    assert count_memory_facts(project["id"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_unapproved_run_writes_no_long_term_memory(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, project = create_run(tmp_repo, tracked_runs, approved=False)
+
+    with pytest.raises(RuntimeError):
+        await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    # A run that was never approved (the rejected/cancelled-equivalent path)
+    # never executes the coder and must leave memory untouched.
+    assert count_memory_facts(project["id"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_successful_chunk_run_does_not_auto_promote_memory(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    # Even on a successful chunk, AI suggestions stay advisory: they are recorded
+    # in the chunk completion summary for human review, never written to memory.
+    assert count_memory_facts(project["id"]) == 0
+
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT completion_summary FROM chunks
+            WHERE run_id = :run_id AND chunk_number = 1
+        """), {"run_id": run_id}).fetchone()
+    summary = json.loads(row[0])
+    assert summary["suggested_memory_entries"] == ["remember chunk"]
 
 
 @pytest.mark.asyncio
