@@ -12,8 +12,8 @@ backend/routes/chunks decision endpoints:
   - C. Override-once: approving the gate lets THIS run continue; a different run still
        gates; a changed conflict re-blocks.
   - D. Rejection: rejecting the gate rejects the run with nothing applied.
-  - E. Safety: gate evaluation never mutates memory, never crosses projects, never leaks
-       secrets, runs once per run, and the decision core is pure.
+  - E. Safety: gate creation stales conflicting DB memory before prompts, never crosses
+       projects, never leaks secrets, runs once per run, and the decision core is pure.
 
 Deterministic: temp repos, isolated DB rows, mocked pipeline/git. No real AI, no push.
 """
@@ -31,6 +31,7 @@ from backend.db.database import engine
 from backend.events.event_bus import clear_all_events_for_tests, get_buffered_events
 from backend.main import app
 from backend.memory.memory_store import add_fact, list_facts
+from backend.memory.prompt_builder import build_project_memory_block
 from backend.memory.repo_reality import ConflictEntry, ConflictReport
 from backend.models.chunk import ChunkDefinition, TriageResult
 from backend.pipeline import chunked_orchestrator
@@ -55,6 +56,10 @@ from backend.routes.chunks import _decide_memory_conflict_gate
 # never touches real AI or git, and every planner/coder/patch/test/branch/commit call
 # is recorded in a shared ``calls`` list.
 from backend.tests.test_chunked_orchestrator import (
+    make_coder_result,
+    make_patch_result,
+    make_planner_result,
+    make_test_result,
     patch_git_preflight,
     patch_success_pipeline,
 )
@@ -168,9 +173,59 @@ def _mock_pipeline_and_git(monkeypatch, run_id: str, calls: list) -> None:
     patch_git_preflight(monkeypatch, calls)
 
 
+def _mock_pipeline_and_git_with_memory_capture(
+    monkeypatch,
+    run_id: str,
+    calls: list,
+    captured_memory: dict[str, str],
+) -> None:
+    async def fake_planner(feature_description, run_id, chunk_number=0, **kwargs):
+        if calls is not None:
+            calls.append(("planner", chunk_number, feature_description))
+        captured_memory["planner"] = build_project_memory_block(
+            project_id=kwargs.get("project_id"),
+            role="planner",
+        )
+        return make_planner_result(run_id)
+
+    async def fake_coder(plan, run_id, chunk_number=0, **kwargs):
+        if calls is not None:
+            calls.append(("coder", chunk_number))
+        captured_memory["coder"] = build_project_memory_block(
+            project_id=kwargs.get("project_id"),
+            role="coder",
+        )
+        return make_coder_result(run_id, chunk_number)
+
+    def fake_patch(code, run_id, chunk_number=0):
+        if calls is not None:
+            calls.append(("patch", chunk_number))
+        return make_patch_result(run_id)
+
+    def fake_tests(patch, run_id, chunk_number=0):
+        if calls is not None:
+            calls.append(("test", chunk_number))
+        return make_test_result(run_id, True)
+
+    monkeypatch.setattr(chunked_orchestrator, "run_planner", fake_planner)
+    monkeypatch.setattr(chunked_orchestrator, "run_coder", fake_coder)
+    monkeypatch.setattr(chunked_orchestrator, "apply_patch", fake_patch)
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", fake_tests)
+    patch_git_preflight(monkeypatch, calls)
+
+
 def _fact_snapshot(project_id: str, fact_id: str) -> dict:
     fact = next(f for f in list_facts(project_id) if f["id"] == fact_id)
     return dict(fact)
+
+
+def _prompt_preview(project_id: str, role: str = "planner") -> str:
+    response = client.get(
+        f"/api/v1/projects/{project_id}/memory/prompt-preview",
+        params={"role": role},
+    )
+    assert response.status_code == 200
+    return response.json()["memory_block"]
 
 
 def _conflict_events(run_id):
@@ -231,13 +286,14 @@ def test_readme_only_run_does_not_block_but_warns(repo, tracked):
     clear_all_events_for_tests()
     _postgres_repo(repo)
     project_id = _make_project(repo, tracked)
-    _add_db_fact(project_id, "Project uses MongoDB.")
+    fact_id = _add_db_fact(project_id, "Project uses MongoDB.")
     run_id = _make_run(project_id, tracked, NON_SENSITIVE_FILES)
 
     pause = _apply_db_memory_conflict_policy(run_id, project_id, str(repo), NON_SENSITIVE_FILES)
 
     assert pause is None
     assert get_pending_memory_conflict_gate(run_id) is None
+    assert _fact_snapshot(project_id, fact_id)["status"] == "active"
     # #16D-3 warning preserved (non-sensitive => info level).
     events = _conflict_events(run_id)
     assert len(events) == 1
@@ -298,7 +354,10 @@ async def test_approving_gate_lets_this_run_continue(repo, tracked, monkeypatch)
     run_id = _make_run(project_id, tracked, DB_SENSITIVE_FILES)
 
     calls: list = []
-    _mock_pipeline_and_git(monkeypatch, run_id, calls)
+    captured_memory: dict[str, str] = {}
+    _mock_pipeline_and_git_with_memory_capture(
+        monkeypatch, run_id, calls, captured_memory
+    )
 
     # 1) First execute blocks.
     first = await execute_approved_chunks(run_id)
@@ -315,6 +374,8 @@ async def test_approving_gate_lets_this_run_continue(repo, tracked, monkeypatch)
     assert second["status"] == "awaiting_final_approval"
     assert any(c[0] == "planner" for c in calls)
     assert any(c[0] == "branch" for c in calls)
+    assert "MongoDB" not in captured_memory["planner"]
+    assert "MongoDB" not in captured_memory["coder"]
 
 
 @pytest.mark.asyncio
@@ -418,19 +479,33 @@ async def test_rejecting_gate_rejects_run_with_nothing_applied(repo, tracked, mo
 # E. Safety
 # --------------------------------------------------------------------------- #
 
-def test_gate_evaluation_never_mutates_memory(repo, tracked):
+def test_gate_creation_stales_conflicting_memory_and_prompt_preview_excludes_it(repo, tracked):
     clear_all_events_for_tests()
     _postgres_repo(repo)
     project_id = _make_project(repo, tracked)
     fact_id = _add_db_fact(project_id, "Project uses MongoDB.")
     run_id = _make_run(project_id, tracked, DB_SENSITIVE_FILES)
 
-    before = _fact_snapshot(project_id, fact_id)
+    before_preview = _prompt_preview(project_id, role="planner")
+    assert "Project uses MongoDB." in before_preview
+
     pause = _apply_db_memory_conflict_policy(run_id, project_id, str(repo), DB_SENSITIVE_FILES)
     after = _fact_snapshot(project_id, fact_id)
 
-    assert pause is not None  # it did block (so evaluation definitely ran)
-    assert before == after    # ...yet the fact is byte-identical: no verify, no stale
+    assert pause is not None
+    assert after["status"] == "stale"
+    assert after["is_stale"] in (1, True)
+    assert "repo=postgresql, memory=mongodb" in (after["archived_reason"] or "")
+
+    planner_preview = _prompt_preview(project_id, role="planner")
+    coder_preview = _prompt_preview(project_id, role="coder")
+    assert "Project uses MongoDB." not in planner_preview
+    assert "Project uses MongoDB." not in coder_preview
+
+    _decide_memory_conflict_gate(
+        run_id, ApprovalStatus.APPROVED, RunStatus.CHUNK_PLAN_APPROVED
+    )
+    assert "Project uses MongoDB." not in _prompt_preview(project_id, role="planner")
 
 
 def test_conflict_in_project_a_never_gates_project_b(repo, tracked):
@@ -455,7 +530,7 @@ def test_gate_and_events_contain_no_secret(repo, tracked):
     _write(repo, ".env", f"DATABASE_URL=postgres://user:{secret}@host/db\n")
     _postgres_repo(repo)
     project_id = _make_project(repo, tracked)
-    _add_db_fact(project_id, "Project uses MongoDB.")
+    fact_id = _add_db_fact(project_id, "Project uses MongoDB.")
     run_id = _make_run(project_id, tracked, DB_SENSITIVE_FILES)
 
     pause = _apply_db_memory_conflict_policy(run_id, project_id, str(repo), DB_SENSITIVE_FILES)
@@ -464,6 +539,8 @@ def test_gate_and_events_contain_no_secret(repo, tracked):
     gate = get_pending_memory_conflict_gate(run_id)
     assert secret not in (gate["ai_summary"] or "")
     assert secret not in (gate["test_results"] or "")
+    fact = _fact_snapshot(project_id, fact_id)
+    assert secret not in (fact["archived_reason"] or "")
     for event in get_buffered_events(run_id):
         assert secret not in event.message
         assert secret not in str(event.data)

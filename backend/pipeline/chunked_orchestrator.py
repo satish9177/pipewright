@@ -37,6 +37,7 @@ from backend.pipeline.chunk_store import (
     save_chunk_completion_summary,
 )
 from backend.memory.conflict_scope import is_db_sensitive_run
+from backend.memory.memory_store import mark_fact_stale
 from backend.memory.repo_reality import evaluate_db_memory_conflicts
 from backend.pipeline.coder import run_coder
 from backend.pipeline.patch_applier import apply_patch, rollback_patch
@@ -116,6 +117,24 @@ def _build_memory_conflict_summary(report) -> str:
     )
 
 
+def _stale_db_conflict_facts(project_id: str, report) -> None:
+    """
+    Mark clearly conflicting DB memory stale before pausing on the gate.
+
+    The evaluator remains read-only; this mutation is tied to the blocking gate path
+    so an approved override cannot inject the stale DB fact into planner/coder prompts.
+    """
+    for entry in report.conflicts:
+        mark_fact_stale(
+            project_id=project_id,
+            memory_id=entry.fact_id,
+            reason=(
+                "repo reality conflict: "
+                f"repo={entry.repo_value}, memory={entry.memory_value}"
+            ),
+        )
+
+
 def _db_conflict_block_decision(
     report,
     files_expected: list[str],
@@ -148,10 +167,11 @@ def _apply_db_memory_conflict_policy(
     """
     Run the DB memory-conflict policy once, before any branch/patch/commit (#16D-4).
 
-    Evaluates DB memory vs. repo reality READ-ONLY (never mutates memory). On a clear
-    conflict for a DB-sensitive run with no matching approved override, it creates a
-    blocking ``memory_conflict`` gate, pauses the run, and returns a pause result.
-    Otherwise it preserves the #16D-3 non-blocking warning and returns ``None``.
+    Evaluates DB memory vs. repo reality with a read-only comparison. On a clear
+    conflict for a DB-sensitive run with no matching approved override, it marks the
+    conflicting DB memory facts stale, creates a blocking ``memory_conflict`` gate,
+    pauses the run, and returns a pause result. Otherwise it preserves the #16D-3
+    non-blocking warning and returns ``None``.
     """
     try:
         report = evaluate_db_memory_conflicts(project_id, repo_path)
@@ -170,6 +190,7 @@ def _apply_db_memory_conflict_policy(
     decision = _db_conflict_block_decision(report, files_expected, approved_signature)
     if decision is not None:
         summary, signature = decision
+        _stale_db_conflict_facts(project_id, report)
         gate = create_memory_conflict_gate_and_mark_run(run_id, summary, signature)
         logger.info(
             "[CHUNKED] DB memory conflict gate engaged | run_id=%s | gate_id=%s",

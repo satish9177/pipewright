@@ -26,7 +26,9 @@ doing right now*:
 based on the run's scope. It implements nothing here; it is the contract for #16D-2…4.
 
 Core rule, unchanged: **current repository state > project memory.** The gate never
-edits or archives memory; it only pauses a run so a human decides.
+edits or archives memory content; when a clear DB conflict blocks a run, the
+implementation marks the conflicting DB facts stale so they are not injected while the
+human decides.
 
 ---
 
@@ -182,13 +184,15 @@ It:
   `category='db'` facts, maps each fact's content via the existing
   `_extract_db_values_from_content` / `_DB_VALUE_TOKENS`, and
 - returns conflicts / ambiguity / evidence **without mutating anything** — no `verify`,
-  no `mark_fact_stale`. Mutation stays in #16C's manual action.
+  no `mark_fact_stale`. #16D-4 keeps this evaluator pure, then stales the clearly
+  conflicting facts only on the blocking gate path.
 
 `verify_project_db_memory_against_repo` (#16C) is then rewritten to call this evaluator
 and apply its mutations, so detection logic lives in exactly one place. The gate calls
-the evaluator **read-only**. This makes the gate decision robust, stateless, and
-schema-free, and it correctly handles a fact that was staled by a *prior* manual
-verification (the conflict still exists in the repo, so the evaluator re-derives it).
+the evaluator for a **read-only comparison** and performs only the narrow stale marking
+after a blocking decision. This makes the gate decision robust and schema-free, and it
+correctly handles a fact that was staled by a *prior* manual verification (the conflict
+still exists in the repo, so the evaluator re-derives it).
 
 `ConflictReport` (shape, not a DB table) carries per-conflict: `fact_id`, `memory_value`,
 `repo_value`, `evidence_path`, `evidence_excerpt` (the fingerprint's fixed human string —
@@ -210,8 +214,9 @@ never raw file content, never `.env` values), plus `repo_db_signal` and `ambiguo
   scratch and will gate again if still relevant.
 - **Visibility:** the gate record appears in run detail (same surface as chunk/final
   gates).
-- The override **never** edits or archives memory. Resolving the underlying staleness is
-  a separate, explicit human action (#16C `verify-repo`, edit, or archive).
+- The override decision **never** edits or archives memory content. Resolving the
+  underlying staleness is a separate, explicit human action (#16C `verify-repo`, edit,
+  or archive).
 
 ---
 
@@ -326,6 +331,9 @@ PR #16D-4 implements the blocking run-scope DB memory conflict gate.
 - A clear DB memory conflict on a DB-sensitive run now pauses execution with run status
   `awaiting_memory_conflict_approval` before branch creation, patching, testing, commit,
   push, or PR work.
+- Before pausing, the gate marks the clearly conflicting DB memory facts stale with the
+  existing `mark_fact_stale` helper so they are excluded from prompt preview and from
+  planner/coder project-memory blocks.
 - The gate uses the existing `approval_gates` table with
   `approval_type = "memory_conflict"`, `risk_level = "high"`, and `chunk_number = 0`;
   there is no schema change and no `memory_conflicts` table.
@@ -337,5 +345,6 @@ PR #16D-4 implements the blocking run-scope DB memory conflict gate.
   matches the conflict that was approved.
 - The conflict signature is stored in the existing gate `test_results` field so the
   override can be compared without adding new columns.
-- Approving the gate does not update, verify, archive, or otherwise resolve memory. It
-  only lets this run continue; resolving stale memory remains an explicit human action.
+- Approving the gate does not update, verify, archive, or otherwise resolve memory
+  content. It only lets this run continue; resolving stale memory remains an explicit
+  human action.
