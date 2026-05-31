@@ -15,7 +15,7 @@ from backend.models.handoff import CoderHandoff, PatchResult, FileChange
 from backend.checkpoint.checkpoint_store import save_checkpoint
 from backend.projects.project_context import get_target_repo_path
 from backend.utils.path_safety import (
-    is_forbidden_path as is_secret_path,
+    is_forbidden_write_path,
     normalize_relative_path,
     validate_safe_relative_path,
 )
@@ -27,27 +27,6 @@ BACKUP_DIR = Path(__file__).parent.parent / "backups"
 # than this may not be modified by wholesale full-content replacement; they must
 # be changed with targeted action="edit" instead.
 MAX_MODIFY_FILE_LINES = 200
-
-FORBIDDEN_PATHS = [
-    ".env",
-    ".env.local",
-    ".env.production",
-    ".git",
-    ".gitignore",
-    "docker-compose.yml",
-    "Dockerfile",
-    "requirements.txt",
-    "package-lock.json",
-]
-
-FORBIDDEN_PATTERNS = [
-    ".env",
-    "secrets",
-    "private",
-    "../",
-    "..\\",
-]
-
 
 def _get_git_hash(repo_path: str) -> str:
     """
@@ -72,36 +51,11 @@ def _get_git_hash(repo_path: str) -> str:
         return "no-git"
 
 
-def _is_forbidden_path(relative_path: str) -> bool:
-    try:
-        normalized = normalize_relative_path(relative_path)
-        parts = [part.lower() for part in normalized.split("/")]
-        lower_path = normalized.lower()
-
-        if is_secret_path(normalized):
-            return True
-
-        for forbidden in FORBIDDEN_PATHS:
-            forbidden_lower = forbidden.lower()
-            if lower_path == forbidden_lower or lower_path.endswith(
-                f"/{forbidden_lower}"
-            ):
-                return True
-
-        for pattern in FORBIDDEN_PATTERNS:
-            if pattern.lower() in lower_path:
-                return True
-
-        return ".git" in parts
-    except Exception as error:
-        raise RuntimeError(f"patch_applier.py: forbidden path check failed: {error}")
-
-
 def _validate_path(relative_path: str, target_repo: str) -> Path:
     try:
         print(f"[PATCH] Validating path: {relative_path}")
 
-        if _is_forbidden_path(relative_path):
+        if is_forbidden_write_path(relative_path):
             raise RuntimeError(
                 f"patch_applier.py: [SECURITY] forbidden path rejected: "
                 f"{relative_path}"
