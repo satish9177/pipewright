@@ -1,3 +1,9 @@
+-- memory_facts.project_id is intentionally nullable for legacy/pre-M1
+-- compatibility. The application layer (memory_store.py) requires a non-blank
+-- project_id for every read and write, and any unscoped legacy rows are
+-- archived and never injected into prompts (see _archive_unscoped_pre_m1_memory).
+-- A future migration may tighten this to NOT NULL after a local-DB backfill
+-- strategy exists. Do not change it here without that backfill.
 CREATE TABLE IF NOT EXISTS memory_facts (
     id TEXT PRIMARY KEY,
     project_id TEXT,

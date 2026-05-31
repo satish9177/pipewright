@@ -101,6 +101,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_memory_facts_project_hash_active
 
 **Backfill rule:** Every existing row is set to `project_id = NULL` and `status = 'archived'`, `archived_reason = 'pre-M1; no project scope'`. Do not auto-assign them to a project. They are unsafe by construction (see Finding #2).
 
+**Nullable `project_id` decision (implemented, M1):** `memory_facts.project_id` is intentionally **nullable** in the shipped schema, not `NOT NULL`, for legacy/pre-M1 compatibility. The safety guarantee is enforced at the application layer, not by the column constraint:
+
+- `memory_store.py` requires a non-blank `project_id` for every read and write (`_validate_project_id`).
+- `load_hard_facts` / `build_project_memory_block` return `""` (no memory) when `project_id` is `None`, empty, or whitespace — there is never a global fallback.
+- Any unscoped legacy rows (`project_id IS NULL`) are archived on access via `_archive_unscoped_pre_m1_memory()` and are never injected into prompts.
+
+A future migration may tighten this column to `NOT NULL`, but only after a local-DB backfill strategy exists for already-installed databases. Do not flip it to `NOT NULL` without that backfill, because the archive-on-access path depends on nullable legacy rows existing. This nullable-but-app-enforced behavior is covered by regression tests in `backend/tests/test_memory.py` and `backend/tests/test_memory_prompt_builder.py`.
+
 Also add a suggestions table:
 
 ```sql
