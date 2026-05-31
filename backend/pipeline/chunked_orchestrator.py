@@ -28,6 +28,8 @@ from backend.models.handoff import CoderHandoff, PlannerHandoff
 from backend.pipeline.approval_gate import (
     create_chunk_approval_gate_and_mark_chunk,
     create_final_approval_gate_and_mark_run,
+    create_memory_conflict_gate_and_mark_run,
+    get_approved_memory_conflict_gate,
 )
 from backend.pipeline.chunk_store import (
     get_chunk_plan_status,
@@ -72,11 +74,127 @@ def _collect_files_expected(chunks) -> list[str]:
     return files
 
 
+_DB_DISPLAY_NAMES = {
+    "postgresql": "PostgreSQL",
+    "mysql": "MySQL",
+    "mongodb": "MongoDB",
+    "sqlite": "SQLite",
+}
+
+
+def _db_display(value: str | None) -> str:
+    if not value:
+        return "unknown"
+    return _DB_DISPLAY_NAMES.get(value, value)
+
+
+def _conflict_signature(report) -> str:
+    """
+    Stable, deterministic fingerprint of the current DB conflict. Used to scope an
+    approved override to the exact conflict the human saw — a changed conflict must
+    re-block. Pure.
+    """
+    memory_values = sorted({entry.memory_value for entry in report.conflicts})
+    return f"{report.repo_db_signal}|{','.join(memory_values)}"
+
+
+def _build_memory_conflict_summary(report) -> str:
+    """
+    Build the human-facing block message (gate ai_summary, §7 of the design doc).
+    Pure. Evidence is the evaluator's path + fixed excerpt only — never secrets.
+    """
+    memory_values = sorted({entry.memory_value for entry in report.conflicts})
+    memory_display = ", ".join(_db_display(value) for value in memory_values)
+    repo_display = _db_display(report.repo_db_signal)
+    evidence_path = report.conflicts[0].evidence_path or "repo manifest"
+    return (
+        "Pipewright found a DB memory conflict relevant to this run.\n"
+        f"Memory says: {memory_display}\n"
+        f"Repo evidence says: {repo_display} (from {evidence_path})\n"
+        "This run appears to modify DB/model/migration files.\n"
+        "Resolve the stale memory or override once to continue."
+    )
+
+
+def _db_conflict_block_decision(
+    report,
+    files_expected: list[str],
+    approved_signature: str | None,
+) -> tuple[str, str] | None:
+    """
+    Pure blocking-policy decision (no I/O). Returns ``(summary, signature)`` when the
+    run must block on a DB memory conflict, else ``None``.
+
+    Blocks only when ALL hold: a clear conflict exists, the repo DB signal is known and
+    not ambiguous, the run is DB-sensitive, and no approved override matches the current
+    conflict. Any other case returns ``None`` (proceed / warn).
+    """
+    if not report.conflicts or report.ambiguous or not report.repo_db_signal:
+        return None
+    if not is_db_sensitive_run(files_expected):
+        return None
+    signature = _conflict_signature(report)
+    if approved_signature is not None and approved_signature == signature:
+        return None
+    return (_build_memory_conflict_summary(report), signature)
+
+
+def _apply_db_memory_conflict_policy(
+    run_id: str,
+    project_id: str,
+    repo_path: str,
+    files_expected: list[str],
+) -> dict | None:
+    """
+    Run the DB memory-conflict policy once, before any branch/patch/commit (#16D-4).
+
+    Evaluates DB memory vs. repo reality READ-ONLY (never mutates memory). On a clear
+    conflict for a DB-sensitive run with no matching approved override, it creates a
+    blocking ``memory_conflict`` gate, pauses the run, and returns a pause result.
+    Otherwise it preserves the #16D-3 non-blocking warning and returns ``None``.
+    """
+    try:
+        report = evaluate_db_memory_conflicts(project_id, repo_path)
+    except Exception as error:
+        # Evaluation problems must never silently corrupt a run; fall back to the
+        # safe, non-blocking path (no conflict info to surface).
+        logger.warning(
+            "[CHUNKED] db conflict evaluation failed, not blocking | run_id=%s | error=%s",
+            run_id, error,
+        )
+        return None
+
+    approved = get_approved_memory_conflict_gate(run_id)
+    approved_signature = (approved.get("test_results") or "") if approved else None
+
+    decision = _db_conflict_block_decision(report, files_expected, approved_signature)
+    if decision is not None:
+        summary, signature = decision
+        gate = create_memory_conflict_gate_and_mark_run(run_id, summary, signature)
+        logger.info(
+            "[CHUNKED] DB memory conflict gate engaged | run_id=%s | gate_id=%s",
+            run_id, gate["id"],
+        )
+        return {
+            "status": "awaiting_memory_conflict_approval",
+            "run_id": run_id,
+            "approval_required": True,
+            "gate_id": gate["id"],
+        }
+
+    # Not blocking: preserve the #16D-3 warning, reusing the single evaluation.
+    _emit_db_conflict_warning(
+        run_id, project_id, repo_path, files_expected, report=report
+    )
+    return None
+
+
 def _emit_db_conflict_warning(
     run_id: str,
     project_id: str,
     repo_path: str,
     files_expected: list[str],
+    report=None,
 ) -> None:
     """
     Non-blocking notice (#16D-3). Evaluates DB memory vs. repo reality READ-ONLY and,
@@ -85,9 +203,13 @@ def _emit_db_conflict_warning(
 
     Surface: a `log`-kind event on the existing event bus (visible in run detail's
     live event stream). Severity is `warning` for DB-sensitive runs, else `info`.
+
+    ``report`` may be a precomputed ConflictReport to avoid re-evaluating (so the gate
+    policy and this warning together evaluate at most once per run).
     """
     try:
-        report = evaluate_db_memory_conflicts(project_id, repo_path)
+        if report is None:
+            report = evaluate_db_memory_conflicts(project_id, repo_path)
         if not report.conflicts and not report.ambiguous:
             return
 
@@ -824,18 +946,23 @@ async def _execute_approved_chunks_locked(
             f"run_id={run_id} | error={error}"
         )
 
-    branch_name = f"pipewright/{run_id[:8]}"
-    local_git.assert_not_on_stale_pipewright_branch(target_repo_path, run_id)
-    local_git.create_or_checkout_branch(branch_name, target_repo_path)
-
     pending = _pending_chunks(plan_status)
-    # Non-blocking DB memory conflict notice, once per run before any chunk executes.
-    _emit_db_conflict_warning(
+    # DB memory-conflict gate (#16D-4): block a clear conflict on a DB-sensitive run
+    # before any branch/patch/commit. A blocked run writes nothing. Non-blocking
+    # cases (docs-only, ambiguous/unknown signal, no conflict, honored override) keep
+    # the #16D-3 warning. Runs once per run.
+    pause = _apply_db_memory_conflict_policy(
         run_id,
         plan_status.project_id,
         target_repo_path,
         _collect_files_expected(pending),
     )
+    if pause is not None:
+        return pause
+
+    branch_name = f"pipewright/{run_id[:8]}"
+    local_git.assert_not_on_stale_pipewright_branch(target_repo_path, run_id)
+    local_git.create_or_checkout_branch(branch_name, target_repo_path)
 
     completed_chunks = 0
     with active_project(project_runtime):
@@ -919,13 +1046,17 @@ async def _resume_chunked_pipeline_locked(
     completed_chunks = 0
 
     resumable = _resumable_chunks(refreshed)
-    # Non-blocking DB memory conflict notice, once per resume before any chunk runs.
-    _emit_db_conflict_warning(
+    # DB memory-conflict gate (#16D-4): re-evaluate once before any chunk runs. An
+    # approved override is honored only when the current conflict still matches; a
+    # changed/new conflict re-blocks. Non-blocking cases keep the #16D-3 warning.
+    pause = _apply_db_memory_conflict_policy(
         run_id,
         plan_status.project_id,
         target_repo_path,
         _collect_files_expected(resumable),
     )
+    if pause is not None:
+        return pause
 
     with active_project(project_runtime):
         for chunk_status in resumable:

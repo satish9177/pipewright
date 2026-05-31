@@ -16,6 +16,7 @@ import RunStatusBadge from '@/components/RunStatusBadge'
 import EventLog from '@/components/EventLog'
 import ChunkPlanPanel from '@/components/ChunkPlanPanel'
 import FinalApprovalPanel from '@/components/FinalApprovalPanel'
+import MemoryConflictPanel from '@/components/MemoryConflictPanel'
 import PushPrPanel from '@/components/PushPrPanel'
 import ReportView from '@/components/ReportView'
 import PlanView from '@/components/PlanView'
@@ -89,6 +90,7 @@ function shouldPollRunStatus(status: RunStatus) {
     'awaiting_chunk_plan_approval',
     'awaiting_chunk_approval',
     'awaiting_final_approval',
+    'awaiting_memory_conflict_approval',
     'pushing',
   ].includes(status)
 }
@@ -125,6 +127,15 @@ function isPendingFinalGate(gate: ApprovalGate, runId: string) {
   )
 }
 
+function isPendingMemoryConflictGate(gate: ApprovalGate, runId: string) {
+  return (
+    gate.run_id === runId &&
+    gate.approval_type === 'memory_conflict' &&
+    gate.chunk_number === 0 &&
+    gate.status === 'pending'
+  )
+}
+
 export default function RunDetailPage() {
   const { runId } = useParams<{ runId: string }>()
   const navigate = useNavigate()
@@ -147,6 +158,12 @@ export default function RunDetailPage() {
     string | null
   >(null)
   const [finalApprovalError, setFinalApprovalError] = useState<string | null>(
+    null
+  )
+  const [memoryConflictMessage, setMemoryConflictMessage] = useState<
+    string | null
+  >(null)
+  const [memoryConflictError, setMemoryConflictError] = useState<string | null>(
     null
   )
   const [pushPrMessage, setPushPrMessage] = useState<string | null>(null)
@@ -196,11 +213,17 @@ export default function RunDetailPage() {
     (gate: ApprovalGate) => runId ? isPendingFinalGate(gate, runId) : false
   )
 
+  const pendingMemoryConflictGate = gates?.find(
+    (gate: ApprovalGate) =>
+      runId ? isPendingMemoryConflictGate(gate, runId) : false
+  )
+
   const pendingGate = gates?.find(
     (g: ApprovalGate) =>
       g.run_id === runId &&
       g.status === 'pending' &&
-      !isPendingFinalGate(g, runId!)
+      !isPendingFinalGate(g, runId!) &&
+      !isPendingMemoryConflictGate(g, runId!)
   )
 
   const approveMutation = useMutation({
@@ -387,6 +410,48 @@ export default function RunDetailPage() {
     },
   })
 
+  const approveMemoryConflictMutation = useMutation({
+    mutationFn: () => runsApi.approveMemoryConflict(runId!),
+    onSuccess: () => {
+      setMemoryConflictMessage(
+        'Conflict overridden for this run. Continuing execution...'
+      )
+      setMemoryConflictError(null)
+      queryClient.invalidateQueries({ queryKey: ['run', runId] })
+      queryClient.invalidateQueries({ queryKey: ['gates'] })
+      // Override-once: the run returned to an executable state. Re-trigger
+      // execution so the now-honored override lets the run continue.
+      executeChunksMutation.mutate()
+    },
+    onError: (error: unknown) => {
+      setMemoryConflictMessage(null)
+      setMemoryConflictError(
+        getErrorMessage(error, 'Failed to override memory conflict.')
+      )
+    },
+  })
+
+  const rejectMemoryConflictMutation = useMutation({
+    mutationFn: (reason: string) =>
+      runsApi.rejectMemoryConflict(
+        runId!,
+        reason || 'Memory conflict rejected by user'
+      ),
+    onSuccess: () => {
+      setMemoryConflictMessage('Run rejected due to memory conflict.')
+      setMemoryConflictError(null)
+      queryClient.invalidateQueries({ queryKey: ['run', runId] })
+      queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+      queryClient.invalidateQueries({ queryKey: ['gates'] })
+    },
+    onError: (error: unknown) => {
+      setMemoryConflictMessage(null)
+      setMemoryConflictError(
+        getErrorMessage(error, 'Failed to reject memory conflict.')
+      )
+    },
+  })
+
   const pushPrMutation = useMutation({
     mutationFn: () => runsApi.pushPr(runId!),
     onSuccess: (response) => {
@@ -445,6 +510,8 @@ export default function RunDetailPage() {
   }
 
   const hasPrData = Boolean(run.pr_url || run.pr_number || run.push_error)
+  const showMemoryConflictPanel =
+    run.status === 'awaiting_memory_conflict_approval'
   const showFinalApprovalPanel = run.status === 'awaiting_final_approval'
   const showPushPrPanel = shouldShowPushPrPanel(run.status, hasPrData)
 
@@ -619,6 +686,28 @@ export default function RunDetailPage() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {showMemoryConflictPanel && (
+        <section className="mb-6">
+          <div className="mb-3">
+            <h3 className="text-sm font-semibold">Memory Conflict</h3>
+            <p className="text-xs text-muted-foreground">
+              A DB memory conflict paused this run. Override once to continue or
+              reject the run.
+            </p>
+          </div>
+          <MemoryConflictPanel
+            gate={pendingMemoryConflictGate}
+            isCheckingGate={gatesLoading}
+            isApproving={approveMemoryConflictMutation.isPending}
+            isRejecting={rejectMemoryConflictMutation.isPending}
+            message={memoryConflictMessage}
+            error={memoryConflictError}
+            onApprove={() => approveMemoryConflictMutation.mutate()}
+            onReject={(reason) => rejectMemoryConflictMutation.mutate(reason)}
+          />
+        </section>
       )}
 
       {(showFinalApprovalPanel || showPushPrPanel) && (

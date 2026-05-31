@@ -1078,6 +1078,8 @@ def _insert_read_only_run(run_id: str, project_id: str, intent: str):
     ("/runs/{run_id}/chunks/1/reject", {"reason": "no"}),
     ("/runs/{run_id}/final-approval/approve", None),
     ("/runs/{run_id}/final-approval/reject", {"reason": "no"}),
+    ("/runs/{run_id}/memory-conflict/approve", None),
+    ("/runs/{run_id}/memory-conflict/reject", {"reason": "no"}),
     ("/runs/{run_id}/push-pr", None),
 ])
 def test_read_only_runs_reject_mutating_routes(
@@ -1120,6 +1122,12 @@ def test_read_only_runs_reject_mutating_routes(
     monkeypatch.setattr(
         "backend.routes.chunks._decide_final_gate",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("final gate called")),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks._decide_memory_conflict_gate",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("memory conflict gate called")
+        ),
     )
     monkeypatch.setattr(
         "backend.routes.chunks.push_and_create_pr",
@@ -1202,6 +1210,8 @@ def test_execute_and_resume_routes_exist():
     assert "/runs/{run_id}/chunks/{chunk_number}/reject" in paths
     assert "/runs/{run_id}/final-approval/approve" in paths
     assert "/runs/{run_id}/final-approval/reject" in paths
+    assert "/runs/{run_id}/memory-conflict/approve" in paths
+    assert "/runs/{run_id}/memory-conflict/reject" in paths
     assert "/runs/{run_id}/push-pr" in paths
 
 
@@ -1309,6 +1319,16 @@ def test_final_approval_reject_route_rejects_too_long_reason():
     client = TestClient(app)
 
     response = client.post("/runs/run-123/final-approval/reject", json={
+        "reason": "x" * 2001,
+    })
+
+    assert response.status_code == 422
+
+
+def test_memory_conflict_reject_route_rejects_too_long_reason():
+    client = TestClient(app)
+
+    response = client.post("/runs/run-123/memory-conflict/reject", json={
         "reason": "x" * 2001,
     })
 

@@ -316,3 +316,26 @@ PR #16D-1 is **design and documentation only**: this doc plus a one-line pointer
 `memory-repo-reality-conflicts.md`. It changes **no** runtime behavior — no gate, no run
 blocking, no prompt-format change, no memory-store/API/UI/schema change. The integration
 points, gate mechanism, and reuse targets described here are referenced, not modified.
+
+---
+
+## 13. #16D-4 implemented
+
+PR #16D-4 implements the blocking run-scope DB memory conflict gate.
+
+- A clear DB memory conflict on a DB-sensitive run now pauses execution with run status
+  `awaiting_memory_conflict_approval` before branch creation, patching, testing, commit,
+  push, or PR work.
+- The gate uses the existing `approval_gates` table with
+  `approval_type = "memory_conflict"`, `risk_level = "high"`, and `chunk_number = 0`;
+  there is no schema change and no `memory_conflicts` table.
+- Decision endpoints are:
+  `POST /runs/{run_id}/memory-conflict/approve` and
+  `POST /runs/{run_id}/memory-conflict/reject`.
+- Approving the gate is an override-once action scoped to that run. Execute/resume
+  re-evaluates the current conflict and honors the approved gate only when it still
+  matches the conflict that was approved.
+- The conflict signature is stored in the existing gate `test_results` field so the
+  override can be compared without adding new columns.
+- Approving the gate does not update, verify, archive, or otherwise resolve memory. It
+  only lets this run continue; resolving stale memory remains an explicit human action.
