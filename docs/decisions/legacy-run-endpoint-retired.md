@@ -35,9 +35,11 @@ oversight than the supported path — a safety inconsistency, not a feature.
 - The unused frontend helpers (`runsApi.start`, `LegacyRunStartResponse`) were
   removed since nothing referenced them.
 
-The legacy orchestrator module (`backend/pipeline/orchestrator.py`) is left in
-place for now; only its wiring into the app entry point was removed. Deleting
-the module is a separate, larger cleanup.
+The legacy orchestrator module (`backend/pipeline/orchestrator.py`) has been
+deleted (PR #15D). It was no longer wired into the app entry point and nothing
+in production imported it, so removing it eliminates a latent footgun: a future
+import could otherwise have re-enabled the old single-shot bypass. The only
+supported implementation path remains `POST /runs/chunked`.
 
 ## Consequences
 
