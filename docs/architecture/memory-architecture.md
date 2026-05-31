@@ -410,6 +410,13 @@ Don't age by `created_at`. Instead:
 
 This is the right place to fix Finding #3 fully. M1 can use the naive aging as a transitional measure but **must** also expose the "verify" button per fact (already in §2.5) so humans can refute the stale flag without archiving.
 
+> **M1.5 (focused slice, designed separately):** A deterministic, `db`-first version of
+> this signal-driven conflict detection is designed in
+> [`memory-repo-reality-conflicts.md`](./memory-repo-reality-conflicts.md). It pulls the
+> "stack fingerprint vs. memory" idea forward as a small, testable increment (detect
+> clear conflicts → exclude the fact from prompts via the existing `is_stale` filter →
+> human-gate only scope-relevant runs) without the full M2 PostgreSQL/worker move.
+
 ### 3.6 Worker queue interaction
 
 When you introduce a worker queue (Celery/RQ/Arq), memory reads and writes become cross-process. Three rules:
