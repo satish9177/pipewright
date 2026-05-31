@@ -634,6 +634,37 @@ def test_push_error_is_sanitized(monkeypatch, tmp_repo, tracked_runs):
     assert "[REDACTED]" in push_error
 
 
+def test_push_error_sanitizes_bare_tokenized_remote_url(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    # The real High-severity gap: a tokenized HTTPS remote in a push failure
+    # has no "token="/"credential=" context word, so it relied on the new
+    # GitHub-token / URL-credential redaction rather than _SECRET_CONTEXT_RE.
+    run_id, _project = create_final_approved_run(tmp_repo, tracked_runs)
+    branch_name = f"pipewright/{run_id[:8]}"
+    calls = []
+    patch_git_for_branch(monkeypatch, calls, branch_name, remote_exists=True)
+    fake_token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    remote_url = f"https://{fake_token}@github.com/owner/repo.git"
+    monkeypatch.setattr(
+        pr_orchestrator,
+        "_get_github_repo",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError(f"fatal: unable to access {remote_url}")
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    assert fake_token not in str(exc_info.value)
+    push_error = _read_run_row(run_id)[3]
+    assert fake_token not in push_error
+    assert "[REDACTED]" in push_error
+    # Host/path stay useful for debugging.
+    assert "github.com/owner/repo.git" in push_error
+
+
 def test_run_payloads_never_expose_token(monkeypatch, tmp_repo, tracked_runs):
     run_id, _project = create_final_approved_run(tmp_repo, tracked_runs)
     branch_name = f"pipewright/{run_id[:8]}"
