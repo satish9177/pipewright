@@ -67,6 +67,12 @@ A **pure, deterministic** classifier over the **union of all pending chunks'
 is_db_sensitive_run(files_expected: list[str]) -> bool
 ```
 
+> **Implemented in #16D-2** as `backend/memory/conflict_scope.py`:
+> `is_db_sensitive_run(files_expected)` plus the debug helper
+> `get_db_sensitivity_reason(path) -> str | None`. Pure (no I/O, no side effects),
+> reuses `repo_indexer.classify_file` for indicator A, and is not yet wired into the
+> pipeline.
+
 `db_sensitive = True` only on a **strong** indicator — any expected file where:
 
 1. `backend/repo/repo_indexer.py:classify_file(path)` returns `model` or `migration`; or
