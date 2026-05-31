@@ -42,6 +42,7 @@ const statusTones: Record<string, StatusTone> = {
   awaiting_chunk_plan_approval: 'approval',
   awaiting_chunk_approval: 'approval',
   awaiting_final_approval: 'approval',
+  awaiting_memory_conflict_approval: 'approval',
   chunk_plan_approved: 'success',
   chunk_approved: 'success',
   final_approved: 'success',
@@ -75,5 +76,6 @@ export function getStatusDisplay(status: string): StatusDisplay {
 export function getApprovalTypeLabel(approvalType?: string | null) {
   if (approvalType === 'chunk') return 'Chunk Approval'
   if (approvalType === 'final') return 'Final Approval'
+  if (approvalType === 'memory_conflict') return 'Memory Conflict'
   return 'Legacy/Pre-merge Approval'
 }

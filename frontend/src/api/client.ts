@@ -483,6 +483,13 @@ export const runsApi = {
       `/runs/${runId}/final-approval/reject`,
       { reason },
     ).then(r => r.data),
+  approveMemoryConflict: (runId: string) =>
+    api.post<GateDecisionResponse>(`/runs/${runId}/memory-conflict/approve`).then(r => r.data),
+  rejectMemoryConflict: (runId: string, reason?: string | null) =>
+    api.post<GateDecisionResponse>(
+      `/runs/${runId}/memory-conflict/reject`,
+      { reason },
+    ).then(r => r.data),
   pushPr: (runId: string) =>
     api.post<PushPrResponse>(`/runs/${runId}/push-pr`).then(r => r.data),
   startImplementation: (runId: string) =>

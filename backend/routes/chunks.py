@@ -136,6 +136,10 @@ class RejectChunkApprovalRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=REJECTION_REASON_MAX_LENGTH)
 
 
+class RejectMemoryConflictRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=REJECTION_REASON_MAX_LENGTH)
+
+
 def _get_pending_final_gate(run_id: str) -> dict | None:
     with engine.connect() as conn:
         row = conn.execute(text("""
@@ -245,6 +249,60 @@ def _decide_final_gate(
         """), {"run_id": run_id}).fetchone()
         if row is None:
             raise ValueError("Pending final approval gate not found")
+
+        gate = dict(row._mapping)
+        conn.execute(text("""
+            UPDATE approval_gates
+            SET status = :gate_status,
+                rejection_reason = :reason,
+                decided_at = :decided_at
+            WHERE id = :gate_id
+              AND status = 'pending'
+        """), {
+            "gate_status": gate_status,
+            "reason": reason,
+            "decided_at": _utc_now(),
+            "gate_id": gate["id"],
+        })
+        result = conn.execute(text("""
+            UPDATE pipeline_runs
+            SET status = :run_status,
+                current_step = :run_status
+            WHERE id = :run_id
+        """), {
+            "run_id": run_id,
+            "run_status": run_status,
+        })
+        if result.rowcount == 0:
+            raise ValueError(f"Run not found: {run_id}")
+        return {"status": run_status, "run_id": run_id}
+
+
+def _decide_memory_conflict_gate(
+    run_id: str,
+    gate_status: str,
+    run_status: str,
+    reason: str | None = None,
+) -> dict:
+    """
+    Decide the pending DB memory-conflict gate (#16D-4) and set the run status.
+
+    Approve flips the gate to ``approved`` and the run back to an executable state;
+    continuation is the existing explicit execute/resume call, which honors the
+    approved override. Reject fails the run before any branch/patch/commit.
+    """
+    with engine.begin() as conn:
+        row = conn.execute(text("""
+            SELECT * FROM approval_gates
+            WHERE run_id = :run_id
+              AND approval_type = 'memory_conflict'
+              AND chunk_number = 0
+              AND status = 'pending'
+            ORDER BY created_at DESC
+            LIMIT 1
+        """), {"run_id": run_id}).fetchone()
+        if row is None:
+            raise ValueError("Pending memory conflict gate not found")
 
         gate = dict(row._mapping)
         conn.execute(text("""
@@ -670,6 +728,53 @@ def reject_final_approval_route(
             ApprovalStatus.REJECTED,
             RunStatus.FINAL_REJECTED,
             request.reason or "Final approval rejected",
+        )
+    except HTTPException:
+        raise
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@router.post("/runs/{run_id}/memory-conflict/approve")
+def approve_memory_conflict_route(run_id: str):
+    """
+    Override-once: approve the pending DB memory-conflict gate for this run. The run
+    returns to an executable state; re-call execute/resume to continue (the gate
+    re-evaluation honors the approved override for the same conflict).
+    """
+    try:
+        _ensure_mutating_run(run_id)
+        return _decide_memory_conflict_gate(
+            run_id,
+            ApprovalStatus.APPROVED,
+            RunStatus.CHUNK_PLAN_APPROVED,
+        )
+    except HTTPException:
+        raise
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@router.post("/runs/{run_id}/memory-conflict/reject")
+def reject_memory_conflict_route(
+    run_id: str,
+    request: RejectMemoryConflictRequest,
+):
+    """
+    Reject the pending DB memory-conflict gate. The run is rejected before any
+    branch/patch/commit/push.
+    """
+    try:
+        _ensure_mutating_run(run_id)
+        return _decide_memory_conflict_gate(
+            run_id,
+            ApprovalStatus.REJECTED,
+            RunStatus.REJECTED,
+            request.reason or "Memory conflict gate rejected",
         )
     except HTTPException:
         raise

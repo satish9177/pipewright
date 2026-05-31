@@ -23,6 +23,7 @@ class RunStatus:
     AWAITING_CHUNK_APPROVAL = "awaiting_chunk_approval"
     CHUNK_APPROVED = "chunk_approved"
     AWAITING_FINAL_APPROVAL = "awaiting_final_approval"
+    AWAITING_MEMORY_CONFLICT_APPROVAL = "awaiting_memory_conflict_approval"
     FINAL_APPROVED = "final_approved"
     FINAL_REJECTED = "final_rejected"
     PUSHING = "pushing"

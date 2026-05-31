@@ -402,6 +402,116 @@ def create_final_approval_gate_and_mark_run(
         )
 
 
+def _get_pending_memory_conflict_gate_for_conn(conn, run_id: str) -> dict | None:
+    row = conn.execute(text("""
+        SELECT * FROM approval_gates
+        WHERE run_id = :run_id
+          AND approval_type = 'memory_conflict'
+          AND chunk_number = 0
+          AND status = 'pending'
+        ORDER BY created_at DESC
+        LIMIT 1
+    """), {"run_id": run_id}).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def _get_approved_memory_conflict_gate_for_conn(conn, run_id: str) -> dict | None:
+    row = conn.execute(text("""
+        SELECT * FROM approval_gates
+        WHERE run_id = :run_id
+          AND approval_type = 'memory_conflict'
+          AND chunk_number = 0
+          AND status = 'approved'
+        ORDER BY created_at DESC
+        LIMIT 1
+    """), {"run_id": run_id}).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def get_pending_memory_conflict_gate(run_id: str) -> dict | None:
+    """Return the pending DB memory-conflict gate for a run, if any."""
+    with engine.connect() as conn:
+        return _get_pending_memory_conflict_gate_for_conn(conn, run_id)
+
+
+def get_approved_memory_conflict_gate(run_id: str) -> dict | None:
+    """Return the approved DB memory-conflict gate for a run, if any."""
+    with engine.connect() as conn:
+        return _get_approved_memory_conflict_gate_for_conn(conn, run_id)
+
+
+def create_memory_conflict_gate_and_mark_run(
+    run_id: str,
+    summary: str,
+    signature: str,
+) -> dict:
+    """
+    Transactionally create (or reuse a matching pending) DB memory-conflict gate and
+    mark the run as awaiting memory-conflict approval (#16D-4).
+
+    The conflict ``signature`` is stored in the existing free-text ``test_results``
+    column (no schema change). It lets execute/resume honor an override only when the
+    current conflict still matches the one the human approved.
+    """
+    try:
+        with engine.begin() as conn:
+            existing = _get_pending_memory_conflict_gate_for_conn(conn, run_id)
+            if existing and (existing.get("test_results") or "") == signature:
+                print(
+                    f"[APPROVAL] Memory conflict gate already pending | "
+                    f"run_id={run_id} | gate_id={existing['id']}"
+                )
+                gate = existing
+            else:
+                gate_id = str(uuid.uuid4())
+                conn.execute(text("""
+                    INSERT INTO approval_gates
+                    (
+                        id, run_id, step, status, ai_summary,
+                        plain_english_summary, risk_level, chunk_number,
+                        approval_type, test_results, created_at
+                    )
+                    VALUES
+                    (
+                        :id, :run_id, 'memory-conflict-approval', 'pending',
+                        :summary, :summary, 'high', 0, 'memory_conflict',
+                        :signature, :created_at
+                    )
+                """), {
+                    "id": gate_id,
+                    "run_id": run_id,
+                    "summary": summary,
+                    "signature": signature,
+                    "created_at": _utc_now(),
+                })
+                gate = _row_to_dict(conn.execute(text("""
+                    SELECT * FROM approval_gates
+                    WHERE id = :id
+                """), {"id": gate_id}).fetchone())
+                print(
+                    f"[APPROVAL] Memory conflict gate created | "
+                    f"run_id={run_id} | gate_id={gate_id}"
+                )
+
+            result = conn.execute(text("""
+                UPDATE pipeline_runs
+                SET status = 'awaiting_memory_conflict_approval',
+                    current_step = 'memory_conflict_approval'
+                WHERE id = :run_id
+            """), {"run_id": run_id})
+            if result.rowcount == 0:
+                raise RuntimeError(
+                    f"approval_gate.py: run not found for memory conflict gate. "
+                    f"run_id={run_id}"
+                )
+            return gate
+    except Exception as error:
+        raise RuntimeError(
+            f"approval_gate.py: failed to create memory conflict gate and mark run. "
+            f"run_id={run_id} | error={error}"
+        )
+
+
 def _display_approval_request(
     gate_id: str,
     run_id: str,
