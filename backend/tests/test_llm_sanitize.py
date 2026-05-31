@@ -43,3 +43,55 @@ def test_sanitize_redacts_commit_like_value_near_secret_context():
 
     assert commit_like not in sanitized
     assert "[REDACTED]" in sanitized
+
+
+# All tokens below are fake, fixed-shape strings — not real credentials.
+_FAKE_GHP = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+_FAKE_GHO = "gho_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+_FAKE_GHS = "ghs_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+_FAKE_GHU = "ghu_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+_FAKE_GHR = "ghr_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+_FAKE_PAT = "github_pat_" + "11ABCDEFG0_" + "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9"
+
+
+@pytest.mark.parametrize(
+    "token",
+    [_FAKE_GHP, _FAKE_GHO, _FAKE_GHS, _FAKE_GHU, _FAKE_GHR, _FAKE_PAT],
+)
+def test_sanitize_redacts_github_tokens(token):
+    sanitized = sanitize_for_log(f"git push failed: {token}")
+
+    assert token not in sanitized
+    assert "[REDACTED]" in sanitized
+
+
+def test_sanitize_redacts_tokenized_github_https_remote():
+    raw = f"fatal: unable to access https://{_FAKE_GHP}@github.com/owner/repo.git"
+    sanitized = sanitize_for_log(raw)
+
+    assert _FAKE_GHP not in sanitized
+    assert "https://[REDACTED]@github.com/owner/repo.git" in sanitized
+
+
+def test_sanitize_redacts_username_token_github_https_remote():
+    raw = f"remote: https://octocat:{_FAKE_PAT}@github.com/owner/repo.git"
+    sanitized = sanitize_for_log(raw)
+
+    assert _FAKE_PAT not in sanitized
+    assert "octocat" not in sanitized
+    assert "https://[REDACTED]@github.com/owner/repo.git" in sanitized
+
+
+def test_sanitize_keeps_plain_github_url_without_credentials():
+    url = "https://github.com/owner/repo.git"
+    text = f"failed to push to {url}"
+
+    assert sanitize_for_log(text) == text
+
+
+def test_sanitize_keeps_ssh_github_remote():
+    # SSH remotes carry no token; the leading git@ must not be destroyed.
+    url = "git@github.com:owner/repo.git"
+    text = f"failed to push to {url}"
+
+    assert sanitize_for_log(text) == text
