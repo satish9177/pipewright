@@ -17,9 +17,12 @@ from sqlalchemy import text
 
 from backend.db.database import engine
 from backend.main import app
-from backend.memory.memory_store import add_fact, list_facts
+from backend.memory.memory_store import add_fact, list_facts, mark_fact_stale
 from backend.memory.prompt_builder import build_project_memory_block
-from backend.memory.repo_reality import verify_project_db_memory_against_repo
+from backend.memory.repo_reality import (
+    evaluate_db_memory_conflicts,
+    verify_project_db_memory_against_repo,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -283,3 +286,50 @@ def test_verify_repo_endpoint_unknown_project_is_404():
     client = TestClient(app)
     response = client.post("/api/v1/projects/does-not-exist/memory/verify-repo")
     assert response.status_code == 404
+
+
+# --- read-only evaluator (#16D-3) ------------------------------------------
+
+def test_evaluator_is_read_only(repo, project_factory):
+    _write(repo, "package.json", '{"dependencies": {"mongodb": "^6.0.0"}}')
+    project_id = project_factory(repo)
+    fact_id = _add_db_fact(project_id, "Project uses PostgreSQL.")
+
+    before = _fact_by_id(project_id, fact_id)
+    report = evaluate_db_memory_conflicts(project_id, str(repo))
+    after = _fact_by_id(project_id, fact_id)
+
+    # Conflict detected...
+    assert report.repo_db_signal == "mongodb"
+    assert any(entry.fact_id == fact_id for entry in report.conflicts)
+    # ...but nothing mutated: status, staleness, and verification stamp unchanged.
+    assert after["status"] == before["status"] == "active"
+    assert after["is_stale"] == before["is_stale"]
+    assert after["last_verified_at"] == before["last_verified_at"]
+
+
+def test_evaluator_detects_conflict_among_stale_facts(repo, project_factory):
+    _write(repo, "package.json", '{"dependencies": {"mongodb": "^6.0.0"}}')
+    project_id = project_factory(repo)
+    fact_id = _add_db_fact(project_id, "Project uses PostgreSQL.")
+    # Pre-stale the fact (as #16C's manual action would). Default eval statuses
+    # include 'stale', so the conflict must still surface.
+    mark_fact_stale(project_id, fact_id, reason="prior conflict")
+    assert _fact_by_id(project_id, fact_id)["status"] == "stale"
+
+    report = evaluate_db_memory_conflicts(project_id, str(repo))
+
+    conflict = next(e for e in report.conflicts if e.fact_id == fact_id)
+    assert conflict.status == "stale"
+    assert conflict.repo_value == "mongodb"
+
+
+def test_evaluator_no_conflict_when_memory_matches(repo, project_factory):
+    _write(repo, "requirements.txt", "pymongo\n")
+    project_id = project_factory(repo)
+    fact_id = _add_db_fact(project_id, "Project uses MongoDB.")
+
+    report = evaluate_db_memory_conflicts(project_id, str(repo))
+
+    assert report.conflicts == ()
+    assert fact_id in report.matches
