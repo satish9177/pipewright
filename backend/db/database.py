@@ -444,6 +444,28 @@ def _ensure_file_index_shape(conn) -> None:
         )
 
 
+def _execute_schema_script(schema_sql: str) -> None:
+    """
+    Execute a full SQLite schema script.
+
+    Uses the sqlite3 driver's executescript(), which understands SQL comments,
+    string literals, and statement boundaries. This replaces naive
+    schema_sql.split(";") execution, which broke when a comment or literal
+    contained a ';'. Schema statements are idempotent (CREATE ... IF NOT EXISTS).
+    """
+    raw_conn = engine.raw_connection()
+    try:
+        cursor = raw_conn.cursor()
+        try:
+            cursor.executescript(schema_sql)
+        finally:
+            cursor.close()
+        raw_conn.commit()
+    finally:
+        # Returns the connection to the SQLAlchemy pool (does not hard-close).
+        raw_conn.close()
+
+
 def init_db() -> None:
     """
     Read schema.sql and execute it.
@@ -452,11 +474,8 @@ def init_db() -> None:
     """
     try:
         schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
+        _execute_schema_script(schema_sql)
         with engine.connect() as conn:
-            for statement in schema_sql.split(";"):
-                statement = statement.strip()
-                if statement:
-                    conn.execute(text(statement))
             _migrate_db(conn)
             conn.commit()
         print("Database initialized successfully.")

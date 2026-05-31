@@ -169,6 +169,33 @@ def test_legacy_chunk_checkpoint_still_loads():
     assert loaded["output"]["goal"] == "legacy"
 
 
+def test_execute_schema_script_handles_semicolon_in_comment():
+    # Regression for PR #15B: the old split(";") schema loader treated text
+    # after a ';' inside a SQL comment as a statement, raising
+    # "OperationalError near ...". executescript must handle this safely.
+    table = f"pr15b_schema_{uuid.uuid4().hex}"
+    schema = f"""
+    -- this comment contains a semicolon; the loader must not choke on it
+    CREATE TABLE IF NOT EXISTS {table} (
+        id TEXT PRIMARY KEY,
+        note TEXT DEFAULT 'a;b'  -- string literal with a semicolon too
+    );
+    """
+    try:
+        # Must not raise.
+        database._execute_schema_script(schema)
+        with database.engine.connect() as conn:
+            exists = conn.execute(text(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name = :name"
+            ), {"name": table}).fetchone()
+        assert exists is not None
+    finally:
+        with database.engine.connect() as conn:
+            conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
+            conn.commit()
+
+
 def test_init_migration_adds_approval_gate_created_at():
     temp_engine = create_engine("sqlite:///:memory:")
     with temp_engine.connect() as conn:
