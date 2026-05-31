@@ -169,3 +169,24 @@ npm run build
 
 See [`../troubleshooting.md`](../troubleshooting.md) for operational issues
 (Windows pytest temp errors, `.git/index.lock`, dirty repo cleanup, etc.).
+
+## Disk space / backup cleanup
+
+Pipewright stores rollback backups in `backend/backups/` as it patches your
+target repository. This directory is gitignored but grows over time on long-lived
+local installs.
+
+Inspect what can be cleaned (dry-run, no deletion):
+
+```powershell
+python scripts/cleanup_backups.py
+```
+
+Delete backups older than 14 days (active runs are always protected):
+
+```powershell
+python scripts/cleanup_backups.py --delete
+```
+
+See [`../ops/backup-retention.md`](../ops/backup-retention.md) for the full
+cleanup guide, flag reference, and safety notes.
