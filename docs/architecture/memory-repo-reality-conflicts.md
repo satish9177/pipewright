@@ -400,6 +400,12 @@ and an isolated DB — mirroring the existing memory test suite.
 Each PR is independently shippable and testable. Expand to `test_runner` /
 `framework_backend` / etc. only after `db` is proven in real use.
 
+> **#16D — run-scope gate (designed separately):** When a clear DB conflict should
+> **block**, **warn**, or **do nothing** based on the requested run's scope is designed
+> in [`memory-conflict-run-gate.md`](./memory-conflict-run-gate.md). #16C stops stale DB
+> memory from being *injected*; #16D decides when a relevant conflict should *pause a
+> run*. No gating is implemented in #16C.
+
 ---
 
 ## 12. What NOT to build yet (strict list)
