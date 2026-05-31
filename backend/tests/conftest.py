@@ -3,22 +3,37 @@ conftest.py
 Pytest configuration and shared fixtures.
 
 IMPORTANT:
-  Tests run against the same SQLite database
-  as the application (backend/db/pipewright.db).
-  All test data must be cleaned up after
-  each test session to avoid polluting the UI.
+  Tests run against an ISOLATED temporary SQLite database, never the real
+  local app DB (backend/db/pipewright.db). This module sets PIPEWRIGHT_DB_PATH
+  to a throwaway temp file BEFORE importing backend.db.database, so the engine
+  (which is bound at import time and captured by reference across the codebase)
+  points at the temp DB for the whole test session. The temp DB is deleted at
+  session end. This prevents cross-test bleed and keeps test runs from polluting
+  a developer's real database.
 
   Test projects are identified by repo_path
   containing '.pytest_tmp' - never use real
   repo paths in tests.
 """
 
+import os
+import tempfile
+
+# Must run before backend.db.database is imported (directly or transitively),
+# otherwise the engine would already be bound to the real app DB. Respect an
+# externally provided PIPEWRIGHT_DB_PATH (e.g. CI) instead of overriding it.
+if not os.environ.get("PIPEWRIGHT_DB_PATH"):
+    _TEST_DB_DIR = tempfile.mkdtemp(prefix="pipewright-test-db-")
+    os.environ["PIPEWRIGHT_DB_PATH"] = os.path.join(_TEST_DB_DIR, "test_pipewright.db")
+else:
+    _TEST_DB_DIR = None
+
 import uuid
 import shutil
 import pytest
 from pathlib import Path
 from sqlalchemy import text
-from backend.db.database import init_db, engine
+from backend.db.database import init_db, engine, DB_PATH
 
 _LLM_ENV_VARS = (
     "DEFAULT_LLM_PROVIDER", "DEFAULT_LLM_MODEL",
@@ -41,18 +56,31 @@ LOCAL_TMP = Path(__file__).parent.parent / ".pytest_tmp"
 
 @pytest.fixture(scope="session", autouse=True)
 def initialize_database():
-    """Initialize database before any tests run."""
+    """Initialize database before any tests run.
+
+    Also asserts the active engine is the isolated temp DB, not the real local
+    app DB. This is a safety net: if the import-order contract ever breaks and
+    the engine binds to backend/db/pipewright.db, the whole suite fails loudly
+    here instead of silently polluting the developer's database.
+    """
+    assert Path(DB_PATH).name != "pipewright.db", (
+        "Test DB isolation failed: engine is bound to the real app DB "
+        f"({DB_PATH}). PIPEWRIGHT_DB_PATH must be set before backend.db.database "
+        "is imported."
+    )
     init_db()
 
 
 @pytest.fixture(scope="session", autouse=True)
 def cleanup_test_data():
     """
-    Clean up all test data after the full test session.
-    Runs AFTER all tests complete.
-    Deletes any project whose repo_path contains .pytest_tmp.
-    Also deletes pipeline_runs and checkpoints linked to
-    those test projects.
+    Clean up after the full test session. Runs AFTER all tests complete.
+
+    The session DB is a throwaway temp file, so the whole thing is dropped at
+    the end (after disposing the engine so the SQLite file is unlocked on
+    Windows). The per-project row cleanup below is kept as a harmless defensive
+    measure in case an externally provided PIPEWRIGHT_DB_PATH points somewhere
+    that should outlive the run.
     """
     yield
     # Session is done - clean up test data
@@ -85,6 +113,15 @@ def cleanup_test_data():
                 print("[conftest] No test projects to clean")
     except Exception as e:
         print(f"[conftest] Cleanup warning: {e}")
+
+    # Drop the throwaway session DB. Only remove the temp dir this module
+    # created; never touch an externally supplied PIPEWRIGHT_DB_PATH.
+    if _TEST_DB_DIR is not None:
+        try:
+            engine.dispose()
+        except Exception as e:
+            print(f"[conftest] Engine dispose warning: {e}")
+        shutil.rmtree(_TEST_DB_DIR, ignore_errors=True)
 
 
 @pytest.fixture()

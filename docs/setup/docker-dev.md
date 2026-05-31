@@ -66,18 +66,19 @@ convenience to bolt on.
 
 ### Hard dependency the demo plan must account for
 
-The SQLite database path is currently **hardcoded** at
-`backend/db/pipewright.db` (`backend/db/database.py`); there is no
-`DATABASE_URL`/`DB_PATH` environment override. So "persist SQLite under
-`./data`" (the #14B goal) is **not free** — #14B must either:
+The SQLite database path defaults to `backend/db/pipewright.db`
+(`backend/db/database.py`). As of PR #15E it can be overridden with the
+`PIPEWRIGHT_DB_PATH` environment variable, which points the engine at a
+different SQLite file (the override's parent directory is created if missing).
+When the variable is unset, the default path and behavior are unchanged. So
+"persist SQLite under `./data`" (the #14B goal) can be done either way:
 
 - mount a host `./data` volume at the container's `backend/db/` directory, so
-  the hardcoded path lands on the volume (docs/compose-only, no code change), or
-- introduce a configurable DB path (a small **runtime change**, explicitly out
-  of scope for the design-only #14A and to be decided in #14B).
+  the default path lands on the volume (docs/compose-only, no code change), or
+- set `PIPEWRIGHT_DB_PATH=/data/pipewright.db` and mount `./data` at `/data`.
 
-This doc recommends the volume-mount approach first because it keeps #14B
-docs/compose-only and changes no backend behavior.
+Either keeps backend behavior unchanged; the variable simply makes the location
+explicit. (There is still no `DATABASE_URL` and no non-SQLite support.)
 
 ---
 

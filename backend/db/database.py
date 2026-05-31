@@ -5,12 +5,28 @@ All operations are synchronous.
 Database file lives at backend/db/pipewright.db
 """
 
+import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from pathlib import Path
 
 DB_DIR = Path(__file__).parent
-DB_PATH = DB_DIR / "pipewright.db"
+
+# DB location is resolved once, at import time, because the engine below is
+# bound to it immediately and is captured by reference across the codebase
+# (`from backend.db.database import engine`). PIPEWRIGHT_DB_PATH lets callers
+# point at a different SQLite file (e.g. a Docker volume, or an isolated
+# per-session test DB) without touching the real local app DB. When it is
+# unset, the default backend/db/pipewright.db is used and behavior is unchanged.
+_DB_PATH_OVERRIDE = os.environ.get("PIPEWRIGHT_DB_PATH")
+if _DB_PATH_OVERRIDE:
+    DB_PATH = Path(_DB_PATH_OVERRIDE)
+    # The override may point somewhere that does not exist yet; SQLite will not
+    # create missing parent directories on its own.
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+else:
+    DB_PATH = DB_DIR / "pipewright.db"
+
 SCHEMA_PATH = DB_DIR / "schema.sql"
 
 engine = create_engine(
