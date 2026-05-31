@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -28,72 +27,34 @@ from backend.memory.memory_store import (
     validate_memory_content,
 )
 from backend.projects.project_store import get_project
-from backend.utils.path_safety import validate_safe_relative_path
+from backend.repo.repo_fingerprint import (
+    DB_MONGODB_MARKERS,
+    DB_MYSQL_MARKERS,
+    DB_POSTGRES_MARKERS,
+    DB_SQLITE_MARKERS,
+    IGNORED_DIRS,
+    MAX_DEPTH,
+    MAX_MANIFEST_FILES,
+    content_has_any as _content_has_any,
+    discover_manifest_files,
+    load_repo_file,
+)
 
 logger = logging.getLogger(__name__)
 
 ALLOWED_SUGGESTION_STATUSES = {"pending", "approved", "rejected", "archived"}
 BOOTSTRAP_SOURCE = "bootstrap"
-BOOTSTRAP_MAX_DEPTH = 5
-BOOTSTRAP_MAX_MANIFEST_FILES = 100
 
-BOOTSTRAP_IGNORED_DIRS = {
-    ".git",
-    "node_modules",
-    "venv",
-    ".venv",
-    "dist",
-    "build",
-    "target",
-    "__pycache__",
-    "coverage",
-    "vendor",
-    "generated",
-    ".next",
-    "out",
-    "tmp",
-    "logs",
-    "examples",
-    "example",
-    "samples",
-    "sample",
-    "demo",
-    "template",
-    "templates",
-    "fixtures",
-}
+# Caps remain bootstrap-local module constants so existing tests can monkeypatch
+# bootstrap.BOOTSTRAP_MAX_MANIFEST_FILES; their default values come from the
+# shared repo_fingerprint module so there is one source of truth. The discovery
+# wrapper below reads these at call time, preserving the monkeypatch behavior.
+BOOTSTRAP_MAX_DEPTH = MAX_DEPTH
+BOOTSTRAP_MAX_MANIFEST_FILES = MAX_MANIFEST_FILES
 
-MANIFEST_FILENAMES = {
-    "package.json",
-    "requirements.txt",
-    "pyproject.toml",
-    "Pipfile",
-    "setup.py",
-    "pom.xml",
-    "build.gradle",
-    "build.gradle.kts",
-    "go.mod",
-    "Cargo.toml",
-    "Dockerfile",
-    "docker-compose.yml",
-    "docker-compose.yaml",
-    "pytest.ini",
-    "jest.config.js",
-    "jest.config.ts",
-    "vitest.config.js",
-    "vitest.config.ts",
-    "tsconfig.json",
-    "vite.config.js",
-    "vite.config.ts",
-    "next.config.js",
-    "next.config.ts",
-    "alembic.ini",
-    "schema.sql",
-}
-
-SPECIAL_MANIFEST_SUFFIXES = {
-    "prisma/schema.prisma",
-}
+# Skip list and manifest sets are now owned by repo_fingerprint (single source of
+# truth). Re-exported under the historical bootstrap name for compatibility.
+BOOTSTRAP_IGNORED_DIRS = IGNORED_DIRS
 
 
 @dataclass(frozen=True)
@@ -125,62 +86,18 @@ def _sanitize_suggestion(row: dict) -> dict:
 
 
 def _load_repo_file(root: Path, relative_path: str) -> str | None:
-    try:
-        path = validate_safe_relative_path(relative_path, root)
-    except RuntimeError:
-        return None
-    if not path.is_file():
-        return None
-    try:
-        if path.stat().st_size > 200_000:
-            return None
-        return path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return None
-
-
-def _relative_posix(path: Path, root: Path) -> str:
-    return path.relative_to(root).as_posix()
-
-
-def _is_ignored_relative_path(relative_path: str) -> bool:
-    parts = {part.lower() for part in relative_path.split("/") if part}
-    return bool(parts & BOOTSTRAP_IGNORED_DIRS)
-
-
-def _is_manifest_path(relative_path: str) -> bool:
-    name = relative_path.rsplit("/", 1)[-1]
-    if name in MANIFEST_FILENAMES:
-        return True
-    return any(relative_path.endswith(suffix) for suffix in SPECIAL_MANIFEST_SUFFIXES)
+    return load_repo_file(root, relative_path)
 
 
 def _discover_manifest_files(root: Path) -> list[str]:
-    discovered: list[str] = []
-    root = root.resolve()
-
-    for current_root, dirnames, filenames in os.walk(root):
-        current_path = Path(current_root)
-        relative_dir = current_path.relative_to(root)
-        depth = 0 if str(relative_dir) == "." else len(relative_dir.parts)
-        dirnames[:] = [
-            dirname for dirname in dirnames
-            if dirname.lower() not in BOOTSTRAP_IGNORED_DIRS
-            and depth < BOOTSTRAP_MAX_DEPTH
-        ]
-        if depth > BOOTSTRAP_MAX_DEPTH:
-            continue
-
-        for filename in sorted(filenames):
-            relative_path = _relative_posix(current_path / filename, root)
-            if _is_ignored_relative_path(relative_path):
-                continue
-            if not _is_manifest_path(relative_path):
-                continue
-            discovered.append(relative_path)
-            if len(discovered) >= BOOTSTRAP_MAX_MANIFEST_FILES:
-                return discovered
-    return discovered
+    # Reads bootstrap's module-level caps at call time so existing tests that
+    # monkeypatch BOOTSTRAP_MAX_MANIFEST_FILES continue to take effect.
+    return discover_manifest_files(
+        root,
+        ignored_dirs=BOOTSTRAP_IGNORED_DIRS,
+        max_depth=BOOTSTRAP_MAX_DEPTH,
+        max_files=BOOTSTRAP_MAX_MANIFEST_FILES,
+    )
 
 
 def _lower_files(files: dict[str, str]) -> dict[str, str]:
@@ -228,10 +145,6 @@ def _scope_from_path(path: str, default: str = "backend") -> str:
     if parts & {"backend", "api", "server", "service", "services"}:
         return "backend"
     return default
-
-
-def _content_has_any(content: str, needles: set[str]) -> bool:
-    return any(needle in content for needle in needles)
 
 
 def _python_311_detected(files: dict[str, str]) -> bool:
@@ -325,7 +238,7 @@ def _collect_candidates(root: Path) -> list[CandidateSuggestion]:
                     "Detected pytest dependency.",
                     priority=90,
                 )
-            if _content_has_any(content, {"postgresql", "psycopg", "asyncpg"}):
+            if _content_has_any(content, DB_POSTGRES_MARKERS):
                 _add_candidate(
                     candidates,
                     "Project uses PostgreSQL.",
@@ -335,7 +248,7 @@ def _collect_candidates(root: Path) -> list[CandidateSuggestion]:
                     "Detected PostgreSQL dependency or reference.",
                     priority=100,
                 )
-            if _content_has_any(content, {"mysql", "pymysql", "mysqlclient"}):
+            if _content_has_any(content, DB_MYSQL_MARKERS):
                 _add_candidate(
                     candidates,
                     "Project uses MySQL.",
@@ -345,7 +258,7 @@ def _collect_candidates(root: Path) -> list[CandidateSuggestion]:
                     "Detected MySQL dependency or reference.",
                     priority=100,
                 )
-            if _content_has_any(content, {"mongodb", "mongoose"}):
+            if _content_has_any(content, DB_MONGODB_MARKERS):
                 _add_candidate(
                     candidates,
                     "Project uses MongoDB.",
@@ -596,7 +509,7 @@ def _collect_candidates(root: Path) -> list[CandidateSuggestion]:
     sqlite_evidence = next(
         (
             path for path, content in lowered.items()
-            if "sqlite" in content or "sqlite3" in content or path.endswith("schema.sql")
+            if _content_has_any(content, DB_SQLITE_MARKERS) or path.endswith("schema.sql")
         ),
         None,
     )
