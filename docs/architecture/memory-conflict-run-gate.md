@@ -120,6 +120,17 @@ Options considered:
 | C. Hard-fail the run | Rejected — too blunt, loses the override path, and reads as a crash. |
 | D. Warn-only, defer blocking | Adopted as the **first shipped slice** (#16D-3) before blocking (#16D-4). |
 
+> **Implemented in #16D-3 (warning-only):** the read-only evaluator
+> `evaluate_db_memory_conflicts(project_id, repo_path, statuses=("active","stale"))`
+> in `backend/memory/repo_reality.py` returns a `ConflictReport` without mutating
+> memory. `chunked_orchestrator._emit_db_conflict_warning(...)` runs it **once** at
+> execute/resume start (before any chunk runs) and, on a conflict, publishes a single
+> run `log` event (`level="warning"` when `is_db_sensitive_run(files_expected)` is true,
+> else `"info"`; `data.type="memory_db_conflict"`). It **never blocks, pauses, changes
+> status, marks memory stale, or creates a gate** — those land in #16D-4. The manual
+> `verify-repo` action (#16C) now also calls this evaluator and remains the only path
+> that mutates memory.
+
 Non-negotiables: **never silently fail; never auto-edit or auto-archive memory.** At the
 gate the human always sees: the stale/conflicting fact, the repo DB signal, the evidence
 path, why the run is blocked, and the options — **verify / update / archive / override

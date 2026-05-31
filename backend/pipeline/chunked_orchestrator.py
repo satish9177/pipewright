@@ -20,6 +20,7 @@ from backend.core.status_service import (
 )
 from backend.db.database import engine, init_db
 from backend.events import event_bus
+from backend.events.schema import Event
 from backend.git import local_git
 from backend.checkpoint.checkpoint_store import load_chunk_step_checkpoint
 from backend.models.chunk import ChunkDefinition, ChunkPlanResponse, ChunkStatus
@@ -33,6 +34,8 @@ from backend.pipeline.chunk_store import (
     get_previous_chunks_context,
     save_chunk_completion_summary,
 )
+from backend.memory.conflict_scope import is_db_sensitive_run
+from backend.memory.repo_reality import evaluate_db_memory_conflicts
 from backend.pipeline.coder import run_coder
 from backend.pipeline.patch_applier import apply_patch, rollback_patch
 from backend.pipeline.planner import run_planner
@@ -60,6 +63,97 @@ def _publish_safe(event) -> None:
         event_bus.publish(event)
     except Exception as error:
         logger.warning("[EVENT_BUS] publish raised, ignored: %s", error)
+
+
+def _collect_files_expected(chunks) -> list[str]:
+    files: list[str] = []
+    for chunk in chunks:
+        files.extend(getattr(chunk, "files_expected", None) or [])
+    return files
+
+
+def _emit_db_conflict_warning(
+    run_id: str,
+    project_id: str,
+    repo_path: str,
+    files_expected: list[str],
+) -> None:
+    """
+    Non-blocking notice (#16D-3). Evaluates DB memory vs. repo reality READ-ONLY and,
+    on a conflict, emits a single run log event. It never blocks, pauses, changes run
+    status, marks memory stale, or creates an approval gate. Must never raise.
+
+    Surface: a `log`-kind event on the existing event bus (visible in run detail's
+    live event stream). Severity is `warning` for DB-sensitive runs, else `info`.
+    """
+    try:
+        report = evaluate_db_memory_conflicts(project_id, repo_path)
+        if not report.conflicts and not report.ambiguous:
+            return
+
+        sensitive = is_db_sensitive_run(files_expected)
+
+        if report.conflicts:
+            level = "warning" if sensitive else "info"
+            repo_value = report.conflicts[0].repo_value
+            evidence_path = report.conflicts[0].evidence_path or "repo manifest"
+            memory_values = sorted({entry.memory_value for entry in report.conflicts})
+            if sensitive:
+                message = (
+                    f"DB memory conflict relevant to this run: memory says "
+                    f"{', '.join(memory_values)}, repo says {repo_value} "
+                    f"({evidence_path}). The run was NOT blocked; conflicting memory "
+                    f"is excluded from prompts. Resolve via memory verify/update/archive."
+                )
+            else:
+                message = (
+                    f"DB memory conflict detected (memory: {', '.join(memory_values)}, "
+                    f"repo: {repo_value} from {evidence_path}) but this run does not "
+                    f"appear to touch DB files, so it was not blocked."
+                )
+            data = {
+                "type": "memory_db_conflict",
+                "repo_db_signal": report.repo_db_signal,
+                "db_sensitive": sensitive,
+                "conflicts": [
+                    {
+                        "fact_id": entry.fact_id,
+                        "memory_value": entry.memory_value,
+                        "repo_value": entry.repo_value,
+                        "evidence_path": entry.evidence_path,
+                        "evidence_excerpt": entry.evidence_excerpt,
+                    }
+                    for entry in report.conflicts
+                ],
+            }
+        elif report.ambiguous and sensitive:
+            level = "info"
+            message = (
+                "Repository DB signal is ambiguous (multiple engines detected); "
+                "DB memory was not evaluated for conflicts. The run was not blocked."
+            )
+            data = {"type": "memory_db_conflict_ambiguous"}
+        else:
+            return
+
+        _publish_safe(Event(
+            run_id=run_id,
+            kind="log",
+            stage="orchestrator",
+            level=level,
+            message=message,
+            data=data,
+        ))
+        logger.info(
+            "[CHUNKED] DB memory conflict notice | run_id=%s | level=%s | sensitive=%s",
+            run_id, level, sensitive,
+        )
+    except Exception as error:
+        # A non-blocking warning must never affect execution.
+        logger.warning(
+            "[CHUNKED] db conflict warning failed, ignored | run_id=%s | error=%s",
+            run_id, error,
+        )
 
 
 def update_chunk_status(
@@ -734,9 +828,18 @@ async def _execute_approved_chunks_locked(
     local_git.assert_not_on_stale_pipewright_branch(target_repo_path, run_id)
     local_git.create_or_checkout_branch(branch_name, target_repo_path)
 
+    pending = _pending_chunks(plan_status)
+    # Non-blocking DB memory conflict notice, once per run before any chunk executes.
+    _emit_db_conflict_warning(
+        run_id,
+        plan_status.project_id,
+        target_repo_path,
+        _collect_files_expected(pending),
+    )
+
     completed_chunks = 0
     with active_project(project_runtime):
-        for chunk_status in _pending_chunks(plan_status):
+        for chunk_status in pending:
             chunk_number = chunk_status.chunk_number
             chunk = definitions[chunk_number]
             try:
@@ -815,8 +918,17 @@ async def _resume_chunked_pipeline_locked(
     skipped_chunks = 0
     completed_chunks = 0
 
+    resumable = _resumable_chunks(refreshed)
+    # Non-blocking DB memory conflict notice, once per resume before any chunk runs.
+    _emit_db_conflict_warning(
+        run_id,
+        plan_status.project_id,
+        target_repo_path,
+        _collect_files_expected(resumable),
+    )
+
     with active_project(project_runtime):
-        for chunk_status in _resumable_chunks(refreshed):
+        for chunk_status in resumable:
             chunk_number = chunk_status.chunk_number
             chunk = definitions[chunk_number]
             checkpoint = load_chunk_step_checkpoint(run_id, chunk_number, "test")

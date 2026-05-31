@@ -1981,3 +1981,29 @@ async def test_scope_drift_fails_chunk_before_apply_patch_or_commit(
         """), {"run_id": run_id}).fetchone()
     assert row[0] == "failed"
     assert "src/out_of_scope.py" in (row[1] or "")
+
+
+@pytest.mark.asyncio
+async def test_db_conflict_warning_runs_once_and_does_not_block(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    # #16D-3: the DB-conflict warning is evaluated once per execute (not per chunk)
+    # and never blocks the run.
+    run_id, _project = create_run(tmp_repo, tracked_runs, chunks=2)
+    patch_git_preflight(monkeypatch)
+    patch_success_pipeline(monkeypatch, run_id)
+
+    calls = {"count": 0}
+
+    def spy(run_id_arg, project_id, repo_path, files_expected):
+        calls["count"] += 1
+
+    monkeypatch.setattr(chunked_orchestrator, "_emit_db_conflict_warning", spy)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    # Evaluated exactly once across a 2-chunk run, and the run proceeded normally.
+    assert calls["count"] == 1
+    assert result["status"] == "awaiting_final_approval"
