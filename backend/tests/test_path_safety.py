@@ -12,6 +12,7 @@ from backend.models.handoff import CoderHandoff, FileChange
 from backend.pipeline import coder, patch_applier
 from backend.utils.path_safety import (
     is_forbidden_path,
+    is_forbidden_write_path,
     normalize_relative_path,
     validate_safe_relative_path,
 )
@@ -128,6 +129,53 @@ def test_env_example_and_sample_are_allowed(tmp_repo):
     assert validate_safe_relative_path(".env.example", tmp_repo) == (
         tmp_repo.resolve() / ".env.example"
     )
+
+
+def test_is_forbidden_write_path_git_internals():
+    assert is_forbidden_write_path(".git") is True
+    assert is_forbidden_write_path(".git/config") is True
+    assert is_forbidden_write_path("repo/.git/HEAD") is True
+    assert is_forbidden_write_path(".gitignore") is True
+    assert is_forbidden_write_path("src/.gitignore") is True
+
+
+def test_is_forbidden_write_path_infra_files():
+    assert is_forbidden_write_path("docker-compose.yml") is True
+    assert is_forbidden_write_path("Dockerfile") is True
+    assert is_forbidden_write_path("src/Dockerfile") is True
+    assert is_forbidden_write_path("requirements.txt") is True
+    assert is_forbidden_write_path("package-lock.json") is True
+
+
+def test_is_forbidden_write_path_sensitive_patterns():
+    assert is_forbidden_write_path("src/api_secrets.py") is True
+    assert is_forbidden_write_path("config/secrets.yaml") is True
+    assert is_forbidden_write_path("src/private.py") is True
+    assert is_forbidden_write_path("keys/private_key.pem") is True
+    assert is_forbidden_write_path("deployment.env") is True
+
+
+def test_is_forbidden_write_path_includes_base_forbidden():
+    assert is_forbidden_write_path(".env") is True
+    assert is_forbidden_write_path(".env.local") is True
+    assert is_forbidden_write_path(".env.production") is True
+    assert is_forbidden_write_path("secrets.json") is True
+    assert is_forbidden_write_path("credentials.json") is True
+
+
+def test_is_forbidden_write_path_env_samples_still_blocked():
+    # .env.example passes the read-path check but is blocked at write path
+    # via the ".env" substring pattern — matches original patch_applier behavior.
+    assert is_forbidden_path(".env.example") is False
+    assert is_forbidden_write_path(".env.example") is True
+    assert is_forbidden_write_path(".env.sample") is True
+
+
+def test_is_forbidden_write_path_allows_safe_files():
+    assert is_forbidden_write_path("src/app.py") is False
+    assert is_forbidden_write_path("README.md") is False
+    assert is_forbidden_write_path("tests/test_utils.py") is False
+    assert is_forbidden_write_path("backend/routes/runs.py") is False
 
 
 def test_patch_applier_safe_file_still_works(tmp_repo, monkeypatch):
