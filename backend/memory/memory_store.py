@@ -477,6 +477,59 @@ def verify_fact(
         raise RuntimeError(f"memory_store.py: verify_fact failed: {error}") from error
 
 
+def mark_fact_stale(
+    project_id: str,
+    memory_id: str,
+    reason: str | None = None,
+) -> dict:
+    """
+    Flag a single active fact as stale for a project.
+
+    Mirrors the stale state set by flag_stale_memories (is_stale=1,
+    status='stale'), but targets one fact and records an optional reason.
+    The reason is stored in the existing archived_reason column — the generic
+    "why is this fact inactive" field — because the M1.5 first slice (#16C)
+    deliberately adds no memory_conflicts table or schema change. The status
+    is 'stale', never 'archived', so this is clearly not an archive.
+
+    Content is never edited; the fact is never archived or deleted. Because
+    build_project_memory_block selects only is_stale=0 AND status='active',
+    a fact marked stale here is no longer injected into prompts.
+    """
+    project_id = _validate_project_id(project_id)
+    reason_value = (reason or "").strip() or None
+    try:
+        now = _utc_now()
+        with engine.connect() as conn:
+            result = conn.execute(text("""
+                UPDATE memory_facts
+                SET is_stale = 1,
+                    status = 'stale',
+                    archived_reason = COALESCE(:reason, archived_reason),
+                    updated_at = :now
+                WHERE id = :memory_id
+                  AND project_id = :project_id
+            """), {
+                "memory_id": memory_id,
+                "project_id": project_id,
+                "reason": reason_value,
+                "now": now,
+            })
+            conn.commit()
+        if result.rowcount == 0:
+            raise ValueError("memory_store.py: memory fact not found")
+        return {
+            "id": memory_id,
+            "project_id": project_id,
+            "status": "stale",
+            "is_stale": True,
+        }
+    except ValueError:
+        raise
+    except Exception as error:
+        raise RuntimeError(f"memory_store.py: mark_fact_stale failed: {error}") from error
+
+
 def update_fact(
     project_id: str,
     memory_id: str,

@@ -27,6 +27,7 @@ from backend.memory.memory_store import (
     verify_fact,
 )
 from backend.memory.prompt_builder import ROLE_CATEGORIES, build_project_memory_block
+from backend.memory.repo_reality import verify_project_db_memory_against_repo
 from backend.projects.project_store import get_project
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/memory")
@@ -122,6 +123,26 @@ class MemoryPromptPreviewResponse(BaseModel):
     role: str | None
     memory_block: str
     empty: bool
+
+
+class RepoRealityEvidence(BaseModel):
+    fact_id: str
+    memory_value: str
+    repo_value: str
+    evidence_path: str | None = None
+    evidence_excerpt: str | None = None
+
+
+class MemoryVerifyRepoResponse(BaseModel):
+    project_id: str
+    repo_db_signal: str | None
+    ambiguous: bool
+    checked_count: int
+    verified_fact_ids: list[str]
+    staled_fact_ids: list[str]
+    skipped_fact_ids: list[str]
+    warnings: list[str]
+    evidence: list[RepoRealityEvidence]
 
 
 class MemoryBootstrapRequest(BaseModel):
@@ -283,6 +304,26 @@ def create_bootstrap_suggestions(
             force=request.force,
         )
         return {"project_id": project_id, "suggestions": suggestions}
+    except ValueError as error:
+        raise _map_memory_error(error)
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+
+@router.post("/verify-repo", response_model=MemoryVerifyRepoResponse)
+def verify_memory_against_repo(project_id: str):
+    """
+    Manual, explicit verification of active DB memory against the current repo
+    DB fingerprint. Uses the project's stored repo_path. Never blocks a run,
+    never edits or archives memory, never changes prompt format. Conflicting DB
+    facts are marked stale (excluded from prompts by the existing builder).
+    """
+    project = _require_project(project_id)
+    try:
+        return verify_project_db_memory_against_repo(
+            project_id=project_id,
+            repo_path=project.get("repo_path"),
+        )
     except ValueError as error:
         raise _map_memory_error(error)
     except RuntimeError as error:

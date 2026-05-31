@@ -373,9 +373,29 @@ and an isolated DB — mirroring the existing memory test suite.
 |---|---|---|---|
 | **#16A (this PR)** | Design doc only | `docs/architecture/memory-repo-reality-conflicts.md`, pointer in `memory-architecture.md` | **None** |
 | **#16B** | Shared deterministic fingerprint extractor, **db only**; refactor `bootstrap.py` to consume it | `backend/repo/repo_fingerprint.py` (new), `backend/memory/bootstrap.py` | None (pure extraction; bootstrap output unchanged) |
-| **#16C** | Compare active `db` memory vs repo signal; set `is_stale` on clear conflict; manual `verify-memory` action; positive path bumps `last_verified_at` | `backend/memory/*` | Conflicting db facts excluded from prompts (the intended safety win); no other change |
+| **#16C** | Compare active `db` memory vs repo signal; set `is_stale` on clear conflict; manual verify action; positive path bumps `last_verified_at` | `backend/memory/repo_reality.py` (new), `backend/memory/memory_store.py` (`mark_fact_stale`), `backend/routes/memory.py` | Conflicting db facts excluded from prompts (the intended safety win); no other change |
 | **#16D** | Run-scope block/warn policy for `db` conflicts; pre-prompt-injection gate on db-sensitive runs | pipeline run-start path | Scope-matched db conflicts gate the run (human-gated, loud) |
 | **#16E** | `memory_conflicts` table (Option B) + conflict resolution API/UI, **if needed** | schema + routes + frontend | Adds resolution surface; no change to detection semantics |
+
+### #16C — as implemented
+
+- **Service:** `backend/memory/repo_reality.py` →
+  `verify_project_db_memory_against_repo(project_id, repo_path) -> dict`. Builds the
+  fingerprint via `build_repo_fingerprint`, loads active `category='db'` facts, and
+  compares each fact's recognizable DB value against the repo signal.
+- **Store helper:** `backend/memory/memory_store.py` →
+  `mark_fact_stale(project_id, memory_id, reason=None)`. Sets `is_stale=1`,
+  `status='stale'`; stores the reason in the existing `archived_reason` column (no
+  schema change). Content is never edited; the fact is never archived/deleted.
+- **Endpoint:** `POST /api/v1/projects/{project_id}/memory/verify-repo`. Manual only;
+  derives `repo_path` from the project. Returns `repo_db_signal`, `ambiguous`,
+  `checked_count`, `verified_fact_ids`, `staled_fact_ids`, `skipped_fact_ids`,
+  `warnings`, and `evidence` (fixed fingerprint excerpts — never file content).
+- **Data model:** Option A (no `memory_conflicts` table). Exclusion is the existing
+  `is_stale=0` builder filter. **No run blocking, no per-run gate** — that remains #16D.
+- Matching → `verify_fact` (bumps `last_verified_at`). Unknown/ambiguous repo signal,
+  no active DB memory, or memory whose content names zero or multiple engines →
+  skipped, never staled.
 
 Each PR is independently shippable and testable. Expand to `test_runner` /
 `framework_backend` / etc. only after `db` is proven in real use.
