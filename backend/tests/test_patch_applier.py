@@ -8,11 +8,22 @@ Windows system temp (which denies access).
 
 import uuid
 import shutil
+import subprocess
 import pytest
 from pathlib import Path
 from pydantic import ValidationError
 from backend.models.handoff import CoderHandoff, FileChange
-from backend.pipeline.patch_applier import BACKUP_DIR, apply_patch, rollback_patch
+from backend.pipeline.patch_applier import (
+    BACKUP_DIR,
+    PatchApplyOutcome,
+    actual_changed_files,
+    apply_patch,
+    apply_patch_guarded,
+    classify_patch_failure,
+    rollback_patch,
+    validate_changed_files_in_scope,
+)
+from backend.pipeline.patch_failures import PatchFailureType
 
 pytestmark = pytest.mark.unit
 
@@ -519,3 +530,337 @@ def test_chunk_manifest_path_is_scoped(tmp_repo, monkeypatch):
     assert "chunk_one.py" in chunk_one_manifest.read_text(encoding="utf-8")
     assert "chunk_two.py" in chunk_two_manifest.read_text(encoding="utf-8")
     assert "chunk_two.py" not in chunk_one_manifest.read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# Guarded patch application (#18C)
+#
+# These exercise apply_patch_guarded and its helpers. apply_patch_guarded is a
+# pure mechanism and is NOT wired into the orchestrator/tester here.
+# --------------------------------------------------------------------------- #
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.fixture()
+def git_repo(tmp_repo, monkeypatch):
+    """A real, clean git repo with one seed commit, set as the target repo."""
+    from backend.config import keys
+
+    _git(tmp_repo, "init")
+    _git(tmp_repo, "config", "user.email", "test@example.com")
+    _git(tmp_repo, "config", "user.name", "Pipewright Test")
+    (tmp_repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(tmp_repo, "add", "-A")
+    _git(tmp_repo, "commit", "-m", "seed")
+
+    monkeypatch.setattr(keys.settings, "target_repo_path", str(tmp_repo))
+    return tmp_repo
+
+
+def _create_output(run_id: str, path: str, content: str = "x = 1\n") -> CoderHandoff:
+    return CoderHandoff(
+        run_id=run_id,
+        feature_description="Create a file",
+        files_changed=[
+            FileChange(path=path, action="create", content=content, reason="create")
+        ],
+        summary="create",
+    )
+
+
+# --- success path --------------------------------------------------------- #
+
+
+def test_guarded_success_returns_patch_result(git_repo):
+    run_id = str(uuid.uuid4())
+    outcome = apply_patch_guarded(
+        _create_output(run_id, "new_file.py"),
+        run_id,
+        files_expected=["new_file.py"],
+    )
+    assert isinstance(outcome, PatchApplyOutcome)
+    assert outcome.success is True
+    assert outcome.failure is None
+    assert outcome.patch_result is not None and outcome.patch_result.success is True
+    assert (git_repo / "new_file.py").exists()
+
+
+# --- precondition --------------------------------------------------------- #
+
+
+def test_guarded_dirty_worktree_blocks_before_patch(git_repo):
+    # Uncommitted change makes the tree dirty.
+    (git_repo / "seed.txt").write_text("seed dirty\n", encoding="utf-8")
+
+    run_id = str(uuid.uuid4())
+    outcome = apply_patch_guarded(
+        _create_output(run_id, "new_file.py"),
+        run_id,
+        files_expected=["new_file.py"],
+    )
+    assert outcome.success is False
+    assert outcome.failure.failure_type == PatchFailureType.DIRTY_WORKTREE
+    # No write happened.
+    assert not (git_repo / "new_file.py").exists()
+    assert not (BACKUP_DIR / run_id / "manifest.json").exists()
+
+
+# --- empty / no-op -> NO_CHANGES ------------------------------------------ #
+
+
+def test_guarded_empty_changes_is_no_changes(git_repo):
+    run_id = str(uuid.uuid4())
+    output = CoderHandoff(
+        run_id=run_id,
+        feature_description="nothing",
+        files_changed=[],
+        summary="nothing",
+    )
+    outcome = apply_patch_guarded(output, run_id, files_expected=["x.py"])
+    assert outcome.success is False
+    assert outcome.failure.failure_type == PatchFailureType.NO_CHANGES
+
+
+def test_guarded_noop_edit_is_no_changes_and_clean(git_repo):
+    run_id = str(uuid.uuid4())
+    outcome = apply_patch_guarded(
+        _edit_output(run_id, "seed.txt", "seed", "seed"),
+        run_id,
+        files_expected=["seed.txt"],
+    )
+    assert outcome.success is False
+    assert outcome.failure.failure_type == PatchFailureType.NO_CHANGES
+    assert outcome.failure.working_tree_clean is True
+    assert _git(git_repo, "status", "--porcelain").stdout.strip() == ""
+
+
+# --- apply-time classification -------------------------------------------- #
+
+
+def test_guarded_malformed_action(git_repo):
+    run_id = str(uuid.uuid4())
+    output = CoderHandoff(
+        run_id=run_id,
+        feature_description="bad action",
+        files_changed=[FileChange(path="x.py", action="frobnicate", reason="bad")],
+        summary="bad",
+    )
+    outcome = apply_patch_guarded(output, run_id, files_expected=["x.py"])
+    assert outcome.success is False
+    assert outcome.failure.failure_type == PatchFailureType.PATCH_MALFORMED
+    assert outcome.failure.working_tree_clean is True
+
+
+def test_guarded_large_file_wholesale_modify_is_malformed(git_repo):
+    big = git_repo / "BIG.md"
+    big.write_text("\n".join(f"Line {i}" for i in range(238)) + "\n", encoding="utf-8")
+    _git(git_repo, "add", "-A")
+    _git(git_repo, "commit", "-m", "add big")
+
+    run_id = str(uuid.uuid4())
+    output = CoderHandoff(
+        run_id=run_id,
+        feature_description="wholesale",
+        files_changed=[
+            FileChange(path="BIG.md", action="modify", content="tiny\n", reason="x")
+        ],
+        summary="x",
+    )
+    outcome = apply_patch_guarded(output, run_id, files_expected=["BIG.md"])
+    assert outcome.failure.failure_type == PatchFailureType.PATCH_MALFORMED
+    assert outcome.failure.working_tree_clean is True
+
+
+def test_guarded_old_string_missing_is_does_not_apply(git_repo):
+    run_id = str(uuid.uuid4())
+    outcome = apply_patch_guarded(
+        _edit_output(run_id, "seed.txt", "not-present", "x"),
+        run_id,
+        files_expected=["seed.txt"],
+    )
+    assert outcome.failure.failure_type == PatchFailureType.PATCH_DOES_NOT_APPLY
+    assert outcome.failure.working_tree_clean is True
+
+
+def test_guarded_old_string_not_unique_is_does_not_apply(git_repo):
+    dup = git_repo / "dup.txt"
+    dup.write_text("dup\ndup\n", encoding="utf-8")
+    _git(git_repo, "add", "-A")
+    _git(git_repo, "commit", "-m", "dup")
+
+    run_id = str(uuid.uuid4())
+    outcome = apply_patch_guarded(
+        _edit_output(run_id, "dup.txt", "dup", "x"),
+        run_id,
+        files_expected=["dup.txt"],
+    )
+    assert outcome.failure.failure_type == PatchFailureType.PATCH_DOES_NOT_APPLY
+
+
+def test_guarded_create_target_exists_is_does_not_apply(git_repo):
+    run_id = str(uuid.uuid4())
+    outcome = apply_patch_guarded(
+        _create_output(run_id, "seed.txt"),
+        run_id,
+        files_expected=["seed.txt"],
+    )
+    assert outcome.failure.failure_type == PatchFailureType.PATCH_DOES_NOT_APPLY
+
+
+def test_guarded_forbidden_file(git_repo):
+    # Commit the .env first so the tree is clean and the forbidden-write guard
+    # (not the dirty-worktree precondition) is what rejects the edit.
+    (git_repo / ".env").write_text("SECRET=value\n", encoding="utf-8")
+    _git(git_repo, "add", "-A")
+    _git(git_repo, "commit", "-m", "add env")
+
+    run_id = str(uuid.uuid4())
+    outcome = apply_patch_guarded(
+        _edit_output(run_id, ".env", "SECRET=value", "SECRET=hacked"),
+        run_id,
+        files_expected=[".env"],
+    )
+    assert outcome.failure.failure_type == PatchFailureType.FORBIDDEN_FILE
+    assert (git_repo / ".env").read_text(encoding="utf-8") == "SECRET=value\n"
+
+
+def test_guarded_target_missing(git_repo):
+    run_id = str(uuid.uuid4())
+    outcome = apply_patch_guarded(
+        _edit_output(run_id, "missing.py", "foo", "bar"),
+        run_id,
+        files_expected=["missing.py"],
+    )
+    assert outcome.failure.failure_type == PatchFailureType.TARGET_MISSING
+    assert outcome.failure.working_tree_clean is True
+
+
+# --- partial apply: no residue -------------------------------------------- #
+
+
+def test_guarded_partial_apply_leaves_no_residue(git_repo):
+    # First change is a valid create; second targets a missing file. Validation
+    # rejects before any write, so the valid file must never appear.
+    run_id = str(uuid.uuid4())
+    output = CoderHandoff(
+        run_id=run_id,
+        feature_description="two changes",
+        files_changed=[
+            FileChange(path="a.py", action="create", content="a = 1\n", reason="ok"),
+            FileChange(
+                path="b.py", action="edit", old_string="x", new_string="y", reason="bad"
+            ),
+        ],
+        summary="partial",
+    )
+    outcome = apply_patch_guarded(output, run_id, files_expected=["a.py", "b.py"])
+    assert outcome.success is False
+    assert outcome.failure.failure_type == PatchFailureType.TARGET_MISSING
+    assert not (git_repo / "a.py").exists()
+    assert _git(git_repo, "status", "--porcelain").stdout.strip() == ""
+
+
+# --- post-apply scope validation ------------------------------------------ #
+
+
+def test_guarded_post_apply_scope_violation_rolls_back(git_repo):
+    # The coder creates a file that is NOT in files_expected. The patch applies,
+    # then post-apply scope validation catches it and rolls back.
+    run_id = str(uuid.uuid4())
+    outcome = apply_patch_guarded(
+        _create_output(run_id, "sneaky.py"),
+        run_id,
+        files_expected=["allowed.py"],
+    )
+    assert outcome.success is False
+    assert outcome.failure.failure_type == PatchFailureType.SCOPE_VIOLATION
+    assert "sneaky.py" in outcome.failure.changed_files_actual
+    assert outcome.failure.allowed_files == ["allowed.py"]
+    assert outcome.failure.rollback_performed is True
+    assert outcome.failure.working_tree_clean is True
+    # Rolled back: the out-of-scope file is gone and the tree is clean.
+    assert not (git_repo / "sneaky.py").exists()
+    assert _git(git_repo, "status", "--porcelain").stdout.strip() == ""
+
+
+def test_guarded_in_scope_change_succeeds(git_repo):
+    run_id = str(uuid.uuid4())
+    outcome = apply_patch_guarded(
+        _create_output(run_id, "allowed.py"),
+        run_id,
+        files_expected=["allowed.py"],
+    )
+    assert outcome.success is True
+    assert (git_repo / "allowed.py").exists()
+
+
+# --- rollback failure -> manual intervention ------------------------------ #
+
+
+def test_guarded_rollback_failure_flags_manual_intervention(git_repo, monkeypatch):
+    import backend.pipeline.patch_applier as patch_applier
+
+    # Simulate a rollback that claims success but leaves the tree dirty.
+    monkeypatch.setattr(patch_applier, "rollback_patch", lambda *a, **k: True)
+
+    run_id = str(uuid.uuid4())
+    outcome = apply_patch_guarded(
+        _create_output(run_id, "sneaky.py"),
+        run_id,
+        files_expected=["allowed.py"],
+    )
+    assert outcome.failure.failure_type == PatchFailureType.SCOPE_VIOLATION
+    assert outcome.failure.rollback_performed is True
+    assert outcome.failure.working_tree_clean is False
+    assert outcome.failure.manual_intervention_needed is True
+
+
+# --- helper unit tests ---------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "message, expected",
+    [
+        ("patch_applier.py: [SECURITY] forbidden path rejected: .env", PatchFailureType.FORBIDDEN_FILE),
+        ("edit target missing: x.py", PatchFailureType.TARGET_MISSING),
+        ("create target already exists: x.py", PatchFailureType.PATCH_DOES_NOT_APPLY),
+        ("edit old_string not found in x.py", PatchFailureType.PATCH_DOES_NOT_APPLY),
+        ("edit old_string is not unique in x.py", PatchFailureType.PATCH_DOES_NOT_APPLY),
+        ("Large files cannot be replaced wholesale automatically", PatchFailureType.PATCH_MALFORMED),
+        ("invalid action 'frobnicate' for x.py", PatchFailureType.PATCH_MALFORMED),
+        ("something totally unexpected", PatchFailureType.UNKNOWN_PATCH_FAILURE),
+    ],
+)
+def test_classify_patch_failure_mapping(message, expected):
+    assert classify_patch_failure(RuntimeError(message), phase="apply") == expected
+
+
+def test_classify_test_phase_is_test_failure():
+    assert (
+        classify_patch_failure(RuntimeError("boom"), phase="test")
+        == PatchFailureType.TEST_FAILURE_AFTER_APPLY
+    )
+
+
+def test_validate_changed_files_in_scope_rules():
+    assert validate_changed_files_in_scope(["a.py"], ["a.py", "b.py"]) is True
+    assert validate_changed_files_in_scope(["c.py"], ["a.py", "b.py"]) is False
+    assert validate_changed_files_in_scope([], ["a.py"]) is True
+    # Empty allowed scope is unsafe.
+    assert validate_changed_files_in_scope(["a.py"], []) is False
+    # Windows separators normalize to forward slashes for comparison.
+    assert validate_changed_files_in_scope(["src\\a.py"], ["src/a.py"]) is True
+
+
+def test_actual_changed_files_reports_changes_in_git_repo(git_repo):
+    (git_repo / "obs.py").write_text("x = 1\n", encoding="utf-8")
+    observed = actual_changed_files(str(git_repo))
+    assert "obs.py" in observed
