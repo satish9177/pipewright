@@ -1878,6 +1878,144 @@ def test_multiple_readmes_returns_ambiguous_clarification(monkeypatch, tmp_repo)
     assert data["status"] == "needs_clarification"
     assert "README.md" in data["message"]
     assert "docs/README.md" in data["message"]
+    assert data["candidates"] == ["README.md", "docs/README.md"]
+    assert data["recommendation_strength"] in {"weak", "none"}
+    if data["recommendation_strength"] == "none":
+        assert data["recommended_path"] is None
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+def test_ambiguous_readme_with_main_and_exclusions_recommends_root(
+    monkeypatch,
+    tmp_repo,
+):
+    project = make_project(tmp_repo)
+    seed_file_index(
+        project["id"],
+        ["README.md", "docs/adr/README.md", "docs/architecture/README.md"],
+    )
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": (
+            "add hello in the main readme docs not in the architecture or "
+            "adr readme"
+        ),
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert data["candidates"] == [
+        "README.md",
+        "docs/adr/README.md",
+        "docs/architecture/README.md",
+    ]
+    assert data["recommended_path"] == "README.md"
+    assert data["recommendation_strength"] == "strong"
+    assert "I think you mean README.md" in data["message"]
+    assert "1. README.md" in data["message"]
+    assert "2. docs/adr/README.md" in data["message"]
+    assert "3. docs/architecture/README.md" in data["message"]
+    assert "root-level" in data["message"]
+    assert "excludes adr/architecture" in data["message"]
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+def test_ambiguous_readme_docs_adr_request_recommends_docs_adr(
+    monkeypatch,
+    tmp_repo,
+):
+    project = make_project(tmp_repo)
+    seed_file_index(
+        project["id"],
+        ["README.md", "docs/adr/README.md", "docs/architecture/README.md"],
+    )
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "add hello in docs adr readme",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert data["candidates"][0] == "docs/adr/README.md"
+    assert set(data["candidates"]) == {
+        "README.md",
+        "docs/adr/README.md",
+        "docs/architecture/README.md",
+    }
+    assert data["recommended_path"] == "docs/adr/README.md"
+    assert data["recommendation_strength"] == "strong"
+    assert "I think you mean docs/adr/README.md" in data["message"]
+    assert "matches docs/adr" in data["message"]
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+def test_ambiguous_plain_readme_has_candidates_but_no_strong_auto_selection(
+    monkeypatch,
+    tmp_repo,
+):
+    project = make_project(tmp_repo)
+    seed_file_index(
+        project["id"],
+        ["README.md", "docs/adr/README.md", "docs/architecture/README.md"],
+    )
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "add hello in the readme",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert set(data["candidates"]) == {
+        "README.md",
+        "docs/adr/README.md",
+        "docs/architecture/README.md",
+    }
+    assert data["recommendation_strength"] in {"weak", "none"}
+    assert data["recommendation_strength"] != "strong"
+    if data["recommendation_strength"] == "none":
+        assert data["recommended_path"] is None
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+def test_ambiguous_readme_tie_has_no_recommendation(monkeypatch, tmp_repo):
+    project = make_project(tmp_repo)
+    seed_file_index(
+        project["id"],
+        ["docs/adr/README.md", "docs/api/README.md"],
+    )
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "add hello in docs readme",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert data["candidates"] == ["docs/adr/README.md", "docs/api/README.md"]
+    assert data["recommended_path"] is None
+    assert data["recommendation_strength"] == "none"
+    assert "Choose one exact path" in data["message"]
+    assert "1. docs/adr/README.md" in data["message"]
+    assert "2. docs/api/README.md" in data["message"]
     assert "run_id" not in data
     _assert_no_runs(project["id"])
 
@@ -2043,6 +2181,7 @@ def test_multiple_readmes_with_create_phrase_stays_ambiguous(
     assert data["status"] == "needs_clarification"
     assert "README.md" in data["message"]
     assert "docs/README.md" in data["message"]
+    assert data["candidates"] == ["README.md", "docs/README.md"]
     assert "run_id" not in data
     _assert_no_runs(project["id"])
 

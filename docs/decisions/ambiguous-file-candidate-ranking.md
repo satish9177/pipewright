@@ -435,3 +435,25 @@ This PR adds **only** this document. No module is imported, wired, or modified.
 frontend, approvals, git, and providers are untouched. The current ambiguous
 clarification (chunks.py:187) continues to return the existing safe, generic
 message until #17J ships. All safety invariants in §7 hold unchanged.
+
+---
+
+## #17J implemented
+
+`/runs/chunked` now uses `rank_ambiguous_file_candidates()` only when
+`resolve_explicit_edit_target()` returns `AMBIGUOUS`. The response remains a
+read-only `needs_clarification` envelope: no run row is created, no candidate is
+auto-selected, and the user must confirm an exact path before normal planning can
+continue.
+
+The clarification now includes numbered candidates in ranked order plus additive
+payload fields:
+
+- `candidates`
+- `recommended_path`
+- `recommendation_strength`
+
+Recommendation copy is rendered from the ranker's structured reason tokens in
+the route. No LLM, route broadening, file-alias grounding change, create-target
+change, scope/patch behavior, DB/schema, frontend, memory, approvals, git, or
+provider behavior was added for #17J.

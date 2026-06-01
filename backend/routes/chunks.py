@@ -57,6 +57,10 @@ from backend.pipeline.file_alias_grounding import (
     EditTargetOutcome,
     resolve_explicit_edit_target,
 )
+from backend.pipeline.file_candidate_ranking import (
+    Recommendation,
+    rank_ambiguous_file_candidates,
+)
 from backend.pipeline.plan_path_grounding import (
     ground_triage_result_paths,
     get_indexed_paths_and_dirs,
@@ -80,21 +84,28 @@ def _needs_clarification_response(
     message: str | None = None,
     missing_details: list[str] | None = None,
     examples: list[str] | None = None,
+    candidates: list[str] | None = None,
+    recommended_path: str | None = None,
+    recommendation_strength: str | None = None,
 ) -> JSONResponse:
     """
     Build the read-only needs_clarification envelope (HTTP 200). No run row is
     created and no triage/coder/patch/git/PR path is touched.
     """
-    return JSONResponse(
-        status_code=200,
-        content={
-            "status": "needs_clarification",
-            "intent": IMPLEMENTATION,
-            "message": message or NEEDS_CLARIFICATION_MESSAGE,
-            "missing_details": missing_details or DEFAULT_MISSING_DETAILS,
-            "examples": examples or DEFAULT_EXAMPLES,
-        },
-    )
+    content = {
+        "status": "needs_clarification",
+        "intent": IMPLEMENTATION,
+        "message": message or NEEDS_CLARIFICATION_MESSAGE,
+        "missing_details": missing_details or DEFAULT_MISSING_DETAILS,
+        "examples": examples or DEFAULT_EXAMPLES,
+    }
+    if candidates is not None:
+        content["candidates"] = candidates
+        content["recommended_path"] = recommended_path
+        content["recommendation_strength"] = (
+            recommendation_strength or Recommendation.NONE.value
+        )
+    return JSONResponse(status_code=200, content=content)
 
 
 def _non_actionable_response() -> JSONResponse:
@@ -185,17 +196,79 @@ def _target_not_found_response(label: str, wants_create: bool) -> JSONResponse:
 
 
 def _target_ambiguous_response(
-    label: str, candidates: tuple[str, ...]
+    label: str,
+    candidates: tuple[str, ...],
+    feature_description: str,
 ) -> JSONResponse:
     """Specific clarification when several indexed files match the target."""
-    listed = ", ".join(candidates)
-    return _needs_clarification_response(
-        message=(
-            f'I found multiple files matching "{label}": {listed}. '
-            "Which one should I edit?"
-        ),
-        missing_details=[f"which of these to edit: {listed}"],
+    ranked = rank_ambiguous_file_candidates(feature_description, candidates)
+    ordered = list(ranked.ordered)
+    listed = ", ".join(ordered)
+    numbered = "\n".join(
+        f"{index}. {path}" for index, path in enumerate(ordered, start=1)
     )
+    label_text = "README files" if label == "readme" else f'files matching "{label}"'
+
+    if ranked.recommendation is Recommendation.NONE or ranked.recommended is None:
+        message = (
+            f"I found multiple {label_text}. Choose one exact path:\n"
+            f"{numbered}"
+        )
+    else:
+        reason = _ambiguous_recommendation_reason(
+            ranked.reason_tokens,
+            ranked.recommended,
+        )
+        message = (
+            f"I found multiple {label_text}. I think you mean "
+            f"{ranked.recommended}{reason}. Confirm, or choose one:\n"
+            f"{numbered}"
+        )
+
+    return _needs_clarification_response(
+        message=message,
+        missing_details=[f"which exact path to edit: {listed}"],
+        candidates=ordered,
+        recommended_path=ranked.recommended,
+        recommendation_strength=ranked.recommendation.value,
+    )
+
+
+def _ambiguous_recommendation_reason(
+    reason_tokens: tuple[str, ...],
+    recommended_path: str | None = None,
+) -> str:
+    """Render ranker reason tokens as concise user-facing copy."""
+    matched: list[str] = []
+    excluded: list[str] = []
+    phrases: list[str] = []
+
+    for token in reason_tokens:
+        if token == "exact-path":
+            phrases.append("you named that exact path")
+        elif token == "root-level":
+            phrases.append("it is root-level")
+        elif token.startswith("matched:"):
+            matched.append(token.split(":", 1)[1])
+        elif token.startswith("excluded:"):
+            excluded.append(token.split(":", 1)[1])
+
+    if matched and recommended_path:
+        path_order = {
+            token: index
+            for index, token in enumerate(
+                part.lower()
+                for part in recommended_path.replace("\\", "/").split("/")
+            )
+        }
+        matched.sort(key=lambda token: path_order.get(token, len(path_order)))
+    if matched:
+        phrases.append(f"it matches {'/'.join(matched)}")
+    if excluded:
+        phrases.append(f"your request excludes {'/'.join(excluded)}")
+    if not phrases:
+        return ""
+    return " because " + " and ".join(phrases)
 
 
 def _target_forbidden_response(label: str) -> JSONResponse:
@@ -707,7 +780,9 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
                         list(resolution.candidates),
                     )
                     return _target_ambiguous_response(
-                        resolution.alias, resolution.candidates
+                        resolution.alias,
+                        resolution.candidates,
+                        request.feature_description,
                     )
                 if resolution.outcome is EditTargetOutcome.FORBIDDEN:
                     logger.info(
