@@ -30,6 +30,7 @@ interface ChunkPlanPanelProps {
   executionError: string | null
   chunkActionMessage: string | null
   chunkActionError: string | null
+  hiddenApprovalChunkNumbers?: number[]
   onApprove: () => void
   onReject: (reason: string) => void
   onExecute: () => void
@@ -63,6 +64,7 @@ export default function ChunkPlanPanel({
   executionError,
   chunkActionMessage,
   chunkActionError,
+  hiddenApprovalChunkNumbers = [],
   onApprove,
   onReject,
   onExecute,
@@ -199,6 +201,9 @@ export default function ChunkPlanPanel({
               false
             const isAwaitingChunkApproval =
               chunk.status === 'awaiting_chunk_approval'
+            const showInlineChunkApproval =
+              isAwaitingChunkApproval &&
+              !hiddenApprovalChunkNumbers.includes(chunk.chunk_number)
             const chunkActionPending =
               approvingChunkNumber === chunk.chunk_number ||
               rejectingChunkNumber === chunk.chunk_number
@@ -293,7 +298,7 @@ export default function ChunkPlanPanel({
                     </div>
                   )}
 
-                  {isAwaitingChunkApproval && (
+                  {showInlineChunkApproval && (
                     <div className="grid gap-3 rounded border border-yellow-400 p-3">
                       <div>
                         <p className="font-medium">High-Risk Chunk Approval</p>

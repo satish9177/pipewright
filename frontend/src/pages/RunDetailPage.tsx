@@ -136,6 +136,16 @@ function isPendingMemoryConflictGate(gate: ApprovalGate, runId: string) {
   )
 }
 
+function isPendingChunkGate(gate: ApprovalGate, runId: string) {
+  return (
+    gate.run_id === runId &&
+    gate.approval_type === 'chunk' &&
+    typeof gate.chunk_number === 'number' &&
+    gate.chunk_number > 0 &&
+    gate.status === 'pending'
+  )
+}
+
 export default function RunDetailPage() {
   const { runId } = useParams<{ runId: string }>()
   const navigate = useNavigate()
@@ -218,6 +228,17 @@ export default function RunDetailPage() {
       runId ? isPendingMemoryConflictGate(gate, runId) : false
   )
 
+  const pendingChunkGates =
+    gates?.filter((gate: ApprovalGate) =>
+      runId ? isPendingChunkGate(gate, runId) : false
+    ) ?? []
+
+  const gateBackedApprovalChunkNumbers = pendingChunkGates
+    .map(gate => gate.chunk_number)
+    .filter((chunkNumber): chunkNumber is number =>
+      typeof chunkNumber === 'number'
+    )
+
   const pendingGate = gates?.find(
     (g: ApprovalGate) =>
       g.run_id === runId &&
@@ -227,18 +248,40 @@ export default function RunDetailPage() {
   )
 
   const approveMutation = useMutation({
-    mutationFn: () => gatesApi.approve(pendingGate!.id),
+    mutationFn: () => {
+      if (!pendingGate) {
+        throw new Error('No pending approval gate found.')
+      }
+      if (runId && isPendingChunkGate(pendingGate, runId)) {
+        return runsApi.approveChunk(runId, pendingGate.chunk_number!)
+      }
+      return gatesApi.approve(pendingGate.id)
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['gates'] })
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
+      queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
     },
   })
 
   const rejectMutation = useMutation({
-    mutationFn: () => gatesApi.reject(pendingGate!.id, 'Rejected by user'),
+    mutationFn: () => {
+      if (!pendingGate) {
+        throw new Error('No pending approval gate found.')
+      }
+      if (runId && isPendingChunkGate(pendingGate, runId)) {
+        return runsApi.rejectChunk(
+          runId,
+          pendingGate.chunk_number!,
+          'Rejected by user'
+        )
+      }
+      return gatesApi.reject(pendingGate.id, 'Rejected by user')
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['gates'] })
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
+      queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
     },
   })
 
@@ -593,6 +636,7 @@ export default function RunDetailPage() {
             executionError={chunkExecutionError}
             chunkActionMessage={chunkActionMessage}
             chunkActionError={chunkActionError}
+            hiddenApprovalChunkNumbers={gateBackedApprovalChunkNumbers}
             onApprove={() => approveChunkPlanMutation.mutate()}
             onReject={(reason) => rejectChunkPlanMutation.mutate(reason)}
             onExecute={() => executeChunksMutation.mutate()}
