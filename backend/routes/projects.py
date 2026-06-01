@@ -3,6 +3,8 @@ projects.py
 Project CRUD routes.
 """
 
+import logging
+
 from fastapi import APIRouter, HTTPException
 
 from backend.git.repo_inspect import detect_repo
@@ -11,6 +13,10 @@ from backend.models.handoff import (
     ProjectDetectRequest,
     ProjectDetectResponse,
     ProjectUpdate,
+)
+from backend.pipeline.run_locks import (
+    ProjectRepoLockError,
+    project_repo_lock_sync,
 )
 from backend.projects.project_responses import (
     sanitize_project_list_response,
@@ -22,6 +28,12 @@ from backend.projects.project_store import (
     list_projects as list_stored_projects,
     update_project,
 )
+from backend.repo.repo_indexer import (
+    build_repo_index,
+    get_project_index_status,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -113,3 +125,69 @@ def update_project_endpoint(
             detail="Project not found",
         )
     return sanitize_project_response(project)
+
+
+@router.get("/projects/{project_id}/index")
+def get_project_index_route(project_id: str):
+    """
+    Return read-only repo index status for a project (#19B).
+
+    Reads only the file_index rows (count + most recent indexed_at). Never
+    scans the repo and never calls build_repo_index.
+    """
+    project = get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return get_project_index_status(project_id)
+
+
+@router.post("/projects/{project_id}/reindex")
+def reindex_project_route(project_id: str):
+    """
+    Force a fresh repo index rebuild for a project (#19B).
+
+    Read-only on the target repo: it scans the working tree as-is and atomically
+    replaces the project's file_index rows via build_repo_index. It never stages,
+    commits, patches, pushes, switches branches, or writes to the repo, and it
+    does NOT require a clean working tree.
+
+    Lock-aware: the existing project repo lock is acquired for the scan duration
+    so a run cannot start mid-scan; if a run already holds the lock, this returns
+    HTTP 409 and build_repo_index is never called.
+    """
+    project = get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    repo_path = project.get("repo_path")
+    try:
+        with project_repo_lock_sync(project_id):
+            build_repo_index(project_id, repo_path)
+            status = get_project_index_status(project_id)
+    except ProjectRepoLockError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    except HTTPException:
+        raise
+    except Exception as error:
+        # Never leak raw stack traces. Log the detail server-side; return a
+        # sanitized, route-style message to the client.
+        logger.warning(
+            "[PROJECTS] Re-index failed | project_id=%s | error=%s",
+            project_id,
+            error,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Re-index failed. Check that the project repo path exists "
+            "and is readable.",
+        )
+
+    files_indexed = status["files_indexed"]
+    return {
+        "status": "complete",
+        "project_id": project_id,
+        "target_repo_path": repo_path,
+        "files_indexed": files_indexed,
+        "indexed_at": status["indexed_at"],
+        "message": f"Re-indexed {files_indexed} files.",
+    }
