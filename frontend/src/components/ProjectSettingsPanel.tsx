@@ -1,9 +1,10 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
   PrMode,
   Project,
   ProjectDetectResponse,
+  ProjectReindexResponse,
   ProjectUpdateRequest,
 } from '@/api/client'
 import { projectsApi } from '@/api/client'
@@ -66,6 +67,38 @@ function normalizeMode(value: string | undefined): PrMode {
   return 'local_only'
 }
 
+function getReindexErrorMessage(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'response' in error) {
+    const response = (
+      error as { response?: { status?: number; data?: { detail?: unknown } } }
+    ).response
+    if (response?.status === 409) {
+      return 'A run is active for this project — re-index when it finishes.'
+    }
+    if (typeof response?.data?.detail === 'string') {
+      return response.data.detail
+    }
+  }
+  return 'Re-index failed.'
+}
+
+function indexStatusLabel(status: string | undefined): string {
+  if (status === 'indexed') return 'Indexed'
+  if (status === 'not_indexed') return 'Not indexed'
+  return status || 'Unknown'
+}
+
+// The backend returns a SQLite timestamp like "2026-06-02 12:34:56" (no T/Z).
+// Normalize the space to a "T" so Safari/strict parsers accept it, and fall
+// back to the raw string if it still cannot be parsed. Never throws.
+function formatIndexedAt(value: string | null | undefined): string {
+  if (!value) return 'Never'
+  const candidate = value.includes('T') ? value : value.replace(' ', 'T')
+  const date = new Date(candidate)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString()
+}
+
 export default function ProjectSettingsPanel({
   project,
 }: ProjectSettingsPanelProps) {
@@ -84,6 +117,42 @@ export default function ProjectSettingsPanel({
   const [detection, setDetection] = useState<ProjectDetectResponse | null>(null)
   const [detecting, setDetecting] = useState(false)
   const [detectError, setDetectError] = useState<string | null>(null)
+
+  const [reindexMessage, setReindexMessage] = useState<string | null>(null)
+  const [reindexError, setReindexError] = useState<string | null>(null)
+
+  const indexStatusQuery = useQuery({
+    queryKey: ['project-index', project.id],
+    queryFn: () => projectsApi.getIndexStatus(project.id),
+  })
+
+  const reindexMutation = useMutation({
+    mutationFn: () => projectsApi.reindex(project.id),
+    onSuccess: (data: ProjectReindexResponse) => {
+      setReindexError(null)
+      setReindexMessage(
+        data.message || `Re-indexed ${data.files_indexed} files.`,
+      )
+      // Reflect the fresh count/time immediately, then keep the cache honest.
+      queryClient.setQueryData(['project-index', project.id], {
+        project_id: data.project_id,
+        files_indexed: data.files_indexed,
+        indexed_at: data.indexed_at,
+        status: data.files_indexed > 0 ? 'indexed' : 'not_indexed',
+      })
+      queryClient.invalidateQueries({ queryKey: ['project-index', project.id] })
+    },
+    onError: (reindexErr: unknown) => {
+      setReindexMessage(null)
+      setReindexError(getReindexErrorMessage(reindexErr))
+    },
+  })
+
+  const handleReindex = () => {
+    setReindexMessage(null)
+    setReindexError(null)
+    reindexMutation.mutate()
+  }
 
   useEffect(() => {
     setBasic(basicFromProject(project))
@@ -180,6 +249,70 @@ export default function ProjectSettingsPanel({
               {project.branch || 'Not set'}
             </p>
           </div>
+        </div>
+
+        <div className="mb-6 grid gap-3 rounded-md border p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">Repository index</p>
+              <p className="text-xs text-muted-foreground">
+                The index is a cached map of your repo's files. Re-index after
+                adding, renaming, or deleting files outside Pipewright.
+              </p>
+            </div>
+            {indexStatusQuery.data && (
+              <Badge variant="outline">
+                {indexStatusLabel(indexStatusQuery.data.status)}
+              </Badge>
+            )}
+          </div>
+
+          {indexStatusQuery.isLoading ? (
+            <p className="text-sm text-muted-foreground">
+              Loading index status…
+            </p>
+          ) : indexStatusQuery.isError ? (
+            <p className="text-sm text-muted-foreground">
+              Index status unavailable.
+            </p>
+          ) : (
+            <div className="grid gap-1 text-sm sm:grid-cols-2">
+              <div>
+                <p className="font-medium">Files indexed</p>
+                <p className="text-muted-foreground">
+                  {indexStatusQuery.data?.files_indexed ?? 0}
+                </p>
+              </div>
+              <div>
+                <p className="font-medium">Last indexed</p>
+                <p className="text-muted-foreground">
+                  {formatIndexedAt(indexStatusQuery.data?.indexed_at)}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {reindexMessage && (
+            <p className="text-sm font-medium text-green-600">
+              {reindexMessage}
+            </p>
+          )}
+          {reindexError && (
+            <p className="text-sm font-medium text-red-500">{reindexError}</p>
+          )}
+
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-fit"
+            onClick={handleReindex}
+            disabled={reindexMutation.isPending}
+          >
+            {reindexMutation.isPending
+              ? 'Re-indexing…'
+              : 'Re-index repository'}
+          </Button>
         </div>
 
         <form onSubmit={handleSubmit} className="grid gap-4">
