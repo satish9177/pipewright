@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { projectsApi } from '@/api/client'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -8,21 +9,70 @@ import {
 
 interface PatchFailureBannerProps {
   report: PatchFailureReport
+  // When provided, the `reindex` suggested action becomes an enabled button
+  // that re-indexes this project's repo (#19D). It only re-indexes; it never
+  // retries the failed chunk. Without it, `reindex` stays a disabled
+  // placeholder like the other unwired recovery actions.
+  projectId?: string
 }
 
 const VIEW_DETAILS = 'view_details'
+const REINDEX = 'reindex'
 
 function formatFiles(values: string[]) {
   return values.join(', ')
 }
 
-export default function PatchFailureBanner({ report }: PatchFailureBannerProps) {
+function getReindexErrorMessage(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'response' in error) {
+    const response = (
+      error as { response?: { status?: number; data?: { detail?: unknown } } }
+    ).response
+    if (response?.status === 409) {
+      return 'A run is active for this project — re-index when it finishes.'
+    }
+    if (typeof response?.data?.detail === 'string') {
+      return response.data.detail
+    }
+  }
+  return 'Re-index failed.'
+}
+
+export default function PatchFailureBanner({
+  report,
+  projectId,
+}: PatchFailureBannerProps) {
   const [showDetails, setShowDetails] = useState(false)
+  const [reindexing, setReindexing] = useState(false)
+  const [reindexMessage, setReindexMessage] = useState<string | null>(null)
+  const [reindexError, setReindexError] = useState<string | null>(null)
 
   const attempted = report.changed_files_attempted ?? []
   const actual = report.changed_files_actual ?? []
   const suggestedActions = report.suggested_actions ?? []
   const technicalDetails = report.technical_details ?? ''
+
+  // The reindex action is only actionable when we know which project to scan.
+  const reindexEnabled =
+    suggestedActions.includes(REINDEX) && Boolean(projectId)
+
+  const handleReindex = async () => {
+    if (!projectId) return
+    setReindexing(true)
+    setReindexMessage(null)
+    setReindexError(null)
+    try {
+      // Re-index only. This deliberately does NOT retry the failed chunk.
+      const result = await projectsApi.reindex(projectId)
+      setReindexMessage(
+        result.message || `Re-indexed ${result.files_indexed} files.`,
+      )
+    } catch (error: unknown) {
+      setReindexError(getReindexErrorMessage(error))
+    } finally {
+      setReindexing(false)
+    }
+  }
 
   const rollbackLabel = report.rollback_performed
     ? 'Rolled back'
@@ -90,27 +140,54 @@ export default function PatchFailureBanner({ report }: PatchFailureBannerProps) 
       {suggestedActions.length > 0 && (
         <div className="grid gap-2">
           <div className="flex flex-wrap gap-2">
-            {suggestedActions.map(action =>
-              action === VIEW_DETAILS ? (
-                <Button
-                  key={action}
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setShowDetails(previous => !previous)}
-                  aria-expanded={showDetails}
-                >
-                  {showDetails ? 'Hide details' : suggestedActionLabel(action)}
-                </Button>
-              ) : (
+            {suggestedActions.map(action => {
+              if (action === VIEW_DETAILS) {
+                return (
+                  <Button
+                    key={action}
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setShowDetails(previous => !previous)}
+                    aria-expanded={showDetails}
+                  >
+                    {showDetails ? 'Hide details' : suggestedActionLabel(action)}
+                  </Button>
+                )
+              }
+              if (action === REINDEX && reindexEnabled) {
+                return (
+                  <Button
+                    key={action}
+                    size="sm"
+                    variant="outline"
+                    onClick={handleReindex}
+                    disabled={reindexing}
+                  >
+                    {reindexing
+                      ? 'Re-indexing…'
+                      : 'Re-index and refresh index'}
+                  </Button>
+                )
+              }
+              return (
                 <Button key={action} size="sm" variant="outline" disabled>
                   {suggestedActionLabel(action)}
                 </Button>
               )
-            )}
+            })}
           </div>
+          {reindexMessage && (
+            <p className="text-xs font-medium text-green-600">
+              {reindexMessage}
+            </p>
+          )}
+          {reindexError && (
+            <p className="text-xs font-medium text-red-500">{reindexError}</p>
+          )}
           <p className="text-xs text-muted-foreground">
-            Recovery actions are not wired yet. Use the details below to decide
-            the next manual step.
+            {reindexEnabled
+              ? 'Re-index is available. Other recovery actions are not wired yet.'
+              : 'Recovery actions are not wired yet. Use the details below to decide the next manual step.'}
           </p>
         </div>
       )}

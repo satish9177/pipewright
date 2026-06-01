@@ -290,7 +290,10 @@ export default function ChunkPlanPanel({
                     // Structured patch failure (#18E): the banner shows the
                     // message, so skip the raw completion_summary dump and the
                     // generic error_message block to avoid duplication.
-                    <PatchFailureBanner report={patchFailure} />
+                    <PatchFailureBanner
+                      report={patchFailure}
+                      projectId={plan.project_id}
+                    />
                   ) : (
                     <>
                       {chunk.completion_summary && (

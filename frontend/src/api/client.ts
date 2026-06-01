@@ -132,6 +132,26 @@ export interface ProjectDetectResponse {
 
 export type ProjectCreate = ProjectCreateRequest
 
+export type ProjectIndexState = 'indexed' | 'not_indexed' | (string & {})
+
+export interface ProjectIndexStatus extends ExtraFields {
+  project_id: string
+  files_indexed: number
+  // SQLite timestamp string (e.g. "2026-06-02 12:34:56") or null when never
+  // indexed. Format defensively on the frontend; do not assume ISO-8601.
+  indexed_at: string | null
+  status: ProjectIndexState
+}
+
+export interface ProjectReindexResponse extends ExtraFields {
+  status: string
+  project_id: string
+  target_repo_path?: string
+  files_indexed: number
+  indexed_at: string | null
+  message: string
+}
+
 export interface Run extends ExtraFields {
   id: string
   project_id?: string | null
@@ -461,6 +481,14 @@ export const projectsApi = {
       .post<ProjectDetectResponse>('/projects/detect', {
         repo_path,
       } satisfies ProjectDetectRequest)
+      .then(r => r.data),
+  getIndexStatus: (id: string) =>
+    api
+      .get<ProjectIndexStatus>(`/projects/${id}/index`)
+      .then(r => r.data),
+  reindex: (id: string) =>
+    api
+      .post<ProjectReindexResponse>(`/projects/${id}/reindex`)
       .then(r => r.data),
 }
 
