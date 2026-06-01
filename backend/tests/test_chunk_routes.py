@@ -2642,3 +2642,29 @@ def test_post_runs_chunked_one_has_no_global_selection(monkeypatch, tmp_repo):
 def test_select_endpoint_is_registered():
     paths = {route.path for route in app.routes}
     assert "/runs/chunked/clarifications/{clarification_id}/select" in paths
+
+
+def test_failed_chunk_cannot_be_approved(tmp_repo, tracked_runs):
+    """A chunk that failed at patch time must not be approvable (#18D)."""
+    from backend.pipeline.chunk_store import approve_chunk_plan, update_chunk_status
+
+    project = make_project(tmp_repo)
+    run_id = str(uuid.uuid4())
+    tracked_runs.append(run_id)
+    create_chunked_run(
+        run_id, project["id"], "Add route chunks", make_triage(run_id, project["id"])
+    )
+    approve_chunk_plan(run_id)
+    # Chunk failed during patch application.
+    update_chunk_status(run_id, 1, "failed", "patch failed")
+
+    client = TestClient(app)
+    response = client.post(f"/runs/{run_id}/chunks/1/approve")
+
+    # The status guard rejects approval of a non-awaiting chunk.
+    assert response.status_code == 400
+    with engine.connect() as conn:
+        status = conn.execute(text("""
+            SELECT status FROM chunks WHERE run_id = :run_id AND chunk_number = 1
+        """), {"run_id": run_id}).fetchone()[0]
+    assert status == "failed"
