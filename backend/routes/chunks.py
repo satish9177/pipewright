@@ -61,6 +61,16 @@ from backend.pipeline.file_candidate_ranking import (
     Recommendation,
     rank_ambiguous_file_candidates,
 )
+from backend.pipeline.clarification_context import (
+    ClarificationDecodeStatus,
+    create_clarification_context,
+    decode_clarification_context,
+    encode_clarification_context,
+)
+from backend.pipeline.clarification_selection import (
+    SelectionStatus,
+    parse_clarification_selection,
+)
 from backend.pipeline.plan_path_grounding import (
     ground_triage_result_paths,
     get_indexed_paths_and_dirs,
@@ -87,6 +97,7 @@ def _needs_clarification_response(
     candidates: list[str] | None = None,
     recommended_path: str | None = None,
     recommendation_strength: str | None = None,
+    clarification_id: str | None = None,
 ) -> JSONResponse:
     """
     Build the read-only needs_clarification envelope (HTTP 200). No run row is
@@ -105,6 +116,10 @@ def _needs_clarification_response(
         content["recommendation_strength"] = (
             recommendation_strength or Recommendation.NONE.value
         )
+    # Additive: present only on the ambiguous-file clarification so the follow-up
+    # selection endpoint (#17M) can map a reply within this exact candidate set.
+    if clarification_id is not None:
+        content["clarification_id"] = clarification_id
     return JSONResponse(status_code=200, content=content)
 
 
@@ -199,6 +214,9 @@ def _target_ambiguous_response(
     label: str,
     candidates: tuple[str, ...],
     feature_description: str,
+    project_id: str,
+    *,
+    note: str | None = None,
 ) -> JSONResponse:
     """Specific clarification when several indexed files match the target."""
     ranked = rank_ambiguous_file_candidates(feature_description, candidates)
@@ -224,6 +242,32 @@ def _target_ambiguous_response(
             f"{ranked.recommended}{reason}. Confirm, or choose one:\n"
             f"{numbered}"
         )
+    if note:
+        message = f"{note} {message}"
+
+    # Mint a signed, self-expiring context so the user's follow-up reply
+    # ("1" / "yes 1" / "use README.md") can be mapped to one of THESE candidates
+    # on the selection endpoint. Stateless: no run row, no DB write. The original
+    # intent is preserved so the selection can rebuild the request. Failure to
+    # encode must never break the safe clarification, so it degrades to omitting
+    # clarification_id (older behavior).
+    clarification_id: str | None = None
+    try:
+        context = create_clarification_context(
+            project_id=project_id,
+            original_feature_description=feature_description,
+            alias=label,
+            candidates=ordered,
+            recommended_path=ranked.recommended,
+            recommendation_strength=ranked.recommendation.value,
+        )
+        clarification_id = encode_clarification_context(context)
+    except Exception as error:  # pragma: no cover - defensive only
+        logger.warning(
+            "[CLARIFY] Failed to mint clarification_id; returning clarification "
+            "without selection handoff. error=%s",
+            error,
+        )
 
     return _needs_clarification_response(
         message=message,
@@ -231,6 +275,7 @@ def _target_ambiguous_response(
         candidates=ordered,
         recommended_path=ranked.recommended,
         recommendation_strength=ranked.recommendation.value,
+        clarification_id=clarification_id,
     )
 
 
@@ -336,6 +381,11 @@ class ChunkedRunRequest(BaseModel):
         if _is_blank(value):
             raise ValueError("Field must not be blank")
         return value
+
+
+class ClarificationSelectionRequest(BaseModel):
+    project_id: str
+    selection: str = Field(min_length=1, max_length=FEATURE_DESCRIPTION_MAX_LENGTH)
 
 
 class RejectChunkPlanRequest(BaseModel):
@@ -653,23 +703,40 @@ async def start_implementation_from_plan_route(run_id: str):
 
 @router.post("/runs/chunked", response_model=ChunkPlanResponse)
 async def create_chunked_run_route(request: ChunkedRunRequest):
-    project = get_project(request.project_id)
+    return await _create_chunked_run_core(
+        request.project_id,
+        request.feature_description,
+    )
+
+
+async def _create_chunked_run_core(project_id: str, feature_description: str):
+    """
+    Shared chunked-run creation core (PR #17M refactor).
+
+    Behavior-preserving extraction of the original ``/runs/chunked`` body so the
+    clarification-selection endpoint can re-enter the *exact same* path — pre-
+    intent guard, intent classification, explicit-target resolver/grounding, risk
+    scan, scope pinning, and read-only report/plan handling. No guard is skipped:
+    a rebuilt selection request is re-resolved against the live index here, so the
+    selected path is never trusted as edit authority.
+    """
+    project = get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
     # Pre-intent actionability guard: a greeting / noise-only message is not a
     # work request. Stop before intent classification so it never becomes a
     # plan_ready / report_ready / implementation run.
-    if is_non_actionable_request(request.feature_description):
+    if is_non_actionable_request(feature_description):
         logger.info(
             "[GUARD] Non-actionable request; needs clarification before "
             "intent classification. project_id=%s",
-            request.project_id,
+            project_id,
         )
         return _non_actionable_response()
 
     run_id = str(uuid.uuid4())
-    decision = await classify_intent_details_async(request.feature_description)
+    decision = await classify_intent_details_async(feature_description)
     intent = decision.intent
 
     # Uncertain classification must not fall into the plan_only bucket and
@@ -679,7 +746,7 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
         logger.info(
             "[GUARD] Uncertain classification; needs clarification instead of "
             "a plan_only fallback. project_id=%s | source=%s | reason=%s",
-            request.project_id,
+            project_id,
             decision.source,
             decision.reason,
         )
@@ -697,8 +764,8 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
             try:
                 analysis = await run_report_analysis(
                     run_id=run_id,
-                    project_id=request.project_id,
-                    feature_description=request.feature_description,
+                    project_id=project_id,
+                    feature_description=feature_description,
                 )
                 report = analysis.markdown_report
                 # Structured source for ReportView. Absent on a limited/fallback
@@ -716,13 +783,13 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
                     analysis_error,
                 )
                 report = build_limited_report(
-                    request.feature_description,
+                    feature_description,
                     "analysis failed unexpectedly",
                 )
             _create_read_only_run(
                 run_id=run_id,
-                project_id=request.project_id,
-                feature_description=request.feature_description,
+                project_id=project_id,
+                feature_description=feature_description,
                 intent=REPORT_ONLY,
                 status=RunStatus.REPORT_READY,
                 summary=report,
@@ -730,7 +797,7 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
             )
             return ChunkPlanResponse(
                 run_id=run_id,
-                project_id=request.project_id,
+                project_id=project_id,
                 chunk_plan_status="none",
                 total_chunks=0,
                 current_chunk_number=0,
@@ -754,10 +821,10 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
             # (not that the target is missing); in that case we skip the resolver
             # and fall through to the existing guard rather than emit a false
             # clarification.
-            if not get_indexed_paths_and_dirs(request.project_id).is_empty:
+            if not get_indexed_paths_and_dirs(project_id).is_empty:
                 resolution = resolve_explicit_edit_target(
-                    request.project_id,
-                    request.feature_description,
+                    project_id,
+                    feature_description,
                     allow_create_target=True,
                 )
                 if resolution.outcome is EditTargetOutcome.NOT_FOUND:
@@ -769,7 +836,7 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
                     )
                     return _target_not_found_response(
                         resolution.alias,
-                        _mentions_create(request.feature_description),
+                        _mentions_create(feature_description),
                     )
                 if resolution.outcome is EditTargetOutcome.AMBIGUOUS:
                     logger.info(
@@ -782,7 +849,8 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
                     return _target_ambiguous_response(
                         resolution.alias,
                         resolution.candidates,
-                        request.feature_description,
+                        feature_description,
+                        project_id,
                     )
                 if resolution.outcome is EditTargetOutcome.FORBIDDEN:
                     logger.info(
@@ -812,7 +880,7 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
                         create_target_path,
                     )
                 unsupported_create_label = _unsupported_extensionless_create_target(
-                    request.feature_description
+                    feature_description
                 )
                 if (
                     resolution.outcome is EditTargetOutcome.NO_TARGET
@@ -839,7 +907,7 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
             #      intent itself came from that same LLM call (no extra call)
             if pinned_path is None:
                 specificity = assess_implementation_specificity(
-                    request.feature_description
+                    feature_description
                 )
                 needs_clarification = not specificity.is_specific_enough
                 block_reason = specificity.reason
@@ -882,8 +950,8 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
 
         triage_result = await run_triage(
             run_id=run_id,
-            project_id=request.project_id,
-            feature_description=request.feature_description,
+            project_id=project_id,
+            feature_description=feature_description,
         )
         # PR #17C: pin files_expected to the grounded explicit target (set only
         # for a simple, single-chunk implementation edit). Applied before #9B
@@ -898,7 +966,7 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
         # risk scan and before persisting. Removes invented paths and hardens
         # affected chunks. Applies to both implementation and plan_only.
         triage_result = ground_triage_result_paths(
-            request.project_id,
+            project_id,
             triage_result,
             sanctioned_new_paths=(
                 {create_target_path} if create_target_path is not None else None
@@ -908,8 +976,8 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
         if intent == PLAN_ONLY:
             _create_read_only_run(
                 run_id=run_id,
-                project_id=request.project_id,
-                feature_description=request.feature_description,
+                project_id=project_id,
+                feature_description=feature_description,
                 intent=PLAN_ONLY,
                 status=RunStatus.PLAN_READY,
                 summary=triage_result.reasoning,
@@ -918,7 +986,7 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
             )
             return ChunkPlanResponse(
                 run_id=run_id,
-                project_id=request.project_id,
+                project_id=project_id,
                 chunk_plan_status="none",
                 total_chunks=triage_result.total_chunks,
                 current_chunk_number=0,
@@ -928,14 +996,112 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
 
         return create_chunked_run(
             run_id=run_id,
-            project_id=request.project_id,
-            feature_description=request.feature_description,
+            project_id=project_id,
+            feature_description=feature_description,
             triage_result=triage_result,
         )
     except HTTPException:
         raise
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error))
+
+
+# PR #17M: copy shown when a clarification token can no longer be honored. The
+# user simply re-submits the original request to get a fresh clarification. No
+# run is created.
+_CLARIFICATION_INVALID_MESSAGE = (
+    "This clarification is no longer valid (it may have expired). Please "
+    "re-submit your original request to choose a file again."
+)
+_CLARIFICATION_UNRECOGNIZED_NOTE = (
+    "I couldn't tell which option you meant."
+)
+
+
+def _clarification_unavailable_response() -> JSONResponse:
+    """Safe read-only response for an invalid/expired/unsupported token."""
+    return _needs_clarification_response(
+        message=_CLARIFICATION_INVALID_MESSAGE,
+        missing_details=["re-submit your original request to pick a file"],
+    )
+
+
+@router.post("/runs/chunked/clarifications/{clarification_id}/select")
+async def select_chunked_run_clarification(
+    clarification_id: str,
+    request: ClarificationSelectionRequest,
+):
+    """
+    Resolve a user's reply ("1" / "yes 1" / "use README.md") within the candidate
+    set carried by ``clarification_id`` (PR #17M).
+
+    Safety: "1" is interpreted ONLY here, only against the signed context's
+    candidates — never globally on ``/runs/chunked``. A valid selection rebuilds
+    the original request with the chosen exact path and re-enters the SAME core
+    as a normal request, so the resolver/grounding/scope/approval guards all run
+    again and the selected path is re-validated against the live index (never
+    trusted as edit authority). Invalid / expired / unrecognized / project-
+    mismatched inputs create no run.
+    """
+    decoded = decode_clarification_context(clarification_id)
+    if decoded.status is not ClarificationDecodeStatus.OK or decoded.context is None:
+        logger.info(
+            "[CLARIFY-SELECT] Token not usable; no run created. status=%s",
+            decoded.status.value,
+        )
+        return _clarification_unavailable_response()
+
+    context = decoded.context
+
+    # Bind the selection to the project the clarification was issued for. A
+    # mismatch is a client error and must not create or touch any run.
+    if request.project_id != context.project_id:
+        logger.info(
+            "[CLARIFY-SELECT] Project mismatch; rejecting. token_project=%s "
+            "request_project=%s",
+            context.project_id,
+            request.project_id,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Clarification does not belong to this project.",
+        )
+
+    result = parse_clarification_selection(
+        reply=request.selection,
+        candidates=context.candidates,
+        recommended_path=context.recommended_path,
+    )
+    if result.status is not SelectionStatus.SELECTED or result.selected_path is None:
+        logger.info(
+            "[CLARIFY-SELECT] Unrecognized selection; re-clarifying, no run. "
+            "reason=%s",
+            result.reason,
+        )
+        # Re-offer the SAME candidates with a fresh token (resets TTL). Built
+        # from the stored original intent so messaging/ranking is identical.
+        return _target_ambiguous_response(
+            context.alias or "",
+            tuple(context.candidates),
+            context.original_feature_description,
+            context.project_id,
+            note=_CLARIFICATION_UNRECOGNIZED_NOTE,
+        )
+
+    selected_path = result.selected_path
+    rebuilt_feature_description = (
+        f"{context.original_feature_description.rstrip().rstrip('.')} "
+        f"(use {selected_path})"
+    )
+    logger.info(
+        "[CLARIFY-SELECT] Valid selection; delegating to chunked-run core. "
+        "selected_path=%s",
+        selected_path,
+    )
+    return await _create_chunked_run_core(
+        context.project_id,
+        rebuilt_feature_description,
+    )
 
 
 @router.get("/runs/{run_id}/chunks", response_model=ChunkPlanResponse)
