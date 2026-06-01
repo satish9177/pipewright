@@ -275,6 +275,13 @@ export default function ProjectDashboard() {
                       </div>
                     </div>
                   )}
+                {clarification.candidates &&
+                  clarification.candidates.length > 0 && (
+                    <p className="mt-3 text-xs text-amber-700">
+                      This is based on the current repo index. Re-index if
+                      recently added/removed files are missing.
+                    </p>
+                  )}
               </div>
             )}
             {lastRunId && (
