@@ -157,6 +157,14 @@ returning exactly one of:
 | `NOT_FOUND(alias)` | A target/alias was referenced, but no indexed file matches. |
 | `AMBIGUOUS(alias, paths)` | Multiple indexed files match the referenced target. |
 | `NO_TARGET` | No explicit path or known alias detected — fall through to the existing flow unchanged. |
+| `FORBIDDEN(alias)` | The referenced target is a secret/`.env*`/`.git/*` path — safe refusal, never grounded. |
+
+> #17B note: implemented in `backend/pipeline/file_alias_grounding.py` with these
+> five outcomes (`EditTargetOutcome` enum + frozen `EditTargetResolution`).
+> `FORBIDDEN` is realized as an explicit outcome (read-level `is_forbidden_path`
+> plus a `.git`-component check), not `is_forbidden_write_path` — so legitimately
+> editable infra files (`docker-compose.yml`, `requirements.txt`) still ground
+> while the strict write-time guard in `patch_applier` stays unchanged.
 
 ### Resolution rules
 
