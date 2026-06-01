@@ -53,7 +53,14 @@ from backend.pipeline.intent import (
     SPECIFIC,
     classify_intent_details_async,
 )
-from backend.pipeline.plan_path_grounding import ground_triage_result_paths
+from backend.pipeline.file_alias_grounding import (
+    EditTargetOutcome,
+    resolve_explicit_edit_target,
+)
+from backend.pipeline.plan_path_grounding import (
+    ground_triage_result_paths,
+    get_indexed_paths_and_dirs,
+)
 from backend.pipeline.report_analyzer import (
     build_limited_report,
     run_report_analysis,
@@ -107,6 +114,115 @@ def _non_actionable_response() -> JSONResponse:
             "examples": NON_ACTIONABLE_EXAMPLES,
         },
     )
+
+
+# PR #17C: explicit-edit-target grounding. Canonical filename used in
+# clarification copy when an aliased target is missing. Explicit paths map to
+# themselves (handled by .get default).
+_CANONICAL_CREATE_NAME = {
+    "readme": "README.md",
+    "package.json": "package.json",
+    "docker compose": "docker-compose.yml",
+    "requirements": "requirements.txt",
+    "pyproject": "pyproject.toml",
+}
+
+
+def _canonical_name(label: str) -> str:
+    return _CANONICAL_CREATE_NAME.get(label, label)
+
+
+def _mentions_create(feature_description: str) -> bool:
+    """True when the request explicitly asks to create a file."""
+    words = (feature_description or "").lower().replace("-", " ").split()
+    return "create" in words
+
+
+def _target_not_found_response(label: str, wants_create: bool) -> JSONResponse:
+    """
+    Specific clarification when the user named a file target that is not in the
+    repo index. We never invent or auto-create files (PR #17C).
+    """
+    canonical = _canonical_name(label)
+    if wants_create:
+        message = (
+            f"I understood you want to create {canonical}, but Pipewright does "
+            "not create new files automatically yet. Add it to the repository "
+            "(and re-index), then ask again — or point me at an existing file "
+            "to edit."
+        )
+        missing_details = [
+            f"create {canonical} in the repository first, then retry",
+            "or name an existing file to edit",
+        ]
+    else:
+        message = (
+            f"I understood you want to edit the {label} file, but no matching "
+            f"file was found in this project. Do you want to create {canonical}? "
+            "Pipewright will not create it automatically."
+        )
+        missing_details = [
+            "an existing target file in this project",
+            f"or create {canonical} yourself first",
+        ]
+    return _needs_clarification_response(
+        message=message,
+        missing_details=missing_details,
+    )
+
+
+def _target_ambiguous_response(
+    label: str, candidates: tuple[str, ...]
+) -> JSONResponse:
+    """Specific clarification when several indexed files match the target."""
+    listed = ", ".join(candidates)
+    return _needs_clarification_response(
+        message=(
+            f'I found multiple files matching "{label}": {listed}. '
+            "Which one should I edit?"
+        ),
+        missing_details=[f"which of these to edit: {listed}"],
+    )
+
+
+def _target_forbidden_response(label: str) -> JSONResponse:
+    """Safe refusal when the named target is a protected/secret path."""
+    return _needs_clarification_response(
+        message=(
+            f"I understood the target ({label}), but that file is protected and "
+            "cannot be modified automatically."
+        ),
+        missing_details=["a different, non-protected target file"],
+    )
+
+
+def _pin_single_chunk_files_expected(
+    triage_result: TriageResult, path: str
+) -> TriageResult:
+    """
+    Pin a single grounded edit target onto a one-chunk plan (PR #17C).
+
+    Deterministically narrows ``files_expected`` to ``[path]`` for a simple
+    explicit file edit. Conservative on multi-chunk plans: a single named target
+    must not be forced onto several chunks, so those are left untouched and flow
+    through normal grounding. The pinned path is indexed + non-forbidden (the
+    resolver guarantees this) and still passes through ground_triage_result_paths,
+    scan_triage_result, and scope_guard unchanged.
+    """
+    if triage_result.total_chunks != 1 or len(triage_result.chunks) != 1:
+        logger.info(
+            "[GROUND-TARGET] Skipping files_expected pin on multi-chunk plan "
+            "(total_chunks=%s); leaving to normal grounding. path=%s",
+            triage_result.total_chunks,
+            path,
+        )
+        return triage_result
+
+    chunk = triage_result.chunks[0]
+    if chunk.files_expected == [path]:
+        return triage_result
+    pinned = chunk.model_copy(update={"files_expected": [path]})
+    return triage_result.model_copy(update={"chunks": [pinned]})
 
 
 class ChunkedRunRequest(BaseModel):
@@ -471,6 +587,11 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
         )
         return _non_actionable_response()
 
+    # PR #17C: when a simple explicit file edit grounds to a single indexed
+    # file, pin files_expected to it after triage. Set only in the
+    # implementation branch below; None means "no pin / unchanged flow".
+    pinned_path: str | None = None
+
     try:
         if intent == REPORT_ONLY:
             report_json: str | None = None
@@ -519,58 +640,128 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
             )
 
         if intent == IMPLEMENTATION:
+            # PR #17C: explicit-edit-target grounding runs FIRST. When the user
+            # named a literal file / explicit path that resolves against the repo
+            # index, that grounded path is a concrete anchor — the request is
+            # specific even if the generic heuristic below would call it vague
+            # (e.g. "add hello in the readme", where "readme" fuzzily collapses
+            # into "rename"). A grounded target therefore bypasses the vague
+            # guard; a missing/ambiguous/forbidden target yields a SPECIFIC
+            # clarification instead of the generic one.
+            #
+            # Only consult the resolver when the project already has a non-empty
+            # repo index. The index is built lazily by run_triage below, so an
+            # empty index here means the project simply has not been indexed yet
+            # (not that the target is missing); in that case we skip the resolver
+            # and fall through to the existing guard rather than emit a false
+            # clarification.
+            if not get_indexed_paths_and_dirs(request.project_id).is_empty:
+                resolution = resolve_explicit_edit_target(
+                    request.project_id, request.feature_description
+                )
+                if resolution.outcome is EditTargetOutcome.NOT_FOUND:
+                    logger.info(
+                        "[GROUND-TARGET] Named target not indexed; clarifying. "
+                        "run_id=%s | label=%s",
+                        run_id,
+                        resolution.alias,
+                    )
+                    return _target_not_found_response(
+                        resolution.alias,
+                        _mentions_create(request.feature_description),
+                    )
+                if resolution.outcome is EditTargetOutcome.AMBIGUOUS:
+                    logger.info(
+                        "[GROUND-TARGET] Named target ambiguous; clarifying. "
+                        "run_id=%s | label=%s | candidates=%s",
+                        run_id,
+                        resolution.alias,
+                        list(resolution.candidates),
+                    )
+                    return _target_ambiguous_response(
+                        resolution.alias, resolution.candidates
+                    )
+                if resolution.outcome is EditTargetOutcome.FORBIDDEN:
+                    logger.info(
+                        "[GROUND-TARGET] Named target is protected; refusing. "
+                        "run_id=%s | label=%s",
+                        run_id,
+                        resolution.alias,
+                    )
+                    return _target_forbidden_response(resolution.alias)
+                if resolution.outcome is EditTargetOutcome.GROUNDED:
+                    pinned_path = resolution.path
+                    logger.info(
+                        "[GROUND-TARGET] Grounded explicit target; pinning "
+                        "files_expected and bypassing vague guard. "
+                        "run_id=%s | path=%s",
+                        run_id,
+                        pinned_path,
+                    )
+                # NO_TARGET → fall through to the existing specificity guard.
+
             # Ambiguous-implementation guard (PR #9A): a vague implementation
-            # request must not invent scope. We stop here, before triage /
-            # chunk planning / run creation, and ask for details. Two signals,
+            # request must not invent scope. Skipped when PR #17C already
+            # grounded an explicit target (pinned_path set). Two signals,
             # combined conservatively (block if either says vague):
             #   1. deterministic guard on the raw text (no LLM)
             #   2. the LLM fallback's specificity verdict, but ONLY when the
             #      intent itself came from that same LLM call (no extra call)
-            specificity = assess_implementation_specificity(
-                request.feature_description
-            )
-            needs_clarification = not specificity.is_specific_enough
-            block_reason = specificity.reason
-            llm_message: str | None = None
-            llm_missing: list[str] | None = None
+            if pinned_path is None:
+                specificity = assess_implementation_specificity(
+                    request.feature_description
+                )
+                needs_clarification = not specificity.is_specific_enough
+                block_reason = specificity.reason
+                llm_message: str | None = None
+                llm_missing: list[str] | None = None
 
-            if decision.from_llm:
-                if decision.specificity == NEEDS_CLARIFICATION:
-                    needs_clarification = True
-                    block_reason = "llm_specificity=needs_clarification"
-                    llm_message = decision.clarification_message
-                    llm_missing = decision.missing_details or None
-                elif decision.specificity == SPECIFIC:
-                    if (
-                        decision.specificity_confidence or 0.0
-                    ) < LLM_SPECIFICITY_MIN_CONFIDENCE:
+                if decision.from_llm:
+                    if decision.specificity == NEEDS_CLARIFICATION:
                         needs_clarification = True
-                        block_reason = "llm_specificity_confidence_low"
-                else:
-                    # LLM upgraded an ambiguous request to implementation but
-                    # gave no usable specificity verdict — fail safe.
-                    needs_clarification = True
-                    block_reason = "llm_specificity_missing"
+                        block_reason = "llm_specificity=needs_clarification"
+                        llm_message = decision.clarification_message
+                        llm_missing = decision.missing_details or None
+                    elif decision.specificity == SPECIFIC:
+                        if (
+                            decision.specificity_confidence or 0.0
+                        ) < LLM_SPECIFICITY_MIN_CONFIDENCE:
+                            needs_clarification = True
+                            block_reason = "llm_specificity_confidence_low"
+                    else:
+                        # LLM upgraded an ambiguous request to implementation but
+                        # gave no usable specificity verdict — fail safe.
+                        needs_clarification = True
+                        block_reason = "llm_specificity_missing"
 
-            if needs_clarification:
-                logger.info(
-                    "[GUARD] Blocked vague implementation request before "
-                    "triage. run_id=%s | from_llm=%s | reason=%s",
-                    run_id,
-                    decision.from_llm,
-                    block_reason,
-                )
-                return _needs_clarification_response(
-                    message=llm_message,
-                    missing_details=llm_missing or specificity.missing_details,
-                    examples=specificity.examples,
-                )
+                if needs_clarification:
+                    logger.info(
+                        "[GUARD] Blocked vague implementation request before "
+                        "triage. run_id=%s | from_llm=%s | reason=%s",
+                        run_id,
+                        decision.from_llm,
+                        block_reason,
+                    )
+                    return _needs_clarification_response(
+                        message=llm_message,
+                        missing_details=(
+                            llm_missing or specificity.missing_details
+                        ),
+                        examples=specificity.examples,
+                    )
 
         triage_result = await run_triage(
             run_id=run_id,
             project_id=request.project_id,
             feature_description=request.feature_description,
         )
+        # PR #17C: pin files_expected to the grounded explicit target (set only
+        # for a simple, single-chunk implementation edit). Applied before #9B
+        # grounding so the pinned path still flows through the same guards.
+        if pinned_path is not None:
+            triage_result = _pin_single_chunk_files_expected(
+                triage_result, pinned_path
+            )
         # PR #9B: ground files_expected against the real repo index before the
         # risk scan and before persisting. Removes invented paths and hardens
         # affected chunks. Applies to both implementation and plan_only.

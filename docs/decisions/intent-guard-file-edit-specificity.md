@@ -331,3 +331,43 @@ Regression: existing `test_implementation_guard.py`, `test_intent.py`, and
 - Does not edit forbidden files.
 - Does not change patch application.
 - Changes no runtime behavior and no safety guard. Only this document is added.
+
+---
+
+## 12. #17C implemented (wiring + confirmed root cause)
+
+**Confirmed root cause (supersedes the §10 "unconfirmed" note):** the generic
+"too vague" rejection of `add hello in the readme` comes from the deterministic
+9A guard, not the LLM. In `assess_implementation_specificity`, `readme`
+fuzzy-matches the verb `rename` (Levenshtein distance 2 for a length-6 token),
+so it is stripped as a describe-only word; with `add`/`hello`/`in`/`the` also
+stripped, no concrete anchor remains → vague. #17C does **not** change that guard
+(deferred); instead the resolver supplies the missing concrete anchor.
+
+**Integration (`backend/routes/chunks.py`, `create_chunked_run_route`,
+IMPLEMENTATION branch):**
+
+- The resolver runs **first**, but **only when the project's index is non-empty**
+  (`get_indexed_paths_and_dirs(project_id).is_empty` is False). The index is
+  built lazily by `run_triage`, so an empty index here means "not indexed yet,"
+  not "target missing" — in that case the resolver is skipped and the existing
+  guard applies unchanged.
+- `GROUNDED(path)` → the grounded path is a concrete anchor, so the request is
+  specific: the 9A/LLM vague guard is **bypassed**, and after `run_triage` the
+  single-chunk plan's `files_expected` is pinned to `[path]`
+  (`_pin_single_chunk_files_expected`; multi-chunk plans are left to normal
+  grounding — conservative, no guess). The pinned path still flows through
+  `ground_triage_result_paths` → `scan_triage_result` → `scope_guard` unchanged.
+- `NOT_FOUND` / `AMBIGUOUS` / `FORBIDDEN` → return a **specific**
+  `_needs_clarification_response` before `run_triage` (no run row created).
+- `NO_TARGET` → fall through to the existing specificity guard (generic
+  clarification for genuinely vague requests).
+
+**Index-gate limitation (intentional):** on a never-indexed project the resolver
+is skipped, so the `add hello in the readme` phrasing still hits the generic
+guard until the project is indexed. Auto-indexing in the route would require a
+filesystem walk, which is out of scope here.
+
+**Still deferred:** fuzzy/entity aliases (`user model`, `login button`),
+LLM-based grounding, and automatic file creation. `create README.md` for a
+missing file returns a clarification stating auto-creation is not supported yet.

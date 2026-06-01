@@ -1738,3 +1738,294 @@ def test_handoff_uses_grounded_plan(monkeypatch, tmp_repo, tracked_runs):
     chunk = impl_data["chunks"][0]
     assert chunk["files_expected"] == ["backend/routes/users.py"]
     assert "LoginPage.js" not in " ".join(chunk["files_expected"])
+
+
+# --------------------------------------------------------------------------
+# PR #17C: explicit-edit-target grounding wired into chunked run creation.
+# --------------------------------------------------------------------------
+
+def _forbid_triage(monkeypatch):
+    """Assert run_triage is never reached (clarification short-circuits first)."""
+    monkeypatch.setattr(
+        "backend.routes.chunks.run_triage",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("run_triage must not be called")
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.create_chunked_run",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("create_chunked_run must not be called")
+        ),
+    )
+
+
+def _assert_no_runs(project_id: str) -> None:
+    with engine.connect() as conn:
+        count = conn.execute(text("""
+            SELECT COUNT(*) FROM pipeline_runs WHERE project_id = :pid
+        """), {"pid": project_id}).fetchone()[0]
+    assert count == 0
+
+
+def test_grounded_readme_pins_files_expected(monkeypatch, tmp_repo, tracked_runs):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["README.md", "backend/app.py"])
+
+    async def fake_triage(run_id, project_id, feature_description):
+        # Triage proposes a different path; the pin must override it.
+        return make_triage_with_files(
+            run_id, project_id, files_expected=["backend/app.py"],
+            title="Docs edit", description="Edit docs.",
+        )
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "add hello in the readme",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert data.get("status") != "needs_clarification"
+    chunk = data["chunks"][0]
+    assert chunk["files_expected"] == ["README.md"]
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT files_expected FROM chunks
+            WHERE run_id = :rid AND chunk_number = 1
+        """), {"rid": data["run_id"]}).fetchone()
+    assert "README.md" in row[0]
+
+
+def test_grounded_pin_rescues_empty_files_expected(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["README.md"])
+
+    async def fake_triage(run_id, project_id, feature_description):
+        return make_triage_with_files(
+            run_id, project_id, files_expected=[],
+            title="Docs edit", description="Edit docs.",
+        )
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "add hello in the readme",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    # The pin produced a non-empty scope, so scope_guard never sees empty.
+    assert data["chunks"][0]["files_expected"] == ["README.md"]
+
+
+def test_readme_not_indexed_returns_specific_clarification(monkeypatch, tmp_repo):
+    project = make_project(tmp_repo)
+    # Indexed, but no README present.
+    seed_file_index(project["id"], ["backend/app.py"])
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "add hello in the readme",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert data["intent"] == "implementation"
+    assert "README" in data["message"]
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+def test_multiple_readmes_returns_ambiguous_clarification(monkeypatch, tmp_repo):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["README.md", "docs/README.md"])
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "add hello in the readme",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert "README.md" in data["message"]
+    assert "docs/README.md" in data["message"]
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+def test_explicit_path_pins_files_expected(monkeypatch, tmp_repo, tracked_runs):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["docs/usage.md", "backend/app.py"])
+
+    async def fake_triage(run_id, project_id, feature_description):
+        return make_triage_with_files(
+            run_id, project_id, files_expected=["backend/app.py"],
+            title="Docs edit", description="Edit usage docs.",
+        )
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "add a note to docs/usage.md",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert data["chunks"][0]["files_expected"] == ["docs/usage.md"]
+
+
+def test_forbidden_target_returns_safe_refusal(monkeypatch, tmp_repo):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["backend/app.py"])
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "add a key to .env",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert "protected" in data["message"].lower()
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+def test_explicit_create_missing_file_clarifies_without_creating(
+    monkeypatch, tmp_repo
+):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["backend/app.py"])
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "create README.md with a title",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert "automatically" in data["message"].lower()
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+    # We never created README.md on disk.
+    assert not (tmp_repo / "README.md").exists()
+
+
+def test_no_target_request_proceeds_unchanged(monkeypatch, tmp_repo, tracked_runs):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["backend/models/user.py"])
+    calls = []
+
+    async def fake_triage(run_id, project_id, feature_description):
+        calls.append(run_id)
+        return make_triage_with_files(
+            run_id, project_id, files_expected=["backend/models/user.py"],
+            title="Model edit", description="Edit the model.",
+        )
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "add comment in user model",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert data.get("status") != "needs_clarification"
+    assert len(calls) == 1
+
+
+def test_empty_index_skips_resolver_and_proceeds(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    project = make_project(tmp_repo)
+    # No file_index seeded -> resolver is skipped. An explicit path request that
+    # passes the specificity guard must proceed to triage unchanged (not be
+    # blocked as a missing target).
+    calls = []
+
+    async def fake_triage(run_id, project_id, feature_description):
+        calls.append(run_id)
+        return make_triage(run_id, project_id)
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "add a note to docs/usage.md",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert data.get("status") != "needs_clarification"
+    assert len(calls) == 1
+
+
+def test_unindexed_readme_request_falls_back_to_existing_guard(
+    monkeypatch, tmp_repo
+):
+    # Documents the index-gate limitation: with no index, the resolver cannot
+    # ground "readme", so the request falls through to the existing specificity
+    # guard, which blocks this particular phrasing as vague. Once the project is
+    # indexed (see test_grounded_readme_pins_files_expected) it grounds instead.
+    project = make_project(tmp_repo)
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "add hello in the readme",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    _assert_no_runs(project["id"])
+
+
+def test_vague_request_still_generic_clarification(monkeypatch, tmp_repo):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["README.md"])
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "fix it",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    # Generic guard message (no target named), not a README-specific one.
+    assert "too vague" in data["message"].lower()
+    _assert_no_runs(project["id"])
