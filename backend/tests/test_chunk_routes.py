@@ -6,12 +6,17 @@ No API calls. Triage is mocked.
 
 import json
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from backend.db.database import engine
+from backend.pipeline.clarification_context import (
+    create_clarification_context,
+    encode_clarification_context,
+)
 from backend.llm.base import LLMResponse
 from backend.main import app
 from backend.models.chunk import ChunkDefinition, TriageResult
@@ -2363,3 +2368,277 @@ def test_vague_request_still_generic_clarification(monkeypatch, tmp_repo):
     # Generic guard message (no target named), not a README-specific one.
     assert "too vague" in data["message"].lower()
     _assert_no_runs(project["id"])
+
+
+# ---------------------------------------------------------------------------
+# PR #17M: clarification selection endpoint + handoff.
+# ---------------------------------------------------------------------------
+
+_THREE_READMES = [
+    "README.md",
+    "docs/adr/README.md",
+    "docs/architecture/README.md",
+]
+
+
+def _post_ambiguous_readme(client, project_id, feature="add hello in the main readme"):
+    """First request that yields the ambiguous-README clarification."""
+    response = client.post("/runs/chunked", json={
+        "project_id": project_id,
+        "feature_description": feature,
+    })
+    assert response.status_code == 200
+    return response.json()
+
+
+def _install_working_triage(monkeypatch):
+    """run_triage that is valid for the (post-selection) grounded edit path."""
+    async def fake_triage(run_id, project_id, feature_description):
+        return make_triage_with_files(
+            run_id, project_id, files_expected=["backend/app.py"],
+            title="Docs edit", description="Edit docs.",
+        )
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+
+
+def test_ambiguous_first_request_includes_clarification_id(monkeypatch, tmp_repo):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], _THREE_READMES)
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    data = _post_ambiguous_readme(client, project["id"])
+
+    assert data["status"] == "needs_clarification"
+    assert data["candidates"] == _THREE_READMES
+    assert data["recommended_path"] == "README.md"
+    assert isinstance(data["clarification_id"], str)
+    assert data["clarification_id"]
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+@pytest.mark.parametrize("selection", ["1", "yes 1", "option 1", "use README.md"])
+def test_select_valid_creates_run_pinned_to_choice(
+    monkeypatch, tmp_repo, tracked_runs, selection
+):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], _THREE_READMES + ["backend/app.py"])
+    _install_working_triage(monkeypatch)
+    client = TestClient(app)
+
+    first = _post_ambiguous_readme(client, project["id"])
+    clarification_id = first["clarification_id"]
+    # No run exists before a valid selection.
+    _assert_no_runs(project["id"])
+
+    response = client.post(
+        f"/runs/chunked/clarifications/{clarification_id}/select",
+        json={"project_id": project["id"], "selection": selection},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert data.get("status") != "needs_clarification"
+    # Re-resolved against the live index and pinned to the selected path.
+    assert data["chunks"][0]["files_expected"] == ["README.md"]
+
+
+def test_select_numeric_two_pins_second_candidate(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], _THREE_READMES + ["backend/app.py"])
+    _install_working_triage(monkeypatch)
+    client = TestClient(app)
+
+    first = _post_ambiguous_readme(client, project["id"])
+    response = client.post(
+        f"/runs/chunked/clarifications/{first['clarification_id']}/select",
+        json={"project_id": project["id"], "selection": "2"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert data["chunks"][0]["files_expected"] == ["docs/adr/README.md"]
+
+
+@pytest.mark.parametrize("selection", ["2 or 3", "both", "the main one", "option 9"])
+def test_unrecognized_selection_creates_no_run(
+    monkeypatch, tmp_repo, selection
+):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], _THREE_READMES)
+    # Selection re-clarifies WITHOUT triage/create.
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    first = _post_ambiguous_readme(client, project["id"])
+    response = client.post(
+        f"/runs/chunked/clarifications/{first['clarification_id']}/select",
+        json={"project_id": project["id"], "selection": selection},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert data["candidates"] == _THREE_READMES
+    assert data["clarification_id"]
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+def test_out_of_set_path_selection_creates_no_run(monkeypatch, tmp_repo):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], _THREE_READMES)
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    first = _post_ambiguous_readme(client, project["id"])
+    response = client.post(
+        f"/runs/chunked/clarifications/{first['clarification_id']}/select",
+        json={"project_id": project["id"], "selection": "docs/other/README.md"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+def test_expired_clarification_creates_no_run(monkeypatch, tmp_repo):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], _THREE_READMES)
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    # Mint a token that is already expired (created in the past, short TTL).
+    past = datetime.now(timezone.utc) - timedelta(hours=2)
+    context = create_clarification_context(
+        project_id=project["id"],
+        original_feature_description="add hello in the main readme",
+        alias="readme",
+        candidates=_THREE_READMES,
+        recommended_path="README.md",
+        recommendation_strength="strong",
+        now=past,
+        ttl_minutes=30,
+    )
+    expired_token = encode_clarification_context(context)
+
+    response = client.post(
+        f"/runs/chunked/clarifications/{expired_token}/select",
+        json={"project_id": project["id"], "selection": "1"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+def test_project_mismatch_creates_no_run(monkeypatch, tmp_repo):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], _THREE_READMES)
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    context = create_clarification_context(
+        project_id=project["id"],
+        original_feature_description="add hello in the main readme",
+        alias="readme",
+        candidates=_THREE_READMES,
+        recommended_path="README.md",
+        recommendation_strength="strong",
+    )
+    token = encode_clarification_context(context)
+
+    response = client.post(
+        f"/runs/chunked/clarifications/{token}/select",
+        json={"project_id": str(uuid.uuid4()), "selection": "1"},
+    )
+
+    assert response.status_code == 400
+    _assert_no_runs(project["id"])
+
+
+def test_malformed_clarification_id_creates_no_run(monkeypatch, tmp_repo):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], _THREE_READMES)
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post(
+        "/runs/chunked/clarifications/not-a-real-token/select",
+        json={"project_id": project["id"], "selection": "1"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+def test_stale_index_after_clarification_creates_no_run(monkeypatch, tmp_repo):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], _THREE_READMES + ["backend/app.py"])
+    # If we did reach triage it would still be safe, but a removed target must
+    # never reach it: assert triage/create are not called after the file is gone.
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    first = _post_ambiguous_readme(client, project["id"])
+    clarification_id = first["clarification_id"]
+
+    # README.md leaves the live index before the user selects it.
+    with engine.begin() as conn:
+        conn.execute(text("""
+            DELETE FROM file_index
+            WHERE project_id = :pid AND path = 'README.md'
+        """), {"pid": project["id"]})
+
+    response = client.post(
+        f"/runs/chunked/clarifications/{clarification_id}/select",
+        json={"project_id": project["id"], "selection": "1"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    # Selected path no longer exists -> safe not-found clarification, no edit.
+    assert data["status"] == "needs_clarification"
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+def test_post_runs_chunked_one_has_no_global_selection(monkeypatch, tmp_repo):
+    """A bare '1' on /runs/chunked is never interpreted as a selection."""
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], _THREE_READMES)
+    # "1" matches no deterministic rule; force the intent fallback to uncertain
+    # (no live LLM in tests) so this asserts the existing safe behavior.
+    _install_intent_llm(monkeypatch, "not json at all")
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "1",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert "candidates" not in data  # not an ambiguous-file selection context
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+def test_select_endpoint_is_registered():
+    paths = {route.path for route in app.routes}
+    assert "/runs/chunked/clarifications/{clarification_id}/select" in paths
