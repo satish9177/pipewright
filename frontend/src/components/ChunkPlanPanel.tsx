@@ -16,6 +16,8 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
 import { getStatusDisplay } from '@/utils/statusDisplay'
+import PatchFailureBanner from '@/components/PatchFailureBanner'
+import { parsePatchFailureSummary } from '@/utils/patchFailure'
 
 interface ChunkPlanPanelProps {
   plan: ChunkPlanResponse
@@ -199,10 +201,14 @@ export default function ChunkPlanPanel({
               chunk.requires_human_review ||
               definition?.requires_human_review ||
               false
+            const patchFailure = parsePatchFailureSummary(
+              chunk.completion_summary
+            )
             const isAwaitingChunkApproval =
               chunk.status === 'awaiting_chunk_approval'
             const showInlineChunkApproval =
               isAwaitingChunkApproval &&
+              !patchFailure &&
               !hiddenApprovalChunkNumbers.includes(chunk.chunk_number)
             const chunkActionPending =
               approvingChunkNumber === chunk.chunk_number ||
@@ -280,22 +286,31 @@ export default function ChunkPlanPanel({
                     </div>
                   )}
 
-                  {chunk.completion_summary && (
-                    <div>
-                      <p className="font-medium">Completion Summary</p>
-                      <p className="text-muted-foreground whitespace-pre-wrap">
-                        {chunk.completion_summary}
-                      </p>
-                    </div>
-                  )}
+                  {patchFailure ? (
+                    // Structured patch failure (#18E): the banner shows the
+                    // message, so skip the raw completion_summary dump and the
+                    // generic error_message block to avoid duplication.
+                    <PatchFailureBanner report={patchFailure} />
+                  ) : (
+                    <>
+                      {chunk.completion_summary && (
+                        <div>
+                          <p className="font-medium">Completion Summary</p>
+                          <p className="text-muted-foreground whitespace-pre-wrap">
+                            {chunk.completion_summary}
+                          </p>
+                        </div>
+                      )}
 
-                  {chunk.error_message && (
-                    <div>
-                      <p className="font-medium text-red-500">Error</p>
-                      <p className="text-red-500 whitespace-pre-wrap">
-                        {chunk.error_message}
-                      </p>
-                    </div>
+                      {chunk.error_message && (
+                        <div>
+                          <p className="font-medium text-red-500">Error</p>
+                          <p className="text-red-500 whitespace-pre-wrap">
+                            {chunk.error_message}
+                          </p>
+                        </div>
+                      )}
+                    </>
                   )}
 
                   {showInlineChunkApproval && (
