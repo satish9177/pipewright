@@ -207,6 +207,13 @@ def test_ambiguous_request_defaults_to_plan_only():
     assert classify_intent("authentication thoughts") == "plan_only"
 
 
+def test_bare_readme_is_not_implementation():
+    # #17D protects README as a concrete file anchor in the implementation
+    # guard, but intent classification still requires an implementation-shaped
+    # request before the guard is consulted.
+    assert classify_intent("readme") != "implementation"
+
+
 # --------------------------------------------------------------------------
 # Long-description: read-only blocker must scan the FULL text, not just the
 # first 300 chars sent to the LLM.

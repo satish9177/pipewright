@@ -371,3 +371,21 @@ filesystem walk, which is out of scope here.
 **Still deferred:** fuzzy/entity aliases (`user model`, `login button`),
 LLM-based grounding, and automatic file creation. `create README.md` for a
 missing file returns a clarification stating auto-creation is not supported yet.
+
+---
+
+## 13. #17D implemented (filename-anchor protection)
+
+**Root cause:** `readme` was fuzzy-matched to the generic verb `rename` inside
+`assess_implementation_specificity`, so it was stripped as describe-only text and
+`add hello in the readme` lost its file anchor.
+
+**Fix:** the implementation guard now protects a small set of known literal file
+aliases / filename-like anchors from fuzzy generic-verb stripping. This preserves
+`readme` as a concrete anchor without adding fuzzy/entity aliases.
+
+No file-alias grounding behavior, `/runs/chunked` route wiring, scope guard, patch
+application, or automatic file creation behavior changed. The #17C limitation where
+an unindexed `add hello in the readme` request still hit the generic guard is
+superseded: it now passes the deterministic specificity guard and proceeds normally
+when the resolver is skipped.

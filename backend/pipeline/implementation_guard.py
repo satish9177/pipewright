@@ -123,10 +123,10 @@ _GENERIC_MODIFIERS = {
 _GENERIC_NOUNS = {
     "feature", "features", "change", "changes", "improvement", "improvements",
     "enhancement", "enhancements", "update", "updates", "cleanup", "refactor",
-    "code", "codebase", "app", "apps", "application", "applications",
-    "project", "projects", "repo", "repository", "thing", "things", "stuff",
-    "something", "anything", "everything", "nothing", "solution", "solutions",
-    "it", "this", "that",
+    "code", "codebase", "file", "files", "app", "apps", "application",
+    "applications", "project", "projects", "repo", "repository", "backend",
+    "frontend", "ui", "thing", "things", "stuff", "something", "anything",
+    "everything", "nothing", "solution", "solutions", "it", "this", "that",
 }
 
 # Generic nouns that must be matched EXACTLY (never fuzzily): they sit one edit
@@ -212,6 +212,22 @@ _FUZZY_TARGETS = sorted(
     if len(word) >= 4 and word not in _EXACT_ONLY_NOUNS
 )
 
+# Known literal file aliases / filename-like anchors that must survive fuzzy
+# describe-only matching. This set is intentionally small and mirrors the simple
+# file-edit alias surface; it does not add entity or fuzzy alias resolution.
+_PROTECTED_FILENAME_ANCHORS = {
+    "readme",
+    "package.json",
+    "package",
+    "docker-compose",
+    "compose",
+    "requirements",
+    "pyproject",
+    "alembic",
+    "dockerfile",
+    "makefile",
+}
+
 # Token = a run of word / identifier / path / number characters. Hyphens are
 # treated as separators so "medium-sized" splits into "medium" + "sized".
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_./]+")
@@ -292,6 +308,8 @@ def _fuzzy_threshold(token_length: int) -> int:
 def _is_vague_word(token: str) -> bool:
     if token in _GENERIC_EXACT:
         return True
+    if token in _PROTECTED_FILENAME_ANCHORS:
+        return False
     threshold = _fuzzy_threshold(len(token))
     if threshold == 0:
         return False

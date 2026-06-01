@@ -32,15 +32,20 @@ VAGUE_REQUESTS = [
     "implement a large feature",
     "implement a major change",
     "add a feature",
+    "add hello",
     "build a new feature",
     "make some improvement",
     "do a large update",
     "fix it",
     "fix something",
+    "rename thing",
     "update something",
+    "change the file",
     "change the code",
+    "improve backend",
     "improve the app",
     "make it better",
+    "make UI good",
     "do some cleanup",
     # Subjective quality adjectives / vague quantifiers cannot anchor work.
     "implement one extraordinary feature",
@@ -68,7 +73,10 @@ SPECIFIC_REQUESTS = [
     "add CSV export feature",
     "add webhook retry feature",
     "add health check endpoint",
+    "add hello in the readme",
     "fix typo in README",
+    "rename readme",
+    "rename README.md",
     "change Login button text to Sign in",
     "update timeout from 30 to 60 seconds",
     "implement login feature",
@@ -241,3 +249,11 @@ def test_concrete_identifier_not_fuzzy_matched_to_generic():
     # "text" must not collapse into the generic noise word "test".
     result = assess_implementation_specificity("update header text label")
     assert result.is_specific_enough is True
+
+
+def test_readme_survives_fuzzy_generic_verb_stripping():
+    result = assess_implementation_specificity("add hello in the readme")
+
+    assert result.is_specific_enough is True
+    assert "readme" in result.reason
+    assert "rename" not in result.reason
