@@ -57,6 +57,7 @@ from backend.routes.chunks import _decide_memory_conflict_gate
 # is recorded in a shared ``calls`` list.
 from backend.tests.test_chunked_orchestrator import (
     make_coder_result,
+    make_guarded_apply,
     make_patch_result,
     make_planner_result,
     make_test_result,
@@ -197,11 +198,6 @@ def _mock_pipeline_and_git_with_memory_capture(
         )
         return make_coder_result(run_id, chunk_number)
 
-    def fake_patch(code, run_id, chunk_number=0):
-        if calls is not None:
-            calls.append(("patch", chunk_number))
-        return make_patch_result(run_id)
-
     def fake_tests(patch, run_id, chunk_number=0):
         if calls is not None:
             calls.append(("test", chunk_number))
@@ -209,7 +205,9 @@ def _mock_pipeline_and_git_with_memory_capture(
 
     monkeypatch.setattr(chunked_orchestrator, "run_planner", fake_planner)
     monkeypatch.setattr(chunked_orchestrator, "run_coder", fake_coder)
-    monkeypatch.setattr(chunked_orchestrator, "apply_patch", fake_patch)
+    monkeypatch.setattr(
+        chunked_orchestrator, "apply_patch_guarded", make_guarded_apply(calls)
+    )
     monkeypatch.setattr(chunked_orchestrator, "run_tests", fake_tests)
     patch_git_preflight(monkeypatch, calls)
 

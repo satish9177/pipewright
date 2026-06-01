@@ -32,9 +32,50 @@ from backend.pipeline.chunk_store import (
     save_chunk_completion_summary,
     update_chunk_status,
 )
+from backend.pipeline.patch_applier import PatchApplyOutcome
+from backend.pipeline.patch_failures import (
+    PATCH_FAILURE_KIND,
+    PatchFailureType,
+    build_patch_failure_report,
+    default_message_for_failure_type,
+)
 from backend.projects.project_store import create_project
 
 pytestmark = pytest.mark.unit
+
+
+# Stateful working-tree model for fakes (#18D). The new clean-tree precondition
+# at the start of each chunk requires a clean tree, while the no-effective-change
+# commit guard requires a dirty tree at commit time. A single constant cannot be
+# both, so fakes track whether a patch has been applied this chunk: clean before
+# apply, dirty after apply, clean again after commit.
+_worktree_applied = {"value": False}
+
+
+def reset_worktree_state() -> None:
+    _worktree_applied["value"] = False
+
+
+def mark_worktree_applied() -> None:
+    # Model a chunk whose patch is already applied on disk (e.g. a paused
+    # high-risk chunk being approved), so the working tree reads dirty at commit.
+    _worktree_applied["value"] = True
+
+
+def _stateful_is_clean(repo_path) -> bool:
+    return not _worktree_applied["value"]
+
+
+def make_guarded_apply(calls=None):
+    """Return a fake apply_patch_guarded that records a successful apply."""
+
+    def fake_guarded(code, run_id, chunk_number=0, *, files_expected, repo_path=None):
+        if calls is not None:
+            calls.append(("patch", chunk_number))
+        _worktree_applied["value"] = True
+        return PatchApplyOutcome.from_success(make_patch_result(run_id))
+
+    return fake_guarded
 
 
 @pytest.fixture()
@@ -212,19 +253,26 @@ def patch_git_preflight(monkeypatch, calls=None):
         "create_or_checkout_branch",
         lambda branch, repo: calls.append(("branch", branch, repo)) if calls is not None else None,
     )
+    def fake_commit_files(files, message, repo):
+        # Committing makes the tree clean again for the next chunk.
+        reset_worktree_state()
+        if calls is not None:
+            calls.append(("commit", files, message, repo))
+        return "hash"
+
     monkeypatch.setattr(
         chunked_orchestrator.local_git,
         "commit_files",
-        lambda files, message, repo: calls.append(("commit", files, message, repo)) if calls is not None else "hash",
+        fake_commit_files,
     )
-    # After a real patch the working tree is dirty (effective changes present).
-    # Make this deterministic so the no-effective-change commit guard does not
-    # trip on the fake pipeline. Tests run under .pytest_tmp, which is gitignored,
-    # so the ambient working tree would otherwise look clean in a fresh checkout.
+    # Working tree starts clean; a fake apply marks it dirty; a fake commit
+    # marks it clean again. This lets the #18D clean-tree precondition and the
+    # no-effective-change commit guard both behave correctly in fakes.
+    reset_worktree_state()
     monkeypatch.setattr(
         chunked_orchestrator.local_git,
         "is_working_tree_clean",
-        lambda repo_path: False,
+        _stateful_is_clean,
     )
 
 
@@ -239,27 +287,25 @@ def patch_success_pipeline(monkeypatch, run_id: str, calls=None):
             calls.append(("coder", chunk_number))
         return make_coder_result(run_id, chunk_number)
 
-    def fake_patch(code, run_id, chunk_number=0):
-        if calls is not None:
-            calls.append(("patch", chunk_number))
-        return make_patch_result(run_id)
-
     def fake_tests(patch, run_id, chunk_number=0):
         if calls is not None:
             calls.append(("test", chunk_number))
         return make_test_result(run_id, True)
 
+    reset_worktree_state()
     monkeypatch.setattr(chunked_orchestrator, "run_planner", fake_planner)
     monkeypatch.setattr(chunked_orchestrator, "run_coder", fake_coder)
-    monkeypatch.setattr(chunked_orchestrator, "apply_patch", fake_patch)
+    monkeypatch.setattr(
+        chunked_orchestrator, "apply_patch_guarded", make_guarded_apply(calls)
+    )
     monkeypatch.setattr(chunked_orchestrator, "run_tests", fake_tests)
-    # A successful patch produces effective on-disk changes, so the working
-    # tree is dirty at commit time. Make this deterministic so the
-    # no-effective-change commit guard does not trip on the fake pipeline.
+    # Stateful working-tree fake: clean before apply, dirty after, clean after
+    # commit. Keeps both the clean-tree precondition and the no-effective-change
+    # commit guard correct without a constant that can only model one moment.
     monkeypatch.setattr(
         chunked_orchestrator.local_git,
         "is_working_tree_clean",
-        lambda repo_path: False,
+        _stateful_is_clean,
     )
 
 
@@ -377,9 +423,9 @@ async def test_empty_coder_output_fails_before_patch_test_or_commit(
     monkeypatch.setattr(chunked_orchestrator, "run_coder", fake_coder)
     monkeypatch.setattr(
         chunked_orchestrator,
-        "apply_patch",
+        "apply_patch_guarded",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("apply_patch should not be called")
+            AssertionError("apply_patch_guarded should not be called")
         ),
     )
     monkeypatch.setattr(
@@ -392,12 +438,13 @@ async def test_empty_coder_output_fails_before_patch_test_or_commit(
 
     result = await chunked_orchestrator.execute_approved_chunks(run_id)
 
+    expected_message = default_message_for_failure_type(PatchFailureType.NO_CHANGES)
     assert result["status"] == "failed"
-    assert result["error"] == chunked_orchestrator.NO_CHANGES_MESSAGE
+    assert result["error"] == expected_message
     assert not any(call[0] == "commit" for call in calls)
     with engine.connect() as conn:
         chunk = conn.execute(text("""
-            SELECT status, error_message
+            SELECT status, error_message, completion_summary
             FROM chunks
             WHERE run_id = :run_id AND chunk_number = 1
         """), {"run_id": run_id}).fetchone()
@@ -407,7 +454,10 @@ async def test_empty_coder_output_fails_before_patch_test_or_commit(
             WHERE id = :run_id
         """), {"run_id": run_id}).fetchone()
     assert chunk[0] == "failed"
-    assert chunk[1] == chunked_orchestrator.NO_CHANGES_MESSAGE
+    assert chunk[1] == expected_message
+    summary = json.loads(chunk[2])
+    assert summary["kind"] == PATCH_FAILURE_KIND
+    assert summary["failure_type"] == PatchFailureType.NO_CHANGES.value
     assert run[0] == "failed"
     assert run[1] == "chunk_1_failed"
 
@@ -1375,6 +1425,7 @@ def test_approve_chunk_commits_from_code_checkpoint_without_rerunning(
     create_chunk_approval_gate(run_id, 1, "chunk approval")
     calls = []
     patch_git_preflight(monkeypatch, calls)
+    mark_worktree_applied()  # the paused chunk's patch is already on disk
 
     async def fail_planner(*args, **kwargs):
         raise AssertionError("planner must not run")
@@ -1420,6 +1471,7 @@ async def test_resume_after_chunk_approval_continues_next_pending_chunk(
     create_chunk_approval_gate(run_id, 1, "chunk approval")
     calls = []
     patch_git_preflight(monkeypatch, calls)
+    mark_worktree_applied()  # the paused chunk's patch is already on disk
 
     approve_result = chunked_orchestrator.approve_chunk_and_commit(run_id, 1)
 
@@ -1449,6 +1501,7 @@ async def test_resume_after_last_chunk_approval_creates_final_gate(
     create_chunk_approval_gate(run_id, 1, "chunk approval")
     calls = []
     patch_git_preflight(monkeypatch, calls)
+    mark_worktree_applied()  # the paused chunk's patch is already on disk
     chunked_orchestrator.approve_chunk_and_commit(run_id, 1)
     patch_resume_git(monkeypatch, calls)
     patch_success_pipeline(monkeypatch, run_id, calls)
@@ -1954,9 +2007,9 @@ async def test_scope_drift_fails_chunk_before_apply_patch_or_commit(
     monkeypatch.setattr(chunked_orchestrator, "run_coder", fake_coder)
     monkeypatch.setattr(
         chunked_orchestrator,
-        "apply_patch",
+        "apply_patch_guarded",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("apply_patch must not be called on scope drift")
+            AssertionError("apply_patch_guarded must not be called on scope drift")
         ),
     )
     monkeypatch.setattr(
@@ -1969,18 +2022,25 @@ async def test_scope_drift_fails_chunk_before_apply_patch_or_commit(
 
     result = await chunked_orchestrator.execute_approved_chunks(run_id)
 
+    # The structured report carries the user-facing message; the offending path
+    # and scope detail move into completion_summary, not error_message.
     assert result["status"] == "failed"
-    assert "src/out_of_scope.py" in result["error"]
-    assert "files_expected" in result["error"]
+    assert result["error"] == default_message_for_failure_type(
+        PatchFailureType.SCOPE_VIOLATION
+    )
     assert not any(call[0] == "commit" for call in calls)
     with engine.connect() as conn:
         row = conn.execute(text("""
-            SELECT status, error_message
+            SELECT status, error_message, completion_summary
             FROM chunks
             WHERE run_id = :run_id AND chunk_number = 1
         """), {"run_id": run_id}).fetchone()
     assert row[0] == "failed"
-    assert "src/out_of_scope.py" in (row[1] or "")
+    summary = json.loads(row[2])
+    assert summary["kind"] == PATCH_FAILURE_KIND
+    assert summary["failure_type"] == PatchFailureType.SCOPE_VIOLATION.value
+    assert "src/out_of_scope.py" in summary["changed_files_attempted"]
+    assert "src/out_of_scope.py" in (summary.get("technical_details") or "")
 
 
 @pytest.mark.asyncio
@@ -2007,3 +2067,225 @@ async def test_db_conflict_policy_runs_once_and_does_not_block(
     # Evaluated exactly once across a 2-chunk run, and the run proceeded normally.
     assert calls["count"] == 1
     assert result["status"] == "awaiting_final_approval"
+
+
+# --------------------------------------------------------------------------- #
+# Structured patch failure wiring (#18D)
+# --------------------------------------------------------------------------- #
+
+
+def _read_completion_summary(run_id: str, chunk_number: int = 1) -> dict:
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT completion_summary FROM chunks
+            WHERE run_id = :run_id AND chunk_number = :chunk_number
+        """), {"run_id": run_id, "chunk_number": chunk_number}).fetchone()
+    assert row is not None and row[0] is not None
+    return json.loads(row[0])
+
+
+@pytest.mark.asyncio
+async def test_guarded_apply_failure_persists_report_and_stops(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, chunks=2)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    report = build_patch_failure_report(
+        PatchFailureType.PATCH_DOES_NOT_APPLY,
+        technical_details="hunk #2 FAILED",
+        changed_files_attempted=["created_1.py"],
+        allowed_files=["created_1.py"],
+        rollback_performed=True,
+        working_tree_clean=True,
+        chunk_number=1,
+        failed_step="patch",
+    )
+
+    def fake_guarded_fail(code, run_id, chunk_number=0, *, files_expected, repo_path=None):
+        calls.append(("patch", chunk_number))
+        return PatchApplyOutcome.from_failure(report)
+
+    monkeypatch.setattr(chunked_orchestrator, "apply_patch_guarded", fake_guarded_fail)
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "run_tests",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("run_tests should not run after a failed apply")
+        ),
+    )
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    assert result["failed_chunk"] == 1
+    assert result["error"] == report.message
+    # Stops: no commit, chunk 2 never coded.
+    assert not any(c[0] == "commit" for c in calls)
+    assert not any(c[0] == "coder" and c[1] == 2 for c in calls)
+
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[0].status == "failed"
+    assert status.chunks[0].error_message == report.message
+
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["kind"] == PATCH_FAILURE_KIND
+    assert summary["failure_type"] == PatchFailureType.PATCH_DOES_NOT_APPLY.value
+    assert summary["technical_details"] == "hunk #2 FAILED"
+    assert summary["changed_files_attempted"] == ["created_1.py"]
+
+
+@pytest.mark.asyncio
+async def test_guarded_apply_failure_emits_slim_stage_failed_event(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    clear_all_events_for_tests()
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    report = build_patch_failure_report(
+        PatchFailureType.SCOPE_VIOLATION,
+        technical_details="x" * 5000,  # large details must NOT bloat the event
+        changed_files_attempted=["sneaky.py"],
+        allowed_files=["allowed.py"],
+        rollback_performed=True,
+        working_tree_clean=True,
+        chunk_number=1,
+    )
+
+    def fake_guarded_fail(code, run_id, chunk_number=0, *, files_expected, repo_path=None):
+        return PatchApplyOutcome.from_failure(report)
+
+    monkeypatch.setattr(chunked_orchestrator, "apply_patch_guarded", fake_guarded_fail)
+
+    await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    failed_events = [
+        e for e in get_buffered_events(run_id) if e.kind == "stage_failed"
+    ]
+    assert failed_events, "expected a stage_failed event"
+    event = failed_events[-1]
+    assert event.stage == "patch"
+    assert event.level == "error"
+    assert event.data.get("kind") == "patch_failure"
+    assert event.data.get("failure_type") == PatchFailureType.SCOPE_VIOLATION.value
+    # Slim payload: full technical_details never go into the event.
+    assert "technical_details" not in event.data
+    assert event.data.get("truncated") is not True
+    assert event.data["changed_files_attempted_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_dirty_worktree_fails_fast_before_coder(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    # Preflight (ensure_clean_worktree) is faked clean; force the per-chunk
+    # precondition to see a dirty tree.
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git, "is_working_tree_clean", lambda repo: False
+    )
+
+    flags = {"planner": False, "coder": False, "guarded": False, "tests": False}
+
+    async def rec_planner(*a, **k):
+        flags["planner"] = True
+        return make_planner_result(run_id)
+
+    async def rec_coder(*a, **k):
+        flags["coder"] = True
+        return make_coder_result(run_id, 1)
+
+    def rec_guarded(*a, **k):
+        flags["guarded"] = True
+        return PatchApplyOutcome.from_success(make_patch_result(run_id))
+
+    def rec_tests(*a, **k):
+        flags["tests"] = True
+        return make_test_result(run_id, True)
+
+    monkeypatch.setattr(chunked_orchestrator, "run_planner", rec_planner)
+    monkeypatch.setattr(chunked_orchestrator, "run_coder", rec_coder)
+    monkeypatch.setattr(chunked_orchestrator, "apply_patch_guarded", rec_guarded)
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", rec_tests)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    assert result["error"] == default_message_for_failure_type(
+        PatchFailureType.DIRTY_WORKTREE
+    )
+    assert flags == {
+        "planner": False,
+        "coder": False,
+        "guarded": False,
+        "tests": False,
+    }
+    assert not any(c[0] == "commit" for c in calls)
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["failure_type"] == PatchFailureType.DIRTY_WORKTREE.value
+
+
+@pytest.mark.asyncio
+async def test_test_failure_after_apply_reports_and_does_not_double_rollback(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "run_tests",
+        lambda patch, run_id, chunk_number=0: make_test_result(run_id, False),
+    )
+    # tester.py owns rollback on test failure; the orchestrator must not also
+    # roll back.
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "rollback_patch",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("orchestrator must not roll back; tester already did")
+        ),
+    )
+    # Simulate the tester having rolled back to a clean tree.
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git, "is_working_tree_clean", lambda repo: True
+    )
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    assert result["failed_chunk"] == 1
+    assert not any(c[0] == "commit" for c in calls)
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["failure_type"] == PatchFailureType.TEST_FAILURE_AFTER_APPLY.value
+    assert summary["rollback_performed"] is True
+    assert summary["working_tree_clean"] is True
+    assert summary["failed_step"] == "test"
+
+
+@pytest.mark.asyncio
+async def test_success_path_writes_no_patch_failure_summary(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "awaiting_final_approval"
+    assert any(c[0] == "commit" for c in calls)
+    summary = _read_completion_summary(run_id, 1)
+    # A successful chunk keeps its normal success summary, never a failure one.
+    assert summary.get("kind") != PATCH_FAILURE_KIND
+    assert "chunk_title" in summary

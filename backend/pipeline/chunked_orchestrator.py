@@ -40,7 +40,13 @@ from backend.memory.conflict_scope import is_db_sensitive_run
 from backend.memory.memory_store import mark_fact_stale
 from backend.memory.repo_reality import evaluate_db_memory_conflicts
 from backend.pipeline.coder import run_coder
-from backend.pipeline.patch_applier import apply_patch, rollback_patch
+from backend.pipeline.patch_applier import apply_patch_guarded, rollback_patch
+from backend.pipeline.patch_failures import (
+    PatchFailureReport,
+    PatchFailureType,
+    build_patch_failure_report,
+    patch_failure_report_to_completion_summary,
+)
 from backend.pipeline.planner import run_planner
 from backend.pipeline.run_locks import project_repo_lock, project_repo_lock_sync
 from backend.pipeline.scope_guard import ScopeDriftError, assert_files_in_scope
@@ -705,6 +711,61 @@ def _fail_chunk(
     }
 
 
+def _fail_chunk_with_report(
+    run_id: str,
+    chunk_number: int,
+    report: PatchFailureReport,
+) -> dict:
+    """
+    Fail a chunk with a structured PatchFailureReport (#18D).
+
+    Persists the full report JSON into completion_summary, the user-facing
+    message into error_message, marks the chunk and run failed, and emits a slim
+    stage_failed event. The full technical_details stay in completion_summary;
+    the event payload is intentionally small to respect the event-bus size cap.
+    """
+    print(
+        f"[CHUNKED] Patch failure | run_id={run_id} | "
+        f"chunk={chunk_number} | type={report.failure_type.value}"
+    )
+    save_chunk_completion_summary(
+        run_id,
+        chunk_number,
+        patch_failure_report_to_completion_summary(report),
+    )
+    update_chunk_status(run_id, chunk_number, "failed", report.message)
+    _update_run_status(
+        run_id, "failed", f"chunk_{chunk_number}_failed", chunk_number
+    )
+    _publish_safe(Event(
+        run_id=run_id,
+        chunk_number=chunk_number,
+        kind="stage_failed",
+        stage="patch",
+        level="error",
+        message=report.message,
+        data={
+            "kind": "patch_failure",
+            "failure_type": report.failure_type.value,
+            "chunk_number": chunk_number,
+            "failed_step": report.failed_step,
+            "rollback_performed": report.rollback_performed,
+            "working_tree_clean": report.working_tree_clean,
+            "manual_intervention_needed": report.manual_intervention_needed,
+            "stale_index_hint": report.stale_index_hint,
+            "suggested_actions": report.suggested_actions,
+            "changed_files_attempted_count": len(report.changed_files_attempted),
+            "changed_files_actual_count": len(report.changed_files_actual),
+        },
+    ))
+    return {
+        "status": "failed",
+        "run_id": run_id,
+        "failed_chunk": chunk_number,
+        "error": report.message,
+    }
+
+
 def _validate_target_repo(repo_path: str, require_clean: bool = True) -> None:
     target_repo = Path(repo_path)
     if not target_repo.exists() or not target_repo.is_dir():
@@ -892,6 +953,20 @@ async def _execute_single_chunk(
         chunk_number,
     )
 
+    # Clean-tree precondition (#18D): fail fast before any planner/coder/patch
+    # work if the target git repo already has uncommitted changes, so a later
+    # rollback can never clobber unsaved work. No-op outside a git repo
+    # (is_working_tree_clean returns True for non-git paths).
+    if not local_git.is_working_tree_clean(target_repo_path):
+        report = build_patch_failure_report(
+            PatchFailureType.DIRTY_WORKTREE,
+            allowed_files=chunk.files_expected,
+            working_tree_clean=False,
+            chunk_number=chunk_number,
+            failed_step="patch",
+        )
+        return _fail_chunk_with_report(run_id, chunk_number, report)
+
     enriched_description = _build_enriched_feature_description(
         run_id,
         project_id,
@@ -910,18 +985,58 @@ async def _execute_single_chunk(
         project_id=project_id,
     )
     if not code.files_changed:
-        return _fail_chunk(run_id, chunk_number, NO_CHANGES_MESSAGE)
+        report = build_patch_failure_report(
+            PatchFailureType.NO_CHANGES,
+            allowed_files=chunk.files_expected,
+            chunk_number=chunk_number,
+            failed_step="patch",
+        )
+        return _fail_chunk_with_report(run_id, chunk_number, report)
 
+    # Pre-apply scope guard (defense-in-depth): catches drift before any write.
+    # The guarded applier additionally re-validates the actual changed files
+    # after apply.
     try:
         assert_files_in_scope(code, chunk.files_expected)
     except ScopeDriftError as drift:
-        return _fail_chunk(run_id, chunk_number, str(drift))
+        report = build_patch_failure_report(
+            PatchFailureType.SCOPE_VIOLATION,
+            technical_details=str(drift),
+            changed_files_attempted=[change.path for change in code.files_changed],
+            allowed_files=chunk.files_expected,
+            working_tree_clean=local_git.is_working_tree_clean(target_repo_path),
+            chunk_number=chunk_number,
+            failed_step="patch",
+        )
+        return _fail_chunk_with_report(run_id, chunk_number, report)
 
-    patch = apply_patch(code, run_id, chunk_number=chunk_number)
+    outcome = apply_patch_guarded(
+        code,
+        run_id,
+        chunk_number=chunk_number,
+        files_expected=chunk.files_expected,
+    )
+    if not outcome.success:
+        return _fail_chunk_with_report(run_id, chunk_number, outcome.failure)
+
+    patch = outcome.patch_result
     test_result = run_tests(patch, run_id, chunk_number=chunk_number)
 
     if not test_result.passed:
-        raise RuntimeError("Tests failed. Rollback triggered.")
+        # tester.py already attempted rollback on failure; verify cleanliness
+        # and report. Do NOT roll back again here (avoids a double rollback).
+        clean = local_git.is_working_tree_clean(target_repo_path)
+        report = build_patch_failure_report(
+            PatchFailureType.TEST_FAILURE_AFTER_APPLY,
+            technical_details=getattr(test_result, "output", None),
+            changed_files_attempted=[change.path for change in code.files_changed],
+            allowed_files=chunk.files_expected,
+            rollback_performed=True,
+            working_tree_clean=clean,
+            chunk_number=chunk_number,
+            failed_step="test",
+        )
+        return _fail_chunk_with_report(run_id, chunk_number, report)
 
     if chunk.requires_human_review:
         return _pause_for_chunk_approval(run_id, chunk, code, branch_name)
