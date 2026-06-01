@@ -389,3 +389,141 @@ application, or automatic file creation behavior changed. The #17C limitation wh
 an unindexed `add hello in the readme` request still hit the generic guard is
 superseded: it now passes the deterministic specificity guard and proceeds normally
 when the resolver is skipped.
+
+---
+
+## 14. #17E — Explicit safe create-file intent (design)
+
+**Status:** Design / docs only. No code, no runtime behavior, no safety guard is
+changed by this section. Behavior is specified for follow-up PRs #17F–#17H,
+tests-first.
+
+### 14.1 Problem
+
+The dogfood request
+
+```
+add hello in the readme if readme is not there create one
+```
+
+currently returns *"Pipewright does not create new files automatically yet."*
+That is safe but ignores an explicit instruction to create the file. This section
+designs **when** Pipewright may create a missing file from an explicit request.
+
+**Core safety rule:** never create files by default; create only when the user
+**explicitly** asks to create a **safe** path/alias.
+
+### 14.2 The create machinery already exists (reuse, do not rebuild)
+
+- `patch_applier.py` `_apply_file_change` supports `action="create"`: requires
+  `content`, `mkdir(parents=True)`, writes, and **refuses to overwrite**
+  (`create target already exists`); rollback unlinks the created file.
+- `is_forbidden_write_path` already blocks creating `.env*`, `secrets.json`,
+  `credentials.json`, `.git/*`, `docker-compose.yml`, `requirements.txt`,
+  `package-lock.json`, `.gitignore`, and `secrets`/`private`-substring paths.
+- `PlannerHandoff.files_to_create` already exists and the coder prompt consumes
+  it (`coder.py`); in the chunked flow the LLM planner derives it from the chunk
+  description (`chunked_orchestrator.py` `run_planner`).
+- `scope_guard.assert_files_in_scope` matches `files_expected` by exact path and
+  does **not** require the file to exist, so a create target in `files_expected`
+  passes scope.
+
+**Therefore #17E needs only a deterministic *intent gate* — no new write code, no
+DB/model change, no patch_applier/scope_guard change.**
+
+### 14.3 Allowed create scope (first slice)
+
+Create is allowed only when ALL hold:
+
+1. **Explicit create directive** — the word `create` (incl. conditional forms
+   "create it if missing", "if readme is not there create one"). Bare edit verbs
+   (`add`/`fix`/`update`) on a missing file are **not** create intent.
+2. **A single resolved target** — an explicit relative path the user typed, or
+   the `readme → README.md` alias (the only auto-create alias in this slice).
+3. **Safe extension allowlist: `.md` / `.txt` only** — excludes code and
+   config/build/dependency files.
+4. **Not forbidden** — `is_forbidden_write_path(path)` is False.
+5. **Relative, in-repo, no traversal** (reuse `validate_safe_relative_path`).
+6. **File does not already exist** in the index — if it exists, it is an edit
+   (the #17C `GROUNDED` path), not a create.
+7. **Parent directory already exists** — repo root or an indexed directory
+   (`get_indexed_paths_and_dirs(...).dirs`). **No new-directory scaffolding** in
+   this slice.
+
+Allowed: `create README.md with hello`,
+`add hello in the readme if readme is not there create one` (→ README.md),
+`create docs/usage.md …` (when `docs/` indexed), `create CONTRIBUTING.md …`,
+`create CHANGELOG.md …`.
+
+Refused/deferred: `create .env` / `secrets.json` / `credentials.json` /
+`.git/config` (forbidden); `create package.json` / `requirements.txt` /
+`pyproject.toml` (unsafe extension this slice); `create backend/app.py` (code);
+`create LICENSE` (no safe extension); `create examples/demo.md` when `examples/`
+absent (new dir); and vague forms (`create some file`, `create login system`,
+`create the user model`, `create project structure`) — no single safe target.
+
+### 14.4 Detection, integration, and outcomes
+
+Detection lives in `backend/pipeline/file_alias_grounding.py` (deterministic,
+pre-triage, no LLM), consumed by the IMPLEMENTATION branch of
+`create_chunked_run_route` exactly where #17C wires `GROUNDED`.
+
+A new resolver outcome `CREATE_TARGET(path)` is produced **only** when the target
+is `NOT_FOUND` *and* all §14.3 rules pass. Route handling mirrors `GROUNDED`:
+
+- `CREATE_TARGET(path)` → concrete sanctioned anchor: bypass the vague guard, set
+  `pinned_path = path`, run the **normal** triage → planner → coder → patch →
+  approval flow, pinning `files_expected = [path]`
+  (`_pin_single_chunk_files_expected`). The chunk description carries the explicit
+  "create" instruction so the planner routes the path into `files_to_create` and
+  the coder emits `action="create"`.
+- Existing `NOT_FOUND` (no create intent, or unsafe target) → today's specific
+  clarification, unchanged.
+- `AMBIGUOUS` / `FORBIDDEN` / `GROUNDED` / `NO_TARGET` → unchanged from #17C.
+
+`files_expected = [path]` is the only scope signal (no `ChunkDefinition`/DB
+change). Creation stays fully guarded downstream: chunk-plan approval, final
+approval, `scope_guard`, `is_forbidden_write_path`, and patch_applier
+no-overwrite.
+
+### 14.5 Clarifications
+
+- Unsafe/forbidden/unsupported create → safe refusal ("that file is protected /
+  not a supported create target yet").
+- Explicit create into a missing directory → defer ("creating new directories
+  isn't supported yet").
+- "if not there create one" but **multiple** READMEs indexed → `AMBIGUOUS` wins:
+  ask which to edit; **do not create another**.
+- Missing + explicit + safe → proceed.
+
+### 14.6 Recommended PR split
+
+- **#17E** — this design (docs only).
+- **#17F** — create-intent parser + safe-create-path classifier + `CREATE_TARGET`
+  outcome in `file_alias_grounding.py` + unit tests. No route wiring.
+- **#17G** — wire `CREATE_TARGET` into `/runs/chunked` (pin + proceed) + specific
+  messages; verify the planner routes the pinned path into `files_to_create` and
+  that grounding keeps a sanctioned root-level create; route/integration tests.
+- **#17H** — dogfood polish.
+
+### 14.7 Risks / open questions
+
+- **Grounding vs root-level create:** `ground_triage_result_paths` keeps a *new*
+  file only when its parent dir is indexed; a root-level `README.md` create has
+  parent = repo root. #17G must ensure a sanctioned `CREATE_TARGET` path is not
+  stripped (treat a sanctioned create as grounded).
+- **Planner routing:** confirm the chunked planner places the pinned path in
+  `files_to_create`, not `files_to_modify`; if unreliable, #17G enriches the chunk
+  description to instruct creation.
+- **No explicit `allow_create` marker** in this slice (avoids a schema change);
+  creation is gated solely at the deterministic detector. Whether to add a marker
+  later for auditability is open.
+- **New-directory creation, LICENSE/extensionless docs** intentionally deferred.
+
+### 14.8 What #17E does NOT do / recommend
+
+No arbitrary file creation, directory scaffolding, code/config/dependency file
+creation, project templates, file-browser UI, fuzzy/entity create, automatic
+parent-directory creation, or any bypass of `patch_applier`/`scope_guard`/
+approvals. No code; no runtime behavior or safety guard changes — only this
+document is edited.
