@@ -467,7 +467,7 @@ def test_commit_and_complete_chunk_refuses_empty_touched_files(
     tmp_repo,
     tracked_runs,
 ):
-    run_id, _project = create_run(tmp_repo, tracked_runs)
+    run_id, project = create_run(tmp_repo, tracked_runs)
     plan_status = get_chunk_plan_status(run_id)
     chunk = plan_status.triage.chunks[0]
     monkeypatch.setattr(
@@ -484,6 +484,7 @@ def test_commit_and_complete_chunk_refuses_empty_touched_files(
             chunk,
             make_empty_coder_result(run_id),
             str(tmp_repo),
+            project["id"],
             make_planner_result(run_id),
         )
 
@@ -502,7 +503,7 @@ def test_commit_and_complete_chunk_skips_commit_when_working_tree_clean(
     tmp_repo,
     tracked_runs,
 ):
-    run_id, _project = create_run(tmp_repo, tracked_runs)
+    run_id, project = create_run(tmp_repo, tracked_runs)
     plan_status = get_chunk_plan_status(run_id)
     chunk = plan_status.triage.chunks[0]
 
@@ -527,6 +528,7 @@ def test_commit_and_complete_chunk_skips_commit_when_working_tree_clean(
             chunk,
             make_coder_result(run_id),
             str(tmp_repo),
+            project["id"],
             make_planner_result(run_id),
         )
 

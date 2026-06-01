@@ -53,7 +53,7 @@ from backend.pipeline.scope_guard import ScopeDriftError, assert_files_in_scope
 from backend.pipeline.tester import run_tests
 from backend.projects.project_context import ProjectRuntimeConfig, active_project
 from backend.projects.project_store import require_project
-from backend.repo.repo_indexer import get_relevant_files
+from backend.repo.repo_indexer import build_repo_index, get_relevant_files
 
 logger = logging.getLogger(__name__)
 NO_CHANGES_MESSAGE = "Coder produced no file changes."
@@ -581,11 +581,44 @@ def _pause_for_chunk_approval(
     }
 
 
+def _refresh_index_after_success(
+    project_id: str,
+    target_repo_path: str,
+    *,
+    run_id: str,
+    chunk_number: int,
+) -> None:
+    """
+    Best-effort post-commit repo index refresh (#19E).
+
+    Refreshes file_index so a later chunk/run sees files Pipewright just
+    created/deleted/renamed in this committed chunk. It is called only after a
+    chunk has been committed and marked completed.
+
+    This runs inside the project repo lock (every commit path holds it), and the
+    lock is non-reentrant, so it calls build_repo_index DIRECTLY — re-acquiring
+    the lock would raise. The index is a recoverable cache, so a refresh failure
+    must never fail the chunk or run: it is logged and swallowed.
+    """
+    try:
+        build_repo_index(project_id, target_repo_path)
+    except Exception as error:
+        logger.warning(
+            "[CHUNKED] post-commit index refresh failed, ignored | "
+            "run_id=%s | chunk=%s | project_id=%s | error=%s",
+            run_id,
+            chunk_number,
+            project_id,
+            error,
+        )
+
+
 def _commit_and_complete_chunk(
     run_id: str,
     chunk: ChunkDefinition | ChunkStatus,
     coder_output: CoderHandoff,
     target_repo_path: str,
+    project_id: str,
     plan: PlannerHandoff | None = None,
 ) -> None:
     chunk_number = chunk.chunk_number
@@ -616,6 +649,16 @@ def _commit_and_complete_chunk(
     print(
         f"[CHUNKED] Chunk complete | "
         f"run_id={run_id} | chunk={chunk_number}"
+    )
+
+    # #19E: only after a real, committed, completed chunk — refresh the index so
+    # the next chunk/run sees the files this chunk created/deleted/renamed.
+    # Best-effort: never fails the run.
+    _refresh_index_after_success(
+        project_id,
+        target_repo_path,
+        run_id=run_id,
+        chunk_number=chunk_number,
     )
 
 
@@ -1041,7 +1084,7 @@ async def _execute_single_chunk(
     if chunk.requires_human_review:
         return _pause_for_chunk_approval(run_id, chunk, code, branch_name)
 
-    _commit_and_complete_chunk(run_id, chunk, code, target_repo_path, plan)
+    _commit_and_complete_chunk(run_id, chunk, code, target_repo_path, project_id, plan)
     return None
 
 
@@ -1299,6 +1342,7 @@ def _approve_chunk_and_commit_locked(
         definitions[chunk_number],
         code,
         target_repo_path,
+        plan_status.project_id,
     )
     _update_run_status(run_id, "chunk_approved", "chunk_approved", chunk_number)
     return {
