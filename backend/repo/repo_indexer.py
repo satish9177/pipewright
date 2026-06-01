@@ -355,6 +355,41 @@ def get_file_index_count() -> int:
         raise RuntimeError(f"repo_indexer.py: get_file_index_count failed: {error}")
 
 
+def get_project_index_status(project_id: str) -> dict:
+    """
+    Return read-only index status for one project. Does NOT scan the repo.
+
+    Reads only the existing ``file_index`` rows for the project (COUNT(*) and
+    MAX(indexed_at)); never touches the filesystem and never calls
+    build_repo_index. ``indexed_at`` is the most recent index timestamp, or
+    None when the project has no index rows. No schema change.
+    """
+    if not project_id or not project_id.strip():
+        raise RuntimeError("repo_indexer.py: project_id is required")
+
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("""
+                SELECT COUNT(*) AS files_indexed, MAX(indexed_at) AS indexed_at
+                FROM file_index
+                WHERE project_id = :project_id
+            """), {"project_id": project_id}).fetchone()
+    except Exception as error:
+        raise RuntimeError(
+            f"repo_indexer.py: get_project_index_status failed. "
+            f"project_id={project_id} | error={error}"
+        )
+
+    files_indexed = int(row[0]) if row and row[0] is not None else 0
+    indexed_at = row[1] if (row and files_indexed > 0) else None
+    return {
+        "project_id": project_id,
+        "files_indexed": files_indexed,
+        "indexed_at": indexed_at,
+        "status": "indexed" if files_indexed > 0 else "not_indexed",
+    }
+
+
 def ensure_repo_indexed(project_id: str, target_repo_path: str) -> dict:
     """
     Ensure an index exists for project_id.
