@@ -52,6 +52,14 @@ def _project(paths: list[str]) -> str:
     return project_id
 
 
+def _resolve_with_create(project_id: str, feature: str):
+    return resolve_explicit_edit_target(
+        project_id,
+        feature,
+        allow_create_target=True,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _cleanup_index():
     """Remove any alias-* file_index rows created during a test."""
@@ -124,6 +132,109 @@ def test_explicit_path_trailing_period_is_stripped():
     result = resolve_explicit_edit_target(pid, "edit docs/usage.md.")
     assert result.outcome is EditTargetOutcome.GROUNDED
     assert result.path == "docs/usage.md"
+
+
+# --------------------------------------------------------------------------
+# explicit safe create targets
+# --------------------------------------------------------------------------
+
+def test_create_readme_path_when_missing():
+    pid = _project(["backend/app.py"])
+    result = _resolve_with_create(pid, "create README.md with hello")
+    assert result.outcome is EditTargetOutcome.CREATE_TARGET
+    assert result.path == "README.md"
+
+
+def test_create_target_is_opt_in_until_route_wiring():
+    pid = _project(["backend/app.py"])
+    result = resolve_explicit_edit_target(pid, "create README.md with hello")
+    assert result.outcome is EditTargetOutcome.NOT_FOUND
+    assert result.alias == "README.md"
+
+
+def test_create_readme_alias_when_missing_and_explicit_create_phrase():
+    pid = _project(["backend/app.py"])
+    result = _resolve_with_create(
+        pid,
+        "add hello in the readme if readme is not there create one",
+    )
+    assert result.outcome is EditTargetOutcome.CREATE_TARGET
+    assert result.path == "README.md"
+
+
+def test_create_phrase_existing_readme_still_grounds():
+    pid = _project(["README.md", "backend/app.py"])
+    result = _resolve_with_create(
+        pid,
+        "add hello to README, create it if missing",
+    )
+    assert result.outcome is EditTargetOutcome.GROUNDED
+    assert result.path == "README.md"
+
+
+def test_create_phrase_multiple_readmes_stays_ambiguous():
+    pid = _project(["README.md", "docs/README.md", "backend/app.py"])
+    result = _resolve_with_create(
+        pid,
+        "add hello in the readme if readme is not there create one",
+    )
+    assert result.outcome is EditTargetOutcome.AMBIGUOUS
+    assert result.alias == "readme"
+    assert result.candidates == ("README.md", "docs/README.md")
+
+
+def test_create_nested_doc_when_parent_indexed():
+    pid = _project(["docs/intro.md", "backend/app.py"])
+    result = _resolve_with_create(
+        pid,
+        "create docs/usage.md with setup instructions",
+    )
+    assert result.outcome is EditTargetOutcome.CREATE_TARGET
+    assert result.path == "docs/usage.md"
+
+
+def test_create_nested_doc_with_missing_parent_is_not_create_target():
+    pid = _project(["README.md", "backend/app.py"])
+    result = _resolve_with_create(
+        pid,
+        "create docs/usage.md with setup instructions",
+    )
+    assert result.outcome is EditTargetOutcome.NOT_FOUND
+    assert result.alias == "docs/usage.md"
+
+
+@pytest.mark.parametrize("path", ["CONTRIBUTING.md", "CHANGELOG.md"])
+def test_create_root_docs_when_missing(path):
+    pid = _project(["backend/app.py"])
+    result = _resolve_with_create(pid, f"create {path} with notes")
+    assert result.outcome is EditTargetOutcome.CREATE_TARGET
+    assert result.path == path
+
+
+@pytest.mark.parametrize("feature", [
+    "create package.json",
+    "create requirements.txt",
+    "create pyproject.toml",
+    "create docker-compose.yml",
+    "create backend/app.py",
+])
+def test_unsupported_create_targets_are_not_create_target(feature):
+    pid = _project(["README.md", "backend/existing.py"])
+    result = _resolve_with_create(pid, feature)
+    assert result.outcome is not EditTargetOutcome.CREATE_TARGET
+
+
+@pytest.mark.parametrize("feature", [
+    "create LICENSE",
+    "create some file",
+    "create project structure",
+    "create backend stuff",
+    "create it if missing",
+])
+def test_vague_or_extensionless_create_requests_have_no_target(feature):
+    pid = _project(["README.md", "backend/app.py"])
+    result = _resolve_with_create(pid, feature)
+    assert result.outcome is EditTargetOutcome.NO_TARGET
 
 
 # --------------------------------------------------------------------------
@@ -231,6 +342,20 @@ def test_git_internal_is_forbidden():
     assert result.alias == ".git/config"
 
 
+@pytest.mark.parametrize("feature, alias", [
+    ("create .env", ".env"),
+    ("create .env.local", ".env.local"),
+    ("create secrets.json", "secrets.json"),
+    ("create credentials.json", "credentials.json"),
+    ("create .git/config", ".git/config"),
+])
+def test_forbidden_create_targets_stay_forbidden(feature, alias):
+    pid = _project(["backend/app.py"])
+    result = _resolve_with_create(pid, feature)
+    assert result.outcome is EditTargetOutcome.FORBIDDEN
+    assert result.alias == alias
+
+
 # --------------------------------------------------------------------------
 # determinism
 # --------------------------------------------------------------------------
@@ -244,3 +369,14 @@ def test_repeated_calls_are_deterministic():
     assert all(r == results[0] for r in results)
     assert results[0].outcome is EditTargetOutcome.AMBIGUOUS
     assert results[0].candidates == ("README.md", "docs/README.md")
+
+
+def test_repeated_create_target_calls_are_deterministic():
+    pid = _project(["docs/intro.md"])
+    results = [
+        _resolve_with_create(pid, "create docs/usage.md with notes")
+        for _ in range(3)
+    ]
+    assert all(r == results[0] for r in results)
+    assert results[0].outcome is EditTargetOutcome.CREATE_TARGET
+    assert results[0].path == "docs/usage.md"
