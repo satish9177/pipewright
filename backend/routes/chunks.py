@@ -4,8 +4,11 @@ Routes for Phase 2B chunk planning, approval, execution, and manual resume.
 """
 
 import logging
+import os
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
@@ -55,6 +58,7 @@ from backend.pipeline.intent import (
 )
 from backend.pipeline.file_alias_grounding import (
     EditTargetOutcome,
+    EditTargetResolution,
     resolve_explicit_edit_target,
 )
 from backend.pipeline.file_candidate_ranking import (
@@ -80,9 +84,14 @@ from backend.pipeline.report_analyzer import (
     run_report_analysis,
 )
 from backend.pipeline.risk_scanner import scan_triage_result
-from backend.pipeline.run_locks import ProjectRepoLockError
+from backend.pipeline.run_locks import (
+    ProjectRepoLockError,
+    project_repo_lock_sync,
+)
 from backend.pipeline.triage import run_triage
 from backend.projects.project_store import get_project
+from backend.repo.repo_indexer import build_repo_index, is_supported_file
+from backend.utils.path_safety import is_forbidden_path
 
 logger = logging.getLogger(__name__)
 
@@ -325,6 +334,180 @@ def _target_forbidden_response(label: str) -> JSONResponse:
         ),
         missing_details=["a different, non-protected target file"],
     )
+
+
+def _target_excluded_response(path: str) -> JSONResponse:
+    """
+    Clarification when a named file exists on disk but is not in the repo index
+    because its type is unsupported or it is excluded by the indexer (PR #19C).
+
+    Distinct from the create-file clarification: the file is present, so telling
+    the user to "create it first" would be wrong.
+    """
+    return _needs_clarification_response(
+        message=(
+            f"{path} exists on disk, but it is not included in Pipewright's "
+            "repo index because its file type is unsupported or excluded. "
+            "Pipewright can only edit supported, indexed text/code files."
+        ),
+        missing_details=["a supported, indexed file to edit"],
+    )
+
+
+@dataclass
+class _StaleReindexRecovery:
+    """
+    Result of a PR #19C stale explicit-path recovery attempt.
+
+    - ``response`` set -> return it immediately (a clarification/refusal).
+    - ``resolution`` set -> continue the normal flow with this re-resolved
+      target (only GROUNDED / CREATE_TARGET are handed back this way).
+    - both None -> no recovery happened; caller keeps the original NOT_FOUND
+      (create-file) clarification.
+    """
+
+    response: JSONResponse | None = None
+    resolution: EditTargetResolution | None = None
+
+
+def _safe_repo_relative_path(token: str | None) -> str | None:
+    """
+    Normalize a target token to a safe repo-relative path, or None.
+
+    Rejects empty, absolute, and parent-traversal (``..``) tokens. Pure: never
+    touches the filesystem.
+    """
+    if not token or not isinstance(token, str):
+        return None
+    if os.path.isabs(token):
+        return None
+    norm = token.replace("\\", "/").strip()
+    if not norm or norm.startswith("/"):
+        return None
+    parts = [part for part in norm.split("/") if part and part != "."]
+    if not parts or any(part == ".." for part in parts):
+        return None
+    return "/".join(parts)
+
+
+def _attempt_stale_explicit_target_reindex(
+    project_id: str,
+    target_repo_path: str | None,
+    feature_description: str,
+    alias: str | None,
+) -> _StaleReindexRecovery:
+    """
+    PR #19C: single-shot stale explicit-path recovery.
+
+    Only called when ``resolve_explicit_edit_target`` returned NOT_FOUND for an
+    explicit path/alias. If the named target actually exists on disk under the
+    project repo, re-index ONCE and re-resolve. Hard-capped at a single re-index
+    (no loops, no recursion). Never auto-creates a file, never relaxes
+    forbidden/secret paths, and never walks the filesystem (a single
+    ``Path.is_file()`` probe only).
+
+    Lock-aware: re-index runs under the same project repo lock used by the #19B
+    endpoint, so it cannot race an active run; a held lock surfaces as HTTP 409.
+    """
+    if not target_repo_path or not alias:
+        return _StaleReindexRecovery()
+
+    probe = _safe_repo_relative_path(_canonical_name(alias))
+    if probe is None:
+        return _StaleReindexRecovery()
+
+    # Never re-index toward a forbidden/secret target. The resolver already
+    # returns FORBIDDEN for these, but guard defensively and fail safe.
+    probe_parts = [part for part in probe.split("/") if part]
+    try:
+        if is_forbidden_path(probe) or ".git" in probe_parts:
+            return _StaleReindexRecovery(
+                response=_target_forbidden_response(alias)
+            )
+    except Exception:
+        return _StaleReindexRecovery(
+            response=_target_forbidden_response(alias)
+        )
+
+    target_on_disk = Path(target_repo_path) / probe
+    try:
+        exists_on_disk = target_on_disk.is_file()
+    except OSError:
+        exists_on_disk = False
+
+    if not exists_on_disk:
+        # Genuinely missing on disk: keep the existing create/not-found path.
+        return _StaleReindexRecovery()
+
+    # Present on disk, but the indexer would never include this file type, so a
+    # re-index cannot help. Explain rather than say "create it".
+    if not is_supported_file(target_on_disk):
+        return _StaleReindexRecovery(response=_target_excluded_response(probe))
+
+    # Present on disk and indexable: the index is simply stale. Re-index once
+    # (lock-aware) and re-resolve.
+    try:
+        with project_repo_lock_sync(project_id):
+            build_repo_index(project_id, target_repo_path)
+    except ProjectRepoLockError as error:
+        # A run is actively using this project's repo; do not race it.
+        raise HTTPException(status_code=409, detail=str(error))
+    except Exception as error:
+        # A re-index failure must not 500 the request; keep the safe
+        # clarification and log the sanitized detail server-side.
+        logger.warning(
+            "[GROUND-TARGET] Stale re-index failed; keeping clarification. "
+            "project_id=%s | error=%s",
+            project_id,
+            error,
+        )
+        return _StaleReindexRecovery()
+
+    re_resolved = resolve_explicit_edit_target(
+        project_id,
+        feature_description,
+        allow_create_target=True,
+    )
+    outcome = re_resolved.outcome
+
+    if outcome in (
+        EditTargetOutcome.GROUNDED,
+        EditTargetOutcome.CREATE_TARGET,
+    ):
+        return _StaleReindexRecovery(resolution=re_resolved)
+    if outcome is EditTargetOutcome.AMBIGUOUS:
+        return _StaleReindexRecovery(
+            response=_target_ambiguous_response(
+                re_resolved.alias or alias,
+                re_resolved.candidates,
+                feature_description,
+                project_id,
+            )
+        )
+    if outcome is EditTargetOutcome.FORBIDDEN:
+        return _StaleReindexRecovery(
+            response=_target_forbidden_response(re_resolved.alias or alias)
+        )
+
+    # Still NOT_FOUND / NO_TARGET after a fresh scan even though the file is on
+    # disk. Two safe sub-cases (never silently rewrite, never auto-create):
+    #   1. a case-insensitive index match exists -> offer the real path as a
+    #      candidate (e.g. user typed readme.md but README.md is indexed);
+    #   2. otherwise the file is on disk but excluded from the index -> explain.
+    index = get_indexed_paths_and_dirs(project_id)
+    ci_matches = sorted(
+        path for path in index.paths if path.lower() == probe.lower()
+    )
+    if ci_matches:
+        return _StaleReindexRecovery(
+            response=_target_ambiguous_response(
+                alias,
+                tuple(ci_matches),
+                feature_description,
+                project_id,
+            )
+        )
+    return _StaleReindexRecovery(response=_target_excluded_response(probe))
 
 
 def _pin_single_chunk_files_expected(
@@ -723,6 +906,8 @@ async def _create_chunked_run_core(project_id: str, feature_description: str):
     project = get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
+    # PR #19C: repo path for the stale explicit-target re-index recovery below.
+    target_repo_path = project.get("repo_path")
 
     # Pre-intent actionability guard: a greeting / noise-only message is not a
     # work request. Stop before intent classification so it never becomes a
@@ -828,16 +1013,40 @@ async def _create_chunked_run_core(project_id: str, feature_description: str):
                     allow_create_target=True,
                 )
                 if resolution.outcome is EditTargetOutcome.NOT_FOUND:
-                    logger.info(
-                        "[GROUND-TARGET] Named target not indexed; clarifying. "
-                        "run_id=%s | label=%s",
-                        run_id,
+                    # PR #19C: the index may simply be stale. If the named
+                    # explicit target actually exists on disk, re-index ONCE and
+                    # re-resolve before falling back to the create/not-found
+                    # clarification. Single attempt; never auto-creates; never
+                    # relaxes forbidden paths.
+                    recovery = _attempt_stale_explicit_target_reindex(
+                        project_id,
+                        target_repo_path,
+                        feature_description,
                         resolution.alias,
                     )
-                    return _target_not_found_response(
-                        resolution.alias,
-                        _mentions_create(feature_description),
-                    )
+                    if recovery.response is not None:
+                        return recovery.response
+                    if recovery.resolution is not None:
+                        logger.info(
+                            "[GROUND-TARGET] Stale index; re-indexed and "
+                            "re-resolved named target. run_id=%s | label=%s "
+                            "| outcome=%s",
+                            run_id,
+                            resolution.alias,
+                            recovery.resolution.outcome.value,
+                        )
+                        resolution = recovery.resolution
+                    else:
+                        logger.info(
+                            "[GROUND-TARGET] Named target not indexed; "
+                            "clarifying. run_id=%s | label=%s",
+                            run_id,
+                            resolution.alias,
+                        )
+                        return _target_not_found_response(
+                            resolution.alias,
+                            _mentions_create(feature_description),
+                        )
                 if resolution.outcome is EditTargetOutcome.AMBIGUOUS:
                     logger.info(
                         "[GROUND-TARGET] Named target ambiguous; clarifying. "
