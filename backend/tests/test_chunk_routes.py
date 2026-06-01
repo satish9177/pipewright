@@ -25,6 +25,7 @@ from backend.pipeline.chunk_store import create_chunked_run
 from backend.pipeline.run_locks import (
     PROJECT_LOCK_CONFLICT_MESSAGE,
     ProjectRepoLockError,
+    project_repo_lock_sync,
 )
 from backend.projects.project_store import create_project
 
