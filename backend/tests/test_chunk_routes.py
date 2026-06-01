@@ -1990,15 +1990,19 @@ def test_empty_index_skips_resolver_and_proceeds(
     assert len(calls) == 1
 
 
-def test_unindexed_readme_request_falls_back_to_existing_guard(
-    monkeypatch, tmp_repo
+def test_unindexed_readme_request_passes_specificity_guard(
+    monkeypatch, tmp_repo, tracked_runs
 ):
-    # Documents the index-gate limitation: with no index, the resolver cannot
-    # ground "readme", so the request falls through to the existing specificity
-    # guard, which blocks this particular phrasing as vague. Once the project is
-    # indexed (see test_grounded_readme_pins_files_expected) it grounds instead.
+    # With no index, the resolver cannot ground "readme"; #17D ensures the
+    # existing specificity guard still treats it as a concrete file anchor.
     project = make_project(tmp_repo)
-    _forbid_triage(monkeypatch)
+    calls = []
+
+    async def fake_triage(run_id, project_id, feature_description):
+        calls.append(run_id)
+        return make_triage(run_id, project_id)
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
     client = TestClient(app)
 
     response = client.post("/runs/chunked", json={
@@ -2008,8 +2012,9 @@ def test_unindexed_readme_request_falls_back_to_existing_guard(
 
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "needs_clarification"
-    _assert_no_runs(project["id"])
+    tracked_runs.append(data["run_id"])
+    assert data.get("status") != "needs_clarification"
+    assert len(calls) == 1
 
 
 def test_vague_request_still_generic_clarification(monkeypatch, tmp_repo):
