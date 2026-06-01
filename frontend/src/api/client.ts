@@ -233,12 +233,26 @@ export interface ChunkedRunRequest {
   feature_description: string
 }
 
+export type RecommendationStrength = 'strong' | 'weak' | 'none'
+
 export interface NeedsClarificationResponse extends ExtraFields {
   status: 'needs_clarification'
   intent: RunIntent
   message: string
   missing_details: string[]
   examples: string[]
+  // Present only on the ambiguous-file clarification (PR #17J/#17M). The
+  // candidate set + signed clarification_id let the user pick a file via the
+  // selection endpoint; the frontend forwards the raw reply and never parses it.
+  candidates?: string[]
+  recommended_path?: string | null
+  recommendation_strength?: RecommendationStrength
+  clarification_id?: string
+}
+
+export interface ClarificationSelectionRequest {
+  project_id: string
+  selection: string
 }
 
 export type ChunkedRunResult = ChunkPlanResponse | NeedsClarificationResponse
@@ -459,6 +473,15 @@ export const runsApi = {
       project_id: projectId,
       feature_description: featureDescription,
     }).then(r => r.data),
+  selectClarification: (
+    clarificationId: string,
+    projectId: string,
+    selection: string,
+  ) =>
+    api.post<ChunkedRunResult>(
+      `/runs/chunked/clarifications/${clarificationId}/select`,
+      { project_id: projectId, selection },
+    ).then(r => r.data),
   getRunChunks: (runId: string) =>
     api.get<ChunkPlanResponse>(`/runs/${runId}/chunks`).then(r => r.data),
   approveChunkPlan: (runId: string) =>
