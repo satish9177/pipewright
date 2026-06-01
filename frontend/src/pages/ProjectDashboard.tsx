@@ -7,9 +7,12 @@ import {
   isNeedsClarification,
   PipelineRun,
   NeedsClarificationResponse,
+  ChunkedRunResult,
 } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { Input } from '@/components/ui/input'
+import { Badge } from '@/components/ui/badge'
 import { Label } from '@/components/ui/label'
 import {
   Card,
@@ -30,6 +33,7 @@ export default function ProjectDashboard() {
   const [lastRunId, setLastRunId] = useState<string | null>(null)
   const [clarification, setClarification] =
     useState<NeedsClarificationResponse | null>(null)
+  const [selectionReply, setSelectionReply] = useState('')
 
   const { data: project, isLoading: projectLoading } = useQuery({
     queryKey: ['project', projectId],
@@ -63,25 +67,50 @@ export default function ProjectDashboard() {
     return 'Failed to create chunked run'
   }
 
+  // Shared outcome handler for both the initial request and a clarification
+  // selection: a real plan navigates to the run; a needs_clarification response
+  // re-renders the clarification (with a refreshed clarification_id).
+  function handleChunkedResult(data: ChunkedRunResult) {
+    setSubmitError(null)
+    if (isNeedsClarification(data)) {
+      // No run was created. Ask for details / a file choice instead of
+      // navigating to a run that does not exist.
+      setClarification(data)
+      setSelectionReply('')
+      setLastRunId(null)
+      return
+    }
+    setClarification(null)
+    setSelectionReply('')
+    setLastRunId(data.run_id)
+    setFeature('')
+    queryClient.invalidateQueries({ queryKey: ['runs'] })
+    navigate(`/runs/${data.run_id}`)
+  }
+
   const runMutation = useMutation({
     mutationFn: () => runsApi.createChunkedRun(projectId!, feature),
-    onSuccess: (data) => {
-      setSubmitError(null)
-      if (isNeedsClarification(data)) {
-        // Vague implementation request: no run was created. Ask for details
-        // instead of navigating to a run that does not exist.
-        setClarification(data)
-        setLastRunId(null)
-        return
-      }
-      setClarification(null)
-      setLastRunId(data.run_id)
-      setFeature('')
-      queryClient.invalidateQueries({ queryKey: ['runs'] })
-      navigate(`/runs/${data.run_id}`)
-    },
+    onSuccess: handleChunkedResult,
     onError: (error: unknown) => {
       setClarification(null)
+      setSubmitError(getSubmitError(error))
+    },
+  })
+
+  // Forward the user's raw reply (a candidate path, or typed "1"/"yes 1"/
+  // "use README.md") to the backend selection endpoint. The frontend never
+  // parses the reply itself; the backend maps it within the clarification's
+  // candidate set.
+  const selectMutation = useMutation({
+    mutationFn: (selection: string) => {
+      const clarificationId = clarification?.clarification_id
+      if (!clarificationId) {
+        return Promise.reject(new Error('Missing clarification context'))
+      }
+      return runsApi.selectClarification(clarificationId, projectId!, selection)
+    },
+    onSuccess: handleChunkedResult,
+    onError: (error: unknown) => {
       setSubmitError(getSubmitError(error))
     },
   })
@@ -194,6 +223,58 @@ export default function ProjectDashboard() {
                     </ul>
                   </>
                 )}
+                {clarification.candidates &&
+                  clarification.candidates.length > 0 &&
+                  clarification.clarification_id && (
+                    <div className="mt-3">
+                      <p className="font-medium">Choose a file:</p>
+                      <div className="mt-1 flex flex-col items-start gap-2">
+                        {clarification.candidates.map((path) => (
+                          <Button
+                            key={path}
+                            variant="outline"
+                            size="sm"
+                            disabled={selectMutation.isPending}
+                            onClick={() => selectMutation.mutate(path)}
+                          >
+                            Use {path}
+                            {path === clarification.recommended_path && (
+                              <Badge variant="secondary" className="ml-2">
+                                Recommended
+                              </Badge>
+                            )}
+                          </Button>
+                        ))}
+                      </div>
+                      <div className="mt-2 flex items-center gap-2">
+                        <Input
+                          value={selectionReply}
+                          onChange={(e) => setSelectionReply(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (
+                              e.key === 'Enter' &&
+                              selectionReply.trim() &&
+                              !selectMutation.isPending
+                            ) {
+                              selectMutation.mutate(selectionReply)
+                            }
+                          }}
+                          placeholder='Or reply, e.g. "1", "yes 1", "use README.md"'
+                          disabled={selectMutation.isPending}
+                          className="max-w-sm"
+                        />
+                        <Button
+                          size="sm"
+                          disabled={
+                            !selectionReply.trim() || selectMutation.isPending
+                          }
+                          onClick={() => selectMutation.mutate(selectionReply)}
+                        >
+                          {selectMutation.isPending ? 'Selecting...' : 'Send'}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
               </div>
             )}
             {lastRunId && (
