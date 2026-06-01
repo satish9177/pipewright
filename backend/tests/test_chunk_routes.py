@@ -1768,6 +1768,19 @@ def _assert_no_runs(project_id: str) -> None:
     assert count == 0
 
 
+def _stored_chunk_description(run_id: str, chunk_number: int = 1) -> str:
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT description FROM chunks
+            WHERE run_id = :run_id AND chunk_number = :chunk_number
+        """), {
+            "run_id": run_id,
+            "chunk_number": chunk_number,
+        }).fetchone()
+    assert row is not None
+    return row[0]
+
+
 def test_grounded_readme_pins_files_expected(monkeypatch, tmp_repo, tracked_runs):
     project = make_project(tmp_repo)
     seed_file_index(project["id"], ["README.md", "backend/app.py"])
@@ -1912,12 +1925,21 @@ def test_forbidden_target_returns_safe_refusal(monkeypatch, tmp_repo):
     _assert_no_runs(project["id"])
 
 
-def test_explicit_create_missing_file_clarifies_without_creating(
-    monkeypatch, tmp_repo
+def test_create_readme_missing_file_pins_without_creating(
+    monkeypatch, tmp_repo, tracked_runs
 ):
     project = make_project(tmp_repo)
     seed_file_index(project["id"], ["backend/app.py"])
-    _forbid_triage(monkeypatch)
+    calls = []
+
+    async def fake_triage(run_id, project_id, feature_description):
+        calls.append((run_id, project_id, feature_description))
+        return make_triage_with_files(
+            run_id, project_id, files_expected=["backend/app.py"],
+            title="Docs create", description="Adjust docs.",
+        )
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
     client = TestClient(app)
 
     response = client.post("/runs/chunked", json={
@@ -1927,12 +1949,180 @@ def test_explicit_create_missing_file_clarifies_without_creating(
 
     assert response.status_code == 200
     data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert data.get("status") != "needs_clarification"
+    assert len(calls) == 1
+    assert calls[0][2] == "create README.md with a title"
+    chunk = data["chunks"][0]
+    assert chunk["files_expected"] == ["README.md"]
+    assert "Create README.md" in _stored_chunk_description(data["run_id"])
+    assert not (tmp_repo / "README.md").exists()
+
+
+def test_conditional_create_readme_missing_file_pins_without_creating(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["backend/app.py"])
+    calls = []
+
+    async def fake_triage(run_id, project_id, feature_description):
+        calls.append((run_id, project_id, feature_description))
+        return make_triage_with_files(
+            run_id, project_id, files_expected=[],
+            title="Docs create", description="Adjust docs.",
+        )
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": (
+            "add hello in the readme if readme is not there create one"
+        ),
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert data.get("status") != "needs_clarification"
+    assert len(calls) == 1
+    assert "create one" in calls[0][2]
+    chunk = data["chunks"][0]
+    assert chunk["files_expected"] == ["README.md"]
+    assert "Create README.md" in _stored_chunk_description(data["run_id"])
+    assert not (tmp_repo / "README.md").exists()
+
+
+def test_existing_readme_with_create_phrase_stays_grounded_edit(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["README.md", "backend/app.py"])
+
+    async def fake_triage(run_id, project_id, feature_description):
+        return make_triage_with_files(
+            run_id, project_id, files_expected=["backend/app.py"],
+            title="Docs edit", description="Edit docs.",
+        )
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "add hello to README, create it if missing",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    chunk = data["chunks"][0]
+    assert chunk["files_expected"] == ["README.md"]
+    assert "Create README.md" not in _stored_chunk_description(data["run_id"])
+
+
+def test_multiple_readmes_with_create_phrase_stays_ambiguous(
+    monkeypatch, tmp_repo
+):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["README.md", "docs/README.md"])
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": (
+            "add hello in the readme if readme is not there create one"
+        ),
+    })
+
+    assert response.status_code == 200
+    data = response.json()
     assert data["status"] == "needs_clarification"
-    assert "automatically" in data["message"].lower()
+    assert "README.md" in data["message"]
+    assert "docs/README.md" in data["message"]
     assert "run_id" not in data
     _assert_no_runs(project["id"])
-    # We never created README.md on disk.
-    assert not (tmp_repo / "README.md").exists()
+
+
+def test_create_nested_doc_with_indexed_parent_pins(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["docs/intro.md", "backend/app.py"])
+
+    async def fake_triage(run_id, project_id, feature_description):
+        return make_triage_with_files(
+            run_id, project_id, files_expected=["backend/app.py"],
+            title="Docs create", description="Adjust docs.",
+        )
+
+    monkeypatch.setattr("backend.routes.chunks.run_triage", fake_triage)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "create docs/usage.md with setup instructions",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    chunk = data["chunks"][0]
+    assert chunk["files_expected"] == ["docs/usage.md"]
+    assert "Create docs/usage.md" in _stored_chunk_description(data["run_id"])
+    assert not (tmp_repo / "docs" / "usage.md").exists()
+
+
+def test_create_nested_doc_with_missing_parent_clarifies(
+    monkeypatch, tmp_repo
+):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["README.md", "backend/app.py"])
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "create docs/usage.md with setup instructions",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+@pytest.mark.parametrize("feature", [
+    "create .env",
+    "create package.json",
+    "create requirements.txt",
+    "create docker-compose.yml",
+    "create backend/app.py",
+    "create LICENSE",
+    "create some file",
+])
+def test_unsupported_or_forbidden_create_targets_do_not_create_run(
+    monkeypatch, tmp_repo, feature
+):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["README.md", "backend/existing.py"])
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": feature,
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
 
 
 def test_no_target_request_proceeds_unchanged(monkeypatch, tmp_repo, tracked_runs):

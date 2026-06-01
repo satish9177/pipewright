@@ -149,13 +149,15 @@ def is_grounded_path(project_id: str, path: str) -> bool:
 def _ground_chunk_with_index(
     chunk: ChunkDefinition,
     index: GroundingIndex,
+    sanctioned_new_paths: set[str] | None = None,
 ) -> ChunkDefinition:
     kept: list[str] = []
     removed: list[str] = []
     seen: set[str] = set()
+    sanctioned = sanctioned_new_paths or set()
     for original in chunk.files_expected:
         norm = _normalize_path(original)
-        if norm is not None and _is_grounded(norm, index):
+        if norm is not None and (norm in sanctioned or _is_grounded(norm, index)):
             if norm not in seen:
                 seen.add(norm)
                 kept.append(norm)
@@ -201,6 +203,8 @@ def ground_chunk_files_expected(
 def ground_triage_result_paths(
     project_id: str,
     triage_result: TriageResult,
+    *,
+    sanctioned_new_paths: set[str] | None = None,
 ) -> TriageResult:
     """
     Return a new :class:`TriageResult` with every chunk's ``files_expected``
@@ -209,5 +213,12 @@ def ground_triage_result_paths(
     change. Used for both implementation and plan_only flows.
     """
     index = get_indexed_paths_and_dirs(project_id)
-    grounded = [_ground_chunk_with_index(chunk, index) for chunk in triage_result.chunks]
+    sanctioned = {
+        norm for path in (sanctioned_new_paths or set())
+        if (norm := _normalize_path(path)) is not None
+    }
+    grounded = [
+        _ground_chunk_with_index(chunk, index, sanctioned)
+        for chunk in triage_result.chunks
+    ]
     return triage_result.model_copy(update={"chunks": grounded})

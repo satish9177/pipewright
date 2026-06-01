@@ -138,6 +138,19 @@ def _mentions_create(feature_description: str) -> bool:
     return "create" in words
 
 
+def _unsupported_extensionless_create_target(
+    feature_description: str,
+) -> str | None:
+    """Catch explicit create requests for known extensionless files we defer."""
+    words = {
+        word.strip("\"'`(),;:!?[]{}<>").lower()
+        for word in (feature_description or "").replace("-", " ").split()
+    }
+    if "create" in words and "license" in words:
+        return "LICENSE"
+    return None
+
+
 def _target_not_found_response(label: str, wants_create: bool) -> JSONResponse:
     """
     Specific clarification when the user named a file target that is not in the
@@ -197,17 +210,20 @@ def _target_forbidden_response(label: str) -> JSONResponse:
 
 
 def _pin_single_chunk_files_expected(
-    triage_result: TriageResult, path: str
+    triage_result: TriageResult,
+    path: str,
+    *,
+    create_target: bool = False,
 ) -> TriageResult:
     """
     Pin a single grounded edit target onto a one-chunk plan (PR #17C).
 
     Deterministically narrows ``files_expected`` to ``[path]`` for a simple
-    explicit file edit. Conservative on multi-chunk plans: a single named target
-    must not be forced onto several chunks, so those are left untouched and flow
-    through normal grounding. The pinned path is indexed + non-forbidden (the
-    resolver guarantees this) and still passes through ground_triage_result_paths,
-    scan_triage_result, and scope_guard unchanged.
+    explicit file edit/create. Conservative on multi-chunk plans: a single named
+    target must not be forced onto several chunks, so those are left untouched
+    and flow through normal grounding. The pinned path is resolver-sanctioned and
+    still passes through ground_triage_result_paths, scan_triage_result, and
+    scope_guard unchanged.
     """
     if triage_result.total_chunks != 1 or len(triage_result.chunks) != 1:
         logger.info(
@@ -219,9 +235,18 @@ def _pin_single_chunk_files_expected(
         return triage_result
 
     chunk = triage_result.chunks[0]
-    if chunk.files_expected == [path]:
+    description = chunk.description
+    if create_target:
+        create_note = f"Create {path} and add the requested content."
+        if create_note not in description:
+            description = f"{description.rstrip()} {create_note}".strip()
+
+    if chunk.files_expected == [path] and description == chunk.description:
         return triage_result
-    pinned = chunk.model_copy(update={"files_expected": [path]})
+    pinned = chunk.model_copy(update={
+        "files_expected": [path],
+        "description": description,
+    })
     return triage_result.model_copy(update={"chunks": [pinned]})
 
 
@@ -591,6 +616,7 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
     # file, pin files_expected to it after triage. Set only in the
     # implementation branch below; None means "no pin / unchanged flow".
     pinned_path: str | None = None
+    create_target_path: str | None = None
 
     try:
         if intent == REPORT_ONLY:
@@ -657,7 +683,9 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
             # clarification.
             if not get_indexed_paths_and_dirs(request.project_id).is_empty:
                 resolution = resolve_explicit_edit_target(
-                    request.project_id, request.feature_description
+                    request.project_id,
+                    request.feature_description,
+                    allow_create_target=True,
                 )
                 if resolution.outcome is EditTargetOutcome.NOT_FOUND:
                     logger.info(
@@ -697,6 +725,33 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
                         "run_id=%s | path=%s",
                         run_id,
                         pinned_path,
+                    )
+                if resolution.outcome is EditTargetOutcome.CREATE_TARGET:
+                    pinned_path = resolution.path
+                    create_target_path = resolution.path
+                    logger.info(
+                        "[GROUND-TARGET] Sanctioned create target; pinning "
+                        "files_expected and bypassing vague guard. "
+                        "run_id=%s | path=%s",
+                        run_id,
+                        create_target_path,
+                    )
+                unsupported_create_label = _unsupported_extensionless_create_target(
+                    request.feature_description
+                )
+                if (
+                    resolution.outcome is EditTargetOutcome.NO_TARGET
+                    and unsupported_create_label is not None
+                ):
+                    logger.info(
+                        "[GROUND-TARGET] Unsupported extensionless create "
+                        "target; clarifying. run_id=%s | label=%s",
+                        run_id,
+                        unsupported_create_label,
+                    )
+                    return _target_not_found_response(
+                        unsupported_create_label,
+                        True,
                     )
                 # NO_TARGET → fall through to the existing specificity guard.
 
@@ -760,13 +815,19 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
         # grounding so the pinned path still flows through the same guards.
         if pinned_path is not None:
             triage_result = _pin_single_chunk_files_expected(
-                triage_result, pinned_path
+                triage_result,
+                pinned_path,
+                create_target=create_target_path is not None,
             )
         # PR #9B: ground files_expected against the real repo index before the
         # risk scan and before persisting. Removes invented paths and hardens
         # affected chunks. Applies to both implementation and plan_only.
         triage_result = ground_triage_result_paths(
-            request.project_id, triage_result
+            request.project_id,
+            triage_result,
+            sanctioned_new_paths=(
+                {create_target_path} if create_target_path is not None else None
+            ),
         )
         triage_result = scan_triage_result(triage_result)
         if intent == PLAN_ONLY:

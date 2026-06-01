@@ -548,3 +548,28 @@ missing-target behavior by default. Unsupported create requests such as
 dependency/config/code files, extensionless files, vague "some file" requests,
 and missing parent directories remain deferred through the existing non-create
 outcomes.
+
+---
+
+## 16. #17G implemented (chunked safe-create wiring)
+
+`/runs/chunked` now opts into `CREATE_TARGET(path)` for implementation requests.
+A missing safe documentation/text target with explicit create intent proceeds
+through normal triage and chunk approval with `files_expected` pinned to the
+sanctioned path.
+
+Missing `README.md` plus explicit create intent now proceeds; missing README
+without explicit create still asks for clarification. Existing README targets
+continue to use the #17C grounded-edit path, and multiple README matches still
+ask which file to edit rather than creating another one.
+
+The route carries create intent by appending a deterministic create instruction
+to the pinned chunk description. Grounding allows only the resolver-sanctioned
+new path to survive before risk scanning; all other invented paths still flow
+through normal repo-aware grounding.
+
+Unsupported or forbidden create targets remain blocked or clarified, including
+`.env`, secrets, `.git/*`, dependency/config/code files, extensionless files,
+vague "some file" requests, and missing parent directories. There are still no
+schema, frontend, patch applier, scope guard, approval, git, memory, provider,
+fuzzy/entity alias, or automatic directory-creation changes.
