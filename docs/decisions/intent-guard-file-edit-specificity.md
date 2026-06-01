@@ -527,3 +527,24 @@ creation, project templates, file-browser UI, fuzzy/entity create, automatic
 parent-directory creation, or any bypass of `patch_applier`/`scope_guard`/
 approvals. No code; no runtime behavior or safety guard changes — only this
 document is edited.
+
+---
+
+## 15. #17F implemented (create-intent resolver helper)
+
+`backend/pipeline/file_alias_grounding.py` now has an opt-in helper-level
+`CREATE_TARGET(path)` outcome. It is produced only for a missing, single,
+explicitly requested, safe documentation/text target when create targets are
+enabled by the caller.
+
+Allowed create targets in this slice are root-level `.md` / `.txt` files and
+nested `.md` / `.txt` files whose parent directory is already present in the repo
+index. The `readme` alias may create the canonical `README.md` when no README is
+indexed. Existing files still return `GROUNDED`; multiple README matches still
+return `AMBIGUOUS`; forbidden targets still return `FORBIDDEN`.
+
+There is no `/runs/chunked` route wiring yet; existing callers keep the previous
+missing-target behavior by default. Unsupported create requests such as
+dependency/config/code files, extensionless files, vague "some file" requests,
+and missing parent directories remain deferred through the existing non-create
+outcomes.

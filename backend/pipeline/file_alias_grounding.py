@@ -49,12 +49,13 @@ Case-insensitive convenience is provided only through the alias branch
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from enum import Enum
 
 from backend.pipeline.plan_path_grounding import get_indexed_paths_and_dirs
 from backend.repo.repo_indexer import SUPPORTED_EXTENSIONS
-from backend.utils.path_safety import is_forbidden_path
+from backend.utils.path_safety import is_forbidden_path, is_forbidden_write_path
 
 
 class EditTargetOutcome(str, Enum):
@@ -65,6 +66,7 @@ class EditTargetOutcome(str, Enum):
     AMBIGUOUS = "ambiguous"
     NO_TARGET = "no_target"
     FORBIDDEN = "forbidden"
+    CREATE_TARGET = "create_target"
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,8 @@ class EditTargetResolution:
     - ``AMBIGUOUS`` -> ``alias`` is the referenced alias label; ``candidates``
                        holds the matching indexed paths (sorted).
     - ``FORBIDDEN`` -> ``alias`` is the referenced forbidden path/alias label.
+    - ``CREATE_TARGET`` -> ``path`` is a missing safe docs/text path that the
+                           user explicitly asked to create.
     - ``NO_TARGET`` -> no explicit path or known alias was referenced.
     """
 
@@ -107,6 +111,10 @@ class EditTargetResolution:
         return cls(outcome=EditTargetOutcome.FORBIDDEN, alias=alias)
 
     @classmethod
+    def create_target(cls, path: str) -> "EditTargetResolution":
+        return cls(outcome=EditTargetOutcome.CREATE_TARGET, path=path)
+
+    @classmethod
     def no_target(cls) -> "EditTargetResolution":
         return cls(outcome=EditTargetOutcome.NO_TARGET)
 
@@ -119,6 +127,11 @@ _SENSITIVE_BASENAMES = {".env", "secrets.json", "credentials.json"}
 # Known file extensions (with leading dot, lowercase) that mark a token as an
 # explicit file path. Reused from the indexer so the two stay in lockstep.
 _KNOWN_EXTENSIONS = set(SUPPORTED_EXTENSIONS)
+
+# First-slice create support is deliberately narrow: safe documentation/text
+# files only, and only when the user explicitly says to create the missing file.
+_CREATE_EXTENSIONS = {".md", ".txt"}
+_CREATE_WORD_RE = re.compile(r"\bcreate\b")
 
 # Punctuation stripped from the edges of a raw token before inspection. The
 # trailing "." is handled separately (repeated strip) so a sentence-final period
@@ -191,6 +204,32 @@ def _is_forbidden_target(norm_path: str) -> bool:
     return ".git" in [p for p in norm_path.split("/") if p]
 
 
+def _has_explicit_create_intent(feature_description: str) -> bool:
+    """Return True only for an explicit ``create`` directive."""
+    return bool(_CREATE_WORD_RE.search(_normalize_text(feature_description)))
+
+
+def _is_allowed_create_target(norm_path: str, indexed_dirs: set[str]) -> bool:
+    """First-slice create policy: safe missing .md/.txt with known parent."""
+    if _is_forbidden_target(norm_path):
+        return False
+    try:
+        if is_forbidden_write_path(norm_path):
+            return False
+    except Exception:
+        return False
+
+    ext = os.path.splitext(norm_path.lower())[1]
+    if ext not in _CREATE_EXTENSIONS:
+        return False
+
+    if "/" not in norm_path:
+        return True
+
+    parent = norm_path.rsplit("/", 1)[0]
+    return parent in indexed_dirs
+
+
 def _basename(path: str) -> str:
     parts = [p for p in path.split("/") if p]
     return parts[-1] if parts else path
@@ -252,7 +291,10 @@ def _normalize_text(value: str) -> str:
 
 
 def _resolve_explicit_path(
-    feature_description: str, indexed_paths: set[str]
+    feature_description: str,
+    indexed_paths: set[str],
+    indexed_dirs: set[str],
+    create_requested: bool,
 ) -> EditTargetResolution | None:
     """Resolve the first explicit-path token, or None if none is present."""
     for raw in (feature_description or "").split():
@@ -263,17 +305,27 @@ def _resolve_explicit_path(
             return EditTargetResolution.forbidden(norm)
         if norm in indexed_paths:
             return EditTargetResolution.grounded(norm)
+        if create_requested and _is_allowed_create_target(norm, indexed_dirs):
+            return EditTargetResolution.create_target(norm)
         return EditTargetResolution.not_found(norm)
     return None
 
 
 def _resolve_alias(
-    feature_description: str, indexed_paths: set[str]
+    feature_description: str,
+    indexed_paths: set[str],
+    indexed_dirs: set[str],
+    create_requested: bool,
 ) -> EditTargetResolution | None:
     """Resolve the first triggered literal-file alias, or None if none fires."""
     # Treat hyphens as spaces so "docker-compose" / "package-json" trigger the
-    # same aliases as the spaced forms.
-    text = " ".join(_normalize_text(feature_description).replace("-", " ").split())
+    # same aliases as the spaced forms. Strip punctuation around tokens so
+    # "README, create it if missing" still triggers the readme alias.
+    text = " ".join(
+        _strip_token(raw)
+        for raw in _normalize_text(feature_description).replace("-", " ").split()
+        if _strip_token(raw)
+    )
     words = set(text.split())
     for alias in _ALIASES:
         if not alias.trigger(words, text):
@@ -284,6 +336,12 @@ def _resolve_alias(
             and not _is_forbidden_target(path)
         )
         if not matches:
+            if (
+                create_requested
+                and alias.label == "readme"
+                and _is_allowed_create_target("README.md", indexed_dirs)
+            ):
+                return EditTargetResolution.create_target("README.md")
             return EditTargetResolution.not_found(alias.label)
         if len(matches) == 1:
             return EditTargetResolution.grounded(matches[0])
@@ -292,12 +350,19 @@ def _resolve_alias(
 
 
 def resolve_explicit_edit_target(
-    project_id: str, feature_description: str
+    project_id: str,
+    feature_description: str,
+    *,
+    allow_create_target: bool = False,
 ) -> EditTargetResolution:
     """
     Resolve the explicit edit target referenced by ``feature_description``
     against the project's repo index. Deterministic; no LLM, no fuzzy matching,
     no filesystem walk, no file creation.
+
+    ``CREATE_TARGET`` is opt-in until #17G wires create handling into
+    ``/runs/chunked``; existing callers keep the previous missing-target
+    behavior by default.
 
     Resolution order (first match wins):
       1. an explicit relative path token (exact, case-sensitive index match);
@@ -305,13 +370,28 @@ def resolve_explicit_edit_target(
          requirements / pyproject), matched by indexed basename;
       3. otherwise ``NO_TARGET``.
     """
-    indexed_paths = get_indexed_paths_and_dirs(project_id).paths
+    index = get_indexed_paths_and_dirs(project_id)
+    indexed_paths = index.paths
+    indexed_dirs = index.dirs
+    create_requested = (
+        allow_create_target and _has_explicit_create_intent(feature_description)
+    )
 
-    explicit = _resolve_explicit_path(feature_description, indexed_paths)
+    explicit = _resolve_explicit_path(
+        feature_description,
+        indexed_paths,
+        indexed_dirs,
+        create_requested,
+    )
     if explicit is not None:
         return explicit
 
-    alias = _resolve_alias(feature_description, indexed_paths)
+    alias = _resolve_alias(
+        feature_description,
+        indexed_paths,
+        indexed_dirs,
+        create_requested,
+    )
     if alias is not None:
         return alias
 
