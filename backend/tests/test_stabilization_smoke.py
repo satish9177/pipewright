@@ -464,7 +464,7 @@ def test_empty_coder_output_never_commits(monkeypatch, tmp_repo, tracked_runs):
 
     with pytest.raises(RuntimeError, match=chunked_orchestrator.NO_CHANGES_MESSAGE):
         chunked_orchestrator._commit_and_complete_chunk(
-            run_id, chunk, empty_coder(run_id), str(tmp_repo),
+            run_id, chunk, empty_coder(run_id), str(tmp_repo), project["id"],
         )
 
     with engine.connect() as conn:
