@@ -14,6 +14,7 @@ from sqlalchemy import text
 from backend.core.statuses import RunStatus
 from backend.db.database import engine, init_db
 from backend.git import gh_pr, local_git
+from backend.git.pr_preflight import ensure_remote_base_branch
 from backend.github.branch_safety import validate_base_branch
 from backend.llm.sanitize import sanitize_for_log
 from backend.pipeline.chunk_store import get_chunk_plan_status
@@ -400,6 +401,10 @@ def _push_and_create_pr_github_cli(
         # Resolve a missing base branch to the safe default and reject
         # forbidden base branches (main/master/develop) before anything else.
         base_branch = validate_base_branch(base_branch)
+        # #20B-2: the base branch must exist on the remote, or gh pr create would
+        # fail later with an opaque GraphQL error. Check before any push / PR and
+        # give a clear recovery message instead. Does not auto-push the base.
+        ensure_remote_base_branch(repo_path, base_branch, "origin")
         # Fail safely with a clear message if gh is unusable, before any push.
         gh_pr.ensure_gh_ready()
         _mark_pushing(run_id, branch_name)
@@ -449,6 +454,10 @@ def _push_and_create_pr_manual_token(
         # Resolve a missing base branch to the safe default and reject
         # forbidden base branches (main/master/develop) before any push or PR.
         base_branch = validate_base_branch(base_branch)
+        # #20B-2: the base branch must exist on the remote, or create_pull would
+        # fail later with an opaque GraphQL error. Check before any push / PR and
+        # give a clear recovery message instead. Does not auto-push the base.
+        ensure_remote_base_branch(repo_path, base_branch, "origin")
         _mark_pushing(run_id, branch_name)
         _verify_local_branch(repo_path, branch_name, owner, repo_name)
         _ensure_branch_has_commits_ahead(repo_path, branch_name, base_branch)
