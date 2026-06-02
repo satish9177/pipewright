@@ -13,7 +13,7 @@ from sqlalchemy import text
 
 from backend.db.database import engine
 from backend.main import app
-from backend.memory.bootstrap import list_suggestions
+from backend.memory.bootstrap import list_suggestions, reject_suggestion
 from backend.memory.memory_store import list_facts
 from backend.memory.run_outcome_suggestions import generate_run_memory_suggestions
 from backend.pipeline.patch_failures import (
@@ -185,6 +185,75 @@ def test_generation_is_idempotent(run_env):
     # No duplicate pending rows after the second pass.
     assert len({s["content"] for s in pending}) == len(pending)
     assert len(pending) == first.generated_count
+
+
+# B2. Rejected suggestions are not regenerated for the same run --------------
+
+def test_rejected_suggestion_is_not_regenerated_for_same_run(run_env):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_failure_summary(PatchFailureType.DIRTY_WORKTREE),
+        status="failed",
+    )
+
+    first = generate_run_memory_suggestions(run_id)
+    assert first.generated_count == 1
+    pending = list_suggestions(project_id, status="pending")
+    assert len(pending) == 1
+    suggestion_id = pending[0]["id"]
+
+    rejected = reject_suggestion(
+        project_id, suggestion_id, reason="Not a useful operational note."
+    )
+    assert rejected["status"] == "rejected"
+
+    # Re-generating for the same run must not recreate the rejected suggestion.
+    second = generate_run_memory_suggestions(run_id)
+    assert second.generated_count == 0
+    assert second.skipped_count >= 1
+
+    # No new pending duplicate exists for the same run.
+    assert list_suggestions(project_id, status="pending") == []
+    # The rejected suggestion stays rejected (one row, same id).
+    rejected_rows = list_suggestions(project_id, status="rejected")
+    assert len(rejected_rows) == 1
+    assert rejected_rows[0]["id"] == suggestion_id
+    # Generation never promotes anything to an active memory fact.
+    assert list_facts(project_id, status="active") == []
+
+
+def test_similar_candidate_from_different_run_still_generates(run_env):
+    project_id = run_env.create_project()
+    handoff = "Repo indexing uses project_id isolation everywhere."
+
+    run_one = run_env.create_run(project_id, status="complete")
+    run_env.add_chunk(
+        run_one, project_id, 1,
+        completion_summary=_success_summary([handoff]),
+    )
+    first = generate_run_memory_suggestions(run_one)
+    handoff_one = next(s for s in first.generated if s["content"] == handoff)
+
+    rejected = reject_suggestion(
+        project_id, handoff_one["id"], reason="Reject for the first run only."
+    )
+    assert rejected["status"] == "rejected"
+
+    # A *different* run proposing the same content is still allowed: run-scoped
+    # suppression keys on source_run_id, and no pending/active copy exists.
+    run_two = run_env.create_run(project_id, status="complete")
+    run_env.add_chunk(
+        run_two, project_id, 1,
+        completion_summary=_success_summary([handoff]),
+    )
+    second = generate_run_memory_suggestions(run_two)
+
+    regenerated = [s for s in second.generated if s["content"] == handoff]
+    assert len(regenerated) == 1
+    assert regenerated[0]["source_run_id"] == run_two
+    assert regenerated[0]["status"] == "pending"
 
 
 # C. Blocked unsafe generated content -----------------------------------------

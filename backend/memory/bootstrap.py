@@ -622,6 +622,36 @@ def _pending_suggestion_exists(project_id: str, content_hash: str) -> bool:
     return row is not None
 
 
+def _run_scoped_suggestion_exists(
+    project_id: str, content_hash: str, source_run_id: str
+) -> bool:
+    """
+    True if this run already produced a suggestion with the same content,
+    whether it is still pending, was approved, or was rejected.
+
+    This prevents a *rejected* run-outcome suggestion from being silently
+    recreated the next time the user clicks "generate" for the same run: the
+    pending-only dedupe (_pending_suggestion_exists) and the active-fact dedupe
+    (_active_memory_exists) both miss a rejected suggestion. The check is scoped
+    to source_run_id, so a similar suggestion from a *different* future run can
+    still be generated.
+    """
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT id FROM memory_suggestions
+            WHERE project_id = :project_id
+              AND content_hash = :content_hash
+              AND source_run_id = :source_run_id
+              AND status IN ('pending', 'approved', 'rejected')
+            LIMIT 1
+        """), {
+            "project_id": project_id,
+            "content_hash": content_hash,
+            "source_run_id": source_run_id,
+        }).fetchone()
+    return row is not None
+
+
 _SUGGESTION_COLUMNS = """
     id, project_id, content, category, scope, priority, source,
     evidence_path, evidence_excerpt, status, created_at,
@@ -717,6 +747,12 @@ def insert_pending_suggestion(
     if _active_memory_exists(project_id, content_hash):
         return None
     if _pending_suggestion_exists(project_id, content_hash):
+        return None
+    # Run-scoped suppression: once this run produced this suggestion, do not
+    # recreate it for the same run even if it was rejected (or already approved).
+    if source_run_id and _run_scoped_suggestion_exists(
+        project_id, content_hash, source_run_id
+    ):
         return None
 
     suggestion_id = str(uuid.uuid4())
