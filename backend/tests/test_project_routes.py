@@ -49,6 +49,53 @@ def test_create_project_route(tmp_repo):
     assert data["has_github_token"] is False
 
 
+def test_create_project_exposes_weak_test_command_quality(tmp_repo):
+    # #23A: the configured test command is classified (computed-on-read).
+    client = TestClient(app)
+
+    response = client.post("/projects", json={
+        "name": "Weak Command Project",
+        "repo_path": str(tmp_repo),
+        "test_command": "python --version",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["test_command_quality"] == "weak"
+    assert data["test_command_quality_reason"]
+
+
+def test_create_project_exposes_likely_test_command_quality(tmp_repo):
+    client = TestClient(app)
+
+    response = client.post("/projects", json={
+        "name": "Real Tests Project",
+        "repo_path": str(tmp_repo),
+        "test_command": "python -m pytest",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["test_command_quality"] == "likely_test"
+
+
+def test_get_project_exposes_test_command_quality(tmp_repo):
+    client = TestClient(app)
+    created = client.post("/projects", json={
+        "name": "Custom Script Project",
+        "repo_path": str(tmp_repo),
+        "test_command": "bash run_tests.sh",
+    }).json()
+
+    response = client.get(f"/projects/{created['id']}")
+
+    assert response.status_code == 200
+    data = response.json()
+    # Custom scripts are unknown, never falsely flagged weak.
+    assert data["test_command_quality"] == "unknown"
+    assert data["test_command_quality_reason"]
+
+
 def test_create_project_with_github_token_sanitizes_response(tmp_repo, monkeypatch):
     monkeypatch.setenv("PIPEWRIGHT_ENCRYPTION_KEY", Fernet.generate_key().decode())
     client = TestClient(app)
