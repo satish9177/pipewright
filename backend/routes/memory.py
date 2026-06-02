@@ -28,6 +28,7 @@ from backend.memory.memory_store import (
 )
 from backend.memory.prompt_builder import ROLE_CATEGORIES, build_project_memory_block
 from backend.memory.repo_reality import verify_project_db_memory_against_repo
+from backend.memory.run_outcome_suggestions import generate_run_memory_suggestions
 from backend.projects.project_store import get_project
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/memory")
@@ -169,6 +170,13 @@ class MemorySuggestionResponse(BaseModel):
     rejection_reason: str | None = None
     edited_content: str | None = None
     approved_fact_id: str | None = None
+    source_run_id: str | None = None
+    source_chunk_number: int | None = None
+    source_type: str | None = None
+    source_ref: str | None = None
+    rationale: str | None = None
+    suggested_by: str | None = None
+    risk_level: str | None = None
 
 
 class MemorySuggestionListResponse(BaseModel):
@@ -235,6 +243,8 @@ def _map_memory_error(error: ValueError) -> HTTPException:
         )
     if "memory fact not found" in message:
         return HTTPException(status_code=404, detail="Memory fact not found")
+    if "run not found" in message:
+        return HTTPException(status_code=404, detail="Run not found")
     if "suggestion not found" in message:
         return HTTPException(status_code=404, detail="Memory suggestion not found")
     if "suggestion is not pending" in message:
@@ -475,3 +485,46 @@ def verify_memory_fact(project_id: str, memory_id: str):
         raise _map_memory_error(error)
     except RuntimeError as error:
         raise HTTPException(status_code=500, detail=str(error))
+
+
+# Run-scoped suggestion generation (#21D). Separate router because the path is
+# keyed by run_id, not project_id. Generation only ever produces pending
+# suggestions — it never approves, never creates an active fact, and never
+# touches run status.
+run_memory_router = APIRouter(prefix="/api/v1/runs/{run_id}/memory-suggestions")
+
+
+class RunMemorySuggestionGenerateRequest(BaseModel):
+    requested_by: str | None = None
+
+
+class RunMemorySuggestionGenerateResponse(BaseModel):
+    run_id: str
+    project_id: str
+    generated_count: int
+    skipped_count: int
+    blocked_count: int
+    suggestions: list[MemorySuggestionResponse]
+
+
+@run_memory_router.post("/generate", response_model=RunMemorySuggestionGenerateResponse)
+def generate_run_suggestions(
+    run_id: str,
+    request: RunMemorySuggestionGenerateRequest | None = Body(default=None),
+):
+    requested_by = request.requested_by if request and request.requested_by else "api"
+    try:
+        result = generate_run_memory_suggestions(run_id, requested_by=requested_by)
+    except ValueError as error:
+        raise _map_memory_error(error)
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+    return {
+        "run_id": result.run_id,
+        "project_id": result.project_id,
+        "generated_count": result.generated_count,
+        "skipped_count": result.skipped_count,
+        "blocked_count": result.blocked_count,
+        "suggestions": result.generated,
+    }

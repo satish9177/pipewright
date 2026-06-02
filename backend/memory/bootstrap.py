@@ -627,7 +627,9 @@ _SUGGESTION_COLUMNS = """
     evidence_path, evidence_excerpt, status, created_at,
     updated_at, approved_by, approved_at, rejected_by,
     rejected_at, rejection_reason, content_hash,
-    edited_content, approved_fact_id
+    edited_content, approved_fact_id,
+    source_run_id, source_chunk_number, source_type, source_ref,
+    rationale, suggested_by, risk_level
 """
 
 
@@ -678,6 +680,84 @@ def _insert_suggestion(project_id: str, candidate: CandidateSuggestion) -> dict:
             "content_hash": content_hash,
         })
         conn.commit()
+    return _sanitize_suggestion(_get_suggestion(project_id, suggestion_id) or {})
+
+
+def insert_pending_suggestion(
+    project_id: str,
+    content: str,
+    *,
+    category: str = "other",
+    scope: str = "global",
+    priority: int = DEFAULT_PRIORITY,
+    source: str = "run_outcome",
+    source_type: str | None = None,
+    source_run_id: str | None = None,
+    source_chunk_number: int | None = None,
+    source_ref: str | None = None,
+    rationale: str | None = None,
+    suggested_by: str | None = None,
+    risk_level: str | None = None,
+    evidence_path: str | None = None,
+    evidence_excerpt: str | None = None,
+) -> dict | None:
+    """
+    Validate and insert a single pending suggestion with provenance fields.
+
+    Reuses the same content gate as manual memory creation
+    (validate_memory_content, which raises ValueError on blocked content) and
+    the same per-project dedupe (active fact + pending suggestion content hash).
+
+    Returns the sanitized suggestion dict, or None when an active fact or a
+    pending suggestion with the same content hash already exists. Suggestions
+    are always inserted as pending — this never creates an active memory fact.
+    """
+    content = validate_memory_content(content)
+    content_hash = compute_content_hash(content)
+    if _active_memory_exists(project_id, content_hash):
+        return None
+    if _pending_suggestion_exists(project_id, content_hash):
+        return None
+
+    suggestion_id = str(uuid.uuid4())
+    now = _utc_now()
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO memory_suggestions
+                (id, project_id, content, category, scope, priority, source,
+                 evidence_path, evidence_excerpt, status, created_at, updated_at,
+                 content_hash, source_type, source_run_id, source_chunk_number,
+                 source_ref, rationale, suggested_by, risk_level)
+                VALUES
+                (:id, :project_id, :content, :category, :scope, :priority,
+                 :source, :evidence_path, :evidence_excerpt, 'pending', :now,
+                 :now, :content_hash, :source_type, :source_run_id,
+                 :source_chunk_number, :source_ref, :rationale, :suggested_by,
+                 :risk_level)
+            """), {
+                "id": suggestion_id,
+                "project_id": project_id,
+                "content": content,
+                "category": category,
+                "scope": scope,
+                "priority": priority,
+                "source": source,
+                "evidence_path": evidence_path,
+                "evidence_excerpt": evidence_excerpt,
+                "now": now,
+                "content_hash": content_hash,
+                "source_type": source_type,
+                "source_run_id": source_run_id,
+                "source_chunk_number": source_chunk_number,
+                "source_ref": source_ref,
+                "rationale": rationale,
+                "suggested_by": suggested_by,
+                "risk_level": risk_level,
+            })
+    except IntegrityError:
+        # Lost a race against the partial pending-dedupe unique index.
+        return None
     return _sanitize_suggestion(_get_suggestion(project_id, suggestion_id) or {})
 
 

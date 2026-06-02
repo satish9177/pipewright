@@ -24,6 +24,7 @@ from backend.pipeline.approval_gate import (
 )
 from backend.routes.chunks import router as chunks_router
 from backend.routes.memory import router as memory_router
+from backend.routes.memory import run_memory_router
 from backend.routes.projects import router as projects_router
 from backend.routes.ws_events import router as ws_events_router
 
@@ -59,6 +60,7 @@ app.add_middleware(
 
 app.include_router(chunks_router)
 app.include_router(memory_router)
+app.include_router(run_memory_router)
 app.include_router(projects_router)
 app.include_router(ws_events_router)
 
