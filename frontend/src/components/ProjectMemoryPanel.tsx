@@ -223,6 +223,8 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
   const [editForm, setEditForm] = useState<MemoryFormState>(emptyForm)
   const [archiveReasons, setArchiveReasons] = useState<Record<string, string>>({})
   const [rejectionReasons, setRejectionReasons] = useState<Record<string, string>>({})
+  const [editingSuggestionId, setEditingSuggestionId] = useState<string | null>(null)
+  const [editedContents, setEditedContents] = useState<Record<string, string>>({})
   const [role, setRole] = useState<MemoryPreviewRole>('coder')
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -376,11 +378,22 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
   })
 
   const approveSuggestionMutation = useMutation({
-    mutationFn: (suggestionId: string) =>
-      memoryApi.approveMemorySuggestion(projectId, suggestionId),
-    onSuccess: () => {
-      setSuggestionMessage('Suggestion approved and added to active memory.')
+    mutationFn: ({
+      suggestionId,
+      editedContent,
+    }: {
+      suggestionId: string
+      editedContent?: string
+    }) =>
+      memoryApi.approveMemorySuggestion(projectId, suggestionId, editedContent),
+    onSuccess: (_data, variables) => {
+      setSuggestionMessage(
+        variables.editedContent
+          ? 'Suggestion edited and approved into active memory.'
+          : 'Suggestion approved and added to active memory.',
+      )
       setSuggestionError(null)
+      setEditingSuggestionId(null)
       refreshSuggestions()
       refreshMemory()
     },
@@ -475,6 +488,29 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
       return
     }
     rejectSuggestionMutation.mutate({ suggestionId: suggestion.id, reason })
+  }
+
+  function startEditingSuggestion(suggestion: MemorySuggestion) {
+    setEditingSuggestionId(suggestion.id)
+    setEditedContents(previous => ({
+      ...previous,
+      [suggestion.id]: previous[suggestion.id] ?? suggestion.content,
+    }))
+    setSuggestionMessage(null)
+    setSuggestionError(null)
+  }
+
+  function approveEditedSuggestion(suggestion: MemorySuggestion) {
+    const editedContent = (editedContents[suggestion.id] ?? '').trim()
+    if (editedContent.length < 4 || editedContent.length > 400) {
+      setSuggestionMessage(null)
+      setSuggestionError('Edited memory content must be 4 to 400 characters.')
+      return
+    }
+    approveSuggestionMutation.mutate({
+      suggestionId: suggestion.id,
+      editedContent,
+    })
   }
 
   return (
@@ -845,6 +881,11 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                     </Badge>
                     <Badge variant="outline">{suggestion.category}</Badge>
                     <Badge variant="outline">{suggestion.scope}</Badge>
+                    {suggestion.risk_level && (
+                      <Badge variant="outline">
+                        risk {suggestion.risk_level}
+                      </Badge>
+                    )}
                     <span className="text-xs text-muted-foreground">
                       priority {suggestion.priority}
                     </span>
@@ -855,19 +896,93 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                     )}
                   </div>
                   {isPending && (
-                    <Button
-                      size="sm"
-                      onClick={() =>
-                        approveSuggestionMutation.mutate(suggestion.id)
-                      }
-                      disabled={approveSuggestionMutation.isPending}
-                    >
-                      Approve
-                    </Button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() =>
+                          approveSuggestionMutation.mutate({
+                            suggestionId: suggestion.id,
+                          })
+                        }
+                        disabled={approveSuggestionMutation.isPending}
+                      >
+                        Approve
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          editingSuggestionId === suggestion.id
+                            ? setEditingSuggestionId(null)
+                            : startEditingSuggestion(suggestion)
+                        }
+                      >
+                        {editingSuggestionId === suggestion.id
+                          ? 'Cancel edit'
+                          : 'Edit & approve'}
+                      </Button>
+                    </div>
                   )}
                 </div>
 
                 <p className="mt-3 text-sm leading-6">{suggestion.content}</p>
+
+                {(suggestion.source_type ||
+                  suggestion.source_run_id ||
+                  suggestion.rationale) && (
+                  <div className="mt-3 rounded-lg bg-muted/30 p-3 text-xs text-muted-foreground">
+                    {(suggestion.source_type || suggestion.source_run_id) && (
+                      <p>
+                        {suggestion.source_type && (
+                          <span>from {suggestion.source_type}</span>
+                        )}
+                        {suggestion.source_chunk_number != null && (
+                          <span> · chunk {suggestion.source_chunk_number}</span>
+                        )}
+                        {suggestion.source_run_id && (
+                          <span>
+                            {' · run '}
+                            <span className="font-mono">
+                              {suggestion.source_run_id.slice(0, 8)}
+                            </span>
+                          </span>
+                        )}
+                      </p>
+                    )}
+                    {suggestion.rationale && (
+                      <p className="mt-1">{suggestion.rationale}</p>
+                    )}
+                  </div>
+                )}
+
+                {isPending && editingSuggestionId === suggestion.id && (
+                  <div className="mt-3 grid gap-2 rounded-lg bg-muted/30 p-3">
+                    <Label htmlFor={`edit-suggestion-${suggestion.id}`}>
+                      Edited Memory Content
+                    </Label>
+                    <Textarea
+                      id={`edit-suggestion-${suggestion.id}`}
+                      value={editedContents[suggestion.id] ?? ''}
+                      maxLength={400}
+                      rows={3}
+                      onChange={event =>
+                        setEditedContents(previous => ({
+                          ...previous,
+                          [suggestion.id]: event.target.value,
+                        }))
+                      }
+                    />
+                    <div className="flex justify-end">
+                      <Button
+                        size="sm"
+                        onClick={() => approveEditedSuggestion(suggestion)}
+                        disabled={approveSuggestionMutation.isPending}
+                      >
+                        Approve edited
+                      </Button>
+                    </div>
+                  </div>
+                )}
 
                 {(suggestion.evidence_path || suggestion.evidence_excerpt) && (
                   <div className="mt-3 rounded-lg bg-muted/30 p-3 text-xs text-muted-foreground">
