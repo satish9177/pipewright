@@ -390,6 +390,20 @@ def _safe_repo_relative_path(token: str | None) -> str | None:
     return "/".join(parts)
 
 
+def _is_forbidden_repo_path(path: str) -> bool:
+    """
+    True when a repo-relative path is a protected target: a read-level
+    secret/.env match OR any ``.git`` path component. Fails safe (treats an
+    unexpected error as forbidden).
+    """
+    try:
+        if is_forbidden_path(path):
+            return True
+    except Exception:
+        return True
+    return ".git" in [part for part in path.split("/") if part]
+
+
 def _attempt_stale_explicit_target_reindex(
     project_id: str,
     target_repo_path: str | None,
@@ -892,7 +906,12 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
     )
 
 
-async def _create_chunked_run_core(project_id: str, feature_description: str):
+async def _create_chunked_run_core(
+    project_id: str,
+    feature_description: str,
+    *,
+    selected_path: str | None = None,
+):
     """
     Shared chunked-run creation core (PR #17M refactor).
 
@@ -902,6 +921,13 @@ async def _create_chunked_run_core(project_id: str, feature_description: str):
     scan, scope pinning, and read-only report/plan handling. No guard is skipped:
     a rebuilt selection request is re-resolved against the live index here, so the
     selected path is never trusted as edit authority.
+
+    ``selected_path`` (#20B-1) is set ONLY by the clarification-selection
+    endpoint, never by the public ``/runs/chunked`` route. It carries the exact
+    path the user picked from a previously-shown, signed candidate set. When
+    present it is authoritative over any (possibly wrong-case) alias still in the
+    rebuilt request text — but it is still re-validated against the live index
+    here, so it is never trusted as edit authority.
     """
     project = get_project(project_id)
     if project is None:
@@ -991,6 +1017,50 @@ async def _create_chunked_run_core(project_id: str, feature_description: str):
             )
 
         if intent == IMPLEMENTATION:
+            # #20B-1: clarification-selection handoff. When the user picked an
+            # exact path from a previously-shown, signed candidate set, that
+            # selected path is AUTHORITATIVE over any (possibly wrong-case) alias
+            # still present in the rebuilt request text. Without this, the alias
+            # resolver below would re-derive the original lowercase token first
+            # (e.g. "manual.md" before "MANUAL.md") and loop the same
+            # clarification. We still (1) re-validate the path against the LIVE
+            # index and (2) never relax forbidden paths, so the selection is
+            # never trusted as edit authority. The selection endpoint has already
+            # proven the path is one of the signed candidates and that "1"/index
+            # forms only resolve within that set (no global numeric selection).
+            if selected_path is not None:
+                safe_selected = _safe_repo_relative_path(selected_path)
+                if safe_selected is not None and _is_forbidden_repo_path(
+                    safe_selected
+                ):
+                    logger.info(
+                        "[CLARIFY-SELECT] Selected path is protected; refusing. "
+                        "run_id=%s | path=%s",
+                        run_id,
+                        selected_path,
+                    )
+                    return _target_forbidden_response(selected_path)
+                if (
+                    safe_selected is None
+                    or safe_selected
+                    not in get_indexed_paths_and_dirs(project_id).paths
+                ):
+                    logger.info(
+                        "[CLARIFY-SELECT] Selected path no longer in the live "
+                        "index; safe clarification, no run. run_id=%s | path=%s",
+                        run_id,
+                        selected_path,
+                    )
+                    return _target_not_found_response(selected_path, False)
+                pinned_path = safe_selected
+                logger.info(
+                    "[CLARIFY-SELECT] Pinned user-selected path; bypassing alias "
+                    "resolver to avoid the case-mismatch loop. run_id=%s | "
+                    "path=%s",
+                    run_id,
+                    pinned_path,
+                )
+
             # PR #17C: explicit-edit-target grounding runs FIRST. When the user
             # named a literal file / explicit path that resolves against the repo
             # index, that grounded path is a concrete anchor — the request is
@@ -1005,8 +1075,11 @@ async def _create_chunked_run_core(project_id: str, feature_description: str):
             # empty index here means the project simply has not been indexed yet
             # (not that the target is missing); in that case we skip the resolver
             # and fall through to the existing guard rather than emit a false
-            # clarification.
-            if not get_indexed_paths_and_dirs(project_id).is_empty:
+            # clarification. Skipped entirely when a clarification selection has
+            # already pinned the target above.
+            if selected_path is None and not get_indexed_paths_and_dirs(
+                project_id
+            ).is_empty:
                 resolution = resolve_explicit_edit_target(
                     project_id,
                     feature_description,
@@ -1307,9 +1380,15 @@ async def select_chunked_run_clarification(
         "selected_path=%s",
         selected_path,
     )
+    # Pass the selected path as the authoritative target (#20B-1). The rebuilt
+    # description still carries the user's intent for triage/coder context, but
+    # path resolution no longer re-derives the original (possibly wrong-case)
+    # alias and loops the clarification. The core re-validates the selected path
+    # against the live index before pinning it.
     return await _create_chunked_run_core(
         context.project_id,
         rebuilt_feature_description,
+        selected_path=selected_path,
     )
 
 
