@@ -12,6 +12,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from backend.db.database import engine
+from backend.git import pr_preflight
+from backend.git.pr_preflight import PrPreflightError, ensure_remote_base_branch
 from backend.main import app
 from backend.models.chunk import ChunkDefinition, TriageResult
 from backend.pipeline import pr_orchestrator
@@ -162,7 +164,14 @@ def create_final_approved_run(
     return run_id, project
 
 
-def patch_git(monkeypatch, calls, remote_exists=False, current_branch=None, dirty=False):
+def patch_git(
+    monkeypatch,
+    calls,
+    remote_exists=False,
+    current_branch=None,
+    dirty=False,
+    base_remote_exists=True,
+):
     monkeypatch.setattr(pr_orchestrator.local_git, "ensure_git_repo", lambda repo: calls.append(("ensure", repo)))
     monkeypatch.setattr(pr_orchestrator.local_git, "branch_exists", lambda branch, repo: True)
     monkeypatch.setattr(
@@ -180,10 +189,19 @@ def patch_git(monkeypatch, calls, remote_exists=False, current_branch=None, dirt
         "get_remote_url",
         lambda repo: "https://github.com/acme/demo.git",
     )
+    # The head branch (pipewright/<id>) drives the push decision via
+    # remote_exists; the base branch (pipewright-staging) is checked by the
+    # #20B-2 remote-base preflight and is present unless a test says otherwise.
+    def fake_branch_exists_remote(repo, branch, remote="origin"):
+        calls.append(("remote_exists", branch, remote))
+        if branch.startswith("pipewright/"):
+            return remote_exists
+        return base_remote_exists
+
     monkeypatch.setattr(
         pr_orchestrator.local_git,
         "branch_exists_remote",
-        lambda repo, branch: calls.append(("remote_exists", branch)) or remote_exists,
+        fake_branch_exists_remote,
     )
     monkeypatch.setattr(
         pr_orchestrator.local_git,
@@ -207,13 +225,21 @@ def patch_git(monkeypatch, calls, remote_exists=False, current_branch=None, dirt
     )
 
 
-def patch_git_for_branch(monkeypatch, calls, branch_name, remote_exists=False, dirty=False):
+def patch_git_for_branch(
+    monkeypatch,
+    calls,
+    branch_name,
+    remote_exists=False,
+    dirty=False,
+    base_remote_exists=True,
+):
     patch_git(
         monkeypatch,
         calls,
         remote_exists=remote_exists,
         current_branch=branch_name,
         dirty=dirty,
+        base_remote_exists=base_remote_exists,
     )
 
 
@@ -403,10 +429,17 @@ def test_push_succeeds_pr_create_fails_then_retry_skips_push_and_creates(
     calls = []
     remote_state = {"exists": False}
     patch_git_for_branch(monkeypatch, calls, branch_name)
+
+    # Base is present on the remote; the head's remote state flips after push.
+    def remote_lookup(repo, branch, remote="origin"):
+        if branch.startswith("pipewright/"):
+            return remote_state["exists"]
+        return True
+
     monkeypatch.setattr(
         pr_orchestrator.local_git,
         "branch_exists_remote",
-        lambda repo, branch: remote_state["exists"],
+        remote_lookup,
     )
 
     def fake_push(branch, repo):
@@ -978,3 +1011,173 @@ def test_github_cli_rejects_forbidden_base_branch(monkeypatch, tmp_repo, tracked
     row = _read_run_row(run_id)
     assert row[0] == "push_failed"
     assert row[1] is None
+
+
+# ---------------------------------------------------------------------------
+# #20B-2: remote base branch preflight
+# ---------------------------------------------------------------------------
+
+def test_github_cli_remote_base_missing_fails_before_pr(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, pr_mode="github_cli"
+    )
+    branch_name = f"pipewright/{run_id[:8]}"
+    calls = []
+    # Base is NOT on origin; head would be (irrelevant — we fail before push).
+    patch_git_for_branch(
+        monkeypatch, calls, branch_name, remote_exists=True, base_remote_exists=False
+    )
+    _patch_gh_ready(monkeypatch)
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr,
+        "find_open_pr",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("find_open_pr must not be reached for a missing base")
+        ),
+    )
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr,
+        "create_pr",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("create_pr must not be reached for a missing base")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="is not on 'origin'"):
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    assert not any(call[0] == "push" for call in calls)
+    row = _read_run_row(run_id)
+    assert row[0] == "push_failed"
+    push_error = row[3]
+    assert "Base branch 'pipewright-staging' is not on 'origin'" in push_error
+    assert "git push -u origin pipewright-staging" in push_error
+    # The opaque GitHub error must never be reached.
+    assert "Base sha can't be blank" not in push_error
+    assert "GraphQL" not in push_error
+    assert row[1] is None  # no PR url
+
+
+def test_manual_token_remote_base_missing_fails_before_pr(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_final_approved_run(tmp_repo, tracked_runs)
+    branch_name = f"pipewright/{run_id[:8]}"
+    calls = []
+    patch_git_for_branch(
+        monkeypatch, calls, branch_name, remote_exists=True, base_remote_exists=False
+    )
+    monkeypatch.setattr(
+        pr_orchestrator,
+        "_get_github_repo",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("PyGithub create_pull must not be reached")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="is not on 'origin'"):
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    assert not any(call[0] == "push" for call in calls)
+    row = _read_run_row(run_id)
+    assert row[0] == "push_failed"
+    push_error = row[3]
+    assert "Base branch 'pipewright-staging' is not on 'origin'" in push_error
+    assert "git push -u origin pipewright-staging" in push_error
+    assert "Base sha can't be blank" not in push_error
+    assert row[1] is None  # no PR url
+
+
+def test_local_only_does_not_run_remote_base_preflight(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, pr_mode="local_only"
+    )
+    branch_name = f"pipewright/{run_id[:8]}"
+    monkeypatch.setattr(pr_orchestrator.local_git, "ensure_git_repo", lambda repo: None)
+    monkeypatch.setattr(
+        pr_orchestrator.local_git, "branch_exists", lambda branch, repo: True
+    )
+    # The remote-base preflight must never run in local_only mode.
+    monkeypatch.setattr(
+        pr_orchestrator.local_git,
+        "branch_exists_remote",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("remote-base preflight must not run in local_only")
+        ),
+    )
+    _forbid_all_remote_action(monkeypatch)
+
+    result = pr_orchestrator.push_and_create_pr(run_id)
+
+    assert result["status"] == "complete"
+    assert result["pr_mode"] == "local_only"
+    assert any(
+        f"git push origin {branch_name}" in line
+        for line in result["manual_instructions"]
+    )
+
+
+def test_forbidden_base_skips_remote_base_preflight(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, github_base_branch="main"
+    )
+    # Remote-base preflight must not even be consulted for a forbidden base.
+    monkeypatch.setattr(
+        pr_orchestrator.local_git,
+        "branch_exists_remote",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("must not check remote base for a forbidden base branch")
+        ),
+    )
+    _forbid_push_and_github(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="forbidden base branch"):
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    assert _read_run_row(run_id)[0] == "push_failed"
+
+
+def test_ensure_remote_base_branch_passes_when_present(monkeypatch):
+    monkeypatch.setattr(
+        pr_preflight.local_git,
+        "branch_exists_remote",
+        lambda repo, branch, remote="origin": True,
+    )
+    # Must not raise.
+    ensure_remote_base_branch("/repo", "pipewright-staging", "origin")
+
+
+def test_ensure_remote_base_branch_raises_when_missing(monkeypatch):
+    monkeypatch.setattr(
+        pr_preflight.local_git,
+        "branch_exists_remote",
+        lambda repo, branch, remote="origin": False,
+    )
+
+    with pytest.raises(PrPreflightError) as exc_info:
+        ensure_remote_base_branch("/repo", "pipewright-staging", "origin")
+
+    error = exc_info.value
+    assert error.failure_type == "REMOTE_BASE_MISSING"
+    assert error.recovery_hint == "Push it with: git push -u origin pipewright-staging"
+    assert "Base branch 'pipewright-staging' is not on 'origin'" in str(error)
+    assert "git push -u origin pipewright-staging" in str(error)
+
+
+def test_ensure_remote_base_branch_wraps_git_failure(monkeypatch):
+    monkeypatch.setattr(
+        pr_preflight.local_git,
+        "branch_exists_remote",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("[GIT] ls-remote failed")),
+    )
+
+    with pytest.raises(PrPreflightError) as exc_info:
+        ensure_remote_base_branch("/repo", "pipewright-staging")
+
+    assert exc_info.value.failure_type == "GIT_COMMAND_FAILED"
