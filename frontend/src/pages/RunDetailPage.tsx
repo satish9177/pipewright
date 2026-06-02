@@ -1,9 +1,15 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { runsApi, gatesApi, projectsApi, ApprovalGate } from '@/api/client'
-import type { ChunkPlanResponse, RunStatus } from '@/api/client'
+import { runsApi, gatesApi, projectsApi, memoryApi, ApprovalGate } from '@/api/client'
+import type {
+  ChunkPlanResponse,
+  Run,
+  RunStatus,
+  RunMemorySuggestionGenerateResponse,
+} from '@/api/client'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import {
   Card,
   CardContent,
@@ -80,6 +86,129 @@ function getErrorMessage(error: unknown, fallback: string) {
   }
 
   return fallback
+}
+
+const TERMINAL_RUN_STATUSES: RunStatus[] = ['complete', 'failed', 'rejected']
+
+function RunMemorySuggestions({ run }: { run: Run }) {
+  const navigate = useNavigate()
+  const [result, setResult] =
+    useState<RunMemorySuggestionGenerateResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const generateMutation = useMutation({
+    mutationFn: () => memoryApi.generateRunMemorySuggestions(run.id),
+    onSuccess: (data) => {
+      setResult(data)
+      setError(null)
+    },
+    onError: (mutationError: unknown) => {
+      setResult(null)
+      setError(
+        getErrorMessage(mutationError, 'Failed to generate memory suggestions.'),
+      )
+    },
+  })
+
+  const hasProject = Boolean(run.project_id)
+  const preview = result?.suggestions.slice(0, 5) ?? []
+  const extraCount = result ? result.suggestions.length - preview.length : 0
+
+  return (
+    <Card className="mb-6">
+      <CardHeader>
+        <CardTitle className="text-base">Memory Suggestions</CardTitle>
+        <CardDescription>
+          Generate project memory suggestions from this run's outcome. Suggestions
+          stay pending until you review them in Project Memory.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        <div>
+          <Button
+            size="sm"
+            onClick={() => generateMutation.mutate()}
+            disabled={generateMutation.isPending || !hasProject}
+          >
+            {generateMutation.isPending
+              ? 'Generating…'
+              : 'Generate memory suggestions from this run'}
+          </Button>
+          {!hasProject && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              This run has no project, so no project-scoped memory can be generated.
+            </p>
+          )}
+        </div>
+
+        {error && (
+          <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+            {error}
+          </div>
+        )}
+
+        {result && (
+          <div className="grid gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline">Generated {result.generated_count}</Badge>
+              <Badge variant="outline">Skipped {result.skipped_count}</Badge>
+              <Badge variant="outline">Blocked {result.blocked_count}</Badge>
+            </div>
+
+            {result.generated_count === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No new suggestions (already generated or nothing to suggest).
+              </p>
+            ) : (
+              <ul className="grid gap-2">
+                {preview.map(suggestion => (
+                  <li
+                    key={suggestion.id}
+                    className="rounded-lg border p-3 text-sm"
+                  >
+                    <p className="leading-6">{suggestion.content}</p>
+                    {(suggestion.source_type || suggestion.risk_level) && (
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        {suggestion.source_type && (
+                          <Badge variant="outline">
+                            {suggestion.source_type}
+                          </Badge>
+                        )}
+                        {suggestion.risk_level && (
+                          <Badge variant="outline">
+                            risk {suggestion.risk_level}
+                          </Badge>
+                        )}
+                      </div>
+                    )}
+                  </li>
+                ))}
+                {extraCount > 0 && (
+                  <li className="text-xs text-muted-foreground">
+                    +{extraCount} more
+                  </li>
+                )}
+              </ul>
+            )}
+
+            {hasProject && (
+              <div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    navigate(`/memory?projectId=${run.project_id}`)
+                  }
+                >
+                  Review in Project Memory →
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
 }
 
 function shouldPollRunStatus(status: RunStatus) {
@@ -610,6 +739,10 @@ export default function RunDetailPage() {
           />
         </CardContent>
       </Card>
+
+      {TERMINAL_RUN_STATUSES.includes(run.status) && (
+        <RunMemorySuggestions run={run} />
+      )}
 
       <section className="mb-6">
         <div className="mb-3">

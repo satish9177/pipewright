@@ -442,10 +442,28 @@ export interface MemorySuggestion extends ExtraFields {
   rejected_by?: string | null
   rejected_at?: string | null
   rejection_reason?: string | null
+  edited_content?: string | null
+  approved_fact_id?: string | null
+  source_run_id?: string | null
+  source_chunk_number?: number | null
+  source_type?: string | null
+  source_ref?: string | null
+  rationale?: string | null
+  suggested_by?: string | null
+  risk_level?: string | null
 }
 
 export interface MemorySuggestionListResponse {
   project_id: string
+  suggestions: MemorySuggestion[]
+}
+
+export interface RunMemorySuggestionGenerateResponse extends ExtraFields {
+  run_id: string
+  project_id: string
+  generated_count: number
+  skipped_count: number
+  blocked_count: number
   suggestions: MemorySuggestion[]
 }
 
@@ -623,9 +641,14 @@ export const memoryApi = {
           : undefined,
       },
     ).then(r => r.data),
-  approveMemorySuggestion: (projectId: string, suggestionId: string) =>
+  approveMemorySuggestion: (
+    projectId: string,
+    suggestionId: string,
+    editedContent?: string,
+  ) =>
     api.post<MemorySuggestionApprovalResponse>(
       `/api/v1/projects/${projectId}/memory/suggestions/${suggestionId}/approve`,
+      editedContent ? { edited_content: editedContent } : undefined,
     ).then(r => r.data),
   rejectMemorySuggestion: (
     projectId: string,
@@ -635,5 +658,10 @@ export const memoryApi = {
     api.post<MemorySuggestion>(
       `/api/v1/projects/${projectId}/memory/suggestions/${suggestionId}/reject`,
       { reason },
+    ).then(r => r.data),
+  generateRunMemorySuggestions: (runId: string, requestedBy?: string) =>
+    api.post<RunMemorySuggestionGenerateResponse>(
+      `/api/v1/runs/${runId}/memory-suggestions/generate`,
+      requestedBy ? { requested_by: requestedBy } : {},
     ).then(r => r.data),
 }
