@@ -18,6 +18,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { getStatusDisplay } from '@/utils/statusDisplay'
 import PatchFailureBanner from '@/components/PatchFailureBanner'
 import { parsePatchFailureSummary } from '@/utils/patchFailure'
+import { extractScopeWarnings } from '@/utils/scopeWarnings'
 
 interface ChunkPlanPanelProps {
   plan: ChunkPlanResponse
@@ -204,6 +205,14 @@ export default function ChunkPlanPanel({
             const patchFailure = parsePatchFailureSummary(
               chunk.completion_summary
             )
+            // #22B: surface backend [SCOPE] file-scope notes (#22A) so a
+            // reviewer sees scope mismatches/adjustments before approving.
+            // Read-only: this only displays existing data, never changes scope.
+            const scopeWarnings = extractScopeWarnings(
+              definition?.rationale,
+              definition?.description
+            )
+            const hasScopeWarning = scopeWarnings.length > 0
             const isAwaitingChunkApproval =
               chunk.status === 'awaiting_chunk_approval'
             const showInlineChunkApproval =
@@ -234,6 +243,30 @@ export default function ChunkPlanPanel({
                   </Badge>
                 </div>
 
+                {hasScopeWarning && (
+                  <div className="mb-3 grid gap-2 rounded border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+                    <div className="flex items-center gap-2">
+                      <Badge
+                        variant="outline"
+                        className="border-amber-300 bg-amber-100 text-amber-800"
+                      >
+                        Scope warning
+                      </Badge>
+                    </div>
+                    <p>
+                      This chunk has a file-scope mismatch or constraint
+                      adjustment. Review Files Expected before approving.
+                    </p>
+                    <ul className="list-disc space-y-1 pl-5">
+                      {scopeWarnings.map((warning, index) => (
+                        <li key={index} className="break-words">
+                          {warning}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
                 <div className="grid gap-3 text-sm">
                   <div className="grid gap-3 sm:grid-cols-3">
                     <div>
@@ -254,9 +287,31 @@ export default function ChunkPlanPanel({
                     </div>
                   </div>
 
-                  <div>
-                    <p className="font-medium">Files Expected</p>
-                    <p className="text-muted-foreground break-words">
+                  <div
+                    className={
+                      hasScopeWarning
+                        ? 'rounded border border-amber-300 bg-amber-50 px-3 py-2'
+                        : undefined
+                    }
+                  >
+                    <p className="flex items-center gap-2 font-medium">
+                      Files Expected
+                      {hasScopeWarning && (
+                        <Badge
+                          variant="outline"
+                          className="border-amber-300 bg-amber-100 text-amber-800"
+                        >
+                          Review scope
+                        </Badge>
+                      )}
+                    </p>
+                    <p
+                      className={
+                        hasScopeWarning
+                          ? 'break-words font-medium text-amber-900'
+                          : 'text-muted-foreground break-words'
+                      }
+                    >
                       {formatList(filesExpected)}
                     </p>
                     {filesExpected.length === 0 && (
