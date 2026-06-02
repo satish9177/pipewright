@@ -271,6 +271,51 @@ def _migrate_db(conn) -> None:
                 "approval_type",
                 "ALTER TABLE approval_gates ADD COLUMN approval_type TEXT DEFAULT 'legacy'",
             ),
+            (
+                "memory_suggestions",
+                "source_run_id",
+                "ALTER TABLE memory_suggestions ADD COLUMN source_run_id TEXT",
+            ),
+            (
+                "memory_suggestions",
+                "source_chunk_number",
+                "ALTER TABLE memory_suggestions ADD COLUMN source_chunk_number INTEGER",
+            ),
+            (
+                "memory_suggestions",
+                "source_type",
+                "ALTER TABLE memory_suggestions ADD COLUMN source_type TEXT",
+            ),
+            (
+                "memory_suggestions",
+                "source_ref",
+                "ALTER TABLE memory_suggestions ADD COLUMN source_ref TEXT",
+            ),
+            (
+                "memory_suggestions",
+                "rationale",
+                "ALTER TABLE memory_suggestions ADD COLUMN rationale TEXT",
+            ),
+            (
+                "memory_suggestions",
+                "suggested_by",
+                "ALTER TABLE memory_suggestions ADD COLUMN suggested_by TEXT",
+            ),
+            (
+                "memory_suggestions",
+                "risk_level",
+                "ALTER TABLE memory_suggestions ADD COLUMN risk_level TEXT",
+            ),
+            (
+                "memory_suggestions",
+                "edited_content",
+                "ALTER TABLE memory_suggestions ADD COLUMN edited_content TEXT",
+            ),
+            (
+                "memory_suggestions",
+                "approved_fact_id",
+                "ALTER TABLE memory_suggestions ADD COLUMN approved_fact_id TEXT",
+            ),
         ]
 
         for table_name, column_name, migration_sql in migrations:

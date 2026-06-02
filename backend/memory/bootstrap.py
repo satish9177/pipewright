@@ -22,8 +22,10 @@ from sqlalchemy.exc import IntegrityError
 from backend.db.database import engine
 from backend.memory.memory_store import (
     DEFAULT_PRIORITY,
-    add_fact,
+    MEMORY_DUPLICATE_ERROR,
     compute_content_hash,
+    insert_fact_in_conn,
+    validate_fact_fields,
     validate_memory_content,
 )
 from backend.projects.project_store import get_project
@@ -620,21 +622,31 @@ def _pending_suggestion_exists(project_id: str, content_hash: str) -> bool:
     return row is not None
 
 
+_SUGGESTION_COLUMNS = """
+    id, project_id, content, category, scope, priority, source,
+    evidence_path, evidence_excerpt, status, created_at,
+    updated_at, approved_by, approved_at, rejected_by,
+    rejected_at, rejection_reason, content_hash,
+    edited_content, approved_fact_id
+"""
+
+
+def _get_suggestion_row(conn, project_id: str, suggestion_id: str) -> dict | None:
+    row = conn.execute(text(f"""
+        SELECT {_SUGGESTION_COLUMNS}
+        FROM memory_suggestions
+        WHERE project_id = :project_id
+          AND id = :suggestion_id
+    """), {
+        "project_id": project_id,
+        "suggestion_id": suggestion_id,
+    }).fetchone()
+    return _row_to_dict(row)
+
+
 def _get_suggestion(project_id: str, suggestion_id: str) -> dict | None:
     with engine.connect() as conn:
-        row = conn.execute(text("""
-            SELECT id, project_id, content, category, scope, priority, source,
-                   evidence_path, evidence_excerpt, status, created_at,
-                   updated_at, approved_by, approved_at, rejected_by,
-                   rejected_at, rejection_reason, content_hash
-            FROM memory_suggestions
-            WHERE project_id = :project_id
-              AND id = :suggestion_id
-        """), {
-            "project_id": project_id,
-            "suggestion_id": suggestion_id,
-        }).fetchone()
-    return _row_to_dict(row)
+        return _get_suggestion_row(conn, project_id, suggestion_id)
 
 
 def _insert_suggestion(project_id: str, candidate: CandidateSuggestion) -> dict:
@@ -718,10 +730,7 @@ def list_suggestions(project_id: str, status: str | None = None) -> list[dict]:
 
     with engine.connect() as conn:
         rows = conn.execute(text(f"""
-            SELECT id, project_id, content, category, scope, priority, source,
-                   evidence_path, evidence_excerpt, status, created_at,
-                   updated_at, approved_by, approved_at, rejected_by,
-                   rejected_at, rejection_reason, content_hash
+            SELECT {_SUGGESTION_COLUMNS}
             FROM memory_suggestions
             WHERE {" AND ".join(filters)}
             ORDER BY created_at DESC
@@ -733,43 +742,76 @@ def approve_suggestion(
     project_id: str,
     suggestion_id: str,
     approved_by: str = "api",
+    edited_content: str | None = None,
 ) -> dict:
-    suggestion = _get_suggestion(project_id, suggestion_id)
-    if suggestion is None:
-        raise ValueError("bootstrap.py: suggestion not found")
-    if suggestion["status"] != "pending":
-        raise ValueError("bootstrap.py: suggestion is not pending")
-    if _active_memory_exists(project_id, suggestion["content_hash"]):
-        raise ValueError("bootstrap.py: active duplicate memory fact already exists")
+    """
+    Approve a pending suggestion into an active memory fact, atomically.
 
-    fact = add_fact(
-        project_id=project_id,
-        content=suggestion["content"],
-        category=suggestion["category"],
-        scope=suggestion["scope"],
-        priority=suggestion["priority"],
-        source=BOOTSTRAP_SOURCE,
-        added_by="api",
-        approved_by=approved_by,
-    )
+    Validation, fact insertion, and the suggestion status update all happen in
+    one transaction: if any step fails (blocked content, duplicate, write
+    error) nothing is committed and the suggestion stays pending.
 
+    If edited_content is provided, the edited text is validated through the
+    same memory gate, inserted as the fact, and recorded in
+    memory_suggestions.edited_content. The original suggestion content is never
+    overwritten.
+    """
+    edited = edited_content.strip() if edited_content and edited_content.strip() else None
     now = _utc_now()
-    with engine.connect() as conn:
-        conn.execute(text("""
-            UPDATE memory_suggestions
-            SET status = 'approved',
-                approved_by = :approved_by,
-                approved_at = :now,
-                updated_at = :now
-            WHERE project_id = :project_id
-              AND id = :suggestion_id
-        """), {
-            "project_id": project_id,
-            "suggestion_id": suggestion_id,
-            "approved_by": approved_by,
-            "now": now,
-        })
-        conn.commit()
+
+    try:
+        with engine.begin() as conn:
+            suggestion = _get_suggestion_row(conn, project_id, suggestion_id)
+            if suggestion is None:
+                raise ValueError("bootstrap.py: suggestion not found")
+            if suggestion["status"] != "pending":
+                raise ValueError("bootstrap.py: suggestion is not pending")
+
+            fact_content = edited if edited is not None else suggestion["content"]
+            fact_content, category, scope, priority = validate_fact_fields(
+                fact_content,
+                suggestion["category"],
+                suggestion["scope"],
+                suggestion["priority"],
+            )
+
+            fact = insert_fact_in_conn(
+                conn,
+                project_id=project_id,
+                content=fact_content,
+                category=category,
+                scope=scope,
+                priority=priority,
+                source=suggestion["source"] or BOOTSTRAP_SOURCE,
+                added_by="api",
+                approved_by=approved_by,
+                now=now,
+            )
+
+            conn.execute(text("""
+                UPDATE memory_suggestions
+                SET status = 'approved',
+                    approved_by = :approved_by,
+                    approved_at = :now,
+                    updated_at = :now,
+                    edited_content = :edited_content,
+                    approved_fact_id = :approved_fact_id
+                WHERE project_id = :project_id
+                  AND id = :suggestion_id
+            """), {
+                "project_id": project_id,
+                "suggestion_id": suggestion_id,
+                "approved_by": approved_by,
+                "now": now,
+                "edited_content": edited,
+                "approved_fact_id": fact["id"],
+            })
+    except ValueError:
+        raise
+    except IntegrityError as error:
+        raise ValueError(MEMORY_DUPLICATE_ERROR) from error
+    except Exception as error:
+        raise RuntimeError(f"bootstrap.py: approve_suggestion failed: {error}") from error
 
     return {
         "suggestion": _sanitize_suggestion(_get_suggestion(project_id, suggestion_id) or {}),

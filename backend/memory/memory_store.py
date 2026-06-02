@@ -28,6 +28,9 @@ MEMORY_SAFETY_ERROR = (
     "Memory entries cannot contain secrets, credentials, emails, phone "
     "numbers, or payment card numbers."
 )
+MEMORY_DUPLICATE_ERROR = (
+    "memory_store.py: active duplicate memory fact already exists"
+)
 PRE_M1_ARCHIVE_REASON = "pre-M1 unscoped memory archived for project-safety"
 
 ALLOWED_CATEGORIES = {
@@ -330,6 +333,101 @@ def _archive_unscoped_pre_m1_memory() -> None:
         conn.commit()
 
 
+def validate_fact_fields(
+    content: str,
+    category: str = "other",
+    scope: str = "global",
+    priority: int = DEFAULT_PRIORITY,
+) -> tuple[str, str, str, int]:
+    """
+    Validate and normalize fact content + metadata. Pure (no DB access).
+
+    Runs the same content safety checks as manual creation, so any path that
+    promotes content into a memory fact (manual add, suggestion approval,
+    edit-then-approve) shares one validation gate.
+    """
+    content = validate_memory_content(content)
+    category = _validate_category(category)
+    scope = _validate_scope(scope)
+    priority = _validate_priority(priority)
+    return content, category, scope, priority
+
+
+def insert_fact_in_conn(
+    conn,
+    *,
+    project_id: str,
+    content: str,
+    category: str,
+    scope: str,
+    priority: int,
+    source: str = "manual",
+    added_by: str = "user",
+    approved_by: str | None = None,
+    now: str | None = None,
+) -> dict:
+    """
+    Insert an already-validated fact using a caller-provided connection.
+
+    The caller owns the transaction (commit/rollback), which lets suggestion
+    approval insert the fact and update the suggestion status atomically.
+    Inputs must already be validated via validate_fact_fields.
+    """
+    now = now or _utc_now()
+    content_hash = compute_content_hash(content)
+    fact_id = str(uuid.uuid4())
+
+    existing = conn.execute(text("""
+        SELECT id FROM memory_facts
+        WHERE project_id = :project_id
+          AND content_hash = :content_hash
+          AND status = 'active'
+        LIMIT 1
+    """), {
+        "project_id": project_id,
+        "content_hash": content_hash,
+    }).fetchone()
+    if existing:
+        raise ValueError(MEMORY_DUPLICATE_ERROR)
+
+    conn.execute(text("""
+        INSERT INTO memory_facts
+        (id, project_id, content, category, scope, priority, status,
+         is_stale, source, added_by, approved_by, approved_at,
+         content_hash, created_at, updated_at)
+        VALUES
+        (:id, :project_id, :content, :category, :scope, :priority,
+         'active', 0, :source, :added_by, :approved_by, :approved_at,
+         :content_hash, :now, :now)
+    """), {
+        "id": fact_id,
+        "project_id": project_id,
+        "content": content,
+        "category": category,
+        "scope": scope,
+        "priority": priority,
+        "source": source,
+        "added_by": added_by,
+        "approved_by": approved_by,
+        "approved_at": now if approved_by else None,
+        "content_hash": content_hash,
+        "now": now,
+    })
+    return {
+        "id": fact_id,
+        "project_id": project_id,
+        "content": content,
+        "category": category,
+        "scope": scope,
+        "priority": priority,
+        "status": "active",
+        "source": source,
+        "added_by": added_by,
+        "approved_by": approved_by,
+        "content_hash": content_hash,
+    }
+
+
 def add_fact(
     project_id: str,
     content: str,
@@ -345,75 +443,28 @@ def add_fact(
     Duplicate active facts are blocked per project by content hash.
     """
     project_id = _validate_project_id(project_id)
-    content = validate_memory_content(content)
-    category = _validate_category(category)
-    scope = _validate_scope(scope)
-    priority = _validate_priority(priority)
-    content_hash = compute_content_hash(content)
-    fact_id = str(uuid.uuid4())
-    now = _utc_now()
+    content, category, scope, priority = validate_fact_fields(
+        content, category, scope, priority
+    )
 
     try:
         _archive_unscoped_pre_m1_memory()
-        with engine.connect() as conn:
-            existing = conn.execute(text("""
-                SELECT id FROM memory_facts
-                WHERE project_id = :project_id
-                  AND content_hash = :content_hash
-                  AND status = 'active'
-                LIMIT 1
-            """), {
-                "project_id": project_id,
-                "content_hash": content_hash,
-            }).fetchone()
-            if existing:
-                raise ValueError(
-                    "memory_store.py: active duplicate memory fact already exists"
-                )
-
-            conn.execute(text("""
-                INSERT INTO memory_facts
-                (id, project_id, content, category, scope, priority, status,
-                 is_stale, source, added_by, approved_by, approved_at,
-                 content_hash, created_at, updated_at)
-                VALUES
-                (:id, :project_id, :content, :category, :scope, :priority,
-                 'active', 0, :source, :added_by, :approved_by, :approved_at,
-                 :content_hash, :now, :now)
-            """), {
-                "id": fact_id,
-                "project_id": project_id,
-                "content": content,
-                "category": category,
-                "scope": scope,
-                "priority": priority,
-                "source": source,
-                "added_by": added_by,
-                "approved_by": approved_by,
-                "approved_at": now if approved_by else None,
-                "content_hash": content_hash,
-                "now": now,
-            })
-            conn.commit()
-        return {
-            "id": fact_id,
-            "project_id": project_id,
-            "content": content,
-            "category": category,
-            "scope": scope,
-            "priority": priority,
-            "status": "active",
-            "source": source,
-            "added_by": added_by,
-            "approved_by": approved_by,
-            "content_hash": content_hash,
-        }
+        with engine.begin() as conn:
+            return insert_fact_in_conn(
+                conn,
+                project_id=project_id,
+                content=content,
+                category=category,
+                scope=scope,
+                priority=priority,
+                source=source,
+                added_by=added_by,
+                approved_by=approved_by,
+            )
     except ValueError:
         raise
     except IntegrityError as error:
-        raise ValueError(
-            "memory_store.py: active duplicate memory fact already exists"
-        ) from error
+        raise ValueError(MEMORY_DUPLICATE_ERROR) from error
     except Exception as error:
         raise RuntimeError(f"memory_store.py: add_fact failed: {error}") from error
 

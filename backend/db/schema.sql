@@ -42,7 +42,16 @@ CREATE TABLE IF NOT EXISTS memory_suggestions (
     rejected_by TEXT,
     rejected_at DATETIME,
     rejection_reason TEXT,
-    content_hash TEXT
+    content_hash TEXT,
+    source_run_id TEXT,
+    source_chunk_number INTEGER,
+    source_type TEXT,
+    source_ref TEXT,
+    rationale TEXT,
+    suggested_by TEXT,
+    risk_level TEXT,
+    edited_content TEXT,
+    approved_fact_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS projects (

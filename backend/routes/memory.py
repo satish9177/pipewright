@@ -5,7 +5,7 @@ Project-scoped memory management routes.
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.memory.bootstrap import (
@@ -167,6 +167,8 @@ class MemorySuggestionResponse(BaseModel):
     rejected_by: str | None = None
     rejected_at: str | None = None
     rejection_reason: str | None = None
+    edited_content: str | None = None
+    approved_fact_id: str | None = None
 
 
 class MemorySuggestionListResponse(BaseModel):
@@ -177,6 +179,11 @@ class MemorySuggestionListResponse(BaseModel):
 class MemorySuggestionApprovalResponse(BaseModel):
     suggestion: MemorySuggestionResponse
     fact: MemoryFactResponse
+
+
+class MemorySuggestionApproveRequest(BaseModel):
+    edited_content: str | None = Field(default=None, max_length=400)
+    approved_by: str | None = None
 
 
 class MemorySuggestionRejectRequest(BaseModel):
@@ -375,13 +382,18 @@ def preview_memory_prompt(
     "/suggestions/{suggestion_id}/approve",
     response_model=MemorySuggestionApprovalResponse,
 )
-def approve_memory_suggestion(project_id: str, suggestion_id: str):
+def approve_memory_suggestion(
+    project_id: str,
+    suggestion_id: str,
+    request: MemorySuggestionApproveRequest | None = Body(default=None),
+):
     _require_project(project_id)
     try:
         return approve_suggestion(
             project_id=project_id,
             suggestion_id=suggestion_id,
-            approved_by="api",
+            approved_by=(request.approved_by if request and request.approved_by else "api"),
+            edited_content=(request.edited_content if request else None),
         )
     except ValueError as error:
         raise _map_memory_error(error)
