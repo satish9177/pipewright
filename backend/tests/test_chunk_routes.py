@@ -2645,6 +2645,163 @@ def test_select_endpoint_is_registered():
     assert "/runs/chunked/clarifications/{clarification_id}/select" in paths
 
 
+# --------------------------------------------------------------------------
+# #20B-1: case-mismatch clarification selection loop.
+#
+# Repro from dogfood: a file indexed as MANUAL.md, a request "add hello bro in
+# manual.md". Because the lowercase "manual.md" is itself an explicit-path token,
+# the rebuilt selection request ("... (use MANUAL.md)") used to re-derive the
+# wrong-case token FIRST and loop the same clarification. The selected path must
+# now win — while still being re-validated against the live index.
+#
+# The exact initial clarification (candidate MANUAL.md for a lowercase request)
+# is only produced on a case-insensitive filesystem (Windows), so these tests
+# mint the signed selection context directly — the same pattern the expired /
+# project-mismatch tests already use — to exercise the selection handoff
+# deterministically on every platform.
+# --------------------------------------------------------------------------
+_MANUAL_FEATURE = "add hello bro in manual.md"
+
+
+def _mint_manual_clarification(project_id: str) -> str:
+    """A signed selection context for the MANUAL.md case-mismatch repro."""
+    context = create_clarification_context(
+        project_id=project_id,
+        original_feature_description=_MANUAL_FEATURE,
+        alias="manual.md",
+        candidates=["MANUAL.md"],
+        recommended_path="MANUAL.md",
+        recommendation_strength="strong",
+    )
+    return encode_clarification_context(context)
+
+
+def test_case_mismatch_initial_request_offers_real_candidate(
+    monkeypatch, tmp_repo
+):
+    """The lowercase request surfaces the real-cased candidate, never a run.
+
+    On a case-insensitive FS this is the first half of the dogfood repro
+    (candidate MANUAL.md + clarification_id). On a case-sensitive FS it stays a
+    safe clarification. Either way: a clarification, no run.
+    """
+    (tmp_repo / "MANUAL.md").write_text("# Manual\n", encoding="utf-8")
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["MANUAL.md", "backend/app.py"])
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": _MANUAL_FEATURE,
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    # If a candidate was surfaced it must be the real on-disk casing.
+    if data.get("candidates"):
+        assert data["candidates"] == ["MANUAL.md"]
+        assert data["clarification_id"]
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+@pytest.mark.parametrize("selection", ["MANUAL.md", "use MANUAL.md"])
+def test_case_mismatch_selection_creates_chunk_plan(
+    monkeypatch, tmp_repo, tracked_runs, selection
+):
+    """Selecting MANUAL.md pins it and creates a plan — no second clarification."""
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["MANUAL.md", "backend/app.py"])
+    _install_working_triage(monkeypatch)
+    client = TestClient(app)
+
+    clarification_id = _mint_manual_clarification(project["id"])
+    _assert_no_runs(project["id"])
+
+    response = client.post(
+        f"/runs/chunked/clarifications/{clarification_id}/select",
+        json={"project_id": project["id"], "selection": selection},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data.get("status") != "needs_clarification"
+    tracked_runs.append(data["run_id"])
+    assert data["chunks"][0]["files_expected"] == ["MANUAL.md"]
+
+
+@pytest.mark.parametrize("selection", ["1", "yes 1"])
+def test_case_mismatch_numeric_selection_creates_chunk_plan(
+    monkeypatch, tmp_repo, tracked_runs, selection
+):
+    """A numeric / affirmation selection resolves within this candidate set."""
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["MANUAL.md", "backend/app.py"])
+    _install_working_triage(monkeypatch)
+    client = TestClient(app)
+
+    clarification_id = _mint_manual_clarification(project["id"])
+
+    response = client.post(
+        f"/runs/chunked/clarifications/{clarification_id}/select",
+        json={"project_id": project["id"], "selection": selection},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data.get("status") != "needs_clarification"
+    tracked_runs.append(data["run_id"])
+    assert data["chunks"][0]["files_expected"] == ["MANUAL.md"]
+
+
+def test_case_mismatch_out_of_set_selection_creates_no_run(monkeypatch, tmp_repo):
+    """A path that is not one of the shown candidates is rejected safely."""
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["MANUAL.md", "backend/app.py"])
+    # A valid selection would reach triage; an out-of-set one must not.
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    clarification_id = _mint_manual_clarification(project["id"])
+
+    response = client.post(
+        f"/runs/chunked/clarifications/{clarification_id}/select",
+        json={"project_id": project["id"], "selection": "OTHER.md"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
+def test_case_mismatch_selected_path_unindexed_creates_no_run(
+    monkeypatch, tmp_repo
+):
+    """A selected candidate that has left the live index re-validates safely."""
+    project = make_project(tmp_repo)
+    # MANUAL.md was a candidate at clarification time but is no longer indexed.
+    seed_file_index(project["id"], ["backend/app.py"])
+    _forbid_triage(monkeypatch)
+    client = TestClient(app)
+
+    clarification_id = _mint_manual_clarification(project["id"])
+
+    response = client.post(
+        f"/runs/chunked/clarifications/{clarification_id}/select",
+        json={"project_id": project["id"], "selection": "MANUAL.md"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "needs_clarification"
+    assert "run_id" not in data
+    _assert_no_runs(project["id"])
+
+
 def test_failed_chunk_cannot_be_approved(tmp_repo, tracked_runs):
     """A chunk that failed at patch time must not be approvable (#18D)."""
     from backend.pipeline.chunk_store import approve_chunk_plan, update_chunk_status
