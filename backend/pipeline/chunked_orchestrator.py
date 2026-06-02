@@ -18,6 +18,7 @@ from backend.core.status_service import (
     update_chunk_status as _service_update_chunk_status,
     update_run_status as _service_update_run_status,
 )
+from backend.core.statuses import ChunkStatusValue
 from backend.db.database import engine, init_db
 from backend.events import event_bus
 from backend.events.schema import Event
@@ -354,6 +355,47 @@ def _resumable_chunks(plan: ChunkPlanResponse) -> list[ChunkStatus]:
 
 def _has_running_chunk(plan: ChunkPlanResponse) -> bool:
     return any(chunk.status == "running" for chunk in plan.chunks)
+
+
+def _status_by_number(plan: ChunkPlanResponse) -> dict[int, str]:
+    """Snapshot of every chunk's current status keyed by chunk_number."""
+    return {chunk.chunk_number: chunk.status for chunk in plan.chunks}
+
+
+def _unmet_dependencies(
+    chunk: ChunkDefinition,
+    status_by_number: dict[int, str],
+) -> list[int]:
+    """
+    Return the depends_on chunk numbers that are NOT satisfied.
+
+    A dependency is satisfied only when its current status is exactly
+    ``completed``. Any other status (pending/running/failed/rejected/
+    awaiting_chunk_approval) — and a missing/unknown chunk number — counts as
+    unmet, so the check fails safe.
+    """
+    return [
+        dependency
+        for dependency in chunk.depends_on
+        if status_by_number.get(dependency) != ChunkStatusValue.COMPLETED
+    ]
+
+
+def _dependency_not_met_message(
+    chunk_number: int,
+    unmet: list[int],
+    status_by_number: dict[int, str],
+) -> str:
+    """Human-readable DEPENDENCY_NOT_MET error for a blocked chunk."""
+    details = ", ".join(
+        f"chunk {dependency} status: "
+        f"{status_by_number.get(dependency, 'missing')}"
+        for dependency in unmet
+    )
+    return (
+        f"DEPENDENCY_NOT_MET: chunk {chunk_number} requires chunks {unmet} "
+        f"to be completed first ({details})"
+    )
 
 
 def _awaiting_approval_chunk(plan: ChunkPlanResponse) -> ChunkStatus | None:
@@ -986,8 +1028,23 @@ async def _execute_single_chunk(
     chunk: ChunkDefinition,
     target_repo_path: str,
     branch_name: str,
+    status_by_number: dict[int, str],
 ) -> dict | None:
     chunk_number = chunk.chunk_number
+
+    # Dependency-execution guard (#24A): a chunk may only run once every chunk in
+    # its depends_on is completed. This runs BEFORE the chunk is marked running
+    # and before any planner/coder/patch/test work, so a dependent chunk can
+    # never start while a dependency is failed/rejected/pending/awaiting approval
+    # (the high-risk-pause re-entry bypass) or missing.
+    unmet = _unmet_dependencies(chunk, status_by_number)
+    if unmet:
+        return _fail_chunk(
+            run_id,
+            chunk_number,
+            _dependency_not_met_message(chunk_number, unmet, status_by_number),
+        )
+
     update_chunk_status(run_id, chunk_number, "running")
     _update_run_status(
         run_id,
@@ -1144,6 +1201,11 @@ async def _execute_approved_chunks_locked(
     local_git.create_or_checkout_branch(branch_name, target_repo_path)
 
     completed_chunks = 0
+    # Dependency map kept fresh as chunks complete (#24A): seeded from every
+    # chunk's current status (so deps already completed in a prior pass pass the
+    # check), then updated locally after each completion to avoid both stale
+    # blocking and a re-read per chunk.
+    status_by_number = _status_by_number(plan_status)
     with active_project(project_runtime):
         for chunk_status in pending:
             chunk_number = chunk_status.chunk_number
@@ -1155,9 +1217,11 @@ async def _execute_approved_chunks_locked(
                     chunk,
                     target_repo_path,
                     branch_name,
+                    status_by_number,
                 )
                 if pause_result is not None:
                     return pause_result
+                status_by_number[chunk_number] = ChunkStatusValue.COMPLETED
                 completed_chunks += 1
             except Exception as error:
                 return _fail_chunk(run_id, chunk_number, error)
@@ -1223,6 +1287,9 @@ async def _resume_chunked_pipeline_locked(
     refreshed = get_chunk_plan_status(run_id)
     skipped_chunks = 0
     completed_chunks = 0
+    # Dependency map kept fresh as chunks complete/skip (#24A). Seeded from the
+    # post-reset status of every chunk so an already-completed dependency passes.
+    status_by_number = _status_by_number(refreshed)
 
     resumable = _resumable_chunks(refreshed)
     # DB memory-conflict gate (#16D-4): re-evaluate once before any chunk runs. An
@@ -1243,6 +1310,18 @@ async def _resume_chunked_pipeline_locked(
             chunk = definitions[chunk_number]
             checkpoint = load_chunk_step_checkpoint(run_id, chunk_number, "test")
             if checkpoint is not None:
+                # Dependency guard before skip-completing (#24A): a valid test
+                # checkpoint must not mark a chunk completed while a dependency is
+                # still incomplete. Fail safe with DEPENDENCY_NOT_MET instead.
+                unmet = _unmet_dependencies(chunk, status_by_number)
+                if unmet:
+                    return _fail_chunk(
+                        run_id,
+                        chunk_number,
+                        _dependency_not_met_message(
+                            chunk_number, unmet, status_by_number
+                        ),
+                    )
                 try:
                     _verify_completed_checkpoint_safe(
                         run_id,
@@ -1257,6 +1336,7 @@ async def _resume_chunked_pipeline_locked(
                         f"chunk_{chunk_number}_skipped",
                         chunk_number,
                     )
+                    status_by_number[chunk_number] = ChunkStatusValue.COMPLETED
                     skipped_chunks += 1
                     completed_chunks += 1
                     continue
@@ -1271,9 +1351,11 @@ async def _resume_chunked_pipeline_locked(
                     chunk,
                     target_repo_path,
                     branch_name,
+                    status_by_number,
                 )
                 if pause_result is not None:
                     return pause_result
+                status_by_number[chunk_number] = ChunkStatusValue.COMPLETED
                 completed_chunks += 1
             except Exception as error:
                 return _fail_chunk(run_id, chunk_number, error)

@@ -2291,3 +2291,239 @@ async def test_success_path_writes_no_patch_failure_summary(
     # A successful chunk keeps its normal success summary, never a failure one.
     assert summary.get("kind") != PATCH_FAILURE_KIND
     assert "chunk_title" in summary
+
+
+# ---------------------------------------------------------------------------
+# #24A: chunk dependency execution enforcement.
+#
+# A chunk may begin execution only if every chunk in its depends_on is
+# completed. make_triage wires depends_on=[number-1], so chunk 2 depends on
+# chunk 1. These tests assert the guard fires before any planner/coder/patch/
+# commit work, on both fresh execute and resume (including the checkpoint-skip
+# path), and that valid sequential runs are unchanged.
+# ---------------------------------------------------------------------------
+
+
+def _chunk_status_value(run_id: str, chunk_number: int) -> str:
+    status = get_chunk_plan_status(run_id)
+    return next(
+        chunk.status
+        for chunk in status.chunks
+        if chunk.chunk_number == chunk_number
+    )
+
+
+def test_unmet_dependencies_helper_only_completed_satisfies():
+    chunk = ChunkDefinition(
+        chunk_number=2,
+        title="Chunk 2",
+        description="Do chunk 2",
+        files_expected=["f.py"],
+        depends_on=[1],
+        risk_level="low",
+        token_estimate=10,
+        requires_human_review=False,
+        rationale="dep test",
+    )
+    assert chunked_orchestrator._unmet_dependencies(chunk, {1: "completed"}) == []
+    for status in ("pending", "running", "failed", "rejected", "awaiting_chunk_approval"):
+        assert chunked_orchestrator._unmet_dependencies(chunk, {1: status}) == [1]
+    # Missing reference fails safe.
+    assert chunked_orchestrator._unmet_dependencies(chunk, {}) == [1]
+
+
+# A. Dependency satisfied → allowed.
+@pytest.mark.asyncio
+async def test_dependency_satisfied_allows_dependent_chunk(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, chunks=2)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "awaiting_final_approval"
+    status = get_chunk_plan_status(run_id)
+    assert [chunk.status for chunk in status.chunks] == ["completed", "completed"]
+    assert all(
+        "DEPENDENCY_NOT_MET" not in (chunk.error_message or "")
+        for chunk in status.chunks
+    )
+
+
+# B. Dependency failed → blocked.
+@pytest.mark.asyncio
+async def test_failed_dependency_blocks_dependent_chunk(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, chunks=2)
+    update_chunk_status(run_id, 1, "failed", "boom")
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    assert result["failed_chunk"] == 2
+    assert "DEPENDENCY_NOT_MET" in result["error"]
+    assert not any(
+        call[0] in {"planner", "coder", "patch", "commit"} for call in calls
+    )
+    assert _chunk_status_value(run_id, 2) == "failed"
+    assert "DEPENDENCY_NOT_MET" in get_chunk_plan_status(run_id).chunks[1].error_message
+
+
+# C. Dependency pending/not-started → blocked (direct check on the choke point).
+@pytest.mark.asyncio
+async def test_pending_dependency_blocks_dependent_chunk(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, project = create_run(tmp_repo, tracked_runs, chunks=2)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    plan = get_chunk_plan_status(run_id)
+    definitions = chunked_orchestrator._definition_by_number(plan)
+    result = await chunked_orchestrator._execute_single_chunk(
+        run_id,
+        project["id"],
+        definitions[2],
+        project["repo_path"],
+        f"pipewright/{run_id[:8]}",
+        {1: "pending", 2: "pending"},
+    )
+
+    assert result is not None
+    assert result["status"] == "failed"
+    assert result["failed_chunk"] == 2
+    assert "DEPENDENCY_NOT_MET" in result["error"]
+    assert "chunk 1 status: pending" in result["error"]
+    assert not any(call[0] in {"planner", "coder", "patch"} for call in calls)
+
+
+# D. High-risk approval pause re-entry bypass regression.
+@pytest.mark.asyncio
+async def test_reexecute_during_chunk_approval_pause_cannot_skip_dependency(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(
+        tmp_repo, tracked_runs, chunks=2, review_chunks={1}
+    )
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    first = await chunked_orchestrator.execute_approved_chunks(run_id)
+    assert first["status"] == "awaiting_chunk_approval"
+    assert first["chunk_number"] == 1
+
+    # Chunk 1 is paused at awaiting_chunk_approval (NOT completed). Re-entering
+    # execution must not run chunk 2 (depends_on=[1]) behind the paused dep.
+    calls.clear()
+    second = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert second["status"] == "failed"
+    assert second["failed_chunk"] == 2
+    assert "DEPENDENCY_NOT_MET" in second["error"]
+    assert "awaiting_chunk_approval" in second["error"]
+    assert not any(
+        call[0] in {"planner", "coder", "patch", "commit"} for call in calls
+    )
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[0].status == "awaiting_chunk_approval"
+    assert status.chunks[1].status == "failed"
+
+
+# E. Resume with an incomplete dependency must not execute the dependent.
+@pytest.mark.asyncio
+async def test_resume_blocks_dependent_when_dependency_incomplete(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, chunks=2)
+    # Chunk 1 incomplete but excluded from the resumable set (awaiting approval
+    # with no pending gate, so resume does not early-return on it).
+    update_chunk_status(run_id, 1, "awaiting_chunk_approval")
+    calls = []
+    patch_resume_git(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert result["status"] == "failed"
+    assert result["failed_chunk"] == 2
+    assert "DEPENDENCY_NOT_MET" in result["error"]
+    assert not any(
+        call[0] in {"planner", "coder", "patch", "commit"} for call in calls
+    )
+    assert _chunk_status_value(run_id, 2) == "failed"
+
+
+# F. Resume checkpoint-skip path must not skip-complete past an incomplete dep.
+@pytest.mark.asyncio
+async def test_resume_skip_path_blocks_when_dependency_incomplete(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, chunks=2)
+    update_chunk_status(run_id, 1, "awaiting_chunk_approval")
+    # Chunk 2 has a valid test checkpoint that would otherwise skip-complete it.
+    add_test_checkpoint(run_id, 2)
+    calls = []
+    patch_resume_git(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert result["status"] == "failed"
+    assert result["failed_chunk"] == 2
+    assert "DEPENDENCY_NOT_MET" in result["error"]
+    assert _chunk_status_value(run_id, 2) == "failed"
+    assert not any(call[0] == "planner" for call in calls)
+
+
+# G. Missing dependency reference fails safe (no 500).
+@pytest.mark.asyncio
+async def test_missing_dependency_reference_fails_safe(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, chunks=2)
+    # Corrupt state: drop chunk 1's row so chunk 2's depends_on=[1] is dangling.
+    with engine.begin() as conn:
+        conn.execute(text(
+            "DELETE FROM chunks WHERE run_id = :run_id AND chunk_number = 1"
+        ), {"run_id": run_id})
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    assert result["failed_chunk"] == 2
+    assert "DEPENDENCY_NOT_MET" in result["error"]
+    assert "chunk 1 status: missing" in result["error"]
+    assert not any(call[0] in {"planner", "coder"} for call in calls)
+
+
+# H. Existing multi-chunk sequential success is unchanged.
+@pytest.mark.asyncio
+async def test_sequential_success_unchanged_with_dependency_guard(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, chunks=3)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "awaiting_final_approval"
+    status = get_chunk_plan_status(run_id)
+    assert [chunk.status for chunk in status.chunks] == [
+        "completed",
+        "completed",
+        "completed",
+    ]
