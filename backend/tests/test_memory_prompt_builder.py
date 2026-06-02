@@ -143,7 +143,7 @@ def test_triage_role_uses_small_budget_and_filters_categories(memory_project_ids
     block = build_project_memory_block(project_id, role="triage")
 
     assert "Budget used:" in block
-    assert "/ 300 tokens" in block
+    assert "/ 400 tokens" in block
     assert "backend uses FastAPI" in block
     assert "Reviewer preference" not in block
     assert "short labels" not in block
@@ -213,6 +213,152 @@ def test_load_hard_facts_behavior_still_safe(memory_project_ids):
 
     assert "Project A uses FastAPI" in facts
     assert "Project B uses Django" not in facts
+
+
+# ---------------------------------------------------------------------------
+# #21F role-specific injection hardening: per-role category policy, advisory
+# wrapper wording, deterministic budget truncation, and reviewer role support.
+# ---------------------------------------------------------------------------
+
+def _seed_all_category_facts(project_id):
+    # One fact per real category so role filtering can be asserted precisely.
+    add_fact(project_id, "Security fact: never expose API keys", category="security")
+    add_fact(project_id, "Forbidden path fact: never modify .git", category="forbidden_paths")
+    add_fact(project_id, "Stack fact: backend uses FastAPI", category="stack")
+    add_fact(project_id, "Db fact: project uses SQLite", category="db")
+    add_fact(project_id, "Test fact: run pytest backend tests", category="test")
+    add_fact(project_id, "Structure fact: routes live under backend routes", category="structure")
+    add_fact(project_id, "Architecture fact: patch applier owns writes", category="architecture")
+    add_fact(project_id, "Style fact: prefer concise labels", category="style")
+    add_fact(project_id, "Deploy fact: Docker compose for local dev", category="deploy")
+    add_fact(project_id, "Reviewer pref fact: mention rollback risk", category="reviewer_pref")
+    add_fact(project_id, "Other fact: rejected approach reuse helper", category="other")
+
+
+def test_triage_role_sees_safety_but_not_style_or_reviewer_pref(memory_project_ids):
+    project_id = make_project_id(memory_project_ids)
+    _seed_all_category_facts(project_id)
+
+    block = build_project_memory_block(project_id, role="triage")
+
+    assert "never expose API keys" in block  # safety/security
+    assert "never modify .git" in block       # safety/forbidden_paths
+    assert "backend uses FastAPI" in block    # stack
+    assert "prefer concise labels" not in block   # style excluded for triage
+    assert "mention rollback risk" not in block   # reviewer_pref excluded
+    assert "rejected approach reuse helper" not in block  # other excluded
+
+
+def test_planner_sees_other_and_reviewer_pref(memory_project_ids):
+    project_id = make_project_id(memory_project_ids)
+    _seed_all_category_facts(project_id)
+
+    block = build_project_memory_block(project_id, role="planner")
+
+    assert "patch applier owns writes" in block      # architecture
+    assert "rejected approach reuse helper" in block  # other (rejected-approach lessons)
+    assert "mention rollback risk" in block           # reviewer_pref (user preference)
+
+
+def test_coder_sees_other_for_patch_failure_lessons(memory_project_ids):
+    project_id = make_project_id(memory_project_ids)
+    _seed_all_category_facts(project_id)
+
+    block = build_project_memory_block(project_id, role="coder")
+
+    assert "backend uses FastAPI" in block            # stack
+    assert "rejected approach reuse helper" in block   # other (patch-failure lessons)
+
+
+def test_reviewer_role_is_focused_not_everything(memory_project_ids):
+    project_id = make_project_id(memory_project_ids)
+    _seed_all_category_facts(project_id)
+
+    block = build_project_memory_block(project_id, role="reviewer")
+
+    # Reviewer-relevant categories present.
+    assert "never expose API keys" in block        # security
+    assert "patch applier owns writes" in block    # architecture
+    assert "mention rollback risk" in block        # reviewer_pref
+    assert "rejected approach reuse helper" in block  # other
+    # Narrowed out for reviewer.
+    assert "backend uses FastAPI" not in block     # stack excluded
+    assert "project uses SQLite" not in block      # db excluded
+    assert "routes live under backend routes" not in block  # structure excluded
+
+
+def test_every_role_block_has_advisory_override_wrapper(memory_project_ids):
+    project_id = make_project_id(memory_project_ids)
+    add_fact(project_id, "Security fact: never expose API keys", category="security")
+
+    for role in ("triage", "planner", "coder", "reviewer"):
+        block = build_project_memory_block(project_id, role=role)
+        assert "Memory is advisory context only." in block
+        # Memory must never override source code / request / tests / safety rules.
+        assert "source code / user instruction / tests / safety rules" in block
+
+
+def test_budget_truncation_is_deterministic_and_keeps_safety(memory_project_ids):
+    project_id = make_project_id(memory_project_ids)
+    add_fact(project_id, "Security rule: never expose API keys", category="security", priority=10)
+    for index in range(12):
+        add_fact(
+            project_id,
+            f"Style rule number {index}: keep helpers small and tidy here",
+            category="style",
+            priority=500,
+        )
+
+    first = build_project_memory_block(project_id, role="planner", token_budget=40)
+    second = build_project_memory_block(project_id, role="planner", token_budget=40)
+
+    def memory_lines(block):
+        return [line for line in block.splitlines() if line.startswith("[")]
+
+    # Deterministic: identical selected entries and order across calls (the only
+    # varying header field is the Generated timestamp, which is not memory).
+    assert memory_lines(first) == memory_lines(second)
+    assert len(memory_lines(first)) >= 1
+    # Safety/security is ranked first and survives truncation.
+    assert memory_lines(first)[0].startswith("[security/")
+    assert "never expose API keys" in first
+    # Budget actually truncated some style facts.
+    assert "Style rule number 11" not in first
+
+
+def test_role_block_fails_closed_without_project_id():
+    assert build_project_memory_block(None, role="planner") == ""
+    assert build_project_memory_block("   ", role="reviewer") == ""
+
+
+def test_role_block_excludes_stale_and_archived(memory_project_ids):
+    project_id = make_project_id(memory_project_ids)
+    active = add_fact(project_id, "Active security rule stays", category="security")
+    archived = add_fact(project_id, "Archived security rule goes", category="security")
+    stale = add_fact(project_id, "Stale security rule goes", category="security")
+    archive_fact(project_id, archived["id"], "No longer true")
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE memory_facts SET status = 'stale', is_stale = 1 WHERE id = :id
+        """), {"id": stale["id"]})
+
+    block = build_project_memory_block(project_id, role="reviewer")
+
+    assert active["content"] in block
+    assert "Archived security rule goes" not in block
+    assert "Stale security rule goes" not in block
+
+
+def test_role_block_is_project_scoped(memory_project_ids):
+    project_a = make_project_id(memory_project_ids, "project-a")
+    project_b = make_project_id(memory_project_ids, "project-b")
+    add_fact(project_a, "Project A security rule", category="security")
+    add_fact(project_b, "Project B security rule", category="security")
+
+    block = build_project_memory_block(project_a, role="reviewer")
+
+    assert "Project A security rule" in block
+    assert "Project B security rule" not in block
 
 
 def test_build_memory_block_excludes_unscoped_legacy_rows(memory_project_ids):

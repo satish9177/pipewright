@@ -437,3 +437,43 @@ def test_prompt_preview_endpoint(client, project_factory):
     assert archived["content"] not in data["memory_block"]
     assert stale["content"] not in data["memory_block"]
     assert historical["content"] not in data["memory_block"]
+
+
+def test_prompt_preview_is_role_specific(client, project_factory):
+    project_id = project_factory()
+    _create_memory(
+        client, project_id, "Backend uses FastAPI routers.",
+        category="stack", scope="backend",
+    )
+    _create_memory(
+        client, project_id, "Reviewer preference: mention rollback risk.",
+        category="reviewer_pref", scope="global",
+    )
+
+    triage = client.get(
+        f"/api/v1/projects/{project_id}/memory/prompt-preview",
+        params={"role": "triage"},
+    ).json()
+    reviewer = client.get(
+        f"/api/v1/projects/{project_id}/memory/prompt-preview",
+        params={"role": "reviewer"},
+    ).json()
+
+    # Triage sees stack (tooling) but not reviewer preferences.
+    assert "Backend uses FastAPI routers." in triage["memory_block"]
+    assert "mention rollback risk" not in triage["memory_block"]
+    # Reviewer sees reviewer preferences but not the stack fact.
+    assert "mention rollback risk" in reviewer["memory_block"]
+    assert "Backend uses FastAPI routers." not in reviewer["memory_block"]
+
+
+def test_prompt_preview_unknown_role_is_rejected(client, project_factory):
+    project_id = project_factory()
+
+    response = client.get(
+        f"/api/v1/projects/{project_id}/memory/prompt-preview",
+        params={"role": "made-up-role"},
+    )
+
+    assert response.status_code == 422
+    assert "role" in response.json()["detail"].lower()
