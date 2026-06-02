@@ -22,17 +22,35 @@ from backend.memory.memory_store import (
 
 logger = logging.getLogger(__name__)
 
+# Per-role token budgets. Deliberately conservative: a role should receive only
+# enough advisory memory to be useful, never a large block that competes with the
+# current request / source code.
 ROLE_TOKEN_BUDGETS = {
-    "triage": 300,
-    "planner": 1500,
-    "architect": 1500,
-    "coder": 1500,
-    "reviewer": 1500,
+    "triage": 400,
+    "planner": 1200,
+    "architect": 1200,
+    "coder": 1200,
+    "reviewer": 800,
     "summary": 800,
 }
 
+# Deterministic role -> allowed category policy (#21F).
+#
+# Category names are the real memory_facts categories (see
+# memory_store.ALLOWED_CATEGORIES). The conceptual policy maps onto them as:
+#   safety            -> security, forbidden_paths
+#   project_convention-> style
+#   file_structure    -> structure
+#   tooling           -> stack, deploy
+#   api_contract      -> architecture
+#   user_preference   -> reviewer_pref
+#   rejected_approach / patch_failure_lesson -> other
+#     (run-outcome suggestions persist these under "other"/"security"/"test")
+#
+# Every role always includes the safety categories (security, forbidden_paths).
 ROLE_CATEGORIES = {
-    "triage": {"stack", "structure", "test", "db"},
+    # Triage stays intentionally narrow but must still see safety rules.
+    "triage": {"security", "forbidden_paths", "stack", "structure", "test", "db"},
     "planner": {
         "security",
         "forbidden_paths",
@@ -43,6 +61,8 @@ ROLE_CATEGORIES = {
         "architecture",
         "style",
         "deploy",
+        "reviewer_pref",
+        "other",
     },
     "architect": {
         "security",
@@ -65,8 +85,21 @@ ROLE_CATEGORIES = {
         "architecture",
         "style",
         "deploy",
+        "reviewer_pref",
+        "other",
     },
-    "reviewer": set(CATEGORY_ORDER),
+    # Reviewer is focused (not "everything"): safety, design/contract, conventions,
+    # tests, deployment, user prefs, and rejected-approach/lesson notes ("other").
+    "reviewer": {
+        "security",
+        "forbidden_paths",
+        "architecture",
+        "test",
+        "deploy",
+        "style",
+        "reviewer_pref",
+        "other",
+    },
     "summary": {"security", "forbidden_paths", "stack", "db", "test", "deploy"},
     "default": {
         "security",
@@ -189,9 +222,11 @@ def build_project_memory_block(
         *selected_lines,
         "",
         (
-            "If a memory entry conflicts with the current source code or the "
-            "user's explicit instruction, follow the source code / user "
-            "instruction and suggest a memory update."
+            "Memory is advisory context only. If a memory entry conflicts with "
+            "the current source code, the user's explicit instruction, the "
+            "project's tests, or Pipewright's safety rules, follow the source "
+            "code / user instruction / tests / safety rules and suggest a "
+            "memory update."
         ),
         "=== END PROJECT MEMORY ===",
     ])
