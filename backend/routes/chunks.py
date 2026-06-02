@@ -79,6 +79,10 @@ from backend.pipeline.plan_path_grounding import (
     ground_triage_result_paths,
     get_indexed_paths_and_dirs,
 )
+from backend.pipeline.file_scope_intent import (
+    extract_user_file_constraints,
+    reconcile_file_scope,
+)
 from backend.pipeline.report_analyzer import (
     build_limited_report,
     run_report_analysis,
@@ -1255,6 +1259,21 @@ async def _create_chunked_run_core(
             ),
         )
         triage_result = scan_triage_result(triage_result)
+        # PR #22A: reconcile the grounded plan against explicit user file
+        # constraints ("only A and B", "do not touch A", "similar to A"). Seeds
+        # /caps files_expected to a hard allowlist, drops forbidden files, never
+        # auto-adds reference-only or planner-prose-only paths, and hardens
+        # chunks ([SCOPE] notes + human review) on any drop/cap/mismatch. The
+        # user-constraint logic no-ops when no files are named; the planner
+        # prose-vs-scope consistency check always runs. scope_guard is unchanged.
+        triage_result = reconcile_file_scope(
+            project_id,
+            triage_result,
+            extract_user_file_constraints(feature_description),
+            sanctioned_new_paths=(
+                {create_target_path} if create_target_path is not None else None
+            ),
+        )
         if intent == PLAN_ONLY:
             _create_read_only_run(
                 run_id=run_id,
