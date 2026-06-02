@@ -88,6 +88,100 @@ PROMPT_INJECTION_MARKERS = [
     "ignore previous instructions",
 ]
 
+# Pipewright control-plane bypass phrases. Memory must never become a control
+# channel: even a human-approved fact must not be able to instruct the pipeline
+# to skip approvals, bypass scope guard, push/merge unsafely, or touch secrets.
+# Matched case-insensitively against whitespace-normalized content.
+CONTROL_PLANE_BYPASS_PHRASES = [
+    "skip approval",
+    "skip approvals",
+    "skip the approval",
+    "bypass approval",
+    "bypass approvals",
+    "bypass approval gate",
+    "bypass the approval",
+    "bypass the approval gate",
+    "auto-merge",
+    "automerge",
+    "merge automatically",
+    "ignore tests",
+    "skip tests",
+    "disable tests",
+    "do not run tests",
+    "bypass scope guard",
+    "ignore scope guard",
+    "force push",
+    "force-push",
+    "git push --force",
+    "delete branch",
+    "delete the branch",
+    "commit directly to main",
+    "commit to main",
+    "push directly to main",
+    "push to main",
+    "edit .env",
+    "modify .env",
+    "write .env",
+    "store api key",
+    "store token",
+]
+
+# Absolute local machine paths. Repo-relative paths (backend/...,
+# frontend/src/...) intentionally do NOT match because they have no drive letter
+# and no leading slash at a token boundary. URLs like https:// are excluded by
+# the \b before the drive letter, and URL paths like example.com/home/ are
+# excluded because the leading slash must follow start-of-string or whitespace.
+ABSOLUTE_PATH_PATTERNS = [
+    re.compile(r"\b[A-Za-z]:[\\/]"),
+    re.compile(r"(?:^|[\s\"'(\[`])/(?:Users|home|root|tmp)/", re.IGNORECASE),
+]
+
+# Raw stack-trace markers (Python / Java / Node). Kept conservative: each
+# pattern is distinctive enough that ordinary prose does not match it.
+STACK_TRACE_PATTERNS = [
+    re.compile(r"Traceback \(most recent call last\):"),
+    re.compile(r'File "[^"]+", line \d+'),
+    re.compile(r"Exception in thread"),
+    re.compile(r"\bat [\w.$<>]+\([^)\n]*\.java:\d+\)"),
+    re.compile(r"\bat [\w.$<>]+\s*\([^)\n]*:\d+:\d+\)"),
+    re.compile(r"\bat [\w.$]*<anonymous>"),
+]
+
+MAX_CODE_BLOCK_LINES = 8
+CODE_FENCE_PATTERN = re.compile(r"```(.*?)```", re.DOTALL)
+CODE_LIKE_LINE_PATTERN = re.compile(
+    r"(;|\{|\}|=>|</|/>|"
+    r"^\s*(?:def|class|function|import|from|public|private|"
+    r"return|if|for|while|const|let|var)\b)"
+)
+
+
+def _contains_control_plane_bypass(content: str) -> bool:
+    normalized = " ".join(content.lower().split())
+    return any(phrase in normalized for phrase in CONTROL_PLANE_BYPASS_PHRASES)
+
+
+def _contains_absolute_path(content: str) -> bool:
+    return any(pattern.search(content) for pattern in ABSOLUTE_PATH_PATTERNS)
+
+
+def _contains_stack_trace(content: str) -> bool:
+    return any(pattern.search(content) for pattern in STACK_TRACE_PATTERNS)
+
+
+def _nonempty_lines(text_value: str) -> list[str]:
+    return [line for line in text_value.splitlines() if line.strip()]
+
+
+def _contains_large_code_block(content: str) -> bool:
+    for match in CODE_FENCE_PATTERN.finditer(content):
+        if len(_nonempty_lines(match.group(1))) > MAX_CODE_BLOCK_LINES:
+            return True
+    code_like = sum(
+        1 for line in _nonempty_lines(content) if CODE_LIKE_LINE_PATTERN.search(line)
+    )
+    return code_like > MAX_CODE_BLOCK_LINES
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -161,6 +255,23 @@ def validate_memory_content(content: str) -> str:
     lowered = value.lower()
     if any(marker.lower() in lowered for marker in PROMPT_INJECTION_MARKERS):
         raise ValueError("memory_store.py: memory content contains unsafe instructions")
+
+    if _contains_control_plane_bypass(value):
+        raise ValueError(
+            "memory_store.py: memory content contains a control-plane bypass instruction"
+        )
+    if _contains_absolute_path(value):
+        raise ValueError(
+            "memory_store.py: memory content contains an absolute local path"
+        )
+    if _contains_stack_trace(value):
+        raise ValueError(
+            "memory_store.py: memory content appears to contain a raw stack trace"
+        )
+    if _contains_large_code_block(value):
+        raise ValueError(
+            "memory_store.py: memory content contains a large raw code block"
+        )
 
     if any(pattern.search(value) for pattern in SECRET_PATTERNS):
         raise ValueError(MEMORY_SAFETY_ERROR)
