@@ -21,6 +21,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import TestCommandQualityWarning from '@/components/TestCommandQualityWarning'
 
 interface ProjectSettingsPanelProps {
   project: Project
@@ -358,6 +359,7 @@ export default function ProjectSettingsPanel({
                 value={basic.test_command}
                 onChange={updateBasic('test_command')}
               />
+              <TestCommandQualityWarning project={project} context="settings" />
             </div>
           </div>
 

@@ -24,6 +24,7 @@ import ChunkPlanPanel from '@/components/ChunkPlanPanel'
 import FinalApprovalPanel from '@/components/FinalApprovalPanel'
 import MemoryConflictPanel from '@/components/MemoryConflictPanel'
 import PushPrPanel from '@/components/PushPrPanel'
+import TestCommandQualityWarning from '@/components/TestCommandQualityWarning'
 import ReportView from '@/components/ReportView'
 import PlanView from '@/components/PlanView'
 import useRunEvents from '@/hooks/useRunEvents'
@@ -896,6 +897,10 @@ export default function RunDetailPage() {
             </p>
           </div>
 
+          <div className="mb-3">
+            <TestCommandQualityWarning project={project} context="review" />
+          </div>
+
           {showFinalApprovalPanel && (
             <FinalApprovalPanel
               run={run}
@@ -961,6 +966,9 @@ export default function RunDetailPage() {
                 Pipeline completed successfully.
               </p>
             )}
+            <div className="mt-3">
+              <TestCommandQualityWarning project={project} context="review" />
+            </div>
           </CardContent>
         </Card>
       )}

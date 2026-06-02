@@ -83,6 +83,10 @@ export interface Project extends ExtraFields {
   status: string
   created_at?: string | null
   updated_at?: string | null
+  // Computed-on-read test command quality (#23A). Derived from test_command;
+  // not stored. Used by the UI to warn about weak/unverifiable test commands.
+  test_command_quality?: 'weak' | 'likely_test' | 'unknown' | (string & {})
+  test_command_quality_reason?: string | null
 }
 
 export interface ProjectCreateRequest {
