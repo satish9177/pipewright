@@ -107,6 +107,27 @@ class PendingScopeExpansion(BaseModel):
     created_at: str | None = None
 
 
+class TestRunValidation(BaseModel):
+    """
+    Read-only runtime test-validation evidence for a chunk (#28E).
+
+    Display-only surfacing of the verdict persisted in #28D. It never gates,
+    blocks, or changes any approval/commit/PR behavior — the future #28F
+    acknowledgement gate is the only slice that adds enforcement. Present only
+    when a verdict was recorded; otherwise the field is null (e.g. a pre-#28D
+    chunk, or one skip-completed from a checkpoint without a fresh test run).
+    """
+
+    verdict: Literal["strong", "weak", "none", "unknown"]
+    reason: str = ""
+    command_quality: str | None = None
+    counts_parsed: bool = False
+    total_tests: int | None = None
+    passed_tests: int | None = None
+    failed_tests: int | None = None
+    zero_tests_detected: bool = False
+
+
 class ChunkStatus(BaseModel):
     run_id: str
     project_id: str
@@ -124,6 +145,10 @@ class ChunkStatus(BaseModel):
     # chunk_store.get_chunk_plan_status; never affects effective scope or
     # execution — it only lets the UI surface the existing approve/reject flow.
     pending_scope_expansion: PendingScopeExpansion | None = None
+    # Read-only runtime test-validation verdict (#28E), populated from the
+    # persisted chunk test_run_* columns (#28D). None when no verdict was
+    # recorded. Display-only: never gates approval, commit, or PR.
+    test_validation: TestRunValidation | None = None
 
 
 class ChunkPlanResponse(BaseModel):

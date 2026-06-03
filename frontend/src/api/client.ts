@@ -245,6 +245,22 @@ export interface PendingScopeExpansion extends ExtraFields {
   created_at?: string | null
 }
 
+export type TestRunVerdict = 'strong' | 'weak' | 'none' | 'unknown'
+
+// Read-only runtime test-validation evidence for a chunk (#28E), populated from
+// the persisted verdict (#28D). Display-only: it never gates approval, commit,
+// or PR. Present only when a verdict was recorded; otherwise null.
+export interface TestRunValidation extends ExtraFields {
+  verdict: TestRunVerdict
+  reason: string
+  command_quality?: string | null
+  counts_parsed: boolean
+  total_tests?: number | null
+  passed_tests?: number | null
+  failed_tests?: number | null
+  zero_tests_detected: boolean
+}
+
 export interface ChunkStatus extends ExtraFields {
   run_id: string
   project_id: string
@@ -259,6 +275,8 @@ export interface ChunkStatus extends ExtraFields {
   error_message?: string | null
   // Present only when a pending scope expansion request exists for this chunk.
   pending_scope_expansion?: PendingScopeExpansion | null
+  // Present only when a runtime test verdict was recorded for this chunk (#28E).
+  test_validation?: TestRunValidation | null
 }
 
 export interface ChunkPlanResponse extends ExtraFields {

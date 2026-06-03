@@ -18,6 +18,7 @@ from backend.models.chunk import (
     ChunkPlanResponse,
     ChunkStatus,
     PendingScopeExpansion,
+    TestRunValidation,
     TriageResult,
 )
 from backend.pipeline.scope_expansion import (
@@ -55,6 +56,35 @@ def _nullable_bool(value) -> bool | None:
     return bool(value)
 
 
+_VALID_TEST_RUN_VERDICTS = {"strong", "weak", "none", "unknown"}
+
+
+def _test_validation_from_row(data: dict) -> TestRunValidation | None:
+    """
+    Build the read-only runtime test-validation view (#28E) from a chunk row's
+    persisted ``test_run_*`` columns (#28D), or ``None`` when no verdict was
+    recorded.
+
+    Display-only and fail-safe: an unrecognized/corrupt verdict value yields
+    ``None`` rather than raising, so surfacing evidence can never 500 the chunk
+    plan response.
+    """
+    verdict = data.get("test_run_verdict")
+    if verdict is None or verdict not in _VALID_TEST_RUN_VERDICTS:
+        return None
+    counts = _json_loads_dict(data.get("test_run_counts_json"))
+    return TestRunValidation(
+        verdict=verdict,
+        reason=data.get("test_run_verdict_reason") or "",
+        command_quality=data.get("test_run_command_quality"),
+        counts_parsed=bool(data.get("test_run_counts_parsed")),
+        total_tests=counts.get("total"),
+        passed_tests=counts.get("passed"),
+        failed_tests=counts.get("failed"),
+        zero_tests_detected=bool(data.get("test_run_zero_tests_detected")),
+    )
+
+
 def _chunk_row_to_status(row) -> ChunkStatus:
     data = dict(row._mapping)
     return ChunkStatus(
@@ -69,6 +99,7 @@ def _chunk_row_to_status(row) -> ChunkStatus:
         depends_on=_json_loads_list(data.get("depends_on")),
         completion_summary=data.get("completion_summary"),
         error_message=data.get("error_message"),
+        test_validation=_test_validation_from_row(data),
     )
 
 
