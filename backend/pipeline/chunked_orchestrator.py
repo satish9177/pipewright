@@ -6,6 +6,7 @@ This module executes approved chunks one at a time. It does not implement
 remote push, GitHub PR creation, or remote branch management.
 """
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -42,13 +43,23 @@ from backend.memory.conflict_scope import is_db_sensitive_run
 from backend.memory.memory_store import mark_fact_stale
 from backend.memory.repo_reality import evaluate_db_memory_conflicts
 from backend.pipeline.coder import run_coder
-from backend.pipeline.patch_applier import apply_patch_guarded, rollback_patch
+from backend.pipeline.patch_applier import (
+    apply_patch_guarded,
+    classify_patch_failure,
+    rollback_patch,
+)
+from backend.pipeline.patch_dry_run import dry_run_changes
 from backend.pipeline.patch_failures import (
     PatchFailureReport,
     PatchFailureType,
+    RecoveredPatchReviewSummary,
     build_patch_failure_report,
+    evaluate_patch_retry_eligibility,
+    patch_failure_report_from_completion_summary,
     patch_failure_report_to_completion_summary,
     record_initial_attempt,
+    record_retry_attempt,
+    recovered_patch_review_to_completion_summary,
 )
 from backend.pipeline.planner import run_planner
 from backend.pipeline.run_locks import project_repo_lock, project_repo_lock_sync
@@ -57,6 +68,7 @@ from backend.pipeline.tester import run_tests
 from backend.projects.project_context import ProjectRuntimeConfig, active_project
 from backend.projects.project_store import require_project
 from backend.repo.repo_indexer import build_repo_index, get_relevant_files
+from backend.utils.path_safety import normalize_relative_path
 
 logger = logging.getLogger(__name__)
 NO_CHANGES_MESSAGE = "Coder produced no file changes."
@@ -1540,4 +1552,493 @@ def reject_chunk_and_rollback(
             chunk_number,
             plan_status,
             reason,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Human-triggered patch retry execution (#26D2)
+#
+# Internal only — no public route wires this yet (that is #26D3). A failed chunk
+# whose stored PatchFailureReport is human-retryable (per the #26D1 eligibility
+# helper) can be re-coded against the CURRENT working tree, re-validated against
+# the UNCHANGED files_expected, applied, and tested. On success the chunk pauses
+# at the EXISTING awaiting_chunk_approval gate with a recovered_patch_review
+# marker and is committed only later through the existing approval path — never
+# here. This introduces no new chunk status, checkpoint type, or commit site,
+# never re-triages, never runs the planner, never mutates files_expected, and
+# never weakens scope_guard.
+# --------------------------------------------------------------------------- #
+
+
+def _load_chunk_failure_report(
+    plan_status: ChunkPlanResponse,
+    chunk_number: int,
+) -> PatchFailureReport | None:
+    """
+    Parse a chunk's stored completion_summary into a PatchFailureReport.
+
+    Returns None for a missing/malformed/non-failure summary (e.g. a normal
+    success summary or a recovered_patch_review marker) so the eligibility helper
+    rejects it safely. Pure read; never raises.
+    """
+    chunk = next(
+        (item for item in plan_status.chunks if item.chunk_number == chunk_number),
+        None,
+    )
+    if chunk is None or not chunk.completion_summary:
+        return None
+    raw = chunk.completion_summary
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return None
+    return patch_failure_report_from_completion_summary(value)
+
+
+def _surface_files_expected_for_edit(
+    plan: PlannerHandoff,
+    files_expected: list[str],
+) -> PlannerHandoff:
+    """
+    Return a copy of ``plan`` with every approved file surfaced to the coder via
+    files_to_modify (#26D2 audit correction #1).
+
+    files_expected paths are removed from files_to_read (which refuses files over
+    200 lines) and unioned into files_to_modify (which tolerates larger files for
+    edit grounding). This is prompt context only — it grants NO write authority;
+    the write scope stays files_expected, enforced by scope_guard and
+    apply_patch_guarded. Paths that cannot be normalized are left untouched.
+    """
+    def _norm(path: str) -> str | None:
+        try:
+            return normalize_relative_path(path)
+        except Exception:
+            return None
+
+    expected_norm = {n for n in (_norm(p) for p in files_expected) if n is not None}
+    new_read = [
+        path for path in plan.files_to_read if _norm(path) not in expected_norm
+    ]
+    new_modify = list(plan.files_to_modify)
+    modify_norm = {n for n in (_norm(p) for p in new_modify) if n is not None}
+    for path in files_expected:
+        normalized = _norm(path)
+        if normalized is not None and normalized not in modify_norm:
+            new_modify.append(path)
+            modify_norm.add(normalized)
+    return plan.model_copy(
+        update={"files_to_read": new_read, "files_to_modify": new_modify}
+    )
+
+
+def _retry_plan_for_chunk(run_id: str, chunk: ChunkDefinition) -> PlannerHandoff:
+    """
+    Build the plan a retry feeds to the coder WITHOUT re-running the planner.
+
+    Reuses the chunk's existing plan checkpoint when present; otherwise builds a
+    constrained fallback from the chunk definition alone (no new scope, no files
+    beyond files_expected). In both cases the approved files_expected are made
+    visible through files_to_modify so the coder can re-ground targeted edits
+    against the current on-disk contents.
+    """
+    checkpoint = load_chunk_step_checkpoint(run_id, chunk.chunk_number, "plan")
+    if checkpoint:
+        try:
+            plan = PlannerHandoff.model_validate(checkpoint["output"])
+            return _surface_files_expected_for_edit(plan, chunk.files_expected)
+        except Exception:
+            pass
+
+    fallback = PlannerHandoff(
+        run_id=run_id,
+        feature_description=chunk.description,
+        goal=chunk.description,
+        steps=[
+            f"Regenerate the change for chunk {chunk.chunk_number} against the "
+            "current file contents.",
+        ],
+        files_to_create=[],
+        files_to_modify=[],
+        files_to_read=[],
+        out_of_scope=[],
+        risks=[],
+        suggested_memory_entries=[],
+    )
+    return _surface_files_expected_for_edit(fallback, chunk.files_expected)
+
+
+def _retry_ineligible_result(
+    run_id: str,
+    chunk_number: int,
+    decision,
+) -> dict:
+    """Safe, side-effect-free result for a rejected retry (no work performed)."""
+    print(
+        f"[CHUNKED] Retry ineligible | run_id={run_id} | "
+        f"chunk={chunk_number} | reason={decision.reason}"
+    )
+    return {
+        "status": "retry_ineligible",
+        "run_id": run_id,
+        "chunk_number": chunk_number,
+        "eligible": False,
+        "reason": decision.reason,
+        "status_code": decision.status_code,
+    }
+
+
+def _persist_retry_patch_failure(
+    run_id: str,
+    chunk_number: int,
+    report: PatchFailureReport,
+    prior_attempts: list,
+    *,
+    test_outcome: str = "not_run",
+) -> dict:
+    """
+    Persist a fresh patch_failure summary for a failed retry attempt.
+
+    Carries the prior attempt history forward and appends exactly ONE human
+    retry attempt (#26D1 record_retry_attempt) with freshly minted ids, then
+    marks the chunk failed and emits the slim stage_failed event. Mirrors
+    _fail_chunk_with_report but for a human retry. Never commits; never mutates
+    files_expected.
+    """
+    carried = report.model_copy(update={"attempts": list(prior_attempts)})
+    enriched = record_retry_attempt(
+        carried,
+        failure_report_id=str(uuid.uuid4()),
+        attempt_id=str(uuid.uuid4()),
+        started_at=_utc_now(),
+        recovery_mode="human",
+        failure_type=report.failure_type,
+        failed_step=report.failed_step,
+        changed_files_attempted=list(report.changed_files_attempted),
+        changed_files_actual=list(report.changed_files_actual),
+        scope_ok=report.failure_type != PatchFailureType.SCOPE_VIOLATION,
+        test_outcome=test_outcome,
+        outcome=(
+            "manual_intervention"
+            if report.manual_intervention_needed
+            else "failed"
+        ),
+        human_decision="retry",
+        working_tree_clean=report.working_tree_clean,
+        rollback_performed=report.rollback_performed,
+    )
+    save_chunk_completion_summary(
+        run_id,
+        chunk_number,
+        patch_failure_report_to_completion_summary(enriched),
+    )
+    update_chunk_status(run_id, chunk_number, "failed", report.message)
+    _update_run_status(
+        run_id, "failed", f"chunk_{chunk_number}_failed", chunk_number
+    )
+    _publish_safe(Event(
+        run_id=run_id,
+        chunk_number=chunk_number,
+        kind="stage_failed",
+        stage="patch",
+        level="error",
+        message=report.message,
+        data={
+            "kind": "patch_failure",
+            "failure_type": report.failure_type.value,
+            "chunk_number": chunk_number,
+            "failed_step": report.failed_step,
+            "rollback_performed": report.rollback_performed,
+            "working_tree_clean": report.working_tree_clean,
+            "manual_intervention_needed": report.manual_intervention_needed,
+            "stale_index_hint": report.stale_index_hint,
+            "suggested_actions": report.suggested_actions,
+            "changed_files_attempted_count": len(report.changed_files_attempted),
+            "changed_files_actual_count": len(report.changed_files_actual),
+        },
+    ))
+    return {
+        "status": "failed",
+        "run_id": run_id,
+        "failed_chunk": chunk_number,
+        "error": report.message,
+        "failure_report_id": enriched.failure_report_id,
+    }
+
+
+def _pause_recovered_chunk(
+    run_id: str,
+    chunk: ChunkDefinition,
+    code: CoderHandoff,
+    branch_name: str,
+    original_report: PatchFailureReport,
+) -> dict:
+    """
+    Store the recovered_patch_review marker and pause at the existing chunk
+    approval gate (#26D2 success path).
+
+    Appends a human "recovered" attempt (outcome="recovered",
+    test_outcome="passed") onto the prior attempt history and stores a
+    RecoveredPatchReviewSummary in completion_summary, so the summary is NOT read
+    back as a patch_failure. The regenerated patch is on disk but uncommitted; it
+    is committed only later through the existing approval path, which loads the
+    newest code checkpoint. No commit happens here.
+    """
+    recovery_attempt_id = str(uuid.uuid4())
+    touched = _files_touched(code)
+    enriched = record_retry_attempt(
+        original_report,
+        failure_report_id=str(uuid.uuid4()),
+        attempt_id=recovery_attempt_id,
+        started_at=_utc_now(),
+        recovery_mode="human",
+        failure_type=None,
+        failed_step=None,
+        changed_files_attempted=touched,
+        changed_files_actual=touched,
+        scope_ok=True,
+        test_outcome="passed",
+        outcome="recovered",
+        human_decision="retry",
+        # The regenerated patch is applied but not yet committed, so the working
+        # tree is intentionally not clean at the pause point.
+        working_tree_clean=False,
+        rollback_performed=False,
+    )
+    summary = RecoveredPatchReviewSummary(
+        failure_report_id=enriched.failure_report_id,
+        recovery_attempt_id=recovery_attempt_id,
+        attempts=enriched.attempts,
+    )
+    save_chunk_completion_summary(
+        run_id,
+        chunk.chunk_number,
+        recovered_patch_review_to_completion_summary(summary),
+    )
+    return _pause_for_chunk_approval(run_id, chunk, code, branch_name)
+
+
+async def _execute_retry_attempt(
+    run_id: str,
+    chunk_number: int,
+    chunk: ChunkDefinition,
+    plan_status: ChunkPlanResponse,
+    project_runtime: ProjectRuntimeConfig,
+    target_repo_path: str,
+    prior_attempts: list,
+    branch_name: str,
+    report: PatchFailureReport,
+) -> dict:
+    """
+    Regenerate, validate, apply, and test a retry inside the active project
+    context (#26D2 audit correction #2: coder/apply/tester read the active
+    project's repo path and test command).
+
+    Returns the awaiting-approval result on success or a failed result for a
+    modeled failure (scope/dry-run/apply/test). Raises only on a truly
+    unexpected error; the caller turns that into a failed chunk.
+    """
+    with active_project(project_runtime):
+        plan = _retry_plan_for_chunk(run_id, chunk)
+        code = await run_coder(
+            plan,
+            run_id,
+            chunk_number=chunk_number,
+            project_id=plan_status.project_id,
+        )
+
+        # Pre-apply scope guard against the UNCHANGED files_expected.
+        try:
+            assert_files_in_scope(code, chunk.files_expected)
+        except ScopeDriftError as drift:
+            scope_report = build_patch_failure_report(
+                PatchFailureType.SCOPE_VIOLATION,
+                technical_details=str(drift),
+                changed_files_attempted=[c.path for c in code.files_changed],
+                allowed_files=chunk.files_expected,
+                working_tree_clean=local_git.is_working_tree_clean(
+                    target_repo_path
+                ),
+                chunk_number=chunk_number,
+                failed_step="patch",
+            )
+            return _persist_retry_patch_failure(
+                run_id, chunk_number, scope_report, prior_attempts
+            )
+
+        # Zero-mutation pre-apply validation (#26B). On failure nothing is
+        # written, so apply/tests are skipped entirely.
+        dry = dry_run_changes(code, target_repo_path)
+        if not dry.ok:
+            failure_type = classify_patch_failure(
+                RuntimeError(dry.error_message or ""), phase="apply"
+            )
+            dry_report = build_patch_failure_report(
+                failure_type,
+                technical_details=dry.error_message,
+                changed_files_attempted=[c.path for c in code.files_changed],
+                allowed_files=chunk.files_expected,
+                working_tree_clean=local_git.is_working_tree_clean(
+                    target_repo_path
+                ),
+                chunk_number=chunk_number,
+                failed_step="patch",
+            )
+            return _persist_retry_patch_failure(
+                run_id, chunk_number, dry_report, prior_attempts
+            )
+
+        outcome = apply_patch_guarded(
+            code,
+            run_id,
+            chunk_number=chunk_number,
+            files_expected=chunk.files_expected,
+        )
+        if not outcome.success:
+            return _persist_retry_patch_failure(
+                run_id, chunk_number, outcome.failure, prior_attempts
+            )
+
+        # tester.py rolls back on failure; do NOT roll back again here.
+        test_result = run_tests(
+            outcome.patch_result, run_id, chunk_number=chunk_number
+        )
+        if not test_result.passed:
+            clean = local_git.is_working_tree_clean(target_repo_path)
+            test_report = build_patch_failure_report(
+                PatchFailureType.TEST_FAILURE_AFTER_APPLY,
+                technical_details=getattr(test_result, "output", None),
+                changed_files_attempted=[c.path for c in code.files_changed],
+                allowed_files=chunk.files_expected,
+                rollback_performed=True,
+                working_tree_clean=clean,
+                chunk_number=chunk_number,
+                failed_step="test",
+            )
+            return _persist_retry_patch_failure(
+                run_id,
+                chunk_number,
+                test_report,
+                prior_attempts,
+                test_outcome="failed",
+            )
+
+        # Success: pause at the existing approval gate. No commit here; the
+        # existing approval path commits the newest code checkpoint later.
+        return _pause_recovered_chunk(
+            run_id, chunk, code, branch_name, report
+        )
+
+
+async def _retry_failed_chunk_locked(
+    run_id: str,
+    chunk_number: int,
+    failure_report_id: str,
+    plan_status: ChunkPlanResponse,
+) -> dict:
+    """
+    Re-run a failed, human-retryable chunk against the current tree (#26D2).
+
+    Assumes the project repo lock is already held by the caller. Validates
+    eligibility (#26D1), reuses the existing plan (never re-plans), regenerates
+    the coder handoff, re-validates scope + dry-run, applies, and tests. On any
+    failure it persists a fresh patch_failure report with an appended human
+    attempt and marks the chunk failed. On success it pauses at the existing
+    awaiting_chunk_approval gate with a recovered_patch_review marker and does
+    NOT commit.
+
+    Never calls _execute_single_chunk, never runs the planner, never mutates
+    files_expected, never weakens scope_guard, never commits.
+    """
+    if plan_status.chunk_plan_status != "approved":
+        raise RuntimeError(
+            f"chunked_orchestrator.py: chunk plan is not approved. "
+            f"run_id={run_id} | status={plan_status.chunk_plan_status}"
+        )
+
+    definitions = _definition_by_number(plan_status)
+    chunk = definitions.get(chunk_number)
+    chunk_status = next(
+        (item for item in plan_status.chunks if item.chunk_number == chunk_number),
+        None,
+    )
+    if chunk is None or chunk_status is None:
+        raise RuntimeError(
+            f"chunked_orchestrator.py: chunk not found for retry. "
+            f"run_id={run_id} | chunk={chunk_number}"
+        )
+
+    project, project_runtime = _project_runtime_for_plan(plan_status)
+    target_repo_path = project["repo_path"]
+    _validate_target_repo(target_repo_path, require_clean=False)
+
+    # Eligibility (#26D1): a pure decision over already-computed observations. No
+    # coder/apply/test/disk work happens unless this passes.
+    report = _load_chunk_failure_report(plan_status, chunk_number)
+    status_by_number = _status_by_number(plan_status)
+    dependencies_met = not _unmet_dependencies(chunk, status_by_number)
+    working_tree_clean = local_git.is_working_tree_clean(target_repo_path)
+    decision = evaluate_patch_retry_eligibility(
+        report,
+        requested_failure_report_id=failure_report_id,
+        dependencies_met=dependencies_met,
+        working_tree_clean=working_tree_clean,
+        chunk_status=chunk_status.status,
+    )
+    if not decision.eligible:
+        return _retry_ineligible_result(run_id, chunk_number, decision)
+
+    # report is non-None here (eligibility rejects a None/missing report).
+    prior_attempts = list(report.attempts)
+    branch_name = f"pipewright/{run_id[:8]}"
+
+    # Enter retry execution. Mark running so a crash leaves a resumable chunk and
+    # so the "must be failed" eligibility guard cannot pass twice concurrently.
+    update_chunk_status(run_id, chunk_number, "running")
+    _update_run_status(
+        run_id, "running_chunks", f"chunk_{chunk_number}_retry", chunk_number
+    )
+
+    # Execute the regeneration. An unexpected raise (e.g. the coder LLM or the
+    # test subprocess failing hard) must still leave the chunk failed, not stuck
+    # running — mirroring the orchestrator's own execution guard
+    # (_execute_approved_chunks_locked).
+    try:
+        return await _execute_retry_attempt(
+            run_id,
+            chunk_number,
+            chunk,
+            plan_status,
+            project_runtime,
+            target_repo_path,
+            prior_attempts,
+            branch_name,
+            report,
+        )
+    except Exception as error:
+        return _fail_chunk(run_id, chunk_number, error)
+
+
+async def retry_failed_chunk(
+    run_id: str,
+    chunk_number: int,
+    failure_report_id: str,
+) -> dict:
+    """
+    Internal entry point for a human-triggered patch retry (#26D2).
+
+    Acquires the async project repo lock and delegates to
+    _retry_failed_chunk_locked. No public route calls this yet (that is #26D3).
+
+    The only pre-lock read is the run's project_id, which is the immutable lock
+    key (it never changes for a run, and the lock cannot be acquired without it).
+    All eligibility-relevant state — chunk status, the stored failure report, its
+    failure_report_id, and the human attempt history — is loaded fresh *inside*
+    the lock so a concurrent double-submit cannot bypass MAX_HUMAN_RETRIES on a
+    stale snapshot (TOCTOU fix, #26D2).
+    """
+    project_id = get_chunk_plan_status(run_id).project_id
+    async with project_repo_lock(project_id):
+        plan_status = get_chunk_plan_status(run_id)
+        return await _retry_failed_chunk_locked(
+            run_id, chunk_number, failure_report_id, plan_status
         )
