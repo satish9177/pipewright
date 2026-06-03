@@ -160,6 +160,15 @@ CREATE TABLE IF NOT EXISTS chunks (
     previous_chunks_context TEXT,
     completion_summary TEXT,
     error_message TEXT,
+    -- Display-only runtime test-validation evidence (#28D). Recorded after the
+    -- chunk's test command runs; NEVER gates, blocks, or changes run outcome.
+    -- All nullable: chunks that never ran tests (or pre-#28D rows) load as NULL.
+    test_run_verdict TEXT,                 -- strong / weak / none / unknown
+    test_run_verdict_reason TEXT,
+    test_run_command_quality TEXT,         -- weak / likely_test / unknown (#23A)
+    test_run_counts_parsed INTEGER,        -- 0/1, nullable
+    test_run_zero_tests_detected INTEGER,  -- 0/1, nullable
+    test_run_counts_json TEXT,             -- json {total,passed,failed} or null
     started_at DATETIME,
     completed_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,

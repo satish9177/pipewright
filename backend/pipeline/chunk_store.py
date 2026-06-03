@@ -25,6 +25,7 @@ from backend.pipeline.scope_expansion import (
     compute_effective_files_expected,
     is_in_force,
 )
+from backend.pipeline.test_run_validation import TestRunValidationResult
 
 
 def _json_loads_list(value: str | None) -> list:
@@ -35,6 +36,23 @@ def _json_loads_list(value: str | None) -> list:
         return parsed if isinstance(parsed, list) else []
     except Exception:
         return []
+
+
+def _json_loads_dict(value: str | None) -> dict:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _nullable_bool(value) -> bool | None:
+    """Map a nullable 0/1 SQLite int back to bool, preserving NULL as None."""
+    if value is None:
+        return None
+    return bool(value)
 
 
 def _chunk_row_to_status(row) -> ChunkStatus:
@@ -459,6 +477,106 @@ def save_chunk_completion_summary(
     except Exception as error:
         raise RuntimeError(
             f"chunk_store.py: save_chunk_completion_summary failed. "
+            f"run_id={run_id} | chunk_number={chunk_number} | error={error}"
+        )
+
+
+def save_chunk_test_run_verdict(
+    run_id: str,
+    chunk_number: int,
+    result: TestRunValidationResult,
+) -> None:
+    """
+    Persist the display-only runtime test-validation verdict on the chunk (#28D).
+
+    This is purely additive evidence: it writes only the dedicated
+    ``test_run_*`` columns and never touches ``status``, ``completion_summary``,
+    approval gates, or any run/chunk outcome. It does not gate, block, commit, or
+    roll anything back. Surfacing (#28E) and enforcement (#28F) are later slices.
+
+    Counts are stored as a small JSON blob ({total,passed,failed}) mirroring the
+    pure classifier's parsed evidence; ``None`` counts are preserved as JSON null,
+    so "absence of a count" is never confused with "zero tests".
+    """
+    try:
+        counts_json = json.dumps({
+            "total": result.total_tests,
+            "passed": result.passed_tests,
+            "failed": result.failed_tests,
+        })
+        init_db()
+        with engine.begin() as conn:
+            conn.execute(text("""
+                UPDATE chunks
+                SET test_run_verdict = :verdict,
+                    test_run_verdict_reason = :reason,
+                    test_run_command_quality = :command_quality,
+                    test_run_counts_parsed = :counts_parsed,
+                    test_run_zero_tests_detected = :zero_tests_detected,
+                    test_run_counts_json = :counts_json
+                WHERE run_id = :run_id AND chunk_number = :chunk_number
+            """), {
+                "verdict": result.verdict.value,
+                "reason": result.reason,
+                "command_quality": result.command_quality,
+                "counts_parsed": 1 if result.counts_parsed else 0,
+                "zero_tests_detected": 1 if result.zero_tests_detected else 0,
+                "counts_json": counts_json,
+                "run_id": run_id,
+                "chunk_number": chunk_number,
+            })
+    except Exception as error:
+        raise RuntimeError(
+            f"chunk_store.py: save_chunk_test_run_verdict failed. "
+            f"run_id={run_id} | chunk_number={chunk_number} | error={error}"
+        )
+
+
+def get_chunk_test_run_verdict(
+    run_id: str,
+    chunk_number: int,
+) -> dict | None:
+    """
+    Read back the display-only runtime test verdict for a chunk (#28D).
+
+    Returns ``None`` when the chunk does not exist or has no recorded verdict
+    (e.g. a pre-#28D chunk, or one skip-completed from a checkpoint without a
+    fresh test run). Read-only; surfaces evidence for tests and later #28E.
+    """
+    try:
+        init_db()
+        with engine.connect() as conn:
+            row = conn.execute(text("""
+                SELECT test_run_verdict, test_run_verdict_reason,
+                       test_run_command_quality, test_run_counts_parsed,
+                       test_run_zero_tests_detected, test_run_counts_json
+                FROM chunks
+                WHERE run_id = :run_id AND chunk_number = :chunk_number
+            """), {
+                "run_id": run_id,
+                "chunk_number": chunk_number,
+            }).fetchone()
+        if row is None:
+            return None
+        data = dict(row._mapping)
+        if data.get("test_run_verdict") is None:
+            return None
+        counts = _json_loads_dict(data.get("test_run_counts_json"))
+        return {
+            "verdict": data["test_run_verdict"],
+            "reason": data.get("test_run_verdict_reason"),
+            "command_quality": data.get("test_run_command_quality"),
+            "counts_parsed": _nullable_bool(data.get("test_run_counts_parsed")),
+            "zero_tests_detected": _nullable_bool(
+                data.get("test_run_zero_tests_detected")
+            ),
+            "total_tests": counts.get("total"),
+            "passed_tests": counts.get("passed"),
+            "failed_tests": counts.get("failed"),
+        }
+    except Exception as error:
+        raise RuntimeError(
+            f"chunk_store.py: get_chunk_test_run_verdict failed. "
             f"run_id={run_id} | chunk_number={chunk_number} | error={error}"
         )
 

@@ -272,6 +272,38 @@ def _migrate_db(conn) -> None:
                 "ALTER TABLE approval_gates ADD COLUMN approval_type TEXT DEFAULT 'legacy'",
             ),
             (
+                # Display-only runtime test-validation evidence (#28D). Nullable,
+                # no DEFAULT: existing chunks load as NULL and are never gated.
+                "chunks",
+                "test_run_verdict",
+                "ALTER TABLE chunks ADD COLUMN test_run_verdict TEXT",
+            ),
+            (
+                "chunks",
+                "test_run_verdict_reason",
+                "ALTER TABLE chunks ADD COLUMN test_run_verdict_reason TEXT",
+            ),
+            (
+                "chunks",
+                "test_run_command_quality",
+                "ALTER TABLE chunks ADD COLUMN test_run_command_quality TEXT",
+            ),
+            (
+                "chunks",
+                "test_run_counts_parsed",
+                "ALTER TABLE chunks ADD COLUMN test_run_counts_parsed INTEGER",
+            ),
+            (
+                "chunks",
+                "test_run_zero_tests_detected",
+                "ALTER TABLE chunks ADD COLUMN test_run_zero_tests_detected INTEGER",
+            ),
+            (
+                "chunks",
+                "test_run_counts_json",
+                "ALTER TABLE chunks ADD COLUMN test_run_counts_json TEXT",
+            ),
+            (
                 "memory_suggestions",
                 "source_run_id",
                 "ALTER TABLE memory_suggestions ADD COLUMN source_run_id TEXT",

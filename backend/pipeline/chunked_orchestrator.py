@@ -38,6 +38,7 @@ from backend.pipeline.chunk_store import (
     get_chunk_plan_status,
     get_previous_chunks_context,
     save_chunk_completion_summary,
+    save_chunk_test_run_verdict,
 )
 from backend.memory.conflict_scope import is_db_sensitive_run
 from backend.memory.memory_store import mark_fact_stale
@@ -79,8 +80,13 @@ from backend.pipeline.scope_expansion_store import (
     update_scope_expansion_request_status,
 )
 from backend.pipeline.scope_guard import ScopeDriftError, assert_files_in_scope
+from backend.pipeline.test_run_validation import classify_test_run
 from backend.pipeline.tester import run_tests
-from backend.projects.project_context import ProjectRuntimeConfig, active_project
+from backend.projects.project_context import (
+    ProjectRuntimeConfig,
+    active_project,
+    get_test_command,
+)
 from backend.projects.project_store import require_project
 from backend.repo.repo_indexer import build_repo_index, get_relevant_files
 from backend.utils.path_safety import normalize_relative_path
@@ -1149,6 +1155,39 @@ def _verify_completed_checkpoint_safe(
         )
 
 
+def _persist_test_run_verdict(run_id: str, chunk_number: int, test_result) -> None:
+    """
+    #28D: compute and persist the DISPLAY-ONLY runtime test-validation verdict.
+
+    Joins the configured test command (Signal A) with the run's exit signal and
+    output (Signal B) via the pure ``classify_test_run`` classifier, then records
+    the verdict on the chunk. This is evidence only: it never gates, blocks,
+    commits, rolls back, or changes whether the chunk/run passes. Pass/fail stays
+    exit-code based and is decided entirely by ``test_result.passed`` elsewhere.
+
+    Best-effort and fully swallowed on error — a problem recording evidence must
+    never fail a chunk or perturb the #26/#27 paths. Called inside the active
+    project context so ``get_test_command()`` resolves the same command the tester
+    used. ``exit_code`` is derived from ``test_result.passed`` (the tester sets it
+    from the real returncode == 0); the classifier only distinguishes zero from
+    non-zero, so this is faithful. Output is the #28C tail-preserving preview, so
+    a summary at the end of long output is still classifiable.
+    """
+    try:
+        verdict = classify_test_run(
+            get_test_command(),
+            0 if getattr(test_result, "passed", False) else 1,
+            getattr(test_result, "output", None),
+        )
+        save_chunk_test_run_verdict(run_id, chunk_number, verdict)
+    except Exception as error:
+        logger.warning(
+            "[CHUNKED] test verdict persistence skipped (display-only) | "
+            "run_id=%s | chunk=%s | error=%s",
+            run_id, chunk_number, error,
+        )
+
+
 async def _execute_single_chunk(
     run_id: str,
     project_id: str,
@@ -1248,6 +1287,11 @@ async def _execute_single_chunk(
 
     patch = outcome.patch_result
     test_result = run_tests(patch, run_id, chunk_number=chunk_number)
+
+    # #28D: record the display-only runtime test verdict for BOTH pass and fail,
+    # before any branch decision. This writes only the chunk's test_run_* columns
+    # and cannot change the outcome below (pass/fail stays exit-code based).
+    _persist_test_run_verdict(run_id, chunk_number, test_result)
 
     if not test_result.passed:
         # tester.py already attempted rollback on failure; verify cleanliness
