@@ -34,6 +34,7 @@ from backend.pipeline.chunked_orchestrator import (
     approve_chunk_and_commit,
     execute_approved_chunks,
     reject_chunk_and_rollback,
+    retry_failed_chunk,
     resume_chunked_pipeline,
 )
 from backend.pipeline.pr_orchestrator import push_and_create_pr
@@ -599,6 +600,17 @@ class RejectFinalApprovalRequest(BaseModel):
 
 class RejectChunkApprovalRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=REJECTION_REASON_MAX_LENGTH)
+
+
+class RetryChunkRequest(BaseModel):
+    failure_report_id: str = Field(min_length=1)
+
+    @field_validator("failure_report_id")
+    @classmethod
+    def failure_report_id_must_not_be_blank(cls, value: str) -> str:
+        if _is_blank(value):
+            raise ValueError("Field must not be blank")
+        return value.strip()
 
 
 class RejectMemoryConflictRequest(BaseModel):
@@ -1491,6 +1503,37 @@ def reject_chunk_route(
     try:
         _ensure_mutating_run(run_id)
         return reject_chunk_and_rollback(run_id, chunk_number, request.reason)
+    except ProjectRepoLockError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@router.post("/runs/{run_id}/chunks/{chunk_number}/retry")
+async def retry_chunk_route(
+    run_id: str,
+    chunk_number: int,
+    request: RetryChunkRequest,
+):
+    try:
+        _ensure_mutating_run(run_id)
+        result = await retry_failed_chunk(
+            run_id,
+            chunk_number,
+            request.failure_report_id,
+        )
+        if (
+            isinstance(result, dict)
+            and result.get("status") == "retry_ineligible"
+            and isinstance(result.get("status_code"), int)
+        ):
+            return JSONResponse(
+                status_code=result["status_code"],
+                content=result,
+            )
+        return result
     except ProjectRepoLockError as error:
         raise HTTPException(status_code=409, detail=str(error))
     except ValueError as error:
