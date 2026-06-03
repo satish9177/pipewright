@@ -31,6 +31,7 @@ from backend.pipeline.chunk_store import (
 )
 from backend.models.chunk import TriageResult
 from backend.pipeline.chunked_orchestrator import (
+    approve_and_retry_scope_expansion,
     approve_chunk_and_commit,
     execute_approved_chunks,
     reject_chunk_and_rollback,
@@ -38,6 +39,7 @@ from backend.pipeline.chunked_orchestrator import (
     resume_chunked_pipeline,
     settle_run_after_scope_expansion_reject,
 )
+from backend.pipeline.scope_expansion import ScopeExpansionValidationError
 from backend.pipeline.scope_expansion_store import (
     ScopeExpansionConflictError,
     reject_scope_expansion_request,
@@ -625,6 +627,15 @@ class RejectMemoryConflictRequest(BaseModel):
 class RejectScopeExpansionRequest(BaseModel):
     # Optional reason, matching the other reject endpoints in this module. A blank
     # reason is stored as a safe default by the store layer.
+    reason: str | None = Field(default=None, max_length=REJECTION_REASON_MAX_LENGTH)
+
+
+class ApproveScopeExpansionRequest(BaseModel):
+    # The human-approved expanded allowlist (a subset of the request's untrusted
+    # requested_files). Left unconstrained here so the store/pure-validation layer
+    # is the single source of truth for emptiness/safety (an empty or unsafe set
+    # yields a 422 from validate_approved_files, keeping the request pending).
+    approved_files: list[str] = Field(default_factory=list)
     reason: str | None = Field(default=None, max_length=REJECTION_REASON_MAX_LENGTH)
 
 
@@ -1555,6 +1566,66 @@ def reject_scope_expansion_route(
             "status": "scope_expansion_rejected",
             "request": rejected.model_dump(),
         }
+    except ScopeExpansionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    except ProjectRepoLockError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@router.post("/runs/{run_id}/chunks/{chunk_number}/scope-expansion/{request_id}/approve")
+async def approve_scope_expansion_route(
+    run_id: str,
+    chunk_number: int,
+    request_id: str,
+    request: ApproveScopeExpansionRequest,
+):
+    """
+    Approve a pending scope expansion request and re-drive the chunk retry under
+    the amended effective scope (#27E).
+
+    Scope approval is NOT code approval (design §21): it only authorizes retrying
+    under a wider allowlist. A successful expanded retry still pauses at the
+    existing awaiting_chunk_approval gate and is committed only later through the
+    unchanged approval path — this route never commits and never auto-merges.
+
+    The single idempotent endpoint: a re-click after a crash between
+    `approved` and the retry write re-drives the retry rather than rejecting it
+    (crash-window idempotency, §14).
+
+    Error mapping (a side-effect-free precheck failure keeps the request pending
+    and mutates nothing):
+      - unknown request, or request not under this run/chunk -> 404
+      - non-pending/non-redrivable, stale, dirty tree,
+        not-failed chunk, manual intervention                -> 409
+      - approved_files validation / ineligibility (422 reasons) -> 422
+      - wrong/missing/undeterminable branch                  -> 409 (verify-only)
+    """
+    try:
+        _ensure_mutating_run(run_id)
+        result = await approve_and_retry_scope_expansion(
+            run_id,
+            chunk_number,
+            request_id,
+            request.approved_files,
+            reason=request.reason,
+        )
+        # Branch precheck surfaces a side-effect-free retry_ineligible dict; map
+        # its status_code (409) exactly as the #26 retry route does.
+        if (
+            isinstance(result, dict)
+            and result.get("status") == "retry_ineligible"
+            and isinstance(result.get("status_code"), int)
+        ):
+            return JSONResponse(status_code=result["status_code"], content=result)
+        return result
+    # ScopeExpansionValidationError is a ValueError subclass; it MUST be caught
+    # before the generic ValueError (404) so validation maps to 422.
+    except ScopeExpansionValidationError as error:
+        raise HTTPException(status_code=422, detail=str(error))
     except ScopeExpansionConflictError as error:
         raise HTTPException(status_code=409, detail=str(error))
     except ProjectRepoLockError as error:
