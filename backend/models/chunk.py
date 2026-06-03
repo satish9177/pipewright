@@ -126,6 +126,22 @@ class TestRunValidation(BaseModel):
     passed_tests: int | None = None
     failed_tests: int | None = None
     zero_tests_detected: bool = False
+    # Read-only acknowledgement state for the #28F final-approval gate (#28G).
+    # These describe the EXISTING backend gate; they add no new enforcement. The
+    # gate (test_validation_ack_store) remains the source of truth — the frontend
+    # uses these only to render the acknowledgement prompt/confirmation and to
+    # disable the final-approval button hopefully before the backend would 409.
+    #   requires_acknowledgement: this verdict category requires acknowledgement
+    #     before final approval (true only for weak/none).
+    #   acknowledgement_status: whether that requirement is currently satisfied,
+    #     bound to the chunk's current diff hash.
+    # Defaults are the safe "nothing required / nothing to do" values, so a chunk
+    # plan built without the ack overlay (any non-final read path) never wrongly
+    # claims an acknowledgement is outstanding.
+    requires_acknowledgement: bool = False
+    acknowledgement_status: Literal[
+        "not_required", "missing", "current", "stale"
+    ] = "not_required"
 
 
 class ChunkStatus(BaseModel):

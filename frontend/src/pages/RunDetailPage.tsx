@@ -22,6 +22,7 @@ import RunStatusBadge from '@/components/RunStatusBadge'
 import EventLog from '@/components/EventLog'
 import ChunkPlanPanel from '@/components/ChunkPlanPanel'
 import FinalApprovalPanel from '@/components/FinalApprovalPanel'
+import TestValidationAckPanel from '@/components/TestValidationAckPanel'
 import MemoryConflictPanel from '@/components/MemoryConflictPanel'
 import PushPrPanel from '@/components/PushPrPanel'
 import TestCommandQualityWarning from '@/components/TestCommandQualityWarning'
@@ -777,6 +778,18 @@ export default function RunDetailPage() {
     run.status === 'awaiting_memory_conflict_approval'
   const showFinalApprovalPanel = run.status === 'awaiting_final_approval'
   const showPushPrPanel = shouldShowPushPrPanel(run.status, hasPrData)
+  // #28G: pre-disable Approve Final when any chunk's weak/none verdict is not
+  // acknowledged against the current diff. The backend #28F gate stays the
+  // source of truth; this only avoids sending the user into an avoidable 409.
+  const acknowledgementBlocking = Boolean(
+    chunkPlan?.chunks?.some(chunk => {
+      const status = chunk.test_validation?.acknowledgement_status
+      return (
+        chunk.test_validation?.requires_acknowledgement === true &&
+        (status === 'missing' || status === 'stale')
+      )
+    }),
+  )
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
@@ -1008,17 +1021,36 @@ export default function RunDetailPage() {
           </div>
 
           {showFinalApprovalPanel && (
-            <FinalApprovalPanel
-              run={run}
-              hasPendingFinalGate={Boolean(pendingFinalGate)}
-              isCheckingFinalGate={gatesLoading}
-              isApproving={approveFinalApprovalMutation.isPending}
-              isRejecting={rejectFinalApprovalMutation.isPending}
-              message={finalApprovalMessage}
-              error={finalApprovalError}
-              onApprove={() => approveFinalApprovalMutation.mutate()}
-              onReject={(reason) => rejectFinalApprovalMutation.mutate(reason)}
-            />
+            <>
+              {chunkPlan && (
+                <TestValidationAckPanel
+                  runId={runId!}
+                  plan={chunkPlan}
+                  onAcknowledged={() => {
+                    // Refresh run/chunks/gates so acknowledgement_status and the
+                    // Approve-Final disabled state recompute, matching the
+                    // invalidation used by the other mutations on this page.
+                    queryClient.invalidateQueries({ queryKey: ['run', runId] })
+                    queryClient.invalidateQueries({
+                      queryKey: ['runChunks', runId],
+                    })
+                    queryClient.invalidateQueries({ queryKey: ['gates'] })
+                  }}
+                />
+              )}
+              <FinalApprovalPanel
+                run={run}
+                hasPendingFinalGate={Boolean(pendingFinalGate)}
+                isCheckingFinalGate={gatesLoading}
+                isApproving={approveFinalApprovalMutation.isPending}
+                isRejecting={rejectFinalApprovalMutation.isPending}
+                message={finalApprovalMessage}
+                error={finalApprovalError}
+                acknowledgementBlocking={acknowledgementBlocking}
+                onApprove={() => approveFinalApprovalMutation.mutate()}
+                onReject={(reason) => rejectFinalApprovalMutation.mutate(reason)}
+              />
+            </>
           )}
 
           {showPushPrPanel && (

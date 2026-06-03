@@ -34,6 +34,7 @@ from backend.pipeline.chunk_store import (
 from backend.pipeline.test_validation_ack_store import (
     ACK_REQUIRED_VERDICTS,
     TestValidationAckConflictError,
+    acknowledgement_state,
     chunks_requiring_acknowledgement,
     compute_chunk_diff_hash,
     create_acknowledgement,
@@ -1461,10 +1462,46 @@ async def select_chunked_run_clarification(
     )
 
 
+def _augment_plan_with_ack_read_model(plan: ChunkPlanResponse) -> ChunkPlanResponse:
+    """
+    Overlay the #28F acknowledgement state onto each chunk's display-only
+    test_validation (#28G), so the frontend can render the acknowledgement
+    prompt/confirmation and pre-disable final approval.
+
+    Read-only and additive: this reuses the gate's own
+    ``acknowledgement_state`` (the same logic the final-approval precondition
+    consults), so the UI can never disagree with what the backend will enforce.
+    It changes no gate, never mutates the chunk plan in the DB, and fails safe —
+    a chunk whose ack state cannot be computed keeps the model defaults
+    (not_required / no acknowledgement outstanding) rather than 500-ing the read.
+    """
+    for chunk in plan.chunks:
+        validation = chunk.test_validation
+        if validation is None:
+            continue
+        verdict = validation.verdict
+        if verdict not in ACK_REQUIRED_VERDICTS:
+            # strong/unknown: leave the safe defaults (not_required / False).
+            continue
+        try:
+            current_hash = compute_chunk_diff_hash(plan.run_id, chunk.chunk_number)
+            state = acknowledgement_state(
+                plan.run_id, chunk.chunk_number, verdict, current_hash
+            )
+        except Exception:
+            # Surfacing must never break the read path; keep defaults.
+            continue
+        chunk.test_validation = validation.model_copy(update={
+            "requires_acknowledgement": True,
+            "acknowledgement_status": state,
+        })
+    return plan
+
+
 @router.get("/runs/{run_id}/chunks", response_model=ChunkPlanResponse)
 def get_chunk_plan_route(run_id: str):
     try:
-        return get_chunk_plan_status(run_id)
+        return _augment_plan_with_ack_read_model(get_chunk_plan_status(run_id))
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:
