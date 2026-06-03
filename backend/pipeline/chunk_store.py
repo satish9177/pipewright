@@ -19,6 +19,10 @@ from backend.models.chunk import (
     ChunkStatus,
     TriageResult,
 )
+from backend.pipeline.scope_expansion import (
+    compute_effective_files_expected,
+    is_in_force,
+)
 
 
 def _json_loads_list(value: str | None) -> list:
@@ -61,6 +65,40 @@ def _load_chunk_rows(conn, run_id: str):
         WHERE run_id = :run_id
         ORDER BY chunk_number ASC
     """), {"run_id": run_id}).fetchall()
+
+
+def _load_in_force_scope_files(conn, run_id: str) -> dict[int, list[str]]:
+    """
+    Map chunk_number -> approved_files of in-force scope expansion requests (#27C).
+
+    In-force membership is decided by the pure scope_expansion.is_in_force (the
+    single source of truth — approved/applied), never hardcoded here, so the
+    overlay can never drift from the lifecycle invariant. Rows are read oldest
+    first so the merge order is deterministic when more than one in-force row
+    exists for a chunk. This is read-only and never mutates chunks.files_expected.
+    """
+    rows = conn.execute(text("""
+        SELECT chunk_number, approved_files, status
+        FROM scope_expansion_requests
+        WHERE run_id = :run_id
+        ORDER BY created_at ASC, id ASC
+    """), {"run_id": run_id}).fetchall()
+
+    in_force: dict[int, list[str]] = {}
+    for row in rows:
+        data = dict(row._mapping)
+        status = data.get("status")
+        # Fail safe: an unknown/NULL status is treated as NOT in force (it never
+        # widens scope) rather than crashing this live read path.
+        try:
+            if not status or not is_in_force(status):
+                continue
+        except ValueError:
+            continue
+        in_force.setdefault(data["chunk_number"], []).extend(
+            _json_loads_list(data.get("approved_files"))
+        )
+    return in_force
 
 
 def _insert_chunks(conn, run_id: str, project_id: str, triage_result: TriageResult) -> int:
@@ -185,7 +223,24 @@ def get_chunk_plan_status(run_id: str) -> ChunkPlanResponse:
             run = _load_run(conn, run_id)
             if run is None:
                 raise ValueError(f"chunk_store.py: run not found: {run_id}")
-            chunks = [_chunk_row_to_status(row) for row in _load_chunk_rows(conn, run_id)]
+            # Effective-scope overlay (#27C), computed in exactly ONE site. The
+            # original chunks.files_expected stays immutable; effective scope is
+            # original UNION approved_files of in-force scope expansion requests.
+            # The `if extras` guard keeps output byte-identical to pre-#27C when
+            # no in-force request exists (the common case until requests are
+            # wired in #27E), so this overlay does not perturb the live pipeline.
+            in_force_scope = _load_in_force_scope_files(conn, run_id)
+            chunks = []
+            for row in _load_chunk_rows(conn, run_id):
+                chunk_status = _chunk_row_to_status(row)
+                extras = in_force_scope.get(chunk_status.chunk_number)
+                if extras:
+                    chunk_status = chunk_status.model_copy(update={
+                        "files_expected": compute_effective_files_expected(
+                            chunk_status.files_expected, extras
+                        )
+                    })
+                chunks.append(chunk_status)
 
         run_data = dict(run._mapping)
         triage = None

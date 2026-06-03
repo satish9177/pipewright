@@ -167,10 +167,35 @@ CREATE TABLE IF NOT EXISTS chunks (
     UNIQUE(run_id, chunk_number)
 );
 
+-- scope_expansion_requests is the authoritative, audited home for human-approved
+-- scope amendments (#27). chunks.files_expected stays immutable; effective scope
+-- is reconstructed as original files_expected UNION the approved_files of in-force
+-- (approved/applied) rows here. No file contents, secrets, or token-like values
+-- are ever stored here, only paths, ids, status, audit columns, and a sanitized
+-- decision reason. Columns mirror ScopeExpansionRequest in
+-- backend/pipeline/scope_expansion.py one-to-one.
+CREATE TABLE IF NOT EXISTS scope_expansion_requests (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    chunk_number INTEGER NOT NULL,
+    failure_report_id TEXT NOT NULL,
+    requested_files TEXT,
+    approved_files TEXT,
+    status TEXT DEFAULT 'pending',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    decided_at DATETIME,
+    applied_at DATETIME,
+    decided_by TEXT,
+    decision_reason TEXT,
+    FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_project ON pipeline_runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);
 CREATE INDEX IF NOT EXISTS idx_chunks_run_status ON chunks(run_id, status);
 CREATE INDEX IF NOT EXISTS idx_approval_gates_run_status ON approval_gates(run_id, approval_type, status);
+CREATE INDEX IF NOT EXISTS idx_scope_expansion_requests_run_chunk_status ON scope_expansion_requests(run_id, chunk_number, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_suggestions_pending_dedupe
 ON memory_suggestions(project_id, content_hash)
 WHERE status = 'pending';
