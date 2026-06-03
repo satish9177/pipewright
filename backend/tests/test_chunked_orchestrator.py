@@ -30,6 +30,7 @@ from backend.pipeline.chunk_store import (
     approve_chunk_plan,
     create_chunked_run,
     get_chunk_plan_status,
+    get_chunk_test_run_verdict,
     save_chunk_completion_summary,
     update_chunk_status,
 )
@@ -3323,3 +3324,142 @@ async def test_retry_rejection_never_switches_branch(
     assert result["status_code"] == 409
     assert result["reason"] == RETRY_INELIGIBLE_STALE_FAILURE_REPORT_ID
     assert _chunk_status_value(run_id, 1) == "failed"
+
+
+# --------------------------------------------------------------------------
+# #28D — display-only runtime test verdict is persisted after the chunk's
+# test run, without ever changing pass/fail or run outcome.
+# --------------------------------------------------------------------------
+
+
+def _create_run_with_command(tmp_repo, tracked_runs, test_command: str):
+    project = create_project(
+        name=f"Verdict Project {uuid.uuid4()}",
+        repo_path=str(tmp_repo),
+        test_command=test_command,
+    )
+    run_id = str(uuid.uuid4())
+    tracked_runs.append(run_id)
+    create_chunked_run(
+        run_id,
+        project["id"],
+        "Execute chunks",
+        make_triage(run_id, project["id"], 1),
+    )
+    approve_chunk_plan(run_id)
+    return run_id, project
+
+
+def _override_tests(monkeypatch, result: PipelineTestResult):
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "run_tests",
+        lambda patch, run_id, chunk_number=0: result,
+    )
+
+
+@pytest.mark.asyncio
+async def test_weak_command_persists_weak_verdict_but_chunk_completes(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    # Default project test command is "python --version" (weak). The chunk must
+    # still COMPLETE (pass/fail is exit-code based), and the verdict recorded weak.
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "awaiting_final_approval"
+    assert get_chunk_plan_status(run_id).chunks[0].status == "completed"
+    stored = get_chunk_test_run_verdict(run_id, 1)
+    assert stored["verdict"] == "weak"  # display-only, did not block completion
+    assert stored["command_quality"] == "weak"
+
+
+@pytest.mark.asyncio
+async def test_passing_pytest_persists_strong_verdict(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = _create_run_with_command(tmp_repo, tracked_runs, "pytest")
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+    _override_tests(monkeypatch, PipelineTestResult(
+        run_id=run_id,
+        passed=True,
+        output="===== 5 passed in 0.10s =====",
+        total_tests=5,
+        passed_tests=5,
+        failed_tests=0,
+    ))
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "awaiting_final_approval"
+    stored = get_chunk_test_run_verdict(run_id, 1)
+    assert stored["verdict"] == "strong"
+    assert stored["passed_tests"] == 5
+    assert stored["total_tests"] == 5
+    assert stored["counts_parsed"] is True
+    assert stored["zero_tests_detected"] is False
+
+
+@pytest.mark.asyncio
+async def test_zero_tests_persists_weak_but_does_not_fail_chunk(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    # A recognized runner that collected 0 items, exit 0. This slice must NOT
+    # treat zero tests as a failure: the chunk completes and the verdict is weak.
+    run_id, _project = _create_run_with_command(tmp_repo, tracked_runs, "pytest")
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+    _override_tests(monkeypatch, PipelineTestResult(
+        run_id=run_id,
+        passed=True,  # exit-code based success
+        output="collected 0 items\n\nno tests ran in 0.01s",
+        total_tests=0,
+        passed_tests=0,
+        failed_tests=0,
+    ))
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "awaiting_final_approval"
+    assert get_chunk_plan_status(run_id).chunks[0].status == "completed"
+    stored = get_chunk_test_run_verdict(run_id, 1)
+    assert stored["verdict"] == "weak"
+    assert stored["zero_tests_detected"] is True
+
+
+@pytest.mark.asyncio
+async def test_test_failure_records_verdict_and_fails_by_exit_code(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    # A failing test run fails the chunk via the exit code (existing behavior),
+    # NOT via the verdict. The verdict is still recorded as evidence (unknown:
+    # non-zero exit on a recognized runner is never strong).
+    run_id, _project = _create_run_with_command(tmp_repo, tracked_runs, "pytest")
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+    _override_tests(monkeypatch, PipelineTestResult(
+        run_id=run_id,
+        passed=False,
+        output="1 failed, 4 passed in 1.0s",
+        total_tests=5,
+        passed_tests=4,
+        failed_tests=1,
+    ))
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    assert get_chunk_plan_status(run_id).chunks[0].status == "failed"
+    stored = get_chunk_test_run_verdict(run_id, 1)
+    assert stored["verdict"] == "unknown"
+    assert stored["verdict"] != "strong"
+    assert stored["passed_tests"] == 4
+    assert stored["failed_tests"] == 1
