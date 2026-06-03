@@ -85,6 +85,28 @@ class TriageResult(BaseModel):
         return self
 
 
+class PendingScopeExpansion(BaseModel):
+    """
+    Read-only view of a *pending* scope expansion request, surfaced on a failed
+    chunk so the frontend can render the approve/reject UI (#27F).
+
+    This carries only what the UI needs to act and explain: the request id and
+    the chunk's failure_report_id (to call the approve/reject routes), the
+    untrusted requested_files (diagnostic display only — "the previous attempt
+    tried to touch these"), the lifecycle status, and the created timestamp. It
+    never carries file contents, diffs, secrets, or token-like values, and it
+    grants no authority on its own — approval still goes through the existing
+    backend route, which re-validates everything.
+    """
+
+    request_id: str
+    chunk_number: int
+    failure_report_id: str
+    requested_files: list[str] = Field(default_factory=list)
+    status: str
+    created_at: str | None = None
+
+
 class ChunkStatus(BaseModel):
     run_id: str
     project_id: str
@@ -97,6 +119,11 @@ class ChunkStatus(BaseModel):
     depends_on: list[int]
     completion_summary: str | None = None
     error_message: str | None = None
+    # Read-only overlay (#27F): the single pending scope expansion request for
+    # this chunk, when one exists. None for the common case. Populated by
+    # chunk_store.get_chunk_plan_status; never affects effective scope or
+    # execution — it only lets the UI surface the existing approve/reject flow.
+    pending_scope_expansion: PendingScopeExpansion | None = None
 
 
 class ChunkPlanResponse(BaseModel):

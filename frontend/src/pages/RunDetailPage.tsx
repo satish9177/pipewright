@@ -278,6 +278,9 @@ function shouldPollRunStatus(status: RunStatus) {
     'awaiting_chunk_approval',
     'awaiting_final_approval',
     'awaiting_memory_conflict_approval',
+    // #27F: keep polling while a scope expansion decision is pending so the run
+    // status updates promptly after approve (retry) or reject.
+    'awaiting_scope_approval',
     'pushing',
   ].includes(status)
 }
@@ -876,6 +879,14 @@ export default function RunDetailPage() {
             onRetryChunk={(chunkNumber, failureReportId) =>
               retryChunkMutation.mutate({ chunkNumber, failureReportId })
             }
+            onScopeActionComplete={() => {
+              // #27F: refresh run/chunks/gates after a scope expansion
+              // approve/reject, matching the invalidation used by the chunk
+              // approve/reject/retry mutations above.
+              queryClient.invalidateQueries({ queryKey: ['run', runId] })
+              queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+              queryClient.invalidateQueries({ queryKey: ['gates'] })
+            }}
           />
         ) : (
           <Card className="mb-4 border-dashed">

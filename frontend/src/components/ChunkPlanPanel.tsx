@@ -17,6 +17,7 @@ import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
 import { getStatusDisplay } from '@/utils/statusDisplay'
 import PatchFailureBanner from '@/components/PatchFailureBanner'
+import ScopeExpansionBanner from '@/components/ScopeExpansionBanner'
 import AttemptHistory from '@/components/AttemptHistory'
 import {
   parsePatchFailureSummary,
@@ -41,6 +42,9 @@ interface ChunkPlanPanelProps {
   hiddenApprovalChunkNumbers?: number[]
   // Patch retry wiring (#26E2). Optional so existing callers/tests stay valid.
   retryingChunkNumber?: number | null
+  // #27F: called after a successful scope expansion approve/reject so the parent
+  // refreshes run/chunks/gates query data via the existing invalidation pattern.
+  onScopeActionComplete?: () => void
   onApprove: () => void
   onReject: (reason: string) => void
   onExecute: () => void
@@ -123,6 +127,7 @@ export default function ChunkPlanPanel({
   chunkActionError,
   hiddenApprovalChunkNumbers = [],
   retryingChunkNumber = null,
+  onScopeActionComplete,
   onApprove,
   onReject,
   onExecute,
@@ -261,6 +266,11 @@ export default function ChunkPlanPanel({
             const patchFailure = parsePatchFailureSummary(
               chunk.completion_summary
             )
+            // #27F: a pending scope expansion request makes the scope banner the
+            // primary action. When present we suppress the normal #26 Retry
+            // button (a SCOPE_VIOLATION otherwise offers retry_with_instruction)
+            // so the user is not nudged into the wrong recovery path.
+            const pendingScope = chunk.pending_scope_expansion ?? null
             // #26E3: a recovered_patch_review summary is display-only context;
             // the awaiting_chunk_approval UI below still owns approve/commit.
             const recoveredReview = patchFailure
@@ -402,16 +412,32 @@ export default function ChunkPlanPanel({
                     </div>
                   )}
 
+                  {pendingScope && (
+                    // #27F: primary recovery action for a pending scope
+                    // expansion. Rendered above the diagnostic patch-failure
+                    // banner; owns its own approve/reject + error display.
+                    <ScopeExpansionBanner
+                      runId={plan.run_id}
+                      chunkNumber={chunk.chunk_number}
+                      request={pendingScope}
+                      originalFiles={filesExpected}
+                      diagnosticSummary={patchFailure?.message ?? null}
+                      onActionComplete={onScopeActionComplete}
+                    />
+                  )}
+
                   {patchFailure ? (
                     // Structured patch failure (#18E): the banner shows the
                     // message, so skip the raw completion_summary dump and the
-                    // generic error_message block to avoid duplication.
+                    // generic error_message block to avoid duplication. When a
+                    // scope expansion is pending we pass no onRetry so the normal
+                    // #26 Retry button is not shown as the primary action (#27F).
                     <PatchFailureBanner
                       report={patchFailure}
                       projectId={plan.project_id}
                       chunkNumber={chunk.chunk_number}
                       chunkStatus={chunk.status}
-                      onRetry={onRetryChunk}
+                      onRetry={pendingScope ? undefined : onRetryChunk}
                       isRetrying={retryingChunkNumber === chunk.chunk_number}
                     />
                   ) : recoveredReview ? (
