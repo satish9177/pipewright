@@ -1082,6 +1082,7 @@ def _insert_read_only_run(run_id: str, project_id: str, intent: str):
     ("/runs/{run_id}/chunks/resume", None),
     ("/runs/{run_id}/chunks/1/approve", None),
     ("/runs/{run_id}/chunks/1/reject", {"reason": "no"}),
+    ("/runs/{run_id}/chunks/1/retry", {"failure_report_id": "rpt-1"}),
     ("/runs/{run_id}/final-approval/approve", None),
     ("/runs/{run_id}/final-approval/reject", {"reason": "no"}),
     ("/runs/{run_id}/memory-conflict/approve", None),
@@ -1124,6 +1125,10 @@ def test_read_only_runs_reject_mutating_routes(
     monkeypatch.setattr(
         "backend.routes.chunks.reject_chunk_and_rollback",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("chunk reject called")),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.retry_failed_chunk",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("retry called")),
     )
     monkeypatch.setattr(
         "backend.routes.chunks._decide_final_gate",
@@ -1214,6 +1219,7 @@ def test_execute_and_resume_routes_exist():
     assert "/runs/{run_id}/chunks/resume" in paths
     assert "/runs/{run_id}/chunks/{chunk_number}/approve" in paths
     assert "/runs/{run_id}/chunks/{chunk_number}/reject" in paths
+    assert "/runs/{run_id}/chunks/{chunk_number}/retry" in paths
     assert "/runs/{run_id}/final-approval/approve" in paths
     assert "/runs/{run_id}/final-approval/reject" in paths
     assert "/runs/{run_id}/memory-conflict/approve" in paths
