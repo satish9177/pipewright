@@ -52,6 +52,7 @@ from backend.pipeline.patch_dry_run import dry_run_changes
 from backend.pipeline.patch_failures import (
     PatchFailureReport,
     PatchFailureType,
+    RETRY_INELIGIBLE_WRONG_BRANCH,
     RecoveredPatchReviewSummary,
     build_patch_failure_report,
     evaluate_patch_retry_eligibility,
@@ -1667,6 +1668,85 @@ def _retry_plan_for_chunk(run_id: str, chunk: ChunkDefinition) -> PlannerHandoff
     return _surface_files_expected_for_edit(fallback, chunk.files_expected)
 
 
+def _retry_wrong_branch_result(
+    run_id: str,
+    chunk_number: int,
+    expected_branch: str,
+    current_branch: str | None,
+) -> dict:
+    """
+    Side-effect-free 409 for a retry whose repo HEAD is not on the run branch
+    (#26D3a). Verify-only: no checkout, no branch creation, no switch — the user
+    must checkout the run branch and retry. Mirrors _retry_ineligible_result's
+    shape, with an extra ``detail`` naming the current and expected branches.
+    ``current_branch`` is None when the branch could not be determined (e.g.
+    detached HEAD or a git error).
+    """
+    if current_branch is not None:
+        detail = (
+            f"Target repo is on branch '{current_branch}', not the run branch "
+            f"'{expected_branch}'. Checkout '{expected_branch}' and retry."
+        )
+    else:
+        detail = (
+            f"Could not determine the target repo's current branch (expected "
+            f"'{expected_branch}'). Checkout '{expected_branch}' and retry."
+        )
+    print(
+        f"[CHUNKED] Retry ineligible (wrong branch) | run_id={run_id} | "
+        f"chunk={chunk_number} | expected={expected_branch} | "
+        f"current={current_branch}"
+    )
+    return {
+        "status": "retry_ineligible",
+        "run_id": run_id,
+        "chunk_number": chunk_number,
+        "eligible": False,
+        "reason": RETRY_INELIGIBLE_WRONG_BRANCH,
+        "status_code": 409,
+        "detail": detail,
+    }
+
+
+def _retry_branch_precheck(
+    run_id: str,
+    chunk_number: int,
+    repo_path: str,
+) -> dict | None:
+    """
+    Read-only branch guard for a human retry (#26D3a).
+
+    Verifies the target repo's HEAD is already on the run branch
+    (``pipewright/{run_id[:8]}``) WITHOUT touching the repo: no checkout, no
+    branch creation, no switch. Retry never moves the user's HEAD, so a rejected
+    request is fully side-effect-free. Must be called inside the project repo lock
+    and before any eligibility/execution work.
+
+    Returns a retry_ineligible dict (409) when HEAD is on the wrong branch, the
+    branch is missing, or the branch cannot be determined (detached HEAD / git
+    error); returns None when HEAD is correctly on the run branch and retry may
+    proceed.
+    """
+    expected_branch = f"pipewright/{run_id[:8]}"
+    try:
+        current_branch = local_git.get_current_branch(repo_path)
+    except Exception as error:
+        # Detached HEAD (get_current_branch raises on an empty branch) or a git
+        # failure: cannot prove HEAD is on the run branch, so reject — never guess.
+        print(
+            f"[CHUNKED] Retry branch verification failed | run_id={run_id} | "
+            f"chunk={chunk_number} | expected={expected_branch} | error={error}"
+        )
+        return _retry_wrong_branch_result(
+            run_id, chunk_number, expected_branch, None
+        )
+    if current_branch != expected_branch:
+        return _retry_wrong_branch_result(
+            run_id, chunk_number, expected_branch, current_branch
+        )
+    return None
+
+
 def _retry_ineligible_result(
     run_id: str,
     chunk_number: int,
@@ -1970,6 +2050,16 @@ async def _retry_failed_chunk_locked(
     project, project_runtime = _project_runtime_for_plan(plan_status)
     target_repo_path = project["repo_path"]
     _validate_target_repo(target_repo_path, require_clean=False)
+
+    # Branch guard (#26D3a): retry runs against the working tree, so HEAD must
+    # already be on this run's branch (pipewright/{run_id[:8]}). Verify-only — we
+    # never checkout/create/switch (that would move the user's HEAD on a request
+    # we may then reject). Read-only and placed before eligibility/execution so a
+    # wrong/missing/undeterminable branch is rejected with a clean, side-effect-
+    # free 409 (no chunk marked running, no coder/apply/test, no summary write).
+    branch_block = _retry_branch_precheck(run_id, chunk_number, target_repo_path)
+    if branch_block is not None:
+        return branch_block
 
     # Eligibility (#26D1): a pure decision over already-computed observations. No
     # coder/apply/test/disk work happens unless this passes.

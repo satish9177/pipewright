@@ -59,6 +59,11 @@ RETRY_INELIGIBLE_DEPENDENCIES_NOT_MET = "dependencies_not_met"
 RETRY_INELIGIBLE_DIRTY_WORKTREE = "dirty_worktree"
 RETRY_INELIGIBLE_DISALLOWED_FAILURE_TYPE = "disallowed_failure_type"
 RETRY_INELIGIBLE_CAP_EXHAUSTED = "human_retry_cap_exhausted"
+# Branch guard reason (#26D3a). NOT produced by evaluate_patch_retry_eligibility:
+# that pure helper stays branch-agnostic. This is returned by a separate read-only
+# pre-check in the orchestrator when the target repo's HEAD is not on the run
+# branch (verify-only; retry never checks out or switches branches).
+RETRY_INELIGIBLE_WRONG_BRANCH = "wrong_branch"
 
 # Stable action identifiers surfaced to the frontend recovery UI (#18A §5).
 ACTION_RETRY = "retry"

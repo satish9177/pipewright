@@ -44,6 +44,7 @@ from backend.pipeline.patch_failures import (
     RETRY_INELIGIBLE_DISALLOWED_FAILURE_TYPE,
     RETRY_INELIGIBLE_MISSING_REPORT,
     RETRY_INELIGIBLE_STALE_FAILURE_REPORT_ID,
+    RETRY_INELIGIBLE_WRONG_BRANCH,
     PatchFailureType,
     build_patch_failure_report,
     default_message_for_failure_type,
@@ -248,7 +249,16 @@ def make_test_result(run_id: str, passed: bool = True) -> PipelineTestResult:
     )
 
 
-def patch_git_preflight(monkeypatch, calls=None):
+def patch_git_preflight(monkeypatch, calls=None, run_id=None):
+    # #26D3a: when a retry run_id is given, model HEAD already on the run branch so
+    # the verify-only branch pre-check passes. Patched only when run_id is set so
+    # non-retry tests keep real get_current_branch (also used by pr_orchestrator).
+    if run_id is not None:
+        monkeypatch.setattr(
+            chunked_orchestrator.local_git,
+            "get_current_branch",
+            lambda repo: f"pipewright/{run_id[:8]}",
+        )
     monkeypatch.setattr(chunked_orchestrator.local_git, "ensure_git_repo", lambda repo: None)
     monkeypatch.setattr(
         chunked_orchestrator.local_git,
@@ -2615,6 +2625,33 @@ def _forbid_execution(monkeypatch):
     monkeypatch.setattr(chunked_orchestrator, "run_tests", _boom_async)
 
 
+def _forbid_branch_switch(monkeypatch):
+    """
+    Make every branch-switching git seam explode, to prove the #26D3a branch
+    guard is verify-only: a rejected retry must never checkout/create/switch.
+    Install AFTER patch_git_preflight so this override wins.
+    """
+    def _boom(*_a, **_k):
+        raise AssertionError(
+            "verify-only retry must not checkout/create/switch branches"
+        )
+
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git, "create_or_checkout_branch", _boom
+    )
+
+    real_run_git = chunked_orchestrator.local_git.run_git
+
+    def _guard_run_git(args, repo_path, timeout=30):
+        if args and args[0] in {"checkout", "switch"}:
+            raise AssertionError(
+                f"verify-only retry must not run git {args[0]}"
+            )
+        return real_run_git(args, repo_path, timeout)
+
+    monkeypatch.setattr(chunked_orchestrator.local_git, "run_git", _guard_run_git)
+
+
 def patch_retry_pipeline(
     monkeypatch,
     run_id: str,
@@ -2679,6 +2716,14 @@ def patch_retry_pipeline(
             reset_worktree_state()
         return make_test_result(run_id_arg, tests_ok)
 
+    # #26D3a: the retry runs against the working tree, so HEAD must be on the run
+    # branch. Model that here so the verify-only branch pre-check passes and the
+    # execution seams above are reached.
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "get_current_branch",
+        lambda repo: f"pipewright/{run_id[:8]}",
+    )
     monkeypatch.setattr(chunked_orchestrator, "run_coder", fake_coder)
     monkeypatch.setattr(chunked_orchestrator, "dry_run_changes", fake_dry)
     monkeypatch.setattr(chunked_orchestrator, "apply_patch_guarded", fake_apply)
@@ -2694,7 +2739,7 @@ async def test_retry_stale_failure_report_id_rejected(
 ):
     run_id, _project = create_run(tmp_repo, tracked_runs)
     _seed_failed_chunk(run_id, 1)
-    patch_git_preflight(monkeypatch)
+    patch_git_preflight(monkeypatch, run_id=run_id)
     _forbid_execution(monkeypatch)
 
     result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, "stale-id")
@@ -2713,7 +2758,7 @@ async def test_retry_missing_or_malformed_report_rejected(
     # Chunk failed but the stored summary is not a patch_failure shape.
     update_chunk_status(run_id, 1, "failed", "boom")
     save_chunk_completion_summary(run_id, 1, {"summary": "not a failure report"})
-    patch_git_preflight(monkeypatch)
+    patch_git_preflight(monkeypatch, run_id=run_id)
     _forbid_execution(monkeypatch)
 
     result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, "anything")
@@ -2731,7 +2776,7 @@ async def test_retry_disallowed_failure_type_rejected(
     frid = _seed_failed_chunk(
         run_id, 1, failure_type=PatchFailureType.SCOPE_VIOLATION
     )
-    patch_git_preflight(monkeypatch)
+    patch_git_preflight(monkeypatch, run_id=run_id)
     _forbid_execution(monkeypatch)
 
     result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
@@ -2747,7 +2792,7 @@ async def test_retry_dirty_working_tree_rejected(
 ):
     run_id, _project = create_run(tmp_repo, tracked_runs)
     frid = _seed_failed_chunk(run_id, 1)
-    patch_git_preflight(monkeypatch)
+    patch_git_preflight(monkeypatch, run_id=run_id)
     monkeypatch.setattr(
         chunked_orchestrator.local_git, "is_working_tree_clean", lambda repo: False
     )
@@ -2767,7 +2812,7 @@ async def test_retry_unmet_dependency_rejected(
     run_id, _project = create_run(tmp_repo, tracked_runs, chunks=2)
     # Chunk 2 depends on chunk 1, which is not completed.
     frid = _seed_failed_chunk(run_id, 2)
-    patch_git_preflight(monkeypatch)
+    patch_git_preflight(monkeypatch, run_id=run_id)
     _forbid_execution(monkeypatch)
 
     result = await chunked_orchestrator.retry_failed_chunk(run_id, 2, frid)
@@ -2781,7 +2826,7 @@ async def test_retry_unmet_dependency_rejected(
 async def test_retry_cap_exhausted_rejected(monkeypatch, tmp_repo, tracked_runs):
     run_id, _project = create_run(tmp_repo, tracked_runs)
     frid = _seed_failed_chunk(run_id, 1, human_attempts=2)
-    patch_git_preflight(monkeypatch)
+    patch_git_preflight(monkeypatch, run_id=run_id)
     _forbid_execution(monkeypatch)
 
     result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
@@ -3102,7 +3147,7 @@ async def test_retry_unexpected_coder_error_marks_chunk_failed(
     # "running"; the execution guard turns it into a failed chunk.
     run_id, _project = create_run(tmp_repo, tracked_runs)
     frid = _seed_failed_chunk(run_id, 1)
-    patch_git_preflight(monkeypatch)
+    patch_git_preflight(monkeypatch, run_id=run_id)
 
     async def boom_coder(*_a, **_k):
         raise RuntimeError("coder LLM exploded")
@@ -3135,7 +3180,7 @@ async def test_retry_reevaluates_eligibility_inside_lock_not_pre_lock_snapshot(
     # consumed failure_report_id and bypass MAX_HUMAN_RETRIES.
     run_id, _project = create_run(tmp_repo, tracked_runs)
     old_frid = _seed_failed_chunk(run_id, 1)
-    patch_git_preflight(monkeypatch)
+    patch_git_preflight(monkeypatch, run_id=run_id)
     # If any eligibility-relevant read used the pre-lock snapshot, the request's
     # still-matching old_frid would pass and execution would fire and explode.
     _forbid_execution(monkeypatch)
@@ -3155,6 +3200,125 @@ async def test_retry_reevaluates_eligibility_inside_lock_not_pre_lock_snapshot(
     result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, old_frid)
 
     # In-lock re-read sees the new frid -> stale -> clean 409, no execution.
+    assert result["status"] == "retry_ineligible"
+    assert result["status_code"] == 409
+    assert result["reason"] == RETRY_INELIGIBLE_STALE_FAILURE_REPORT_ID
+    assert _chunk_status_value(run_id, 1) == "failed"
+
+
+# --- #26D3a: verify-only branch pre-check ---------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_retry_wrong_branch_rejected_without_side_effects(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    # Branch guard (#26D3a): if the target repo's HEAD is not on the run branch,
+    # retry must reject with a side-effect-free 409 — no checkout, no execution,
+    # no chunk-status/summary mutation. Verify-only: the user moves the branch.
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1)
+    patch_git_preflight(monkeypatch)
+    # HEAD is on some other branch, not pipewright/<run_id[:8]>.
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "get_current_branch",
+        lambda repo: "feature/something-else",
+    )
+    # Differential: without the pre-check this falls through to execution and the
+    # forbidden seams below explode instead of returning a clean rejection.
+    _forbid_execution(monkeypatch)
+    _forbid_branch_switch(monkeypatch)
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    assert result["status"] == "retry_ineligible"
+    assert result["eligible"] is False
+    assert result["status_code"] == 409
+    assert result["reason"] == RETRY_INELIGIBLE_WRONG_BRANCH
+    # The detail names both the current and the expected run branch.
+    assert "feature/something-else" in result["detail"]
+    assert f"pipewright/{run_id[:8]}" in result["detail"]
+    # Side-effect-free: chunk still failed and the stored report is the ORIGINAL
+    # patch_failure (not a recovered/running mutation).
+    assert _chunk_status_value(run_id, 1) == "failed"
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["kind"] == PATCH_FAILURE_KIND
+
+
+@pytest.mark.asyncio
+async def test_retry_undeterminable_branch_rejected(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    # If the current branch cannot be determined (detached HEAD / git error),
+    # retry must not guess — it rejects with the same 409 wrong-branch reason.
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1)
+    patch_git_preflight(monkeypatch)
+
+    def _detached(repo):
+        raise RuntimeError("[GIT] current branch is empty")
+
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git, "get_current_branch", _detached
+    )
+    _forbid_execution(monkeypatch)
+    _forbid_branch_switch(monkeypatch)
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    assert result["status"] == "retry_ineligible"
+    assert result["status_code"] == 409
+    assert result["reason"] == RETRY_INELIGIBLE_WRONG_BRANCH
+    assert f"pipewright/{run_id[:8]}" in result["detail"]
+    assert _chunk_status_value(run_id, 1) == "failed"
+
+
+@pytest.mark.asyncio
+async def test_retry_on_expected_branch_proceeds_to_execution(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    # Happy path: when HEAD is already on the run branch, the read-only branch
+    # guard passes and retry proceeds to the existing #26D2 execution behavior.
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_retry_pipeline(monkeypatch, run_id, calls=calls)
+    seen = {}
+
+    def _record_branch(repo):
+        seen["branch"] = f"pipewright/{run_id[:8]}"
+        return seen["branch"]
+
+    # Override after patch_retry_pipeline so we can prove the guard read the branch.
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git, "get_current_branch", _record_branch
+    )
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    assert seen["branch"] == f"pipewright/{run_id[:8]}"
+    assert result["status"] == "awaiting_chunk_approval"
+    assert _chunk_status_value(run_id, 1) == "awaiting_chunk_approval"
+
+
+@pytest.mark.asyncio
+async def test_retry_rejection_never_switches_branch(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    # Verify-only regression guard (#26D3a): even when HEAD is correctly on the
+    # run branch, a rejected retry (here: a stale failure_report_id) must perform
+    # no branch checkout/switch. If a future change auto-checks-out, the
+    # _forbid_branch_switch booms fire and this test fails.
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    _seed_failed_chunk(run_id, 1)
+    patch_git_preflight(monkeypatch, run_id=run_id)
+    _forbid_execution(monkeypatch)
+    _forbid_branch_switch(monkeypatch)
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, "stale-id")
+
     assert result["status"] == "retry_ineligible"
     assert result["status_code"] == 409
     assert result["reason"] == RETRY_INELIGIBLE_STALE_FAILURE_REPORT_ID
