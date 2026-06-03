@@ -15,14 +15,17 @@ from backend.pipeline.patch_failures import (
     ACTION_RETRY,
     ACTION_RETRY_WITH_INSTRUCTION,
     ACTION_VIEW_DETAILS,
+    MAX_RECOVERY_ATTEMPTS,
     MAX_TECHNICAL_DETAILS_CHARS,
     PATCH_FAILURE_KIND,
     PatchFailureReport,
     PatchFailureType,
+    PatchRecoveryAttempt,
     build_patch_failure_report,
     default_message_for_failure_type,
     patch_failure_report_from_completion_summary,
     patch_failure_report_to_completion_summary,
+    record_initial_attempt,
     stale_index_hint_for,
     suggested_actions_for,
 )
@@ -391,3 +394,232 @@ def test_from_completion_summary_parses_valid_dict():
     assert isinstance(report, PatchFailureReport)
     assert report.failure_type == PatchFailureType.PATCH_MALFORMED
     assert report.retry.max_attempts == 2
+
+
+# --------------------------------------------------------------------------- #
+# Recovery attempt history / diagnostics (#26C)
+# --------------------------------------------------------------------------- #
+
+
+def _valid_old_failure_dict() -> dict:
+    """A stored failure summary from BEFORE #26C (no failure_report_id/attempts)."""
+    return {
+        "kind": PATCH_FAILURE_KIND,
+        "failure_type": "PATCH_MALFORMED",
+        "message": "x",
+        "technical_details": None,
+        "changed_files_attempted": [],
+        "changed_files_actual": [],
+        "allowed_files": [],
+        "suggested_actions": [ACTION_VIEW_DETAILS],
+        "rollback_performed": False,
+        "working_tree_clean": False,
+        "retry": {"attempts": 0, "max_attempts": 2, "retryable": True},
+        "stale_index_hint": False,
+        "chunk_number": None,
+        "failed_step": "patch",
+        "manual_intervention_needed": False,
+    }
+
+
+def test_report_defaults_have_no_failure_report_id_or_attempts():
+    report = build_patch_failure_report(
+        PatchFailureType.PATCH_DOES_NOT_APPLY, max_attempts=2
+    )
+    assert report.failure_report_id is None
+    assert report.attempts == []
+
+
+def test_old_failure_summary_without_new_fields_still_parses():
+    report = patch_failure_report_from_completion_summary(_valid_old_failure_dict())
+    assert isinstance(report, PatchFailureReport)
+    assert report.failure_report_id is None
+    assert report.attempts == []
+
+
+def test_success_shaped_summary_without_kind_returns_none():
+    # A success summary has no `kind`; it must not parse as a patch failure.
+    assert patch_failure_report_from_completion_summary(
+        {"files_created": ["a.py"], "summary": "did a thing"}
+    ) is None
+
+
+def test_record_initial_attempt_creates_attempt_one():
+    report = build_patch_failure_report(
+        PatchFailureType.PATCH_DOES_NOT_APPLY,
+        changed_files_attempted=["src/a.py"],
+        changed_files_actual=[],
+        allowed_files=["src/a.py"],
+        rollback_performed=True,
+        working_tree_clean=True,
+        max_attempts=2,
+    )
+    enriched = record_initial_attempt(
+        report,
+        failure_report_id="frid-1",
+        attempt_id="att-1",
+        started_at="2026-06-03T00:00:00+00:00",
+    )
+
+    assert enriched.failure_report_id == "frid-1"
+    assert len(enriched.attempts) == 1
+    attempt = enriched.attempts[0]
+    assert attempt.attempt_id == "att-1"
+    assert attempt.attempt_number == 1
+    assert attempt.started_at == "2026-06-03T00:00:00+00:00"
+    assert attempt.recovery_mode == "initial"
+    assert attempt.failure_type == PatchFailureType.PATCH_DOES_NOT_APPLY
+    assert attempt.failed_step == "patch"
+    assert attempt.changed_files_attempted == ["src/a.py"]
+    assert attempt.changed_files_actual == []
+    assert attempt.scope_ok is True
+    assert attempt.preimage_matched is None
+    assert attempt.model_used is None
+    assert attempt.test_outcome == "not_run"
+    assert attempt.outcome == "failed"
+    assert attempt.human_decision is None
+    assert attempt.working_tree_clean is True
+    assert attempt.rollback_performed is True
+
+    # Pure: the original report is not mutated.
+    assert report.failure_report_id is None
+    assert report.attempts == []
+
+
+def test_record_initial_attempt_scope_violation_sets_scope_ok_false():
+    report = build_patch_failure_report(
+        PatchFailureType.SCOPE_VIOLATION, max_attempts=2
+    )
+    enriched = record_initial_attempt(
+        report, failure_report_id="f", attempt_id="a", started_at="t"
+    )
+    assert enriched.attempts[0].scope_ok is False
+
+
+def test_record_initial_attempt_outcome_manual_intervention():
+    # Rollback ran but tree not clean -> manual_intervention_needed -> outcome.
+    report = build_patch_failure_report(
+        PatchFailureType.TEST_FAILURE_AFTER_APPLY,
+        rollback_performed=True,
+        working_tree_clean=False,
+        max_attempts=2,
+    )
+    assert report.manual_intervention_needed is True
+    enriched = record_initial_attempt(
+        report, failure_report_id="f", attempt_id="a", started_at="t"
+    )
+    assert enriched.attempts[0].outcome == "manual_intervention"
+
+
+def test_record_initial_attempt_test_failure_sets_test_outcome():
+    report = build_patch_failure_report(
+        PatchFailureType.TEST_FAILURE_AFTER_APPLY,
+        rollback_performed=True,
+        working_tree_clean=True,
+        max_attempts=2,
+    )
+    enriched = record_initial_attempt(
+        report, failure_report_id="f", attempt_id="a", started_at="t"
+    )
+    assert enriched.attempts[0].test_outcome == "failed"
+    # Tree clean + not cap-exhausted -> not manual.
+    assert enriched.attempts[0].outcome == "failed"
+
+
+def test_record_initial_attempt_caps_attempts():
+    report = build_patch_failure_report(
+        PatchFailureType.PATCH_DOES_NOT_APPLY, max_attempts=2
+    )
+    prefilled = [
+        PatchRecoveryAttempt(
+            attempt_id=f"a{i}", attempt_number=i + 1, started_at="t"
+        )
+        for i in range(MAX_RECOVERY_ATTEMPTS)
+    ]
+    report = report.model_copy(update={"attempts": prefilled})
+
+    enriched = record_initial_attempt(
+        report, failure_report_id="f", attempt_id="new", started_at="t"
+    )
+    assert len(enriched.attempts) == MAX_RECOVERY_ATTEMPTS
+    # Newest appended, oldest ("a0") dropped.
+    assert enriched.attempts[-1].attempt_id == "new"
+    assert all(a.attempt_id != "a0" for a in enriched.attempts)
+
+
+def test_round_trip_with_failure_report_id_and_attempts():
+    report = build_patch_failure_report(
+        PatchFailureType.TARGET_MISSING,
+        changed_files_attempted=["a.py"],
+        max_attempts=2,
+        chunk_number=7,
+    )
+    enriched = record_initial_attempt(
+        report,
+        failure_report_id="frid",
+        attempt_id="att",
+        started_at="2026-06-03T00:00:00+00:00",
+    )
+    data = patch_failure_report_to_completion_summary(enriched)
+
+    assert data["kind"] == PATCH_FAILURE_KIND
+    assert data["failure_report_id"] == "frid"
+    assert isinstance(data["attempts"], list)
+    assert len(data["attempts"]) == 1
+
+    restored = patch_failure_report_from_completion_summary(data)
+    assert isinstance(restored, PatchFailureReport)
+    assert restored == enriched
+
+
+def test_invalid_attempt_data_fails_safe():
+    data = _valid_old_failure_dict()
+    data["failure_report_id"] = "frid"
+    # Attempt missing required fields (attempt_id/attempt_number/started_at).
+    data["attempts"] = [{"recovery_mode": "initial"}]
+    assert patch_failure_report_from_completion_summary(data) is None
+
+
+def test_serialized_attempts_have_no_sensitive_keys_or_values():
+    report = build_patch_failure_report(
+        PatchFailureType.PATCH_DOES_NOT_APPLY,
+        changed_files_attempted=["src/a.py"],
+        changed_files_actual=["src/a.py"],
+        allowed_files=["src/a.py"],
+        max_attempts=2,
+    )
+    enriched = record_initial_attempt(
+        report, failure_report_id="frid", attempt_id="att", started_at="t"
+    )
+    data = patch_failure_report_to_completion_summary(enriched)
+
+    import json
+
+    attempts_blob = json.dumps(data["attempts"])
+    for forbidden in ("old_string", "new_string", "content", "token", "secret"):
+        assert forbidden not in attempts_blob
+
+    # Attempt keys are exactly the diagnostic set — no content/edit-text fields.
+    attempt_keys = set(data["attempts"][0].keys())
+    expected_keys = {
+        "attempt_id", "attempt_number", "started_at", "recovery_mode",
+        "failure_type", "failed_step", "changed_files_attempted",
+        "changed_files_actual", "scope_ok", "preimage_matched", "model_used",
+        "test_outcome", "outcome", "human_decision", "working_tree_clean",
+        "rollback_performed",
+    }
+    assert attempt_keys == expected_keys
+
+
+def test_suggested_actions_and_manual_intervention_unchanged_by_enrichment():
+    report = build_patch_failure_report(
+        PatchFailureType.PATCH_DOES_NOT_APPLY, attempts=0, max_attempts=2
+    )
+    enriched = record_initial_attempt(
+        report, failure_report_id="f", attempt_id="a", started_at="t"
+    )
+    # Enrichment must not change derived behavior.
+    assert enriched.suggested_actions == report.suggested_actions
+    assert enriched.manual_intervention_needed == report.manual_intervention_needed
+    assert enriched.message == report.message
+    assert enriched.retry == report.retry

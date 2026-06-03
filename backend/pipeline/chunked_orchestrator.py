@@ -7,6 +7,7 @@ remote push, GitHub PR creation, or remote branch management.
 """
 
 import logging
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -47,6 +48,7 @@ from backend.pipeline.patch_failures import (
     PatchFailureType,
     build_patch_failure_report,
     patch_failure_report_to_completion_summary,
+    record_initial_attempt,
 )
 from backend.pipeline.planner import run_planner
 from backend.pipeline.run_locks import project_repo_lock, project_repo_lock_sync
@@ -813,10 +815,21 @@ def _fail_chunk_with_report(
         f"[CHUNKED] Patch failure | run_id={run_id} | "
         f"chunk={chunk_number} | type={report.failure_type.value}"
     )
+    # #26C: enrich the persisted summary with a failure_report_id and an initial
+    # attempt record (diagnostics/idempotency foundation). Ids/timestamp are
+    # generated here so build_patch_failure_report stays deterministic. This is
+    # additive: the user-facing message, status, event, and all execution
+    # behavior are unchanged.
+    enriched = record_initial_attempt(
+        report,
+        failure_report_id=str(uuid.uuid4()),
+        attempt_id=str(uuid.uuid4()),
+        started_at=_utc_now(),
+    )
     save_chunk_completion_summary(
         run_id,
         chunk_number,
-        patch_failure_report_to_completion_summary(report),
+        patch_failure_report_to_completion_summary(enriched),
     )
     update_chunk_status(run_id, chunk_number, "failed", report.message)
     _update_run_status(
