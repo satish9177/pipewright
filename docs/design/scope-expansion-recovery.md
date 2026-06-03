@@ -197,8 +197,9 @@ Notes:
 - `requested_files` and `approved_files` are **separate** columns on purpose: a
   human may approve a subset of what was requested, and the requested set is
   never trusted as authorization.
-- The `schema.sql` initializer splits on `;`, so the DDL must contain **no
-  semicolons inside comments** (see the project memory note on `schema.sql`).
+- The `schema.sql` initializer runs `cursor.executescript()`, which understands
+  SQL comments and string literals, so the DDL needs no special handling for
+  semicolons inside comments.
 - All stored values are sanitized; no file contents, `old_string`, secrets, or
   token-like values are ever stored (mirrors #26's sanitization discipline).
 
@@ -762,7 +763,7 @@ Each slice is small, reversible, and ships behind the existing safety layer.
 **None ship with #27A.**
 
 - **#27B — Table + lifecycle data layer.** Add `scope_expansion_requests` DDL
-  (no semicolons in comments) and a typed store with the status state machine
+  and a typed store with the status state machine
   (`pending`/`approved`/`applied`/`rejected`/`superseded`). No routes, no
   overlay yet. Tests for status transitions and audit columns.
 - **#27C — Effective-scope overlay.** Wire the merge into
