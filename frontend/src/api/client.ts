@@ -307,12 +307,26 @@ export interface ChunkOperationResponse extends ExtraFields {
   next_action?: string
   resumed?: boolean
   error?: string
+  // Patch retry fields (#26D3b). Present on retry responses: a new
+  // failure_report_id on success/re-failure, and the retry_ineligible quartet
+  // (eligible/reason/status_code/detail) returned in 409/422 error bodies.
+  failure_report_id?: string
+  eligible?: boolean
+  reason?: string
+  status_code?: number
+  detail?: string
 }
 
 export type ChunkExecuteResponse = ChunkOperationResponse
 export type ChunkResumeResponse = ChunkOperationResponse
 export type ChunkApprovalResponse = ChunkOperationResponse
 export type ChunkRejectionResponse = ChunkOperationResponse
+
+export interface RetryChunkRequest {
+  failure_report_id: string
+}
+
+export type ChunkRetryResponse = ChunkOperationResponse
 
 export interface FinalApprovalResponse extends ExtraFields {
   status: RunStatus
@@ -548,6 +562,11 @@ export const runsApi = {
     api.post<ChunkRejectionResponse>(
       `/runs/${runId}/chunks/${chunkNumber}/reject`,
       { reason },
+    ).then(r => r.data),
+  retryChunk: (runId: string, chunkNumber: number, failureReportId: string) =>
+    api.post<ChunkRetryResponse>(
+      `/runs/${runId}/chunks/${chunkNumber}/retry`,
+      { failure_report_id: failureReportId } satisfies RetryChunkRequest,
     ).then(r => r.data),
   approveFinalApproval: (runId: string) =>
     api.post<FinalApprovalResponse>(`/runs/${runId}/final-approval/approve`).then(r => r.data),
