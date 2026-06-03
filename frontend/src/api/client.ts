@@ -250,6 +250,12 @@ export type TestRunVerdict = 'strong' | 'weak' | 'none' | 'unknown'
 // Read-only runtime test-validation evidence for a chunk (#28E), populated from
 // the persisted verdict (#28D). Display-only: it never gates approval, commit,
 // or PR. Present only when a verdict was recorded; otherwise null.
+export type TestValidationAckStatus =
+  | 'not_required'
+  | 'missing'
+  | 'current'
+  | 'stale'
+
 export interface TestRunValidation extends ExtraFields {
   verdict: TestRunVerdict
   reason: string
@@ -259,6 +265,11 @@ export interface TestRunValidation extends ExtraFields {
   passed_tests?: number | null
   failed_tests?: number | null
   zero_tests_detected: boolean
+  // Read-only #28F acknowledgement state (#28G). The backend gate is the source
+  // of truth; these only drive the acknowledgement UI and pre-disable final
+  // approval. requires_acknowledgement is true only for weak/none verdicts.
+  requires_acknowledgement?: boolean
+  acknowledgement_status?: TestValidationAckStatus
 }
 
 export interface ChunkStatus extends ExtraFields {
@@ -391,6 +402,17 @@ export interface ScopeExpansionRejectResponse extends ExtraFields {
 export interface FinalApprovalResponse extends ExtraFields {
   status: RunStatus
   run_id: string
+}
+
+// Response from the #28F acknowledge route (#28G). Acknowledgement is a
+// precondition for final approval — it commits nothing and is not code approval.
+export interface TestValidationAckResponse extends ExtraFields {
+  status: string
+  run_id: string
+  chunk_number: number
+  verdict: TestRunVerdict
+  acknowledged_diff_hash: string
+  acknowledged_at?: string | null
 }
 
 export interface PushPrResponse extends ExtraFields {
@@ -648,6 +670,15 @@ export const runsApi = {
     api.post<ScopeExpansionRejectResponse>(
       `/runs/${runId}/chunks/${chunkNumber}/scope-expansion/${requestId}/reject`,
       { reason } satisfies RejectScopeExpansionRequest,
+    ).then(r => r.data),
+  acknowledgeTestValidation: (
+    runId: string,
+    chunkNumber: number,
+    reason?: string | null,
+  ) =>
+    api.post<TestValidationAckResponse>(
+      `/runs/${runId}/chunks/${chunkNumber}/test-validation/acknowledge`,
+      { reason },
     ).then(r => r.data),
   approveFinalApproval: (runId: string) =>
     api.post<FinalApprovalResponse>(`/runs/${runId}/final-approval/approve`).then(r => r.data),

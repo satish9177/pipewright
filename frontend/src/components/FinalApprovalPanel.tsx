@@ -20,6 +20,11 @@ interface FinalApprovalPanelProps {
   isRejecting: boolean
   message: string | null
   error: string | null
+  // #28G: true when at least one chunk has a weak/none verdict whose
+  // acknowledgement is missing/stale. The backend gate (#28F) is the source of
+  // truth and will 409; this only pre-disables the Approve button and explains
+  // the required action so the user isn't sent into an avoidable error.
+  acknowledgementBlocking?: boolean
   onApprove: () => void
   onReject: (reason: string) => void
 }
@@ -37,12 +42,15 @@ export default function FinalApprovalPanel({
   isRejecting,
   message,
   error,
+  acknowledgementBlocking = false,
   onApprove,
   onReject,
 }: FinalApprovalPanelProps) {
   const [rejectReason, setRejectReason] = useState('')
   const actionPending =
     isApproving || isRejecting || isCheckingFinalGate || !hasPendingFinalGate
+  // Reject is always allowed; only Approve is gated by the acknowledgement.
+  const approveDisabled = actionPending || acknowledgementBlocking
   const finalApprovalRequired = getBooleanExtra(run, 'final_approval_required')
   const statusDisplay = getStatusDisplay(run.status)
 
@@ -92,6 +100,12 @@ export default function FinalApprovalPanel({
             was found. Refresh the run or resume execution.
           </p>
         )}
+        {acknowledgementBlocking && (
+          <p className="text-sm font-medium text-amber-700">
+            Final approval is blocked until you acknowledge the weak/no-test
+            validation above. Acknowledge each affected chunk, then approve.
+          </p>
+        )}
         {message && (
           <p className="text-sm font-medium text-green-600">{message}</p>
         )}
@@ -102,7 +116,7 @@ export default function FinalApprovalPanel({
         <div className="flex flex-wrap gap-3">
           <Button
             onClick={onApprove}
-            disabled={actionPending}
+            disabled={approveDisabled}
             className="bg-green-600 hover:bg-green-700 text-white"
           >
             {isApproving ? 'Approving...' : 'Approve Final'}
