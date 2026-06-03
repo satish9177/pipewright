@@ -20,7 +20,7 @@ from backend.core.status_service import (
     update_chunk_status as _service_update_chunk_status,
     update_run_status as _service_update_run_status,
 )
-from backend.core.statuses import ChunkStatusValue
+from backend.core.statuses import ChunkStatusValue, RunStatus
 from backend.db.database import engine, init_db
 from backend.events import event_bus
 from backend.events.schema import Event
@@ -64,6 +64,9 @@ from backend.pipeline.patch_failures import (
 )
 from backend.pipeline.planner import run_planner
 from backend.pipeline.run_locks import project_repo_lock, project_repo_lock_sync
+from backend.pipeline.scope_expansion_store import (
+    maybe_create_scope_expansion_request_for_failure,
+)
 from backend.pipeline.scope_guard import ScopeDriftError, assert_files_in_scope
 from backend.pipeline.tester import run_tests
 from backend.projects.project_context import ProjectRuntimeConfig, active_project
@@ -811,6 +814,47 @@ def _fail_chunk(
     }
 
 
+def _surface_scope_expansion_if_eligible(
+    run_id: str,
+    chunk_number: int,
+    report: PatchFailureReport,
+) -> None:
+    """
+    Best-effort: create a pending scope_expansion_request for an eligible clean
+    SCOPE_VIOLATION and surface the run as awaiting scope approval (#27).
+
+    The chunk stays `failed` (design §10); only the run-level status is moved to
+    AWAITING_SCOPE_APPROVAL so the UI/API can distinguish "scope expansion
+    pending" from an ordinary patch failure. This adds NO approval, NO retry, NO
+    commit, and never mutates chunks.files_expected or scope_guard.
+
+    Intentionally swallows its own errors: the patch failure has already been
+    persisted by the caller, so surfacing must never turn a clean `failed` into a
+    crash. A dirty-tree / manual-intervention / non-SCOPE_VIOLATION /
+    all-forbidden / cap-exhausted failure creates nothing and leaves the run
+    `failed`.
+    """
+    try:
+        project_id = get_chunk_plan_status(run_id).project_id
+        result = maybe_create_scope_expansion_request_for_failure(
+            run_id, project_id, chunk_number, report
+        )
+        if result.request is not None:
+            _update_run_status(
+                run_id,
+                RunStatus.AWAITING_SCOPE_APPROVAL,
+                f"chunk_{chunk_number}_awaiting_scope_approval",
+                chunk_number,
+            )
+    except Exception as error:
+        logger.warning(
+            "scope expansion surfacing skipped | run_id=%s | chunk=%s | error=%s",
+            run_id,
+            chunk_number,
+            error,
+        )
+
+
 def _fail_chunk_with_report(
     run_id: str,
     chunk_number: int,
@@ -869,6 +913,11 @@ def _fail_chunk_with_report(
             "changed_files_actual_count": len(report.changed_files_actual),
         },
     ))
+    # #27: on an eligible clean SCOPE_VIOLATION, create a pending scope expansion
+    # request and surface the run as awaiting scope approval. Uses the enriched
+    # report so the request is tied to the persisted failure_report_id. Additive
+    # and best-effort; never changes the failed return value below.
+    _surface_scope_expansion_if_eligible(run_id, chunk_number, enriched)
     return {
         "status": "failed",
         "run_id": run_id,
@@ -1836,6 +1885,11 @@ def _persist_retry_patch_failure(
             "changed_files_actual_count": len(report.changed_files_actual),
         },
     ))
+    # #27: a #26 retry that re-fails with an eligible clean SCOPE_VIOLATION also
+    # surfaces a pending scope expansion request. Same additive, best-effort path
+    # as initial execution; does not change this failed return value or #26's
+    # public retry behavior.
+    _surface_scope_expansion_if_eligible(run_id, chunk_number, enriched)
     return {
         "status": "failed",
         "run_id": run_id,
