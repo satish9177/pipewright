@@ -12,11 +12,15 @@ import uuid
 import pytest
 from sqlalchemy import text
 
+from fastapi.testclient import TestClient
+
 from backend.db.database import engine
+from backend.main import app
 from backend.models.chunk import ChunkDefinition, TriageResult
 from backend.pipeline.chunk_store import (
     create_chunked_run,
     get_chunk,
+    get_chunk_plan_status,
     get_chunk_test_run_verdict,
     save_chunk_test_run_verdict,
 )
@@ -236,3 +240,64 @@ def test_persisting_verdict_does_not_change_chunk_status(tmp_path, tracked_runs)
     after = get_chunk(run_id, 1).status
     assert before == "pending"
     assert after == "pending"  # unchanged by any verdict, including weak/none
+
+
+# --------------------------------------------------------------------------
+# #28E — read-only API surfacing of the persisted verdict on ChunkStatus
+# --------------------------------------------------------------------------
+
+
+def test_chunk_plan_surfaces_strong_test_validation_with_counts(
+    tmp_path, tracked_runs
+):
+    run_id, _ = _make_run_with_one_chunk(tmp_path, tracked_runs)
+    _save(run_id, "pytest", 0, "===== 5 passed in 0.10s =====")
+
+    plan = get_chunk_plan_status(run_id)
+    tv = plan.chunks[0].test_validation
+    assert tv is not None
+    assert tv.verdict == "strong"
+    assert tv.passed_tests == 5
+    assert tv.total_tests == 5
+    assert tv.counts_parsed is True
+    assert tv.zero_tests_detected is False
+
+
+def test_chunk_plan_surfaces_weak_reason_and_zero_tests(tmp_path, tracked_runs):
+    run_id, _ = _make_run_with_one_chunk(tmp_path, tracked_runs)
+    _save(run_id, "pytest", 0, "collected 0 items")
+
+    tv = get_chunk_plan_status(run_id).chunks[0].test_validation
+    assert tv.verdict == "weak"
+    assert tv.zero_tests_detected is True
+    assert tv.reason  # non-empty human-facing reason
+
+
+def test_chunk_without_verdict_has_null_test_validation(tmp_path, tracked_runs):
+    run_id, _ = _make_run_with_one_chunk(tmp_path, tracked_runs)
+    # No verdict saved -> backward-compatible null, never an error.
+    assert get_chunk_plan_status(run_id).chunks[0].test_validation is None
+
+
+def test_api_get_chunks_serializes_test_validation(tmp_path, tracked_runs):
+    run_id, _ = _make_run_with_one_chunk(tmp_path, tracked_runs)
+    _save(run_id, "pytest", 0, "5 passed in 0.2s")
+
+    client = TestClient(app)
+    response = client.get(f"/runs/{run_id}/chunks")
+    assert response.status_code == 200
+    chunk = response.json()["chunks"][0]
+    assert "test_validation" in chunk
+    assert chunk["test_validation"]["verdict"] == "strong"
+    assert chunk["test_validation"]["passed_tests"] == 5
+
+
+def test_api_get_chunks_test_validation_null_for_old_chunk(tmp_path, tracked_runs):
+    run_id, _ = _make_run_with_one_chunk(tmp_path, tracked_runs)
+
+    client = TestClient(app)
+    response = client.get(f"/runs/{run_id}/chunks")
+    assert response.status_code == 200
+    chunk = response.json()["chunks"][0]
+    # Backward compatible: field present and explicitly null, not missing/error.
+    assert chunk["test_validation"] is None

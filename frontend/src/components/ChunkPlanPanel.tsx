@@ -18,6 +18,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { getStatusDisplay } from '@/utils/statusDisplay'
 import PatchFailureBanner from '@/components/PatchFailureBanner'
 import ScopeExpansionBanner from '@/components/ScopeExpansionBanner'
+import RuntimeTestValidationBanner from '@/components/RuntimeTestValidationBanner'
 import AttemptHistory from '@/components/AttemptHistory'
 import {
   parsePatchFailureSummary,
@@ -411,6 +412,13 @@ export default function ChunkPlanPanel({
                       </p>
                     </div>
                   )}
+
+                  {/* #28E: display-only runtime test verdict for this chunk.
+                      Renders nothing until a verdict is recorded (pending/old
+                      chunks). Never gates approval, commit, or PR. */}
+                  <RuntimeTestValidationBanner
+                    validation={chunk.test_validation}
+                  />
 
                   {pendingScope && (
                     // #27F: primary recovery action for a pending scope
