@@ -33,20 +33,48 @@ def _resolve_command(command: str) -> str:
         raise RuntimeError(f"tester.py: failed to resolve command: {error}")
 
 
-def _combine_output(stdout: str, stderr: str) -> str:
+def _combine_full_output(stdout: str, stderr: str) -> str:
+    """
+    Combine stdout and stderr into one UNTRUNCATED string.
+
+    This is the text that evidence parsing (``_parse_test_counts`` here, and the
+    runtime classifier wired in later #28 slices) must see. A test summary line
+    ("12 passed", "collected 0 items") lives at the END of the output, so parsing
+    must run against the full text BEFORE any display truncation. Never raises.
+    """
     try:
         output = f"{stdout or ''}{stderr or ''}"
         if not output.strip():
-            output = "[TESTER] No test output captured"
-
-        if len(output) > MAX_OUTPUT_CHARS:
-            return (
-                output[:MAX_OUTPUT_CHARS]
-                + f"\n[TESTER] Output truncated to {MAX_OUTPUT_CHARS} chars"
-            )
+            return "[TESTER] No test output captured"
         return output
     except Exception as error:
         raise RuntimeError(f"tester.py: failed to combine output: {error}")
+
+
+def _truncate_for_display(output: str) -> str:
+    """
+    Bound stored/displayed output to MAX_OUTPUT_CHARS while PRESERVING THE TAIL.
+
+    The previous implementation kept the head and dropped everything past
+    MAX_OUTPUT_CHARS, which discarded the pytest/jest/go summary line that sits at
+    the end — making a healthy large suite look like "0 tests" to any count-based
+    logic. We keep the tail instead, prefixed with a clear truncation marker.
+
+    This is a DISPLAY/storage transform only. Evidence must be parsed from the
+    full output (see ``_combine_full_output``), never from this string. Never
+    raises.
+    """
+    try:
+        if len(output) <= MAX_OUTPUT_CHARS:
+            return output
+        tail = output[-MAX_OUTPUT_CHARS:]
+        return (
+            f"[TESTER] ... output truncated ... (showing last "
+            f"{MAX_OUTPUT_CHARS} chars)\n"
+            + tail
+        )
+    except Exception as error:
+        raise RuntimeError(f"tester.py: failed to truncate output: {error}")
 
 
 def _parse_test_counts(output: str) -> tuple[int, int, int]:
@@ -128,8 +156,11 @@ def run_tests(
             timeout=TESTER_TIMEOUT_SECONDS
         )
         duration = time.perf_counter() - start
-        output = _combine_output(completed.stdout, completed.stderr)
-        total_tests, passed_tests, failed_tests = _parse_test_counts(output)
+        # Parse counts from the FULL output (summary line is at the end), then
+        # store a tail-preserving truncated copy for display. #28C.
+        full_output = _combine_full_output(completed.stdout, completed.stderr)
+        total_tests, passed_tests, failed_tests = _parse_test_counts(full_output)
+        output = _truncate_for_display(full_output)
         passed = completed.returncode == 0
 
         print(f"[TESTER] Duration: {duration:.2f} seconds")
@@ -186,7 +217,9 @@ def run_tests(
 
     except subprocess.TimeoutExpired as error:
         duration = time.perf_counter() - start
-        output = _combine_output(error.stdout or "", error.stderr or "")
+        output = _truncate_for_display(
+            _combine_full_output(error.stdout or "", error.stderr or "")
+        )
         print(f"[TESTER] Duration: {duration:.2f} seconds")
         print("[TESTER] Result: FAILED | command timed out")
         print("[TESTER] Tests failed. Triggering rollback.")
