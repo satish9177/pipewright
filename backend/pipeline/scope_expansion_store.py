@@ -24,14 +24,18 @@ import uuid
 from datetime import datetime, timezone
 from typing import Sequence
 
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from backend.db.database import engine, init_db
+from backend.pipeline.patch_failures import PatchFailureReport
 from backend.pipeline.scope_expansion import (
     ScopeExpansionRequest,
     ScopeExpansionStatus,
+    evaluate_scope_expansion_eligibility,
     is_in_force,
     is_transition_allowed,
+    normalize_safe_relative_path,
 )
 
 
@@ -265,3 +269,171 @@ def update_scope_expansion_request_status(
             f"scope_expansion_store.py: update_scope_expansion_request_status failed. "
             f"request_id={request_id} | new_status={target} | error={error}"
         )
+
+
+def count_in_force_scope_amendments(run_id: str, chunk_number: int) -> int:
+    """
+    Count in-force (approved/applied) scope amendments for a chunk.
+
+    This is ``amendments_used`` for the #27B eligibility gate. In-force membership
+    is decided only by the pure scope_expansion.is_in_force, so the count can never
+    drift from the lifecycle invariant. pending/rejected/superseded never count.
+    """
+    requests = list_scope_expansion_requests_for_chunk(run_id, chunk_number)
+    return sum(1 for request in requests if is_in_force(request.status))
+
+
+# ---------------------------------------------------------------------------
+# Request creation on an eligible clean SCOPE_VIOLATION
+# ---------------------------------------------------------------------------
+
+
+class ScopeExpansionCreationResult(BaseModel):
+    """
+    Small result of maybe_create_scope_expansion_request_for_failure (for tests
+    and logging). ``request`` is the active pending request when one now exists
+    for the chunk (whether freshly created or an idempotent re-hit of the same
+    failure), and None when the failure was ineligible and nothing was created.
+    """
+
+    created: bool = False
+    eligible: bool = False
+    reason: str | None = None
+    request: ScopeExpansionRequest | None = None
+    superseded_request_ids: list[str] = Field(default_factory=list)
+
+
+def _extra_files_outside_scope(
+    attempted: Sequence[str],
+    actual: Sequence[str],
+    allowed: Sequence[str],
+) -> list[str]:
+    """
+    The paths a failed attempt tried to touch that are outside the approved scope.
+
+    Pure. Compares safe-normalized forms so case/slash variants of an in-scope
+    file are not surfaced as "extra". Returns the original path strings (order
+    preserved, first occurrence wins); denylist filtering and final normalization
+    are applied later by filter_requestable_files via the eligibility helper.
+    """
+    allowed_normalized = {
+        normalized
+        for raw in allowed
+        if (normalized := normalize_safe_relative_path(raw)) is not None
+    }
+    extras: list[str] = []
+    seen: set[str] = set()
+    for raw in list(attempted) + list(actual):
+        normalized = normalize_safe_relative_path(raw)
+        if normalized is None:
+            # Structurally unsafe; let the eligibility filter drop it, but still
+            # consider it a candidate so an all-unsafe set yields no requestables.
+            key = raw
+        elif normalized in allowed_normalized:
+            continue
+        else:
+            key = normalized
+        if key in seen:
+            continue
+        seen.add(key)
+        extras.append(raw)
+    return extras
+
+
+def maybe_create_scope_expansion_request_for_failure(
+    run_id: str,
+    project_id: str,
+    chunk_number: int,
+    report: PatchFailureReport,
+) -> ScopeExpansionCreationResult:
+    """
+    Create a pending scope_expansion_request for an eligible clean SCOPE_VIOLATION
+    (#27 — request creation slice).
+
+    This ONLY creates/surfaces a request. It does NOT approve, retry, commit, or
+    mutate chunks.files_expected, and it never touches scope_guard. A request is
+    created only when scope_expansion.evaluate_scope_expansion_eligibility says the
+    failure is eligible — i.e. failure_type == SCOPE_VIOLATION, working tree clean,
+    no manual intervention needed, at least one requestable (normalized,
+    non-forbidden) extra file, and MAX_SCOPE_AMENDMENTS not exhausted. Dirty-tree /
+    manual-intervention / non-SCOPE_VIOLATION / all-forbidden / cap-exhausted
+    failures create nothing.
+
+    Idempotency / dedup (#27A §6, #27C):
+      - A failure with no failure_report_id creates nothing (cannot be tied).
+      - If a pending request already exists for this chunk with the SAME
+        failure_report_id, it is left unchanged (no duplicate).
+      - If pending requests exist for OTHER failure_report_ids, they are
+        superseded and a single fresh pending request is created, so there is
+        never more than one active pending request per chunk.
+
+    Pure-ish persistence: no git, no LLM, no commit. Returns a small result for
+    tests/logging. requested_files come from the report's attempted/actual changed
+    files outside the approved scope; approved_files is always empty.
+    """
+    if not report.failure_report_id:
+        return ScopeExpansionCreationResult(
+            created=False, eligible=False, reason="missing_failure_report_id"
+        )
+
+    candidate_extras = _extra_files_outside_scope(
+        report.changed_files_attempted,
+        report.changed_files_actual,
+        report.allowed_files,
+    )
+
+    decision = evaluate_scope_expansion_eligibility(
+        failure_type=report.failure_type,
+        working_tree_clean=report.working_tree_clean,
+        manual_intervention_needed=report.manual_intervention_needed,
+        amendments_used=count_in_force_scope_amendments(run_id, chunk_number),
+        requested_extra_files=candidate_extras,
+    )
+    if not decision.eligible:
+        return ScopeExpansionCreationResult(
+            created=False, eligible=False, reason=decision.reason
+        )
+
+    existing = list_scope_expansion_requests_for_chunk(run_id, chunk_number)
+    pending = [
+        request
+        for request in existing
+        if request.status == ScopeExpansionStatus.PENDING.value
+    ]
+
+    # Idempotent: the same failure already has a pending request -> do nothing.
+    for request in pending:
+        if request.failure_report_id == report.failure_report_id:
+            return ScopeExpansionCreationResult(
+                created=False,
+                eligible=True,
+                reason="already_pending_same_failure",
+                request=request,
+            )
+
+    # A newer eligible failure replaces any stale pending request(s) for the chunk
+    # so there is never more than one active pending request.
+    superseded_ids: list[str] = []
+    for request in pending:
+        update_scope_expansion_request_status(
+            request.id,
+            ScopeExpansionStatus.SUPERSEDED,
+            decision_reason="superseded by a newer scope violation",
+        )
+        superseded_ids.append(request.id)
+
+    created = create_scope_expansion_request(
+        run_id,
+        project_id,
+        chunk_number,
+        report.failure_report_id,
+        requested_files=decision.requestable_files,
+        approved_files=[],
+    )
+    return ScopeExpansionCreationResult(
+        created=True,
+        eligible=True,
+        reason="created",
+        request=created,
+        superseded_request_ids=superseded_ids,
+    )
