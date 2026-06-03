@@ -34,12 +34,15 @@ interface ChunkPlanPanelProps {
   chunkActionMessage: string | null
   chunkActionError: string | null
   hiddenApprovalChunkNumbers?: number[]
+  // Patch retry wiring (#26E2). Optional so existing callers/tests stay valid.
+  retryingChunkNumber?: number | null
   onApprove: () => void
   onReject: (reason: string) => void
   onExecute: () => void
   onResume: () => void
   onApproveChunk: (chunkNumber: number) => void
   onRejectChunk: (chunkNumber: number, reason: string) => void
+  onRetryChunk?: (chunkNumber: number, failureReportId: string) => void
 }
 
 function formatList(values: Array<string | number>) {
@@ -68,12 +71,14 @@ export default function ChunkPlanPanel({
   chunkActionMessage,
   chunkActionError,
   hiddenApprovalChunkNumbers = [],
+  retryingChunkNumber = null,
   onApprove,
   onReject,
   onExecute,
   onResume,
   onApproveChunk,
   onRejectChunk,
+  onRetryChunk,
 }: ChunkPlanPanelProps) {
   const [rejectReason, setRejectReason] = useState('')
   const [chunkRejectReasons, setChunkRejectReasons] = useState<
@@ -348,6 +353,10 @@ export default function ChunkPlanPanel({
                     <PatchFailureBanner
                       report={patchFailure}
                       projectId={plan.project_id}
+                      chunkNumber={chunk.chunk_number}
+                      chunkStatus={chunk.status}
+                      onRetry={onRetryChunk}
+                      isRetrying={retryingChunkNumber === chunk.chunk_number}
                     />
                   ) : (
                     <>
