@@ -89,6 +89,63 @@ function getErrorMessage(error: unknown, fallback: string) {
   return fallback
 }
 
+// Human-readable copy for the backend's stable retry_ineligible reasons (#26E2).
+// Backend reason identifiers come from backend/pipeline/patch_failures.py.
+const RETRY_INELIGIBLE_MESSAGES: Record<string, string> = {
+  stale_failure_report_id:
+    'This failure report is stale. Refresh the run and try again.',
+  dirty_worktree: 'The working tree is dirty. Clean it before retrying.',
+  disallowed_failure_type:
+    'This failure type cannot be retried automatically.',
+  missing_or_malformed_report:
+    'The patch failure report is missing or malformed.',
+  missing_failure_report_id:
+    'The patch failure report is missing or malformed.',
+  dependencies_not_met: "This chunk's dependencies are not completed.",
+  human_retry_cap_exhausted: 'The retry limit has been reached.',
+}
+
+function retrySuccessMessage(status: string): string {
+  if (status === 'awaiting_chunk_approval') {
+    return 'Retry succeeded. Review the recovered patch before committing.'
+  }
+  if (status === 'failed') {
+    return 'Retry ran but the patch failed again.'
+  }
+  return 'Retry completed.'
+}
+
+// Map a retry error to inline copy. retry_ineligible bodies (409/422) carry a
+// stable `reason` and sometimes a `detail`; wrong_branch always carries a
+// ready-to-show detail. Non-ineligible HTTP errors fall back to the shared
+// getErrorMessage handler.
+function getRetryErrorMessage(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'response' in error) {
+    const data = (
+      error as {
+        response?: {
+          data?: {
+            status?: unknown
+            reason?: unknown
+            detail?: unknown
+          }
+        }
+      }
+    ).response?.data
+    if (data && data.status === 'retry_ineligible') {
+      const reason = typeof data.reason === 'string' ? data.reason : ''
+      const detail = typeof data.detail === 'string' ? data.detail : undefined
+      if (reason === 'wrong_branch') {
+        return detail || 'Checkout the run branch and try again.'
+      }
+      const mapped = RETRY_INELIGIBLE_MESSAGES[reason]
+      if (mapped) return mapped
+      return detail || (reason ? reason.replace(/_/g, ' ') : 'Retry is not allowed right now.')
+    }
+  }
+  return getErrorMessage(error, 'Failed to retry chunk.')
+}
+
 const TERMINAL_RUN_STATUSES: RunStatus[] = ['complete', 'failed', 'rejected']
 
 function RunMemorySuggestions({ run }: { run: Run }) {
@@ -541,6 +598,36 @@ export default function RunDetailPage() {
     },
   })
 
+  const retryChunkMutation = useMutation({
+    mutationFn: ({
+      chunkNumber,
+      failureReportId,
+    }: {
+      chunkNumber: number
+      failureReportId: string
+    }) => runsApi.retryChunk(runId!, chunkNumber, failureReportId),
+    onSuccess: (response) => {
+      setChunkActionMessage(retrySuccessMessage(response.status))
+      setChunkActionError(null)
+      setChunkExecutionMessage(null)
+      setChunkExecutionError(null)
+      queryClient.invalidateQueries({ queryKey: ['run', runId] })
+      queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+      queryClient.invalidateQueries({ queryKey: ['gates'] })
+    },
+    onError: (error: unknown) => {
+      setChunkActionMessage(null)
+      setChunkActionError(getRetryErrorMessage(error))
+      setChunkExecutionMessage(null)
+      setChunkExecutionError(null)
+      // Refresh even on failure: the backend may have advanced the
+      // failure_report_id (re-failure), so a stale id self-corrects.
+      queryClient.invalidateQueries({ queryKey: ['run', runId] })
+      queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+      queryClient.invalidateQueries({ queryKey: ['gates'] })
+    },
+  })
+
   const approveFinalApprovalMutation = useMutation({
     mutationFn: () => runsApi.approveFinalApproval(runId!),
     onSuccess: () => {
@@ -771,6 +858,11 @@ export default function RunDetailPage() {
             chunkActionMessage={chunkActionMessage}
             chunkActionError={chunkActionError}
             hiddenApprovalChunkNumbers={gateBackedApprovalChunkNumbers}
+            retryingChunkNumber={
+              retryChunkMutation.isPending
+                ? retryChunkMutation.variables?.chunkNumber ?? null
+                : null
+            }
             onApprove={() => approveChunkPlanMutation.mutate()}
             onReject={(reason) => rejectChunkPlanMutation.mutate(reason)}
             onExecute={() => executeChunksMutation.mutate()}
@@ -780,6 +872,9 @@ export default function RunDetailPage() {
             }
             onRejectChunk={(chunkNumber, reason) =>
               rejectChunkMutation.mutate({ chunkNumber, reason })
+            }
+            onRetryChunk={(chunkNumber, failureReportId) =>
+              retryChunkMutation.mutate({ chunkNumber, failureReportId })
             }
           />
         ) : (

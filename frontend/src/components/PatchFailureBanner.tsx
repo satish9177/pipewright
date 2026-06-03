@@ -14,10 +14,20 @@ interface PatchFailureBannerProps {
   // retries the failed chunk. Without it, `reindex` stays a disabled
   // placeholder like the other unwired recovery actions.
   projectId?: string
+  // Retry wiring (#26E2). When the chunk is failed, carries a failure_report_id,
+  // and suggests a retry action, an enabled Retry button calls back with the
+  // current failure_report_id. The backend remains the source of truth for
+  // eligibility — a rejected retry is safe and surfaces a clear message.
+  chunkNumber?: number
+  chunkStatus?: string
+  onRetry?: (chunkNumber: number, failureReportId: string) => void
+  isRetrying?: boolean
 }
 
 const VIEW_DETAILS = 'view_details'
 const REINDEX = 'reindex'
+const RETRY = 'retry'
+const RETRY_WITH_INSTRUCTION = 'retry_with_instruction'
 
 function formatFiles(values: string[]) {
   return values.join(', ')
@@ -41,6 +51,10 @@ function getReindexErrorMessage(error: unknown): string {
 export default function PatchFailureBanner({
   report,
   projectId,
+  chunkNumber,
+  chunkStatus,
+  onRetry,
+  isRetrying = false,
 }: PatchFailureBannerProps) {
   const [showDetails, setShowDetails] = useState(false)
   const [reindexing, setReindexing] = useState(false)
@@ -55,6 +69,20 @@ export default function PatchFailureBanner({
   // The reindex action is only actionable when we know which project to scan.
   const reindexEnabled =
     suggestedActions.includes(REINDEX) && Boolean(projectId)
+
+  // Retry eligibility (#26E2, Strategy A): show the button when the chunk is
+  // failed, the report carries a failure_report_id, a retry action is suggested,
+  // and a callback is wired. We deliberately do NOT replicate the backend's
+  // human-retry allowlist here — the backend decides and rejects safely.
+  const retrySuggested =
+    suggestedActions.includes(RETRY) ||
+    suggestedActions.includes(RETRY_WITH_INSTRUCTION)
+  const canRetry =
+    chunkStatus === 'failed' &&
+    Boolean(report.failure_report_id) &&
+    retrySuggested &&
+    typeof onRetry === 'function' &&
+    typeof chunkNumber === 'number'
 
   const handleReindex = async () => {
     if (!projectId) return
@@ -140,7 +168,22 @@ export default function PatchFailureBanner({
       {suggestedActions.length > 0 && (
         <div className="grid gap-2">
           <div className="flex flex-wrap gap-2">
+            {canRetry && (
+              <Button
+                size="sm"
+                onClick={() => onRetry!(chunkNumber!, report.failure_report_id!)}
+                disabled={isRetrying}
+              >
+                {isRetrying ? 'Retrying…' : 'Retry'}
+              </Button>
+            )}
             {suggestedActions.map(action => {
+              // The dedicated Retry button above replaces the placeholder when
+              // retry is actually wired; otherwise fall through to the disabled
+              // placeholder (unchanged behavior).
+              if (action === RETRY && canRetry) {
+                return null
+              }
               if (action === VIEW_DETAILS) {
                 return (
                   <Button
