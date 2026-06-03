@@ -40,6 +40,26 @@ MAX_TECHNICAL_DETAILS_CHARS = 4000
 # stored in chunks.completion_summary; oldest attempts are dropped past the cap.
 MAX_RECOVERY_ATTEMPTS = 10
 
+# Maximum human-triggered patch retries permitted per failure (#26D1). Auto
+# attempts and the initial failed apply do not count against this cap.
+MAX_HUMAN_RETRIES = 2
+
+# Discriminator for the future success-pause marker stored in
+# chunks.completion_summary once a recovered patch awaits human review (#26D1).
+# Distinct from PATCH_FAILURE_KIND so the existing failure parser ignores it.
+RECOVERED_PATCH_REVIEW_KIND = "recovered_patch_review"
+
+# Stable reason identifiers returned by evaluate_patch_retry_eligibility (#26D1).
+# Kept stable so callers/UI can branch on them without string-matching prose.
+RETRY_INELIGIBLE_MISSING_REPORT = "missing_or_malformed_report"
+RETRY_INELIGIBLE_MISSING_FAILURE_REPORT_ID = "missing_failure_report_id"
+RETRY_INELIGIBLE_STALE_FAILURE_REPORT_ID = "stale_failure_report_id"
+RETRY_INELIGIBLE_CHUNK_NOT_FAILED = "chunk_not_failed"
+RETRY_INELIGIBLE_DEPENDENCIES_NOT_MET = "dependencies_not_met"
+RETRY_INELIGIBLE_DIRTY_WORKTREE = "dirty_worktree"
+RETRY_INELIGIBLE_DISALLOWED_FAILURE_TYPE = "disallowed_failure_type"
+RETRY_INELIGIBLE_CAP_EXHAUSTED = "human_retry_cap_exhausted"
+
 # Stable action identifiers surfaced to the frontend recovery UI (#18A §5).
 ACTION_RETRY = "retry"
 ACTION_RETRY_WITH_INSTRUCTION = "retry_with_instruction"
@@ -117,6 +137,21 @@ _STALE_INDEX_HINT_TYPES: frozenset[PatchFailureType] = frozenset(
         PatchFailureType.PATCH_PARTIAL_APPLY_BLOCKED,
         PatchFailureType.TARGET_MISSING,
         PatchFailureType.STALE_INDEX_OR_FILE_CHANGED,
+    }
+)
+
+# Failure types where a human-triggered retry of the *same plan* is safe to even
+# consider (#26D1). Deliberately a small allowlist — NOT _RETRYABLE_TRANSIENT,
+# which also contains PATCH_MALFORMED / TEST_FAILURE_AFTER_APPLY /
+# UNKNOWN_PATCH_FAILURE (all disallowed for human retry). Anything not in this
+# set — including SCOPE_VIOLATION, FORBIDDEN_FILE, NO_CHANGES, DIRTY_WORKTREE,
+# STALE_INDEX_OR_FILE_CHANGED — is rejected. This module only *evaluates*
+# eligibility; no retry is executed here (execution lands in #26D2+).
+_HUMAN_RETRYABLE_FAILURE_TYPES: frozenset[PatchFailureType] = frozenset(
+    {
+        PatchFailureType.PATCH_DOES_NOT_APPLY,
+        PatchFailureType.TARGET_MISSING,
+        PatchFailureType.PATCH_PARTIAL_APPLY_BLOCKED,
     }
 )
 
@@ -233,6 +268,41 @@ class PatchFailureReport(BaseModel):
     # parse. attempts[] is append-only history capped at MAX_RECOVERY_ATTEMPTS.
     failure_report_id: str | None = None
     attempts: list[PatchRecoveryAttempt] = Field(default_factory=list)
+
+
+class PatchRetryEligibilityDecision(BaseModel):
+    """
+    Pure decision about whether a human may retry a failed patch (#26D1).
+
+    Produced by evaluate_patch_retry_eligibility from already-computed inputs.
+    Carries no behavior: it does not retry, mutate state, or touch disk/git. The
+    ``status_code`` is a *suggested* HTTP status for a future retry route (#26D3)
+    and is None only when ``eligible`` is True.
+    """
+
+    eligible: bool
+    reason: str | None = None
+    status_code: int | None = None
+    failure_type: PatchFailureType | None = None
+    human_retry_attempts_used: int
+    max_human_retries: int
+
+
+class RecoveredPatchReviewSummary(BaseModel):
+    """
+    Marker stored in chunks.completion_summary when a retried patch applied
+    successfully and is paused awaiting human review (#26D1).
+
+    Pure data only. Tagged with its own ``kind`` so the existing patch-failure
+    parser ignores it (kind != PATCH_FAILURE_KIND). Not wired into the
+    orchestrator yet — execution/pause behavior lands in #26D2+.
+    """
+
+    kind: Literal["recovered_patch_review"] = RECOVERED_PATCH_REVIEW_KIND
+    failure_report_id: str
+    recovery_attempt_id: str
+    attempts: list[PatchRecoveryAttempt] = Field(default_factory=list)
+    weak_test_warning: bool | None = None
 
 
 def default_message_for_failure_type(failure_type: PatchFailureType) -> str:
@@ -437,6 +507,180 @@ def record_initial_attempt(
             "attempts": capped,
         }
     )
+
+
+def count_human_retry_attempts(report: PatchFailureReport) -> int:
+    """
+    Count human-triggered retry attempts recorded on ``report`` (#26D1).
+
+    Only ``recovery_mode`` of "human" or "human_with_instruction" counts toward
+    the human retry cap. The initial failed apply ("initial") and any automatic
+    retries ("auto") are deliberately excluded.
+    """
+    return sum(
+        1
+        for attempt in report.attempts
+        if attempt.recovery_mode in ("human", "human_with_instruction")
+    )
+
+
+def evaluate_patch_retry_eligibility(
+    report: PatchFailureReport | None,
+    *,
+    requested_failure_report_id: str | None,
+    dependencies_met: bool,
+    working_tree_clean: bool,
+    chunk_status: str,
+    max_human_retries: int = MAX_HUMAN_RETRIES,
+) -> PatchRetryEligibilityDecision:
+    """
+    Decide whether a human may retry a failed patch (#26D1).
+
+    Pure and deterministic: receives already-computed booleans and never reads
+    disk, calls git, parses JSON, or mutates state. The caller is responsible for
+    computing ``dependencies_met`` / ``working_tree_clean`` / ``chunk_status``
+    and for honoring the suggested ``status_code`` at the route layer (#26D3).
+
+    Ineligible results carry a stable ``reason`` and a suggested status:
+      - missing/malformed report            -> 422
+      - missing failure_report_id           -> 409
+      - requested id != report id (stale)   -> 409
+      - chunk not in "failed" status        -> 422
+      - dependencies not met                -> 422
+      - dirty worktree                      -> 409
+      - disallowed failure type             -> 422
+      - human retry cap exhausted           -> 422
+    """
+    # The None guard must come first: count_human_retry_attempts needs a report.
+    if report is None:
+        return PatchRetryEligibilityDecision(
+            eligible=False,
+            reason=RETRY_INELIGIBLE_MISSING_REPORT,
+            status_code=422,
+            failure_type=None,
+            human_retry_attempts_used=0,
+            max_human_retries=max_human_retries,
+        )
+
+    used = count_human_retry_attempts(report)
+
+    def _ineligible(reason: str, status_code: int) -> PatchRetryEligibilityDecision:
+        return PatchRetryEligibilityDecision(
+            eligible=False,
+            reason=reason,
+            status_code=status_code,
+            failure_type=report.failure_type,
+            human_retry_attempts_used=used,
+            max_human_retries=max_human_retries,
+        )
+
+    if not report.failure_report_id:
+        return _ineligible(RETRY_INELIGIBLE_MISSING_FAILURE_REPORT_ID, 409)
+
+    if requested_failure_report_id != report.failure_report_id:
+        return _ineligible(RETRY_INELIGIBLE_STALE_FAILURE_REPORT_ID, 409)
+
+    if chunk_status != "failed":
+        return _ineligible(RETRY_INELIGIBLE_CHUNK_NOT_FAILED, 422)
+
+    if not dependencies_met:
+        return _ineligible(RETRY_INELIGIBLE_DEPENDENCIES_NOT_MET, 422)
+
+    if not working_tree_clean:
+        return _ineligible(RETRY_INELIGIBLE_DIRTY_WORKTREE, 409)
+
+    if report.failure_type not in _HUMAN_RETRYABLE_FAILURE_TYPES:
+        return _ineligible(RETRY_INELIGIBLE_DISALLOWED_FAILURE_TYPE, 422)
+
+    if used >= max_human_retries:
+        return _ineligible(RETRY_INELIGIBLE_CAP_EXHAUSTED, 422)
+
+    return PatchRetryEligibilityDecision(
+        eligible=True,
+        reason=None,
+        status_code=None,
+        failure_type=report.failure_type,
+        human_retry_attempts_used=used,
+        max_human_retries=max_human_retries,
+    )
+
+
+def record_retry_attempt(
+    report: PatchFailureReport,
+    *,
+    failure_report_id: str,
+    attempt_id: str,
+    started_at: str,
+    recovery_mode: Literal["human", "human_with_instruction", "auto"] = "human",
+    failure_type: PatchFailureType | None = None,
+    failed_step: str | None = None,
+    changed_files_attempted: list[str] | None = None,
+    changed_files_actual: list[str] | None = None,
+    scope_ok: bool | None = None,
+    preimage_matched: bool | None = None,
+    model_used: str | None = None,
+    test_outcome: Literal["passed", "failed", "not_run"] = "not_run",
+    outcome: Literal["failed", "recovered", "manual_intervention"] = "failed",
+    human_decision: str | None = None,
+    working_tree_clean: bool = False,
+    rollback_performed: bool = False,
+) -> PatchFailureReport:
+    """
+    Return a copy of ``report`` with a retry PatchRecoveryAttempt appended and
+    ``failure_report_id`` updated to the supplied new id (#26D1).
+
+    Pure: ids, timestamp, and every attempt field are supplied by the caller, so
+    this stays deterministic and does no I/O. The new attempt is numbered
+    ``len(existing attempts) + 1`` and the list is capped to the most recent
+    MAX_RECOVERY_ATTEMPTS. Like the initial-attempt helper, it stores only
+    paths/enums/flags/ids/timestamp — never file contents, old_string/new_string,
+    raw model output, or secrets.
+
+    For future #26D2/#26D3 use only; not wired into execution yet.
+    """
+    existing = list(report.attempts)
+    attempt_number = len(existing) + 1
+
+    attempt = PatchRecoveryAttempt(
+        attempt_id=attempt_id,
+        attempt_number=attempt_number,
+        started_at=started_at,
+        recovery_mode=recovery_mode,
+        failure_type=failure_type,
+        failed_step=failed_step,
+        changed_files_attempted=list(changed_files_attempted or []),
+        changed_files_actual=list(changed_files_actual or []),
+        scope_ok=scope_ok,
+        preimage_matched=preimage_matched,
+        model_used=model_used,
+        test_outcome=test_outcome,
+        outcome=outcome,
+        human_decision=human_decision,
+        working_tree_clean=working_tree_clean,
+        rollback_performed=rollback_performed,
+    )
+
+    capped = (existing + [attempt])[-MAX_RECOVERY_ATTEMPTS:]
+    return report.model_copy(
+        update={
+            "failure_report_id": failure_report_id,
+            "attempts": capped,
+        }
+    )
+
+
+def recovered_patch_review_to_completion_summary(
+    summary: RecoveredPatchReviewSummary,
+) -> dict[str, Any]:
+    """
+    Serialize a RecoveredPatchReviewSummary to the dict stored in
+    chunks.completion_summary (#26D1).
+
+    The ``kind`` discriminator is part of the model, so the emitted dict is
+    self-tagged as ``recovered_patch_review`` and is therefore ignored by
+    patch_failure_report_from_completion_summary.
+    """
+    return summary.model_dump(mode="json")
 
 
 def patch_failure_report_to_completion_summary(

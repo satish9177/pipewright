@@ -15,17 +15,33 @@ from backend.pipeline.patch_failures import (
     ACTION_RETRY,
     ACTION_RETRY_WITH_INSTRUCTION,
     ACTION_VIEW_DETAILS,
+    MAX_HUMAN_RETRIES,
     MAX_RECOVERY_ATTEMPTS,
     MAX_TECHNICAL_DETAILS_CHARS,
     PATCH_FAILURE_KIND,
+    RECOVERED_PATCH_REVIEW_KIND,
+    RETRY_INELIGIBLE_CAP_EXHAUSTED,
+    RETRY_INELIGIBLE_CHUNK_NOT_FAILED,
+    RETRY_INELIGIBLE_DEPENDENCIES_NOT_MET,
+    RETRY_INELIGIBLE_DIRTY_WORKTREE,
+    RETRY_INELIGIBLE_DISALLOWED_FAILURE_TYPE,
+    RETRY_INELIGIBLE_MISSING_FAILURE_REPORT_ID,
+    RETRY_INELIGIBLE_MISSING_REPORT,
+    RETRY_INELIGIBLE_STALE_FAILURE_REPORT_ID,
     PatchFailureReport,
     PatchFailureType,
     PatchRecoveryAttempt,
+    PatchRetryEligibilityDecision,
+    RecoveredPatchReviewSummary,
     build_patch_failure_report,
+    count_human_retry_attempts,
     default_message_for_failure_type,
+    evaluate_patch_retry_eligibility,
     patch_failure_report_from_completion_summary,
     patch_failure_report_to_completion_summary,
     record_initial_attempt,
+    record_retry_attempt,
+    recovered_patch_review_to_completion_summary,
     stale_index_hint_for,
     suggested_actions_for,
 )
@@ -623,3 +639,349 @@ def test_suggested_actions_and_manual_intervention_unchanged_by_enrichment():
     assert enriched.manual_intervention_needed == report.manual_intervention_needed
     assert enriched.message == report.message
     assert enriched.retry == report.retry
+
+
+# --------------------------------------------------------------------------- #
+# Patch retry eligibility (#26D1) — pure decision helper, no execution.
+# --------------------------------------------------------------------------- #
+
+
+def _eligible_report(
+    failure_type: PatchFailureType = PatchFailureType.PATCH_DOES_NOT_APPLY,
+    *,
+    failure_report_id: str = "frid-1",
+    attempts: list[PatchRecoveryAttempt] | None = None,
+) -> PatchFailureReport:
+    """A report whose surrounding inputs (below) make every check pass except
+    the one a given test deliberately breaks."""
+    report = build_patch_failure_report(failure_type, max_attempts=2)
+    return report.model_copy(
+        update={
+            "failure_report_id": failure_report_id,
+            "attempts": attempts or [],
+        }
+    )
+
+
+def _evaluate(report, **overrides):
+    """Evaluate with all-valid defaults; override one field per test."""
+    kwargs = {
+        "requested_failure_report_id": "frid-1",
+        "dependencies_met": True,
+        "working_tree_clean": True,
+        "chunk_status": "failed",
+    }
+    kwargs.update(overrides)
+    return evaluate_patch_retry_eligibility(report, **kwargs)
+
+
+def _human_attempt(n: int, recovery_mode: str = "human") -> PatchRecoveryAttempt:
+    return PatchRecoveryAttempt(
+        attempt_id=f"a{n}",
+        attempt_number=n,
+        started_at="t",
+        recovery_mode=recovery_mode,
+    )
+
+
+def test_eligibility_happy_path():
+    decision = _evaluate(_eligible_report())
+    assert isinstance(decision, PatchRetryEligibilityDecision)
+    assert decision.eligible is True
+    assert decision.reason is None
+    assert decision.status_code is None
+    assert decision.failure_type == PatchFailureType.PATCH_DOES_NOT_APPLY
+    assert decision.human_retry_attempts_used == 0
+    assert decision.max_human_retries == MAX_HUMAN_RETRIES
+
+
+def test_eligibility_report_none_is_422():
+    decision = evaluate_patch_retry_eligibility(
+        None,
+        requested_failure_report_id="frid-1",
+        dependencies_met=True,
+        working_tree_clean=True,
+        chunk_status="failed",
+    )
+    assert decision.eligible is False
+    assert decision.status_code == 422
+    assert decision.reason == RETRY_INELIGIBLE_MISSING_REPORT
+    assert decision.failure_type is None
+    assert decision.human_retry_attempts_used == 0
+
+
+def test_eligibility_missing_failure_report_id_is_409():
+    report = _eligible_report(failure_report_id="")
+    decision = _evaluate(report, requested_failure_report_id="")
+    assert decision.eligible is False
+    assert decision.status_code == 409
+    assert decision.reason == RETRY_INELIGIBLE_MISSING_FAILURE_REPORT_ID
+
+
+def test_eligibility_stale_failure_report_id_is_409():
+    decision = _evaluate(
+        _eligible_report(), requested_failure_report_id="frid-OTHER"
+    )
+    assert decision.eligible is False
+    assert decision.status_code == 409
+    assert decision.reason == RETRY_INELIGIBLE_STALE_FAILURE_REPORT_ID
+
+
+def test_eligibility_chunk_not_failed_is_422():
+    decision = _evaluate(_eligible_report(), chunk_status="approved")
+    assert decision.eligible is False
+    assert decision.status_code == 422
+    assert decision.reason == RETRY_INELIGIBLE_CHUNK_NOT_FAILED
+
+
+def test_eligibility_dependencies_not_met_is_422():
+    decision = _evaluate(_eligible_report(), dependencies_met=False)
+    assert decision.eligible is False
+    assert decision.status_code == 422
+    assert decision.reason == RETRY_INELIGIBLE_DEPENDENCIES_NOT_MET
+
+
+def test_eligibility_dirty_worktree_is_409():
+    decision = _evaluate(_eligible_report(), working_tree_clean=False)
+    assert decision.eligible is False
+    assert decision.status_code == 409
+    assert decision.reason == RETRY_INELIGIBLE_DIRTY_WORKTREE
+
+
+@pytest.mark.parametrize(
+    "failure_type",
+    [
+        PatchFailureType.PATCH_DOES_NOT_APPLY,
+        PatchFailureType.TARGET_MISSING,
+        PatchFailureType.PATCH_PARTIAL_APPLY_BLOCKED,
+    ],
+)
+def test_eligibility_allowed_failure_types(failure_type):
+    decision = _evaluate(_eligible_report(failure_type))
+    assert decision.eligible is True
+    assert decision.failure_type == failure_type
+
+
+@pytest.mark.parametrize(
+    "failure_type",
+    [
+        PatchFailureType.SCOPE_VIOLATION,
+        PatchFailureType.FORBIDDEN_FILE,
+        PatchFailureType.PATCH_MALFORMED,
+        PatchFailureType.NO_CHANGES,
+        PatchFailureType.DIRTY_WORKTREE,
+        PatchFailureType.TEST_FAILURE_AFTER_APPLY,
+        PatchFailureType.UNKNOWN_PATCH_FAILURE,
+        PatchFailureType.STALE_INDEX_OR_FILE_CHANGED,
+    ],
+)
+def test_eligibility_disallowed_failure_types_are_422(failure_type):
+    decision = _evaluate(_eligible_report(failure_type))
+    assert decision.eligible is False
+    assert decision.status_code == 422
+    assert decision.reason == RETRY_INELIGIBLE_DISALLOWED_FAILURE_TYPE
+
+
+def test_eligibility_cap_exhausted_is_422():
+    # Allowed type + two human attempts => cap reached, type check passes first.
+    report = _eligible_report(
+        PatchFailureType.PATCH_DOES_NOT_APPLY,
+        attempts=[_human_attempt(1), _human_attempt(2)],
+    )
+    decision = _evaluate(report)
+    assert decision.eligible is False
+    assert decision.status_code == 422
+    assert decision.reason == RETRY_INELIGIBLE_CAP_EXHAUSTED
+    assert decision.human_retry_attempts_used == 2
+
+
+def test_eligibility_one_human_attempt_still_eligible():
+    report = _eligible_report(
+        PatchFailureType.PATCH_DOES_NOT_APPLY, attempts=[_human_attempt(1)]
+    )
+    decision = _evaluate(report)
+    assert decision.eligible is True
+    assert decision.human_retry_attempts_used == 1
+
+
+def test_eligibility_custom_max_human_retries():
+    report = _eligible_report(
+        PatchFailureType.PATCH_DOES_NOT_APPLY, attempts=[_human_attempt(1)]
+    )
+    decision = _evaluate(report, max_human_retries=1)
+    assert decision.eligible is False
+    assert decision.reason == RETRY_INELIGIBLE_CAP_EXHAUSTED
+    assert decision.max_human_retries == 1
+
+
+# --------------------------------------------------------------------------- #
+# count_human_retry_attempts (#26D1)
+# --------------------------------------------------------------------------- #
+
+
+def test_count_human_retry_attempts_counts_only_human_modes():
+    report = _eligible_report(
+        attempts=[
+            _human_attempt(1, "initial"),
+            _human_attempt(2, "auto"),
+            _human_attempt(3, "human"),
+            _human_attempt(4, "human_with_instruction"),
+        ]
+    )
+    # initial + auto excluded; human + human_with_instruction counted.
+    assert count_human_retry_attempts(report) == 2
+
+
+def test_count_human_retry_attempts_zero_for_no_attempts():
+    assert count_human_retry_attempts(_eligible_report()) == 0
+
+
+def test_count_human_retry_attempts_initial_does_not_count():
+    report = _eligible_report(attempts=[_human_attempt(1, "initial")])
+    assert count_human_retry_attempts(report) == 0
+
+
+def test_count_human_retry_attempts_auto_does_not_count():
+    report = _eligible_report(
+        attempts=[_human_attempt(1, "auto"), _human_attempt(2, "auto")]
+    )
+    assert count_human_retry_attempts(report) == 0
+
+
+# --------------------------------------------------------------------------- #
+# record_retry_attempt (#26D1)
+# --------------------------------------------------------------------------- #
+
+
+def test_record_retry_attempt_appends_next_number_and_updates_id():
+    report = record_initial_attempt(
+        build_patch_failure_report(
+            PatchFailureType.PATCH_DOES_NOT_APPLY, max_attempts=2
+        ),
+        failure_report_id="frid-1",
+        attempt_id="att-initial",
+        started_at="t0",
+    )
+    assert report.failure_report_id == "frid-1"
+    assert len(report.attempts) == 1
+
+    retried = record_retry_attempt(
+        report,
+        failure_report_id="frid-2",
+        attempt_id="att-retry",
+        started_at="t1",
+        failure_type=PatchFailureType.PATCH_DOES_NOT_APPLY,
+        failed_step="patch",
+        changed_files_attempted=["src/a.py"],
+        human_decision="retry",
+    )
+
+    assert retried.failure_report_id == "frid-2"
+    assert len(retried.attempts) == 2
+    new = retried.attempts[-1]
+    assert new.attempt_id == "att-retry"
+    assert new.attempt_number == 2
+    assert new.recovery_mode == "human"
+    assert new.human_decision == "retry"
+    assert new.changed_files_attempted == ["src/a.py"]
+
+    # Pure: original report untouched.
+    assert report.failure_report_id == "frid-1"
+    assert len(report.attempts) == 1
+
+
+def test_record_retry_attempt_default_recovery_mode_is_human():
+    report = _eligible_report()
+    retried = record_retry_attempt(
+        report, failure_report_id="frid-2", attempt_id="a", started_at="t"
+    )
+    assert retried.attempts[-1].recovery_mode == "human"
+
+
+def test_record_retry_attempt_caps_attempts():
+    base = build_patch_failure_report(
+        PatchFailureType.PATCH_DOES_NOT_APPLY, max_attempts=2
+    )
+    prefilled = [
+        PatchRecoveryAttempt(
+            attempt_id=f"a{i}", attempt_number=i + 1, started_at="t"
+        )
+        for i in range(MAX_RECOVERY_ATTEMPTS)
+    ]
+    report = base.model_copy(update={"attempts": prefilled})
+
+    retried = record_retry_attempt(
+        report, failure_report_id="frid-2", attempt_id="new", started_at="t"
+    )
+    assert len(retried.attempts) == MAX_RECOVERY_ATTEMPTS
+    assert retried.attempts[-1].attempt_id == "new"
+    assert all(a.attempt_id != "a0" for a in retried.attempts)
+
+
+def test_record_retry_attempt_preserves_old_report_fields():
+    report = _eligible_report(PatchFailureType.TARGET_MISSING)
+    retried = record_retry_attempt(
+        report, failure_report_id="frid-2", attempt_id="a", started_at="t"
+    )
+    assert retried.failure_type == report.failure_type
+    assert retried.message == report.message
+    assert retried.suggested_actions == report.suggested_actions
+    assert retried.manual_intervention_needed == report.manual_intervention_needed
+    assert retried.retry == report.retry
+
+
+def test_record_retry_attempt_has_no_sensitive_keys():
+    import json
+
+    report = _eligible_report()
+    retried = record_retry_attempt(
+        report,
+        failure_report_id="frid-2",
+        attempt_id="a",
+        started_at="t",
+        changed_files_attempted=["src/a.py"],
+    )
+    data = patch_failure_report_to_completion_summary(retried)
+    attempts_blob = json.dumps(data["attempts"])
+    for forbidden in ("old_string", "new_string", "content", "token", "secret"):
+        assert forbidden not in attempts_blob
+
+
+# --------------------------------------------------------------------------- #
+# RecoveredPatchReviewSummary (#26D1)
+# --------------------------------------------------------------------------- #
+
+
+def test_recovered_patch_review_summary_serializes_with_kind():
+    summary = RecoveredPatchReviewSummary(
+        failure_report_id="frid-1",
+        recovery_attempt_id="att-2",
+        attempts=[_human_attempt(1, "human")],
+        weak_test_warning=True,
+    )
+    data = recovered_patch_review_to_completion_summary(summary)
+    assert data["kind"] == RECOVERED_PATCH_REVIEW_KIND
+    assert data["kind"] == "recovered_patch_review"
+    assert data["failure_report_id"] == "frid-1"
+    assert data["recovery_attempt_id"] == "att-2"
+    assert data["weak_test_warning"] is True
+    assert isinstance(data["attempts"], list)
+
+
+def test_recovered_patch_review_does_not_look_like_patch_failure():
+    summary = RecoveredPatchReviewSummary(
+        failure_report_id="frid-1", recovery_attempt_id="att-2"
+    )
+    data = recovered_patch_review_to_completion_summary(summary)
+    assert data["kind"] != PATCH_FAILURE_KIND
+    # The patch-failure parser must ignore the recovered-review shape.
+    assert patch_failure_report_from_completion_summary(data) is None
+
+
+def test_recovered_patch_review_defaults():
+    summary = RecoveredPatchReviewSummary(
+        failure_report_id="frid-1", recovery_attempt_id="att-2"
+    )
+    assert summary.kind == "recovered_patch_review"
+    assert summary.attempts == []
+    assert summary.weak_test_warning is None
