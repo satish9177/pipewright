@@ -64,10 +64,19 @@ from backend.pipeline.patch_failures import (
 )
 from backend.pipeline.planner import run_planner
 from backend.pipeline.run_locks import project_repo_lock, project_repo_lock_sync
-from backend.pipeline.scope_expansion import ScopeExpansionStatus
+from backend.pipeline.scope_expansion import (
+    ScopeExpansionStatus,
+    ScopeExpansionValidationError,
+    evaluate_scope_expansion_eligibility,
+    validate_approved_files,
+)
 from backend.pipeline.scope_expansion_store import (
+    ScopeExpansionConflictError,
+    count_in_force_scope_amendments,
+    get_scope_expansion_request,
     list_scope_expansion_requests_for_chunk,
     maybe_create_scope_expansion_request_for_failure,
+    update_scope_expansion_request_status,
 )
 from backend.pipeline.scope_guard import ScopeDriftError, assert_files_in_scope
 from backend.pipeline.tester import run_tests
@@ -2228,4 +2237,280 @@ async def retry_failed_chunk(
         plan_status = get_chunk_plan_status(run_id)
         return await _retry_failed_chunk_locked(
             run_id, chunk_number, failure_report_id, plan_status
+        )
+
+
+# ---------------------------------------------------------------------------
+# Scope expansion approve-and-retry (#27E)
+# ---------------------------------------------------------------------------
+
+
+def _scope_expansion_ineligible_error(decision) -> Exception:
+    """
+    Map an ineligible #27 eligibility decision onto the right typed error so the
+    route maps it to the documented status code (§11/§12): 422 for validation /
+    eligibility (not-scope-violation, cap-exhausted, no-requestable-files) and 409
+    for state conflicts (dirty tree, manual intervention). Both keep the request
+    pending and mutate nothing.
+    """
+    message = (
+        f"chunked_orchestrator.py: scope expansion not eligible "
+        f"(reason={decision.reason})"
+    )
+    if decision.status_code == 422:
+        return ScopeExpansionValidationError(decision.reason or "ineligible", message)
+    return ScopeExpansionConflictError(message)
+
+
+async def _approve_and_retry_scope_expansion_locked(
+    run_id: str,
+    chunk_number: int,
+    request_id: str,
+    approved_files: list[str],
+    plan_status: ChunkPlanResponse,
+    *,
+    reason: str | None = None,
+    decided_by: str | None = None,
+) -> dict:
+    """
+    Approve a pending scope expansion request and re-drive the chunk retry under
+    the amended effective scope (#27E). Assumes the project repo lock is already
+    held by the caller; all eligibility-relevant state is loaded fresh here.
+
+    Mandatory order (design §11, must not be reordered):
+      1/2. (lock + fresh load — done by the caller / at the top here)
+      3. request belongs to this run_id + chunk_number
+      4. request is pending OR approved-but-not-applied (crash-window re-drive)
+      5. chunk is still ``failed`` and carries a current patch-failure report
+      6. the request's failure_report_id is still the current one (not stale)
+         + live dirty-tree re-check + #27 eligibility (pending path only)
+      7. read-only branch precheck (verify-only; never checkout)
+      8. validate approved_files (write-path safety + denylist + subset)
+      9. any side-effect-free precheck failure -> typed error, request stays
+         pending, nothing retried/committed, chunks.files_expected untouched
+      10. atomically flip pending -> approved (persist approved_files)
+      11. re-drive #26 internal execution (_execute_retry_attempt) with the
+          effective scope already overlaid by get_chunk_plan_status
+      12. flip approved -> applied once the retry has been driven
+
+    Reuses #26's internal execution but NOT its public eligibility front door
+    (which hard-rejects SCOPE_VIOLATION). Never calls _execute_single_chunk,
+    never runs the planner, never mutates chunks.files_expected, never weakens
+    scope_guard, and never commits. A successful expanded retry pauses at the
+    existing awaiting_chunk_approval gate; commit happens later via the unchanged
+    approval path.
+    """
+    if plan_status.chunk_plan_status != "approved":
+        raise ScopeExpansionConflictError(
+            f"chunked_orchestrator.py: chunk plan is not approved. "
+            f"run_id={run_id} | status={plan_status.chunk_plan_status}"
+        )
+
+    # 3. Request must exist and belong to this run + chunk (else 404, no mutation).
+    request = get_scope_expansion_request(request_id)  # ValueError -> 404
+    if request.run_id != run_id or request.chunk_number != chunk_number:
+        raise ValueError(
+            "chunked_orchestrator.py: scope expansion request "
+            f"{request_id} not found for run {run_id} chunk {chunk_number}"
+        )
+
+    # 4. Only a pending request may be newly approved; an approved-but-not-applied
+    #    request is re-driven (crash-window idempotency, §14). applied / rejected /
+    #    superseded cannot be acted on (409).
+    status = request.status
+    is_pending = status == ScopeExpansionStatus.PENDING.value
+    is_redrive = status == ScopeExpansionStatus.APPROVED.value
+    if not (is_pending or is_redrive):
+        raise ScopeExpansionConflictError(
+            "chunked_orchestrator.py: scope expansion request "
+            f"{request_id} is {status}; it cannot be approved or retried again"
+        )
+
+    # 5. Chunk must still be failed and carry a current patch-failure report.
+    chunk_status = next(
+        (item for item in plan_status.chunks if item.chunk_number == chunk_number),
+        None,
+    )
+    if chunk_status is None:
+        raise ValueError(
+            f"chunked_orchestrator.py: chunk not found for scope retry. "
+            f"run_id={run_id} | chunk={chunk_number}"
+        )
+    if chunk_status.status != ChunkStatusValue.FAILED:
+        raise ScopeExpansionConflictError(
+            f"chunked_orchestrator.py: chunk {chunk_number} is not failed "
+            f"(status={chunk_status.status}); scope retry refused"
+        )
+    report = _load_chunk_failure_report(plan_status, chunk_number)
+    if report is None:
+        raise ScopeExpansionConflictError(
+            f"chunked_orchestrator.py: no current patch failure for chunk "
+            f"{chunk_number}; scope retry refused"
+        )
+
+    # 6. Optimistic-concurrency: the request must still be tied to the current
+    #    failure. If the chunk has since re-failed (a new failure_report_id), the
+    #    request is stale -> 409, nothing mutated.
+    if (
+        not report.failure_report_id
+        or report.failure_report_id != request.failure_report_id
+    ):
+        raise ScopeExpansionConflictError(
+            "chunked_orchestrator.py: scope expansion request is stale "
+            "(the chunk's current failure no longer matches this request)"
+        )
+
+    project, project_runtime = _project_runtime_for_plan(plan_status)
+    target_repo_path = project["repo_path"]
+    _validate_target_repo(target_repo_path, require_clean=False)
+
+    # Live dirty-tree re-check (§13/§18): even if the stored report says clean, a
+    # tree that went dirty since the failure refuses scope approval. Dirty tree
+    # means manual intervention only.
+    working_tree_clean = local_git.is_working_tree_clean(target_repo_path)
+    if not working_tree_clean:
+        raise ScopeExpansionConflictError(
+            "chunked_orchestrator.py: working tree is not clean; scope approval "
+            "refused (manual intervention required)"
+        )
+
+    # Re-evaluate #27 eligibility inside the lock for a fresh approval. (A
+    # re-drive's request is already approved/in-force, so the cap check would
+    # double-count it; the gates that still matter for a re-drive — failed chunk,
+    # matching report, clean tree, correct branch — are all checked above/below.)
+    if is_pending:
+        decision = evaluate_scope_expansion_eligibility(
+            failure_type=report.failure_type,
+            working_tree_clean=working_tree_clean,
+            manual_intervention_needed=report.manual_intervention_needed,
+            amendments_used=count_in_force_scope_amendments(run_id, chunk_number),
+            requested_extra_files=list(request.requested_files),
+        )
+        if not decision.eligible:
+            raise _scope_expansion_ineligible_error(decision)
+
+    # 7. Read-only branch precheck. A wrong/missing/undeterminable branch returns
+    #    a side-effect-free 409 dict and leaves the request pending — retry runs
+    #    against the working tree, so it must never move HEAD on a request it may
+    #    reject.
+    branch_block = _retry_branch_precheck(run_id, chunk_number, target_repo_path)
+    if branch_block is not None:
+        return branch_block
+
+    # 8/10. Validate the human-approved allowlist and flip pending -> approved.
+    #       For a re-drive the approval already happened: keep the persisted
+    #       approved_files (approval is immutable once granted) and resume the
+    #       retry.
+    if is_pending:
+        validated = validate_approved_files(request.requested_files, approved_files)
+        original_norm = {
+            normalized
+            for normalized in (
+                _safe_norm(path) for path in chunk_status.files_expected
+            )
+            if normalized is not None
+        }
+        if all(path in original_norm for path in validated):
+            raise ScopeExpansionValidationError(
+                "approved_files_no_new_scope",
+                "scope_expansion.py: approved files add nothing beyond the "
+                "original scope; an empty amendment is not approved.",
+            )
+        update_scope_expansion_request_status(
+            request_id,
+            ScopeExpansionStatus.APPROVED,
+            approved_files=validated,
+            decision_reason=reason,
+            decided_by=decided_by,
+        )
+
+    # Reload the plan so the effective-scope overlay now includes the approved
+    # files (single merge site: get_chunk_plan_status). _definition_by_number
+    # carries that effective files_expected into the ChunkDefinition the retry —
+    # and therefore scope_guard — sees.
+    fresh_plan = get_chunk_plan_status(run_id)
+    definitions = _definition_by_number(fresh_plan)
+    chunk = definitions.get(chunk_number)
+    if chunk is None:
+        raise RuntimeError(
+            f"chunked_orchestrator.py: chunk definition missing for scope retry. "
+            f"run_id={run_id} | chunk={chunk_number}"
+        )
+
+    prior_attempts = list(report.attempts)
+    branch_name = f"pipewright/{run_id[:8]}"
+
+    # Enter retry execution. Mark running so a crash leaves a resumable chunk.
+    update_chunk_status(run_id, chunk_number, "running")
+    _update_run_status(
+        run_id, "running_chunks", f"chunk_{chunk_number}_scope_retry", chunk_number
+    )
+
+    # 11/12. Drive the retry under the amended effective scope, then flip
+    #        approved -> applied: the approval has been consumed by an attempt
+    #        that wrote a fresh result. Only a hard process crash before this
+    #        leaves the request 'approved' (re-drivable, §14).
+    try:
+        try:
+            result = await _execute_retry_attempt(
+                run_id,
+                chunk_number,
+                chunk,
+                fresh_plan,
+                project_runtime,
+                target_repo_path,
+                prior_attempts,
+                branch_name,
+                report,
+            )
+        except Exception as error:
+            result = _fail_chunk(run_id, chunk_number, error)
+    finally:
+        try:
+            update_scope_expansion_request_status(
+                request_id, ScopeExpansionStatus.APPLIED
+            )
+        except ValueError:
+            # Already terminal (e.g. a concurrent transition) — leave as-is.
+            pass
+    return result
+
+
+def _safe_norm(path: str) -> str | None:
+    try:
+        return normalize_relative_path(path)
+    except Exception:
+        return None
+
+
+async def approve_and_retry_scope_expansion(
+    run_id: str,
+    chunk_number: int,
+    request_id: str,
+    approved_files: list[str],
+    *,
+    reason: str | None = None,
+    decided_by: str | None = None,
+) -> dict:
+    """
+    Public entry point for scope-expansion approve-and-retry (#27E).
+
+    Acquires the async project repo lock (the same lock #26 uses) and delegates
+    to _approve_and_retry_scope_expansion_locked, which loads all
+    eligibility-relevant state fresh inside the lock. The only pre-lock read is
+    the run's immutable project_id (the lock key). Scope approval is NOT code
+    approval: a successful expanded retry still pauses at awaiting_chunk_approval
+    for human review and is committed only later by the unchanged approval path.
+    """
+    project_id = get_chunk_plan_status(run_id).project_id
+    async with project_repo_lock(project_id):
+        plan_status = get_chunk_plan_status(run_id)
+        return await _approve_and_retry_scope_expansion_locked(
+            run_id,
+            chunk_number,
+            request_id,
+            list(approved_files),
+            plan_status,
+            reason=reason,
+            decided_by=decided_by,
         )
