@@ -200,11 +200,35 @@ CREATE TABLE IF NOT EXISTS scope_expansion_requests (
     FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
 );
 
+-- test_validation_acknowledgements is the audited home for human acknowledgements
+-- of a weak/none runtime test verdict at the final gate (#28F). It mirrors the
+-- scope_expansion_requests shape. Each row binds an acknowledgement to the EXACT
+-- diff it was made against (acknowledged_diff_hash), so a later retry/amendment
+-- that changes the chunk's diff makes the acknowledgement stale and re-requires a
+-- fresh one. No file contents, diffs, secrets, or token-like values are stored
+-- here — only ids, the verdict, the diff hash, audit columns, and a sanitized
+-- human reason. Acknowledgement is a precondition for final approval; it never
+-- replaces it and never auto-commits.
+CREATE TABLE IF NOT EXISTS test_validation_acknowledgements (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    chunk_number INTEGER NOT NULL,
+    verdict TEXT NOT NULL,
+    acknowledged_diff_hash TEXT NOT NULL,
+    acknowledged_by TEXT,
+    acknowledged_at DATETIME,
+    reason TEXT,
+    status TEXT DEFAULT 'active',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_project ON pipeline_runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);
 CREATE INDEX IF NOT EXISTS idx_chunks_run_status ON chunks(run_id, status);
 CREATE INDEX IF NOT EXISTS idx_approval_gates_run_status ON approval_gates(run_id, approval_type, status);
 CREATE INDEX IF NOT EXISTS idx_scope_expansion_requests_run_chunk_status ON scope_expansion_requests(run_id, chunk_number, status);
+CREATE INDEX IF NOT EXISTS idx_test_validation_ack_run_chunk_status ON test_validation_acknowledgements(run_id, chunk_number, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_suggestions_pending_dedupe
 ON memory_suggestions(project_id, content_hash)
 WHERE status = 'pending';
