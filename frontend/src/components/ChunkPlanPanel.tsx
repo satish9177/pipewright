@@ -17,7 +17,12 @@ import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
 import { getStatusDisplay } from '@/utils/statusDisplay'
 import PatchFailureBanner from '@/components/PatchFailureBanner'
-import { parsePatchFailureSummary } from '@/utils/patchFailure'
+import AttemptHistory from '@/components/AttemptHistory'
+import {
+  parsePatchFailureSummary,
+  parseRecoveredPatchReviewSummary,
+  type RecoveredPatchReviewSummary,
+} from '@/utils/patchFailure'
 import { extractScopeWarnings } from '@/utils/scopeWarnings'
 
 interface ChunkPlanPanelProps {
@@ -55,6 +60,52 @@ function getChunkDefinition(
   definitionsByNumber: Map<number, ChunkDefinition>
 ) {
   return definitionsByNumber.get(chunk.chunk_number)
+}
+
+// Display-only marker for a recovered patch awaiting review (#26E3). The patch
+// was regenerated, applied, and passed tests, but is NOT committed — the
+// existing awaiting_chunk_approval UI below still owns approve/commit. This adds
+// no approval controls; it is context only.
+function RecoveredReviewMarker({
+  summary,
+}: {
+  summary: RecoveredPatchReviewSummary
+}) {
+  const weakTest = summary.weak_test_warning === true
+
+  return (
+    <div className="grid gap-3 rounded border border-green-500 bg-background p-4">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-sm font-semibold text-green-600">
+          Recovered patch ready for review
+        </p>
+        {weakTest && (
+          <Badge
+            variant="outline"
+            className="border-amber-300 bg-amber-100 text-amber-800"
+          >
+            Weak test
+          </Badge>
+        )}
+      </div>
+
+      <p className="text-sm text-muted-foreground">
+        Retry applied and tests passed. Review the recovered patch before
+        committing.
+      </p>
+
+      {weakTest && (
+        <p className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          This recovered change passed only a weak test command. Review carefully
+          before approving.
+        </p>
+      )}
+
+      {summary.attempts && summary.attempts.length > 0 && (
+        <AttemptHistory attempts={summary.attempts} />
+      )}
+    </div>
+  )
 }
 
 export default function ChunkPlanPanel({
@@ -210,6 +261,11 @@ export default function ChunkPlanPanel({
             const patchFailure = parsePatchFailureSummary(
               chunk.completion_summary
             )
+            // #26E3: a recovered_patch_review summary is display-only context;
+            // the awaiting_chunk_approval UI below still owns approve/commit.
+            const recoveredReview = patchFailure
+              ? null
+              : parseRecoveredPatchReviewSummary(chunk.completion_summary)
             // #22B: surface backend [SCOPE] file-scope notes (#22A) so a
             // reviewer sees scope mismatches/adjustments before approving.
             // Read-only: this only displays existing data, never changes scope.
@@ -358,6 +414,10 @@ export default function ChunkPlanPanel({
                       onRetry={onRetryChunk}
                       isRetrying={retryingChunkNumber === chunk.chunk_number}
                     />
+                  ) : recoveredReview ? (
+                    // Recovered patch awaiting review (#26E3): show a marker
+                    // instead of dumping the raw recovered_patch_review JSON.
+                    <RecoveredReviewMarker summary={recoveredReview} />
                   ) : (
                     <>
                       {chunk.completion_summary && (
