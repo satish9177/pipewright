@@ -19,9 +19,9 @@ serialization). Behavioral wiring lands in later PRs (#18C+).
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.llm.sanitize import sanitize_for_log
 
@@ -35,6 +35,10 @@ PATCH_FAILURE_KIND = "patch_failure"
 # under the event-bus data budget (#18A: Event.data capped ~4000 bytes) and
 # never echo large blobs or file contents.
 MAX_TECHNICAL_DETAILS_CHARS = 4000
+
+# Cap on stored recovery attempts per failure summary (#26C). Bounds the JSON
+# stored in chunks.completion_summary; oldest attempts are dropped past the cap.
+MAX_RECOVERY_ATTEMPTS = 10
 
 # Stable action identifiers surfaced to the frontend recovery UI (#18A §5).
 ACTION_RETRY = "retry"
@@ -171,6 +175,43 @@ class PatchFailureRetryInfo(BaseModel):
     retryable: bool = False
 
 
+class PatchRecoveryAttempt(BaseModel):
+    """
+    One patch-application attempt for a chunk (#26C — diagnostics foundation).
+
+    Recorded purely for diagnostics and to seed future idempotency. No retry
+    behavior exists yet: the only attempt recorded today is the initial failed
+    apply (recovery_mode="initial"); retry-specific fields stay null until #26D.
+
+    Never carries file contents, old_string/new_string, raw model output, or
+    secrets — only paths already on the report, enums, flags, ids, and an ISO
+    timestamp.
+    """
+
+    # `model_used` is a deliberate field name; opt out of Pydantic's protected
+    # "model_" namespace so it does not warn (no behavior change).
+    model_config = ConfigDict(protected_namespaces=())
+
+    attempt_id: str
+    attempt_number: int
+    started_at: str
+    recovery_mode: Literal[
+        "initial", "human", "human_with_instruction", "auto"
+    ] = "initial"
+    failure_type: PatchFailureType | None = None
+    failed_step: str | None = None
+    changed_files_attempted: list[str] = Field(default_factory=list)
+    changed_files_actual: list[str] = Field(default_factory=list)
+    scope_ok: bool | None = None
+    preimage_matched: bool | None = None
+    model_used: str | None = None
+    test_outcome: Literal["passed", "failed", "not_run"] = "not_run"
+    outcome: Literal["failed", "recovered", "manual_intervention"] = "failed"
+    human_decision: str | None = None
+    working_tree_clean: bool = False
+    rollback_performed: bool = False
+
+
 class PatchFailureReport(BaseModel):
     """Structured, human-safe patch failure report (#18A §4)."""
 
@@ -188,6 +229,10 @@ class PatchFailureReport(BaseModel):
     chunk_number: int | None = None
     failed_step: str = "patch"
     manual_intervention_needed: bool = False
+    # Recovery diagnostics (#26C). Optional/defaulted so pre-#26C summaries still
+    # parse. attempts[] is append-only history capped at MAX_RECOVERY_ATTEMPTS.
+    failure_report_id: str | None = None
+    attempts: list[PatchRecoveryAttempt] = Field(default_factory=list)
 
 
 def default_message_for_failure_type(failure_type: PatchFailureType) -> str:
@@ -327,6 +372,70 @@ def build_patch_failure_report(
         chunk_number=chunk_number,
         failed_step=failed_step,
         manual_intervention_needed=manual_intervention_needed,
+    )
+
+
+def record_initial_attempt(
+    report: PatchFailureReport,
+    *,
+    failure_report_id: str,
+    attempt_id: str,
+    started_at: str,
+) -> PatchFailureReport:
+    """
+    Return a copy of ``report`` enriched with a ``failure_report_id`` and an
+    initial PatchRecoveryAttempt (#26C).
+
+    Pure: ids and the timestamp are supplied by the caller so
+    build_patch_failure_report stays deterministic. If the report already
+    carries attempts, the new one is appended and the list is capped to the most
+    recent MAX_RECOVERY_ATTEMPTS. Only data already present on the report is
+    copied — never file contents, old_string/new_string, raw model output, or
+    secrets. The new attempt always records the current (failed) state, so
+    recovery_mode is "initial" and outcome is never "recovered" here.
+    """
+    existing = list(report.attempts)
+    attempt_number = len(existing) + 1
+
+    # scope_ok: false only when the failure is a scope drift; true otherwise.
+    scope_ok = report.failure_type != PatchFailureType.SCOPE_VIOLATION
+
+    test_outcome = (
+        "failed"
+        if report.failure_type == PatchFailureType.TEST_FAILURE_AFTER_APPLY
+        else "not_run"
+    )
+    outcome = (
+        "manual_intervention"
+        if report.manual_intervention_needed
+        else "failed"
+    )
+
+    attempt = PatchRecoveryAttempt(
+        attempt_id=attempt_id,
+        attempt_number=attempt_number,
+        started_at=started_at,
+        recovery_mode="initial",
+        failure_type=report.failure_type,
+        failed_step=report.failed_step,
+        changed_files_attempted=list(report.changed_files_attempted),
+        changed_files_actual=list(report.changed_files_actual),
+        scope_ok=scope_ok,
+        preimage_matched=None,
+        model_used=None,
+        test_outcome=test_outcome,
+        outcome=outcome,
+        human_decision=None,
+        working_tree_clean=report.working_tree_clean,
+        rollback_performed=report.rollback_performed,
+    )
+
+    capped = (existing + [attempt])[-MAX_RECOVERY_ATTEMPTS:]
+    return report.model_copy(
+        update={
+            "failure_report_id": failure_report_id,
+            "attempts": capped,
+        }
     )
 
 
