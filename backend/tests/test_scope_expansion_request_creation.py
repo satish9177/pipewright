@@ -200,6 +200,44 @@ def test_pending_request_does_not_affect_effective_scope(tmp_repo, tracked_runs)
     assert plan.chunks[0].files_expected == ["a.py"]
 
 
+# 6b (#27F): the pending request is surfaced read-only on the chunk plan so the
+# frontend can render approve/reject, without affecting effective scope.
+def test_pending_request_is_surfaced_on_chunk_plan(tmp_repo, tracked_runs):
+    run_id, project_id = _seed_run(tmp_repo, tracked_runs, files=("a.py",))
+
+    created = maybe_create_scope_expansion_request_for_failure(
+        run_id, project_id, 1, _report(attempted=("src/extra.py",), failure_report_id="frid-1"),
+    )
+
+    plan = get_chunk_plan_status(run_id)
+    chunk = plan.chunks[0]
+    # Read-only overlay: original scope is untouched.
+    assert chunk.files_expected == ["a.py"]
+    surfaced = chunk.pending_scope_expansion
+    assert surfaced is not None
+    assert surfaced.request_id == created.request.id
+    assert surfaced.chunk_number == 1
+    assert surfaced.failure_report_id == "frid-1"
+    assert surfaced.requested_files == ["src/extra.py"]
+    assert surfaced.status == ScopeExpansionStatus.PENDING.value
+
+
+# 6c (#27F): non-pending (rejected/approved/superseded) requests are NOT surfaced
+# as pending; only a live pending request drives the approve/reject UI.
+def test_non_pending_request_is_not_surfaced_on_chunk_plan(tmp_repo, tracked_runs):
+    run_id, project_id = _seed_run(tmp_repo, tracked_runs, files=("a.py",))
+
+    created = maybe_create_scope_expansion_request_for_failure(
+        run_id, project_id, 1, _report(attempted=("src/extra.py",), failure_report_id="frid-1"),
+    )
+    update_scope_expansion_request_status(
+        created.request.id, ScopeExpansionStatus.REJECTED, decision_reason="no",
+    )
+
+    plan = get_chunk_plan_status(run_id)
+    assert plan.chunks[0].pending_scope_expansion is None
+
+
 # 7
 def test_duplicate_same_failure_report_id_does_not_duplicate(tmp_repo, tracked_runs):
     run_id, project_id = _seed_run(tmp_repo, tracked_runs)

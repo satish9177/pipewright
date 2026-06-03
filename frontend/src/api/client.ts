@@ -30,6 +30,9 @@ export type RunStatus =
   | 'push_failed'
   | 'report_ready'
   | 'plan_ready'
+  // #27F: a clean SCOPE_VIOLATION created a pending scope expansion request and
+  // the run is waiting for a human approve/reject decision (chunk stays failed).
+  | 'awaiting_scope_approval'
   | (string & {})
 
 export type RunIntent =
@@ -228,6 +231,20 @@ export interface TriageResult extends ExtraFields {
   reasoning: string
 }
 
+// #27F: read-only view of the single pending scope expansion request for a
+// failed chunk, surfaced by the backend on the chunk-plan payload. requested_files
+// are UNTRUSTED and diagnostic only ("the previous attempt tried to touch these")
+// — never a list of required files and never authorization. Approval still goes
+// through the backend route, which re-validates everything.
+export interface PendingScopeExpansion extends ExtraFields {
+  request_id: string
+  chunk_number: number
+  failure_report_id: string
+  requested_files: string[]
+  status: string
+  created_at?: string | null
+}
+
 export interface ChunkStatus extends ExtraFields {
   run_id: string
   project_id: string
@@ -240,6 +257,8 @@ export interface ChunkStatus extends ExtraFields {
   depends_on: number[]
   completion_summary?: string | null
   error_message?: string | null
+  // Present only when a pending scope expansion request exists for this chunk.
+  pending_scope_expansion?: PendingScopeExpansion | null
 }
 
 export interface ChunkPlanResponse extends ExtraFields {
@@ -327,6 +346,29 @@ export interface RetryChunkRequest {
 }
 
 export type ChunkRetryResponse = ChunkOperationResponse
+
+// #27F scope expansion approve/reject. Approve sends the human-approved
+// allowlist (for v1 the UI approves exactly the request's requested_files); the
+// backend re-validates it and re-drives the chunk retry under the amended scope.
+// A successful retry still pauses at awaiting_chunk_approval — approval here is
+// NOT code approval and never commits.
+export interface ApproveScopeExpansionRequest {
+  approved_files: string[]
+  reason?: string | null
+}
+
+export interface RejectScopeExpansionRequest {
+  reason?: string | null
+}
+
+// Approve reuses the same operation-response shape as retry (carries a `status`
+// such as awaiting_chunk_approval on success or failed on re-failure).
+export type ScopeExpansionApproveResponse = ChunkOperationResponse
+
+export interface ScopeExpansionRejectResponse extends ExtraFields {
+  status: string
+  request?: Record<string, unknown>
+}
 
 export interface FinalApprovalResponse extends ExtraFields {
   status: RunStatus
@@ -567,6 +609,27 @@ export const runsApi = {
     api.post<ChunkRetryResponse>(
       `/runs/${runId}/chunks/${chunkNumber}/retry`,
       { failure_report_id: failureReportId } satisfies RetryChunkRequest,
+    ).then(r => r.data),
+  approveScopeExpansion: (
+    runId: string,
+    chunkNumber: number,
+    requestId: string,
+    approvedFiles: string[],
+    reason?: string | null,
+  ) =>
+    api.post<ScopeExpansionApproveResponse>(
+      `/runs/${runId}/chunks/${chunkNumber}/scope-expansion/${requestId}/approve`,
+      { approved_files: approvedFiles, reason } satisfies ApproveScopeExpansionRequest,
+    ).then(r => r.data),
+  rejectScopeExpansion: (
+    runId: string,
+    chunkNumber: number,
+    requestId: string,
+    reason?: string | null,
+  ) =>
+    api.post<ScopeExpansionRejectResponse>(
+      `/runs/${runId}/chunks/${chunkNumber}/scope-expansion/${requestId}/reject`,
+      { reason } satisfies RejectScopeExpansionRequest,
     ).then(r => r.data),
   approveFinalApproval: (runId: string) =>
     api.post<FinalApprovalResponse>(`/runs/${runId}/final-approval/approve`).then(r => r.data),

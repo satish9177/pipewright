@@ -17,9 +17,11 @@ from backend.db.database import engine, init_db
 from backend.models.chunk import (
     ChunkPlanResponse,
     ChunkStatus,
+    PendingScopeExpansion,
     TriageResult,
 )
 from backend.pipeline.scope_expansion import (
+    ScopeExpansionStatus,
     compute_effective_files_expected,
     is_in_force,
 )
@@ -99,6 +101,44 @@ def _load_in_force_scope_files(conn, run_id: str) -> dict[int, list[str]]:
             _json_loads_list(data.get("approved_files"))
         )
     return in_force
+
+
+def _load_pending_scope_expansion(
+    conn, run_id: str
+) -> dict[int, PendingScopeExpansion]:
+    """
+    Map chunk_number -> the single pending scope expansion request (#27F).
+
+    Read-only surfacing for the frontend approve/reject UI. The store guarantees
+    at most one pending request per chunk (older pending requests are superseded
+    when a newer eligible failure arrives), so a plain dict keyed by chunk_number
+    is sufficient; if more than one ever appears, the most recent (by created_at)
+    wins. Only `pending` requests are surfaced — approved/applied feed the
+    effective-scope overlay instead, and rejected/superseded are inert. This never
+    mutates anything and never affects effective scope or execution.
+    """
+    rows = conn.execute(text("""
+        SELECT id, chunk_number, failure_report_id, requested_files,
+               status, created_at
+        FROM scope_expansion_requests
+        WHERE run_id = :run_id
+        ORDER BY created_at ASC, id ASC
+    """), {"run_id": run_id}).fetchall()
+
+    pending: dict[int, PendingScopeExpansion] = {}
+    for row in rows:
+        data = dict(row._mapping)
+        if data.get("status") != ScopeExpansionStatus.PENDING.value:
+            continue
+        pending[data["chunk_number"]] = PendingScopeExpansion(
+            request_id=data["id"],
+            chunk_number=data["chunk_number"],
+            failure_report_id=data.get("failure_report_id") or "",
+            requested_files=_json_loads_list(data.get("requested_files")),
+            status=data["status"],
+            created_at=data.get("created_at"),
+        )
+    return pending
 
 
 def _insert_chunks(conn, run_id: str, project_id: str, triage_result: TriageResult) -> int:
@@ -230,16 +270,22 @@ def get_chunk_plan_status(run_id: str) -> ChunkPlanResponse:
             # no in-force request exists (the common case until requests are
             # wired in #27E), so this overlay does not perturb the live pipeline.
             in_force_scope = _load_in_force_scope_files(conn, run_id)
+            pending_scope = _load_pending_scope_expansion(conn, run_id)
             chunks = []
             for row in _load_chunk_rows(conn, run_id):
                 chunk_status = _chunk_row_to_status(row)
+                updates: dict = {}
                 extras = in_force_scope.get(chunk_status.chunk_number)
                 if extras:
-                    chunk_status = chunk_status.model_copy(update={
-                        "files_expected": compute_effective_files_expected(
-                            chunk_status.files_expected, extras
-                        )
-                    })
+                    updates["files_expected"] = compute_effective_files_expected(
+                        chunk_status.files_expected, extras
+                    )
+                pending = pending_scope.get(chunk_status.chunk_number)
+                if pending is not None:
+                    # Read-only overlay (#27F): never affects effective scope.
+                    updates["pending_scope_expansion"] = pending
+                if updates:
+                    chunk_status = chunk_status.model_copy(update=updates)
                 chunks.append(chunk_status)
 
         run_data = dict(run._mapping)
