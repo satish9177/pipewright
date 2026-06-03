@@ -7,6 +7,7 @@ No real AI calls, no real GitHub, no push.
 import json
 import uuid
 import inspect
+from contextlib import asynccontextmanager
 
 import pytest
 from fastapi.testclient import TestClient
@@ -33,11 +34,22 @@ from backend.pipeline.chunk_store import (
     update_chunk_status,
 )
 from backend.pipeline.patch_applier import PatchApplyOutcome
+from backend.pipeline.patch_dry_run import DryRunResult
 from backend.pipeline.patch_failures import (
     PATCH_FAILURE_KIND,
+    RECOVERED_PATCH_REVIEW_KIND,
+    RETRY_INELIGIBLE_CAP_EXHAUSTED,
+    RETRY_INELIGIBLE_DEPENDENCIES_NOT_MET,
+    RETRY_INELIGIBLE_DIRTY_WORKTREE,
+    RETRY_INELIGIBLE_DISALLOWED_FAILURE_TYPE,
+    RETRY_INELIGIBLE_MISSING_REPORT,
+    RETRY_INELIGIBLE_STALE_FAILURE_REPORT_ID,
     PatchFailureType,
     build_patch_failure_report,
     default_message_for_failure_type,
+    patch_failure_report_to_completion_summary,
+    record_initial_attempt,
+    record_retry_attempt,
 )
 from backend.projects.project_store import create_project
 
@@ -2527,3 +2539,623 @@ async def test_sequential_success_unchanged_with_dependency_guard(
         "completed",
         "completed",
     ]
+
+
+# --------------------------------------------------------------------------- #
+# Human-triggered patch retry execution (#26D2)
+# --------------------------------------------------------------------------- #
+
+
+def _files_expected(chunk_number: int) -> list[str]:
+    return [
+        f"created_{chunk_number}.py",
+        f"modified_{chunk_number}.py",
+        f"deleted_{chunk_number}.py",
+    ]
+
+
+def _seed_failed_chunk(
+    run_id: str,
+    chunk_number: int = 1,
+    *,
+    failure_type: PatchFailureType = PatchFailureType.PATCH_DOES_NOT_APPLY,
+    human_attempts: int = 0,
+) -> str:
+    """
+    Persist a failed chunk with a stored patch_failure report, exactly as the
+    orchestrator would after a real failure, and return its failure_report_id.
+    """
+    report = build_patch_failure_report(
+        failure_type,
+        technical_details="original failure",
+        changed_files_attempted=[f"modified_{chunk_number}.py"],
+        allowed_files=_files_expected(chunk_number),
+        rollback_performed=True,
+        working_tree_clean=True,
+        chunk_number=chunk_number,
+        max_attempts=2,
+        failed_step="patch",
+    )
+    current = record_initial_attempt(
+        report,
+        failure_report_id=str(uuid.uuid4()),
+        attempt_id=str(uuid.uuid4()),
+        started_at="2026-06-03T00:00:00+00:00",
+    )
+    for _ in range(human_attempts):
+        current = record_retry_attempt(
+            current,
+            failure_report_id=str(uuid.uuid4()),
+            attempt_id=str(uuid.uuid4()),
+            started_at="2026-06-03T00:00:00+00:00",
+            recovery_mode="human",
+            failure_type=failure_type,
+            outcome="failed",
+        )
+    save_chunk_completion_summary(
+        run_id,
+        chunk_number,
+        patch_failure_report_to_completion_summary(current),
+    )
+    update_chunk_status(run_id, chunk_number, "failed", report.message)
+    return current.failure_report_id
+
+
+def _forbid_execution(monkeypatch):
+    """Make every retry execution seam explode, to prove ineligible == no work."""
+    def _boom_async(*_a, **_k):
+        raise AssertionError("retry must not run coder/apply/test when ineligible")
+
+    async def _boom_coder(*_a, **_k):
+        raise AssertionError("retry must not call coder when ineligible")
+
+    monkeypatch.setattr(chunked_orchestrator, "run_coder", _boom_coder)
+    monkeypatch.setattr(chunked_orchestrator, "dry_run_changes", _boom_async)
+    monkeypatch.setattr(chunked_orchestrator, "apply_patch_guarded", _boom_async)
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", _boom_async)
+
+
+def patch_retry_pipeline(
+    monkeypatch,
+    run_id: str,
+    *,
+    dry_ok: bool = True,
+    apply_ok: bool = True,
+    tests_ok: bool = True,
+    coder_result: CoderHandoff | None = None,
+    apply_failure_report=None,
+    calls=None,
+    save_code_checkpoint: bool = True,
+):
+    """Fake the coder/dry-run/apply/test seams for a retry, mirroring reality."""
+    resolved_coder = coder_result or make_coder_result(run_id, 1)
+
+    async def fake_coder(plan, run_id_arg, chunk_number=0, **kwargs):
+        if calls is not None:
+            calls.append(("coder", chunk_number))
+        if save_code_checkpoint:
+            # The real run_coder writes the code checkpoint the approval path
+            # later commits from; model that here.
+            save_checkpoint(
+                run_id=run_id_arg,
+                step="code",
+                output=resolved_coder.model_dump(),
+                handoff_contract=resolved_coder.model_dump(),
+                git_hash="pre-patch",
+                tests_passed=False,
+                step_completed=True,
+                chunk_number=chunk_number,
+            )
+        return resolved_coder
+
+    def fake_dry(code, repo_path):
+        if calls is not None:
+            calls.append(("dry_run", None))
+        if dry_ok:
+            return DryRunResult(ok=True)
+        return DryRunResult(
+            ok=False,
+            failed_path="modified_1.py",
+            failed_action="edit",
+            error_message=(
+                "patch_applier.py: edit old_string not found in modified_1.py. "
+                "The text to replace must match the file exactly."
+            ),
+        )
+
+    def fake_apply(code, run_id_arg, chunk_number=0, *, files_expected, repo_path=None):
+        if calls is not None:
+            calls.append(("patch", chunk_number))
+        if apply_ok:
+            _worktree_applied["value"] = True
+            return PatchApplyOutcome.from_success(make_patch_result(run_id_arg))
+        return PatchApplyOutcome.from_failure(apply_failure_report)
+
+    def fake_tests(patch, run_id_arg, chunk_number=0):
+        if calls is not None:
+            calls.append(("test", chunk_number))
+        if not tests_ok:
+            # tester.py rolls back on failure, restoring a clean tree.
+            reset_worktree_state()
+        return make_test_result(run_id_arg, tests_ok)
+
+    monkeypatch.setattr(chunked_orchestrator, "run_coder", fake_coder)
+    monkeypatch.setattr(chunked_orchestrator, "dry_run_changes", fake_dry)
+    monkeypatch.setattr(chunked_orchestrator, "apply_patch_guarded", fake_apply)
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", fake_tests)
+
+
+# --- Eligibility / ineligible: nothing executes ---------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_retry_stale_failure_report_id_rejected(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    _seed_failed_chunk(run_id, 1)
+    patch_git_preflight(monkeypatch)
+    _forbid_execution(monkeypatch)
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, "stale-id")
+
+    assert result["status"] == "retry_ineligible"
+    assert result["status_code"] == 409
+    assert result["reason"] == RETRY_INELIGIBLE_STALE_FAILURE_REPORT_ID
+    assert _chunk_status_value(run_id, 1) == "failed"
+
+
+@pytest.mark.asyncio
+async def test_retry_missing_or_malformed_report_rejected(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    # Chunk failed but the stored summary is not a patch_failure shape.
+    update_chunk_status(run_id, 1, "failed", "boom")
+    save_chunk_completion_summary(run_id, 1, {"summary": "not a failure report"})
+    patch_git_preflight(monkeypatch)
+    _forbid_execution(monkeypatch)
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, "anything")
+
+    assert result["status"] == "retry_ineligible"
+    assert result["status_code"] == 422
+    assert result["reason"] == RETRY_INELIGIBLE_MISSING_REPORT
+
+
+@pytest.mark.asyncio
+async def test_retry_disallowed_failure_type_rejected(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(
+        run_id, 1, failure_type=PatchFailureType.SCOPE_VIOLATION
+    )
+    patch_git_preflight(monkeypatch)
+    _forbid_execution(monkeypatch)
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    assert result["status"] == "retry_ineligible"
+    assert result["status_code"] == 422
+    assert result["reason"] == RETRY_INELIGIBLE_DISALLOWED_FAILURE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_retry_dirty_working_tree_rejected(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1)
+    patch_git_preflight(monkeypatch)
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git, "is_working_tree_clean", lambda repo: False
+    )
+    _forbid_execution(monkeypatch)
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    assert result["status"] == "retry_ineligible"
+    assert result["status_code"] == 409
+    assert result["reason"] == RETRY_INELIGIBLE_DIRTY_WORKTREE
+
+
+@pytest.mark.asyncio
+async def test_retry_unmet_dependency_rejected(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, chunks=2)
+    # Chunk 2 depends on chunk 1, which is not completed.
+    frid = _seed_failed_chunk(run_id, 2)
+    patch_git_preflight(monkeypatch)
+    _forbid_execution(monkeypatch)
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 2, frid)
+
+    assert result["status"] == "retry_ineligible"
+    assert result["status_code"] == 422
+    assert result["reason"] == RETRY_INELIGIBLE_DEPENDENCIES_NOT_MET
+
+
+@pytest.mark.asyncio
+async def test_retry_cap_exhausted_rejected(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1, human_attempts=2)
+    patch_git_preflight(monkeypatch)
+    _forbid_execution(monkeypatch)
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    assert result["status"] == "retry_ineligible"
+    assert result["status_code"] == 422
+    assert result["reason"] == RETRY_INELIGIBLE_CAP_EXHAUSTED
+
+
+# --- Success: pauses at approval, never commits ---------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_retry_success_pauses_at_chunk_approval_not_completed(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_retry_pipeline(monkeypatch, run_id, calls=calls)
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    assert result["status"] == "awaiting_chunk_approval"
+    assert _chunk_status_value(run_id, 1) == "awaiting_chunk_approval"
+    # Regenerated, validated, applied, and tested — but NOT committed.
+    assert [c[0] for c in calls if c[0] in {"coder", "dry_run", "patch", "test"}] == [
+        "coder",
+        "dry_run",
+        "patch",
+        "test",
+    ]
+    assert not any(c[0] == "commit" for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_retry_success_stores_recovered_patch_review_summary(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1)
+    patch_git_preflight(monkeypatch)
+    patch_retry_pipeline(monkeypatch, run_id)
+
+    await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["kind"] == RECOVERED_PATCH_REVIEW_KIND
+    assert summary["kind"] != PATCH_FAILURE_KIND
+    # The recovered attempt is appended with human/recovered/passed semantics.
+    recovered = summary["attempts"][-1]
+    assert recovered["recovery_mode"] == "human"
+    assert recovered["outcome"] == "recovered"
+    assert recovered["test_outcome"] == "passed"
+    # Prior initial attempt is preserved in history.
+    assert any(a["recovery_mode"] == "initial" for a in summary["attempts"])
+
+
+@pytest.mark.asyncio
+async def test_retry_success_then_approval_commits_newest_code_checkpoint(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1)
+    # An older, stale code checkpoint touching all three files.
+    add_code_checkpoint(run_id, 1)
+
+    # The retry regenerates a DISTINCT, narrower patch (only the create).
+    regenerated = CoderHandoff(
+        run_id=run_id,
+        feature_description="regenerated",
+        files_changed=[
+            FileChange(
+                path="created_1.py",
+                action="create",
+                content="print('regenerated')\n",
+                reason="regenerate",
+            ),
+        ],
+        summary="regenerated chunk 1",
+        suggested_memory_entries=[],
+    )
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_retry_pipeline(monkeypatch, run_id, coder_result=regenerated, calls=calls)
+
+    pause = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+    assert pause["status"] == "awaiting_chunk_approval"
+
+    approve = chunked_orchestrator.approve_chunk_and_commit(run_id, 1)
+    assert approve["status"] == "chunk_approved"
+
+    commit_calls = [c for c in calls if c[0] == "commit"]
+    assert len(commit_calls) == 1
+    # The newest (regenerated) checkpoint's file list is what gets committed.
+    assert commit_calls[0][1] == ["created_1.py"]
+    assert _chunk_status_value(run_id, 1) == "completed"
+
+
+# --- Failure paths persist a fresh report + appended human attempt --------- #
+
+
+@pytest.mark.asyncio
+async def test_retry_dry_run_failure_persists_report_and_skips_apply(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_retry_pipeline(monkeypatch, run_id, dry_ok=False, calls=calls)
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    assert result["status"] == "failed"
+    assert result["failure_report_id"] != frid
+    # Dry-run gates apply/test entirely.
+    assert not any(c[0] in {"patch", "test"} for c in calls)
+    assert _chunk_status_value(run_id, 1) == "failed"
+
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["kind"] == PATCH_FAILURE_KIND
+    assert summary["failure_type"] == PatchFailureType.PATCH_DOES_NOT_APPLY.value
+    # Initial + appended human retry attempt.
+    modes = [a["recovery_mode"] for a in summary["attempts"]]
+    assert modes == ["initial", "human"]
+
+
+@pytest.mark.asyncio
+async def test_retry_apply_failure_persists_report_and_appends_attempt(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1)
+    apply_failure = build_patch_failure_report(
+        PatchFailureType.PATCH_DOES_NOT_APPLY,
+        technical_details="hunk failed",
+        changed_files_attempted=["modified_1.py"],
+        allowed_files=_files_expected(1),
+        rollback_performed=True,
+        working_tree_clean=True,
+        chunk_number=1,
+        failed_step="patch",
+    )
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_retry_pipeline(
+        monkeypatch,
+        run_id,
+        apply_ok=False,
+        apply_failure_report=apply_failure,
+        calls=calls,
+    )
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    assert result["status"] == "failed"
+    assert result["failure_report_id"] != frid
+    assert not any(c[0] == "test" for c in calls)
+    assert not any(c[0] == "commit" for c in calls)
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["kind"] == PATCH_FAILURE_KIND
+    modes = [a["recovery_mode"] for a in summary["attempts"]]
+    assert modes == ["initial", "human"]
+
+
+@pytest.mark.asyncio
+async def test_retry_test_failure_persists_report_with_rollback(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_retry_pipeline(monkeypatch, run_id, tests_ok=False, calls=calls)
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    assert result["status"] == "failed"
+    assert not any(c[0] == "commit" for c in calls)
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["failure_type"] == (
+        PatchFailureType.TEST_FAILURE_AFTER_APPLY.value
+    )
+    assert summary["rollback_performed"] is True
+    recovered = summary["attempts"][-1]
+    assert recovered["recovery_mode"] == "human"
+    assert recovered["test_outcome"] == "failed"
+
+
+# --- Safety invariants ----------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_retry_does_not_mutate_files_expected(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1)
+    before = get_chunk_plan_status(run_id).chunks[0].files_expected
+    patch_git_preflight(monkeypatch)
+    patch_retry_pipeline(monkeypatch, run_id)
+
+    await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    after = get_chunk_plan_status(run_id).chunks[0].files_expected
+    assert after == before == _files_expected(1)
+
+
+@pytest.mark.asyncio
+async def test_retry_out_of_scope_regenerated_patch_blocked(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1)
+    out_of_scope = CoderHandoff(
+        run_id=run_id,
+        feature_description="drift",
+        files_changed=[
+            FileChange(
+                path="src/out_of_scope.py",
+                action="modify",
+                content="print('drift')\n",
+                reason="drift",
+            ),
+        ],
+        summary="drifted",
+        suggested_memory_entries=[],
+    )
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_retry_pipeline(monkeypatch, run_id, coder_result=out_of_scope, calls=calls)
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    assert result["status"] == "failed"
+    # Scope guard fires before dry-run/apply/test and before any commit.
+    assert not any(c[0] in {"dry_run", "patch", "test", "commit"} for c in calls)
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["failure_type"] == PatchFailureType.SCOPE_VIOLATION.value
+    assert _chunk_status_value(run_id, 1) == "failed"
+
+
+@pytest.mark.asyncio
+async def test_recovered_awaiting_chunk_does_not_unblock_dependent(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, chunks=2)
+    frid = _seed_failed_chunk(run_id, 1)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_retry_pipeline(monkeypatch, run_id, calls=calls)
+
+    pause = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+    assert pause["status"] == "awaiting_chunk_approval"
+
+    # Chunk 1 is recovered-but-uncommitted (awaiting approval). Chunk 2 must not
+    # be allowed to run: its dependency is not completed.
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+    assert result["status"] == "failed"
+    assert result["failed_chunk"] == 2
+    assert "DEPENDENCY_NOT_MET" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_retry_does_not_write_memory(monkeypatch, tmp_repo, tracked_runs):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1)
+    patch_git_preflight(monkeypatch)
+    patch_retry_pipeline(monkeypatch, run_id)
+
+    memory_calls = {"count": 0}
+
+    def spy_mark_stale(*_a, **_k):
+        memory_calls["count"] += 1
+
+    monkeypatch.setattr(chunked_orchestrator, "mark_fact_stale", spy_mark_stale)
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    assert result["status"] == "awaiting_chunk_approval"
+    assert memory_calls["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_resume_does_not_skip_complete_recovered_but_uncommitted_chunk(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    # Crash window: a retry produced a passing test checkpoint but the process
+    # died before the approval pause, so NO chunk commit exists. Resume must NOT
+    # skip-complete the chunk; the existing _verify_completed_checkpoint_safe
+    # requires the commit.
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    add_test_checkpoint(run_id, 1)
+    update_chunk_status(run_id, 1, "running")  # mid-retry crash state
+    calls = []
+    patch_resume_git(monkeypatch, calls)
+    # No chunk commit exists.
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "commit_message_exists",
+        lambda repo, prefix: False,
+    )
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    with pytest.raises(RuntimeError, match="unsafe resume recovery"):
+        await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert _chunk_status_value(run_id, 1) != "completed"
+
+
+@pytest.mark.asyncio
+async def test_retry_unexpected_coder_error_marks_chunk_failed(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    # A hard raise from the coder/test seam must not leave the chunk stuck in
+    # "running"; the execution guard turns it into a failed chunk.
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1)
+    patch_git_preflight(monkeypatch)
+
+    async def boom_coder(*_a, **_k):
+        raise RuntimeError("coder LLM exploded")
+
+    monkeypatch.setattr(chunked_orchestrator, "run_coder", boom_coder)
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "apply_patch_guarded",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("apply must not run after a coder error")
+        ),
+    )
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    assert result["status"] == "failed"
+    assert result["failed_chunk"] == 1
+    assert "coder LLM exploded" in result["error"]
+    assert _chunk_status_value(run_id, 1) == "failed"
+
+
+@pytest.mark.asyncio
+async def test_retry_reevaluates_eligibility_inside_lock_not_pre_lock_snapshot(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    # TOCTOU guard (#26D2): a concurrent retry that wins the lock first replaces
+    # the stored failure report (new failure_report_id) while this call is blocked
+    # on the lock. Eligibility must be decided from that fresh in-lock state, not
+    # the pre-lock snapshot — otherwise a double-submit could re-run an already
+    # consumed failure_report_id and bypass MAX_HUMAN_RETRIES.
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    old_frid = _seed_failed_chunk(run_id, 1)
+    patch_git_preflight(monkeypatch)
+    # If any eligibility-relevant read used the pre-lock snapshot, the request's
+    # still-matching old_frid would pass and execution would fire and explode.
+    _forbid_execution(monkeypatch)
+
+    real_lock = chunked_orchestrator.project_repo_lock
+
+    @asynccontextmanager
+    async def mutating_lock(project_id):
+        async with real_lock(project_id):
+            # Model the winning concurrent retry: the stored report now carries a
+            # different failure_report_id, making old_frid stale.
+            _seed_failed_chunk(run_id, 1)
+            yield
+
+    monkeypatch.setattr(chunked_orchestrator, "project_repo_lock", mutating_lock)
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, old_frid)
+
+    # In-lock re-read sees the new frid -> stale -> clean 409, no execution.
+    assert result["status"] == "retry_ineligible"
+    assert result["status_code"] == 409
+    assert result["reason"] == RETRY_INELIGIBLE_STALE_FAILURE_REPORT_ID
+    assert _chunk_status_value(run_id, 1) == "failed"
