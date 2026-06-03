@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { projectsApi } from '@/api/client'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import AttemptHistory from '@/components/AttemptHistory'
 import {
   suggestedActionLabel,
   type PatchFailureReport,
@@ -233,6 +234,10 @@ export default function PatchFailureBanner({
               : 'Recovery actions are not wired yet. Use the details below to decide the next manual step.'}
           </p>
         </div>
+      )}
+
+      {report.attempts && report.attempts.length > 0 && (
+        <AttemptHistory attempts={report.attempts} />
       )}
 
       {showDetails && technicalDetails && (
