@@ -64,7 +64,9 @@ from backend.pipeline.patch_failures import (
 )
 from backend.pipeline.planner import run_planner
 from backend.pipeline.run_locks import project_repo_lock, project_repo_lock_sync
+from backend.pipeline.scope_expansion import ScopeExpansionStatus
 from backend.pipeline.scope_expansion_store import (
+    list_scope_expansion_requests_for_chunk,
     maybe_create_scope_expansion_request_for_failure,
 )
 from backend.pipeline.scope_guard import ScopeDriftError, assert_files_in_scope
@@ -853,6 +855,47 @@ def _surface_scope_expansion_if_eligible(
             chunk_number,
             error,
         )
+
+
+def settle_run_after_scope_expansion_reject(run_id: str, chunk_number: int) -> None:
+    """
+    Move the run off AWAITING_SCOPE_APPROVAL back to a plain failed state after a
+    scope expansion request was rejected (#27 reject slice).
+
+    The chunk itself stays `failed` (design §10), so dependents remain blocked and
+    no execution authority is granted. This only clears the run-level "waiting for
+    scope approval" surfacing. It is conservative:
+
+      - it does nothing unless the run is currently AWAITING_SCOPE_APPROVAL (never
+        clobbers some other run state);
+      - it does nothing if another pending scope request still exists for the
+        chunk (still legitimately awaiting a scope decision).
+
+    There is no dedicated manual-intervention run status, so the closest existing
+    state — RunStatus.FAILED with the standard `chunk_{n}_failed` step — is used.
+    """
+    remaining_pending = [
+        request
+        for request in list_scope_expansion_requests_for_chunk(run_id, chunk_number)
+        if request.status == ScopeExpansionStatus.PENDING.value
+    ]
+    if remaining_pending:
+        return
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT status FROM pipeline_runs WHERE id = :run_id"),
+            {"run_id": run_id},
+        ).fetchone()
+    if row is None or row[0] != RunStatus.AWAITING_SCOPE_APPROVAL:
+        return
+
+    _update_run_status(
+        run_id,
+        RunStatus.FAILED,
+        f"chunk_{chunk_number}_failed",
+        chunk_number,
+    )
 
 
 def _fail_chunk_with_report(

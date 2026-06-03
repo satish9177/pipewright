@@ -39,8 +39,21 @@ from backend.pipeline.scope_expansion import (
 )
 
 
+class ScopeExpansionConflictError(Exception):
+    """
+    Raised when a scope expansion request exists and belongs to the given
+    run/chunk but cannot be acted on in its current state (e.g. a reject of a
+    request that is not pending). Distinct from ValueError (not found) so the
+    route layer can map it to HTTP 409 rather than 404. Carries no mutation: the
+    caller has changed nothing when this is raised.
+    """
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_DEFAULT_REJECTION_REASON = "Scope expansion rejected."
 
 
 def _status_value(status: ScopeExpansionStatus | str) -> str:
@@ -269,6 +282,57 @@ def update_scope_expansion_request_status(
             f"scope_expansion_store.py: update_scope_expansion_request_status failed. "
             f"request_id={request_id} | new_status={target} | error={error}"
         )
+
+
+def reject_scope_expansion_request(
+    run_id: str,
+    chunk_number: int,
+    request_id: str,
+    *,
+    reason: str | None = None,
+    decided_by: str | None = None,
+) -> ScopeExpansionRequest:
+    """
+    Reject a pending scope expansion request (pending -> rejected).
+
+    Rejecting is NOT retry and NOT code approval. It records the human's decision
+    and nothing else: it never creates approved/applied rows, never touches
+    approved_files, never runs a retry, never commits, and never mutates
+    chunks.files_expected. After rejection the request is not in force, so
+    effective scope reverts to the original files_expected.
+
+    Safety / validation (mutates nothing on any failure):
+      - request not found                          -> ValueError (route -> 404)
+      - request belongs to a different run/chunk   -> ValueError (route -> 404)
+      - request is not pending                     -> ScopeExpansionConflictError
+                                                      (route -> 409); approved/
+                                                      applied/rejected/superseded
+                                                      requests are left untouched,
+                                                      so a double reject is a 409.
+
+    The decision reason defaults to a safe placeholder when blank so the audit
+    column is always populated (mirrors reject_chunk_plan). decided_at is stamped
+    by the underlying status transition.
+    """
+    request = get_scope_expansion_request(request_id)  # ValueError if missing.
+    if request.run_id != run_id or request.chunk_number != chunk_number:
+        raise ValueError(
+            "scope_expansion_store.py: scope expansion request "
+            f"{request_id} not found for run {run_id} chunk {chunk_number}"
+        )
+    if request.status != ScopeExpansionStatus.PENDING.value:
+        raise ScopeExpansionConflictError(
+            "scope_expansion_store.py: scope expansion request "
+            f"{request_id} is not pending (status={request.status}); nothing changed"
+        )
+
+    resolved_reason = reason if (reason and reason.strip()) else _DEFAULT_REJECTION_REASON
+    return update_scope_expansion_request_status(
+        request_id,
+        ScopeExpansionStatus.REJECTED,
+        decided_by=decided_by,
+        decision_reason=resolved_reason,
+    )
 
 
 def count_in_force_scope_amendments(run_id: str, chunk_number: int) -> int:

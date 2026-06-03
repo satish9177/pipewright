@@ -36,6 +36,11 @@ from backend.pipeline.chunked_orchestrator import (
     reject_chunk_and_rollback,
     retry_failed_chunk,
     resume_chunked_pipeline,
+    settle_run_after_scope_expansion_reject,
+)
+from backend.pipeline.scope_expansion_store import (
+    ScopeExpansionConflictError,
+    reject_scope_expansion_request,
 )
 from backend.pipeline.pr_orchestrator import push_and_create_pr
 from backend.pipeline.implementation_guard import (
@@ -614,6 +619,12 @@ class RetryChunkRequest(BaseModel):
 
 
 class RejectMemoryConflictRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=REJECTION_REASON_MAX_LENGTH)
+
+
+class RejectScopeExpansionRequest(BaseModel):
+    # Optional reason, matching the other reject endpoints in this module. A blank
+    # reason is stored as a safe default by the store layer.
     reason: str | None = Field(default=None, max_length=REJECTION_REASON_MAX_LENGTH)
 
 
@@ -1503,6 +1514,49 @@ def reject_chunk_route(
     try:
         _ensure_mutating_run(run_id)
         return reject_chunk_and_rollback(run_id, chunk_number, request.reason)
+    except ProjectRepoLockError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@router.post("/runs/{run_id}/chunks/{chunk_number}/scope-expansion/{request_id}/reject")
+def reject_scope_expansion_route(
+    run_id: str,
+    chunk_number: int,
+    request_id: str,
+    request: RejectScopeExpansionRequest,
+):
+    """
+    Reject a pending scope expansion request (#27).
+
+    This is NOT retry and NOT code approval. It transitions the request
+    pending -> rejected, records the reason, and settles the run off
+    `awaiting_scope_approval` back to a plain failed state. The chunk stays
+    `failed`; nothing is retried, committed, approved, or applied, and
+    chunks.files_expected is never mutated.
+
+    Error mapping (mutates nothing on failure):
+      - unknown request, or request not under this run/chunk -> 404
+      - request not pending (incl. double reject)            -> 409
+    """
+    try:
+        _ensure_mutating_run(run_id)
+        rejected = reject_scope_expansion_request(
+            run_id,
+            chunk_number,
+            request_id,
+            reason=request.reason,
+        )
+        settle_run_after_scope_expansion_reject(run_id, chunk_number)
+        return {
+            "status": "scope_expansion_rejected",
+            "request": rejected.model_dump(),
+        }
+    except ScopeExpansionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error))
     except ProjectRepoLockError as error:
         raise HTTPException(status_code=409, detail=str(error))
     except ValueError as error:
