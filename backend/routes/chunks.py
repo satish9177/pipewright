@@ -26,8 +26,17 @@ from backend.models.chunk import ChunkPlanResponse
 from backend.pipeline.chunk_store import (
     approve_chunk_plan,
     create_chunked_run,
+    get_chunk,
     get_chunk_plan_status,
+    get_chunk_test_run_verdict,
     reject_chunk_plan,
+)
+from backend.pipeline.test_validation_ack_store import (
+    ACK_REQUIRED_VERDICTS,
+    TestValidationAckConflictError,
+    chunks_requiring_acknowledgement,
+    compute_chunk_diff_hash,
+    create_acknowledgement,
 )
 from backend.models.chunk import TriageResult
 from backend.pipeline.chunked_orchestrator import (
@@ -621,6 +630,13 @@ class RetryChunkRequest(BaseModel):
 
 
 class RejectMemoryConflictRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=REJECTION_REASON_MAX_LENGTH)
+
+
+class AcknowledgeTestValidationRequest(BaseModel):
+    # Optional human reason for committing despite weak/no-test validation
+    # ("small change, manually verified"). Stored as audited context only; it
+    # never relaxes any check.
     reason: str | None = Field(default=None, max_length=REJECTION_REASON_MAX_LENGTH)
 
 
@@ -1667,10 +1683,126 @@ async def retry_chunk_route(
         raise HTTPException(status_code=400, detail=str(error))
 
 
+def _build_ack_required_message(blocking) -> str:
+    """Human-facing 409 message for the final-approval acknowledgement gate."""
+    parts = []
+    for item in blocking:
+        state = "stale" if item.state == "stale" else "missing"
+        parts.append(
+            f"chunk {item.chunk_number} ({item.verdict}, acknowledgement {state})"
+        )
+    detail = "; ".join(parts)
+    return (
+        "Weak or no-test runtime validation requires acknowledgement before "
+        f"final approval: {detail}. Acknowledge each via "
+        "POST /runs/{run_id}/chunks/{chunk_number}/test-validation/acknowledge "
+        "against the current diff, then approve. Nothing was committed."
+    )
+
+
+def _require_test_validation_acknowledged(run_id: str) -> None:
+    """
+    #28F final-approval precondition. If any chunk about to be finally approved
+    has a weak/none runtime verdict without an ACTIVE acknowledgement bound to its
+    CURRENT diff hash, block with 409 BEFORE the final-approved mutation (and so
+    before any downstream push/PR, which require FINAL_APPROVED).
+
+    Only enforced when a pending final gate exists, so non-final states keep their
+    existing 404. Strong/unknown/no-verdict chunks never block. Reads only;
+    mutates nothing on the blocking path.
+    """
+    if _get_pending_final_gate(run_id) is None:
+        return
+    blocking = chunks_requiring_acknowledgement(run_id)
+    if blocking:
+        raise HTTPException(
+            status_code=409,
+            detail=_build_ack_required_message(blocking),
+        )
+
+
+@router.post(
+    "/runs/{run_id}/chunks/{chunk_number}/test-validation/acknowledge"
+)
+def acknowledge_test_validation_route(
+    run_id: str,
+    chunk_number: int,
+    request: AcknowledgeTestValidationRequest,
+):
+    """
+    Record a human acknowledgement of a weak/none runtime test verdict for a
+    chunk (#28F), bound to the chunk's current diff hash.
+
+    This is NOT code approval and does NOT replace final approval — it is only a
+    precondition the final gate checks. It commits nothing, pushes nothing, and
+    creates no PR.
+
+    Error mapping (mutates nothing on failure):
+      - unknown run/chunk                                  -> 404
+      - verdict is strong/unknown or no verdict recorded   -> 409 (nothing to ack)
+      - current diff identity cannot be determined         -> 409
+      - re-acknowledging the same diff                     -> 200 (idempotent)
+    """
+    try:
+        _ensure_mutating_run(run_id)
+        # 404 if the chunk does not exist under this run.
+        get_chunk(run_id, chunk_number)
+
+        stored = get_chunk_test_run_verdict(run_id, chunk_number)
+        verdict = stored["verdict"] if stored else None
+        if verdict not in ACK_REQUIRED_VERDICTS:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This chunk does not require acknowledgement "
+                    f"(verdict={verdict or 'none recorded'}). Only weak/no-test "
+                    "verdicts can be acknowledged."
+                ),
+            )
+
+        diff_hash = compute_chunk_diff_hash(run_id, chunk_number)
+        if not diff_hash:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot determine the current diff identity for this chunk; "
+                    "no acknowledgement was recorded."
+                ),
+            )
+
+        ack = create_acknowledgement(
+            run_id,
+            chunk_number,
+            verdict,
+            diff_hash,
+            reason=request.reason,
+        )
+        return {
+            "status": "test_validation_acknowledged",
+            "run_id": run_id,
+            "chunk_number": chunk_number,
+            "verdict": verdict,
+            "acknowledged_diff_hash": ack["acknowledged_diff_hash"],
+            "acknowledged_at": ack.get("acknowledged_at"),
+        }
+    except HTTPException:
+        raise
+    except TestValidationAckConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
 @router.post("/runs/{run_id}/final-approval/approve")
 def approve_final_approval_route(run_id: str):
     try:
         _ensure_mutating_run(run_id)
+        # #28F: block final approval (and so downstream push/PR) when a weak/none
+        # verdict is not acknowledged against the current diff. Runs BEFORE the
+        # final-approved mutation; raises 409 and mutates nothing if missing/stale.
+        _require_test_validation_acknowledged(run_id)
         return _decide_final_gate(
             run_id,
             ApprovalStatus.APPROVED,
