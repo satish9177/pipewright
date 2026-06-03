@@ -30,18 +30,21 @@ from backend.pipeline.patch_failures import (
     build_patch_failure_report,
 )
 from backend.utils.path_safety import (
-    is_forbidden_write_path,
     normalize_relative_path,
     validate_safe_relative_path,
+)
+from backend.pipeline.patch_dry_run import (
+    EvaluatedChange,
+    compute_edited_content,
+    evaluate_file_change,
 )
 
 BACKUP_DIR = Path(__file__).parent.parent / "backups"
 
-# Mirror of coder.MAX_FILE_LINES. Defined locally so patch_applier stays a pure
-# file-ops module with no dependency on the AI/coder import graph. Files larger
-# than this may not be modified by wholesale full-content replacement; they must
-# be changed with targeted action="edit" instead.
-MAX_MODIFY_FILE_LINES = 200
+# The large-file-modify threshold, the shared precondition evaluator, and the
+# exact-match helpers now live in patch_dry_run so the zero-mutation dry-run and
+# the real apply pass-1 validation share ONE implementation (#26B). Behavior and
+# RuntimeError message strings are unchanged.
 
 def _get_git_hash(repo_path: str) -> str:
     """
@@ -64,26 +67,6 @@ def _get_git_hash(repo_path: str) -> str:
         return git_hash if git_hash else "no-git"
     except Exception:
         return "no-git"
-
-
-def _validate_path(relative_path: str, target_repo: str) -> Path:
-    try:
-        print(f"[PATCH] Validating path: {relative_path}")
-
-        if is_forbidden_write_path(relative_path):
-            raise RuntimeError(
-                f"patch_applier.py: [SECURITY] forbidden path rejected: "
-                f"{relative_path}"
-            )
-
-        root = Path(target_repo).resolve()
-        return validate_safe_relative_path(relative_path, root)
-    except RuntimeError:
-        raise
-    except Exception as error:
-        raise RuntimeError(
-            f"patch_applier.py: failed to validate path {relative_path}: {error}"
-        )
 
 
 def _backup_root(run_id: str, chunk_number: int = 0) -> Path:
@@ -129,17 +112,6 @@ def _backup_file(
         )
 
 
-def _read_existing_content(full_path: Path) -> str:
-    try:
-        if not full_path.exists() or not full_path.is_file():
-            return ""
-        return full_path.read_text(encoding="utf-8")
-    except Exception as error:
-        raise RuntimeError(
-            f"patch_applier.py: failed to read existing content: {error}"
-        )
-
-
 def _apply_edit_to_text(
     relative_path: str,
     content: str,
@@ -147,32 +119,11 @@ def _apply_edit_to_text(
     new_string: str | None,
 ) -> str:
     """
-    Apply a single targeted edit to file text and return the new text.
-
-    Requires old_string to appear exactly once. Fails safely with a clear
-    error if old_string is missing (0 occurrences) or ambiguous (>1).
-    No fuzzy matching: matching is exact substring matching.
+    Thin wrapper over the shared exact-match helper so pass-2 edit application
+    uses the same matching semantics and the same RuntimeError message strings
+    as pass-1 evaluation (#26B). No fuzzy matching; exact substring matching.
     """
-    if old_string is None or new_string is None:
-        raise RuntimeError(
-            f"patch_applier.py: edit requires old_string and new_string: "
-            f"{relative_path}"
-        )
-
-    occurrences = content.count(old_string)
-    if occurrences == 0:
-        raise RuntimeError(
-            f"patch_applier.py: edit old_string not found in {relative_path}. "
-            "The text to replace must match the file exactly."
-        )
-    if occurrences > 1:
-        raise RuntimeError(
-            f"patch_applier.py: edit old_string is not unique in {relative_path} "
-            f"(found {occurrences} occurrences). Provide a larger, unique "
-            "old_string so exactly one location matches."
-        )
-
-    return content.replace(old_string, new_string, 1)
+    return compute_edited_content(relative_path, content, old_string, new_string)
 
 
 def _generate_file_diff(
@@ -337,79 +288,45 @@ def apply_patch(
             rollback_available=False,
         )
 
-    validated_changes: list[tuple[FileChange, Path, str, str]] = []
+    validated_changes: list[EvaluatedChange] = []
     manifest: list[dict] = []
 
     try:
+        # Pass 1: validate every change in memory (no writes). This shares the
+        # exact-match/precondition evaluator with the zero-mutation dry-run via
+        # evaluate_file_change (#26B), so the dry-run verdict and the real apply
+        # cannot drift. Behavior and RuntimeError message strings are unchanged.
         for change in coder_output.files_changed:
-            full_path = _validate_path(change.path, target_repo)
+            validated_changes.append(
+                evaluate_file_change(change, target_repo)
+            )
 
-            if change.action not in ["create", "modify", "delete", "edit"]:
-                raise RuntimeError(
-                    f"patch_applier.py: invalid action '{change.action}' "
-                    f"for {change.path}"
-                )
-
-            if change.action == "create" and full_path.exists():
-                raise RuntimeError(
-                    f"patch_applier.py: create target already exists: "
-                    f"{change.path}"
-                )
-
-            if change.action in ["modify", "delete", "edit"] and not full_path.exists():
-                raise RuntimeError(
-                    f"patch_applier.py: {change.action} target missing: "
-                    f"{change.path}"
-                )
-
-            original_content = _read_existing_content(full_path)
-
-            if change.action == "modify":
-                original_line_count = len(original_content.splitlines())
-                if original_line_count > MAX_MODIFY_FILE_LINES:
-                    raise RuntimeError(
-                        f"patch_applier.py: Large files cannot be replaced "
-                        f"wholesale automatically. Use targeted edits. "
-                        f"({change.path}: {original_line_count} lines exceeds "
-                        f"{MAX_MODIFY_FILE_LINES})"
-                    )
-
-            if change.action == "delete":
-                new_content = ""
-            elif change.action == "edit":
-                # Validate the edit up front (fails before any backup/write) and
-                # capture the resulting content so the diff reflects the edit.
-                new_content = _apply_edit_to_text(
-                    change.path,
-                    original_content,
-                    change.old_string,
-                    change.new_string,
-                )
-            else:
-                new_content = change.content or ""
-
-            validated_changes.append((
-                change,
-                full_path,
-                original_content,
-                new_content
-            ))
-
-        for change, full_path, _original_content, _new_content in validated_changes:
+        # Pass 2: write, backing up and recording a manifest per touched file.
+        # Unchanged: edits are still re-applied during the write (via
+        # _apply_file_change), and backup/manifest/rollback semantics are
+        # identical to before.
+        for evaluated in validated_changes:
+            change = evaluated.change
             if change.action in ["modify", "delete", "edit"]:
-                _backup_file(change.path, full_path, run_id, chunk_number)
+                _backup_file(
+                    change.path, evaluated.full_path, run_id, chunk_number
+                )
 
             manifest.append({
                 "path": change.path,
                 "action": change.action
             })
             _write_manifest(run_id, manifest, chunk_number)
-            _apply_file_change(change, full_path)
+            _apply_file_change(change, evaluated.full_path)
 
         diffs = []
-        for change, _full_path, original_content, new_content in validated_changes:
+        for evaluated in validated_changes:
             diffs.append(
-                _generate_file_diff(change.path, original_content, new_content)
+                _generate_file_diff(
+                    evaluated.change.path,
+                    evaluated.original_content,
+                    evaluated.new_content,
+                )
             )
         diff = "\n".join(diffs)
         diff_lines = len(diff.splitlines())
