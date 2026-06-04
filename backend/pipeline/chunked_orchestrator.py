@@ -66,9 +66,15 @@ from backend.pipeline.patch_failures import (
 from backend.pipeline.planner import run_planner
 from backend.pipeline.run_locks import project_repo_lock, project_repo_lock_sync
 from backend.pipeline.scope_expansion import (
+    SCOPE_EXPANSION_APPROVE_INELIGIBLE_CHUNK_NOT_FAILED,
+    SCOPE_EXPANSION_APPROVE_INELIGIBLE_DIRTY_WORKTREE,
+    SCOPE_EXPANSION_APPROVE_INELIGIBLE_MISSING_REPORT,
+    SCOPE_EXPANSION_APPROVE_INELIGIBLE_PLAN_NOT_APPROVED,
+    SCOPE_EXPANSION_APPROVE_INELIGIBLE_REQUEST_NOT_ACTIONABLE,
+    SCOPE_EXPANSION_APPROVE_INELIGIBLE_STALE_REPORT,
     ScopeExpansionStatus,
     ScopeExpansionValidationError,
-    evaluate_scope_expansion_eligibility,
+    evaluate_scope_expansion_approve_retry_eligibility,
     validate_approved_files,
 )
 from backend.pipeline.scope_expansion_store import (
@@ -2372,9 +2378,10 @@ async def _approve_and_retry_scope_expansion_locked(
     #    request is re-driven (crash-window idempotency, §14). applied / rejected /
     #    superseded cannot be acted on (409).
     status = request.status
-    is_pending = status == ScopeExpansionStatus.PENDING.value
-    is_redrive = status == ScopeExpansionStatus.APPROVED.value
-    if not (is_pending or is_redrive):
+    if not (
+        status == ScopeExpansionStatus.PENDING.value
+        or status == ScopeExpansionStatus.APPROVED.value
+    ):
         raise ScopeExpansionConflictError(
             "chunked_orchestrator.py: scope expansion request "
             f"{request_id} is {status}; it cannot be approved or retried again"
@@ -2422,26 +2429,64 @@ async def _approve_and_retry_scope_expansion_locked(
     # tree that went dirty since the failure refuses scope approval. Dirty tree
     # means manual intervention only.
     working_tree_clean = local_git.is_working_tree_clean(target_repo_path)
-    if not working_tree_clean:
-        raise ScopeExpansionConflictError(
-            "chunked_orchestrator.py: working tree is not clean; scope approval "
-            "refused (manual intervention required)"
-        )
-
     # Re-evaluate #27 eligibility inside the lock for a fresh approval. (A
     # re-drive's request is already approved/in-force, so the cap check would
     # double-count it; the gates that still matter for a re-drive — failed chunk,
     # matching report, clean tree, correct branch — are all checked above/below.)
-    if is_pending:
-        decision = evaluate_scope_expansion_eligibility(
-            failure_type=report.failure_type,
-            working_tree_clean=working_tree_clean,
-            manual_intervention_needed=report.manual_intervention_needed,
-            amendments_used=count_in_force_scope_amendments(run_id, chunk_number),
-            requested_extra_files=list(request.requested_files),
+    approve_decision = evaluate_scope_expansion_approve_retry_eligibility(
+        chunk_plan_status=plan_status.chunk_plan_status,
+        request_status=request.status,
+        chunk_status=chunk_status.status,
+        has_patch_failure_report=report is not None,
+        report_failure_report_id=report.failure_report_id if report else None,
+        request_failure_report_id=request.failure_report_id,
+        working_tree_clean=working_tree_clean,
+        failure_type=report.failure_type if report else None,
+        manual_intervention_needed=(
+            report.manual_intervention_needed if report else False
+        ),
+        amendments_used=count_in_force_scope_amendments(run_id, chunk_number),
+        requested_extra_files=list(request.requested_files),
+    )
+    if not approve_decision.eligible:
+        if approve_decision.reason == SCOPE_EXPANSION_APPROVE_INELIGIBLE_PLAN_NOT_APPROVED:
+            raise ScopeExpansionConflictError(
+                f"chunked_orchestrator.py: chunk plan is not approved. "
+                f"run_id={run_id} | status={plan_status.chunk_plan_status}"
+            )
+        if approve_decision.reason == SCOPE_EXPANSION_APPROVE_INELIGIBLE_REQUEST_NOT_ACTIONABLE:
+            raise ScopeExpansionConflictError(
+                "chunked_orchestrator.py: scope expansion request "
+                f"{request_id} is {request.status}; it cannot be approved or retried again"
+            )
+        if approve_decision.reason == SCOPE_EXPANSION_APPROVE_INELIGIBLE_CHUNK_NOT_FAILED:
+            raise ScopeExpansionConflictError(
+                f"chunked_orchestrator.py: chunk {chunk_number} is not failed "
+                f"(status={chunk_status.status}); scope retry refused"
+            )
+        if approve_decision.reason == SCOPE_EXPANSION_APPROVE_INELIGIBLE_MISSING_REPORT:
+            raise ScopeExpansionConflictError(
+                f"chunked_orchestrator.py: no current patch failure for chunk "
+                f"{chunk_number}; scope retry refused"
+            )
+        if approve_decision.reason == SCOPE_EXPANSION_APPROVE_INELIGIBLE_STALE_REPORT:
+            raise ScopeExpansionConflictError(
+                "chunked_orchestrator.py: scope expansion request is stale "
+                "(the chunk's current failure no longer matches this request)"
+            )
+        if approve_decision.reason == SCOPE_EXPANSION_APPROVE_INELIGIBLE_DIRTY_WORKTREE:
+            raise ScopeExpansionConflictError(
+                "chunked_orchestrator.py: working tree is not clean; scope approval "
+                "refused (manual intervention required)"
+            )
+        if approve_decision.scope_decision is not None:
+            raise _scope_expansion_ineligible_error(approve_decision.scope_decision)
+        raise ScopeExpansionConflictError(
+            "chunked_orchestrator.py: scope expansion request cannot be approved "
+            f"or retried (reason={approve_decision.reason})"
         )
-        if not decision.eligible:
-            raise _scope_expansion_ineligible_error(decision)
+
+    is_pending = approve_decision.is_pending
 
     # 7. Read-only branch precheck. A wrong/missing/undeterminable branch returns
     #    a side-effect-free 409 dict and leaves the request pending — retry runs

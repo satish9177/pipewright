@@ -6,6 +6,7 @@ This module only runs after final human approval. It does not merge PRs,
 delete branches, force push, poll CI, or create per-chunk PRs.
 """
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from github import Github
@@ -27,6 +28,78 @@ from backend.projects.pr_modes import (
 )
 from backend.projects.project_store import require_project
 from backend.security.secrets import decrypt_secret
+
+PUSH_PR_ELIGIBLE = "push_pr_ready"
+PUSH_PR_EXISTING_PR = "pr_already_recorded"
+PUSH_PR_LOCAL_ONLY_READY = "local_only_ready"
+PUSH_PR_INELIGIBLE_STATUS = "run_not_ready_for_push_pr"
+
+
+@dataclass(frozen=True)
+class PushPrEligibilityDecision:
+    """
+    Pure status/mode eligibility decision for push/create-PR.
+
+    This helper deliberately does not verify branches, dirty tree, remote base
+    state, GitHub auth, or existing remote PRs. Those checks remain in the locked
+    mutating path because they depend on live git/GitHub state and must be
+    revalidated at execution time.
+    """
+
+    eligible: bool
+    reason: str | None
+    status_code: int | None
+    pr_mode: str
+
+
+def evaluate_push_pr_eligibility(
+    *,
+    run_status: str | None,
+    pr_mode: str,
+    has_pr_url: bool,
+) -> PushPrEligibilityDecision:
+    """
+    Decide whether the run status and PR mode allow push/create-PR handling.
+
+    Existing DB PR URLs stay idempotently eligible regardless of run status,
+    matching push_and_create_pr's current behavior. local_only allows COMPLETE in
+    addition to FINAL_APPROVED/PUSH_FAILED because the local completion path is
+    idempotent after it marks the run complete. Remote PR modes allow only
+    FINAL_APPROVED or PUSH_FAILED before live git/GitHub checks proceed.
+    """
+    normalized_mode = normalize_pr_mode(pr_mode)
+    if has_pr_url:
+        return PushPrEligibilityDecision(
+            eligible=True,
+            reason=PUSH_PR_EXISTING_PR,
+            status_code=None,
+            pr_mode=normalized_mode,
+        )
+
+    allowed = {RunStatus.FINAL_APPROVED, RunStatus.PUSH_FAILED}
+    if normalized_mode == PR_MODE_LOCAL_ONLY:
+        allowed = allowed | {RunStatus.COMPLETE}
+        if run_status in allowed:
+            return PushPrEligibilityDecision(
+                eligible=True,
+                reason=PUSH_PR_LOCAL_ONLY_READY,
+                status_code=None,
+                pr_mode=normalized_mode,
+            )
+    elif run_status in allowed:
+        return PushPrEligibilityDecision(
+            eligible=True,
+            reason=PUSH_PR_ELIGIBLE,
+            status_code=None,
+            pr_mode=normalized_mode,
+        )
+
+    return PushPrEligibilityDecision(
+        eligible=False,
+        reason=PUSH_PR_INELIGIBLE_STATUS,
+        status_code=409,
+        pr_mode=normalized_mode,
+    )
 
 
 def _utc_now() -> str:
@@ -505,16 +578,21 @@ def _push_and_create_pr_locked(run_id: str, run: dict) -> dict:
 
     project = require_project(run.get("project_id"))
     pr_mode = normalize_pr_mode(project.get("pr_mode"))
+    decision = evaluate_push_pr_eligibility(
+        run_status=run.get("status"),
+        pr_mode=pr_mode,
+        has_pr_url=False,
+    )
 
-    if pr_mode == PR_MODE_LOCAL_ONLY:
-        return _complete_local_only(run_id, run, project, branch_name)
-
-    status = run.get("status")
-    if status not in {RunStatus.FINAL_APPROVED, RunStatus.PUSH_FAILED}:
+    if not decision.eligible:
+        status = run.get("status")
         raise RuntimeError(
             f"pr_orchestrator.py: run is not ready for push-pr. "
             f"run_id={run_id} | status={status}"
         )
+
+    if pr_mode == PR_MODE_LOCAL_ONLY:
+        return _complete_local_only(run_id, run, project, branch_name)
 
     if pr_mode == PR_MODE_GITHUB_CLI:
         return _push_and_create_pr_github_cli(run_id, run, project, branch_name)
