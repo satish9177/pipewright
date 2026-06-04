@@ -526,6 +526,64 @@ export interface PushPrResponse extends ExtraFields {
   pr_number?: number | null
 }
 
+// Read-only, typed PR/push lifecycle state (#31B). Orthogonal to RunStatus.
+export type PrState =
+  | 'not_started'
+  | 'ready_to_push'
+  | 'local_ready'
+  | 'local_complete'
+  | 'pushing'
+  | 'push_failed'
+  | 'pr_open'
+  | 'unknown'
+
+// Display-only PR checks summary state (#31D). `unavailable` means the checks
+// could not be retrieved (gh/network) — it is NOT a failing build.
+export type ChecksState =
+  | 'unknown'
+  | 'pending'
+  | 'passed'
+  | 'failed'
+  | 'unavailable'
+  | 'no_checks'
+
+export interface PrChecksSummary extends ExtraFields {
+  schema_version: number
+  state: ChecksState
+  total: number
+  passed: number
+  failed: number
+  pending: number
+  skipped: number
+  checked_at?: string | null
+}
+
+export interface PrPushFailure extends ExtraFields {
+  kind: string
+  summary: string
+  next_action: string
+  retryable: boolean
+}
+
+// Response from GET /runs/{run_id}/pr-status (#31E). Read-only: it never
+// mutates run/approval/push/PR state. `checks` is present only when a PR exists
+// and was explicitly refreshed.
+export interface PrStatus extends ExtraFields {
+  run_id: string
+  schema_version: number
+  pr_state: PrState
+  pr_mode: PrMode
+  is_terminal: boolean
+  branch_name?: string | null
+  pr_url?: string | null
+  pr_number?: number | null
+  pushed_at?: string | null
+  pr_created_at?: string | null
+  push_error?: string | null
+  failure?: PrPushFailure | null
+  checks?: PrChecksSummary | null
+}
+
 export type MemoryCategory =
   | 'stack'
   | 'structure'
@@ -799,6 +857,10 @@ export const runsApi = {
     ).then(r => r.data),
   pushPr: (runId: string) =>
     api.post<PushPrResponse>(`/runs/${runId}/push-pr`).then(r => r.data),
+  // Explicit, read-only PR status + checks refresh (#31E/#31F). Only called on
+  // demand (e.g. a "Refresh PR checks" click) — never automatically on load.
+  getPrStatus: (runId: string) =>
+    api.get<PrStatus>(`/runs/${runId}/pr-status`).then(r => r.data),
   startImplementation: (runId: string) =>
     api.post<ChunkPlanResponse>(
       `/runs/${runId}/start-implementation`,
