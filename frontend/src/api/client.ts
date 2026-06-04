@@ -290,6 +290,59 @@ export interface ChunkStatus extends ExtraFields {
   test_validation?: TestRunValidation | null
 }
 
+// Read-only operator attention state. It is computed on chunk reads and never
+// persisted; existing clients can ignore it. Display-only: it never gates,
+// triggers, or replaces the real mutating controls. Mirrors the backend
+// OperatorState.model_dump() shape in backend/pipeline/operator_state.py.
+export type OperatorWaitingOn = 'human' | 'system' | 'nobody'
+export type OperatorDecisionType = 'progress' | 'risk_decision' | 'none'
+export type OperatorActionSeverity = 'normal' | 'caution' | 'danger'
+export type OperatorSafetyCheckStatus =
+  | 'passed'
+  | 'failed'
+  | 'weak'
+  | 'not_evaluated'
+  | 'not_applicable'
+
+export interface OperatorAction extends ExtraFields {
+  id: string
+  label: string
+  intent: string
+  severity: OperatorActionSeverity
+  enabled: boolean
+  blocked_reason?: string | null
+}
+
+export interface OperatorSafetyCheck extends ExtraFields {
+  id: string
+  label: string
+  status: OperatorSafetyCheckStatus
+  detail: string
+}
+
+export interface OperatorTrustFact extends ExtraFields {
+  id: string
+  label: string
+  detail: string
+}
+
+export interface OperatorState extends ExtraFields {
+  title: string
+  explanation: string
+  waiting_on: OperatorWaitingOn
+  decision_type: OperatorDecisionType
+  schema_version: number
+  primary_action?: OperatorAction | null
+  neutral_actions: OperatorAction[]
+  secondary_actions: OperatorAction[]
+  blocked_actions: OperatorAction[]
+  safety_checks: OperatorSafetyCheck[]
+  trust_facts: OperatorTrustFact[]
+  out_of_app_instruction?: string | null
+  is_terminal: boolean
+  unknown_state_warning?: string | null
+}
+
 export interface ChunkPlanResponse extends ExtraFields {
   run_id: string
   project_id: string
@@ -298,6 +351,8 @@ export interface ChunkPlanResponse extends ExtraFields {
   current_chunk_number: number
   triage?: TriageResult | null
   chunks: ChunkStatus[]
+  // Additive read-only operator attention state (display-only).
+  operator_state?: OperatorState | null
 }
 
 export interface ChunkedRunRequest {

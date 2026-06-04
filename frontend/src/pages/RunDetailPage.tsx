@@ -21,6 +21,7 @@ import { Separator } from '@/components/ui/separator'
 import RunStatusBadge from '@/components/RunStatusBadge'
 import EventLog from '@/components/EventLog'
 import ChunkPlanPanel from '@/components/ChunkPlanPanel'
+import OperatorAttentionPanel from '@/components/OperatorAttentionPanel'
 import FinalApprovalPanel from '@/components/FinalApprovalPanel'
 import TestValidationAckPanel from '@/components/TestValidationAckPanel'
 import MemoryConflictPanel from '@/components/MemoryConflictPanel'
@@ -843,6 +844,10 @@ export default function RunDetailPage() {
           />
         </CardContent>
       </Card>
+
+      {/* Display-only operator attention summary. Rendered above the existing
+          execution/approval controls; it never replaces or rewires them. */}
+      <OperatorAttentionPanel operatorState={chunkPlan?.operator_state} />
 
       {TERMINAL_RUN_STATUSES.includes(run.status) && (
         <RunMemorySuggestions run={run} />
