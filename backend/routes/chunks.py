@@ -46,6 +46,7 @@ from backend.pipeline.operator_state import (
     OperatorStateContext,
     compute_operator_state,
 )
+from backend.pipeline.chunk_review_read_model import load_chunk_review_read_model
 from backend.pipeline.patch_failures import (
     patch_failure_report_from_completion_summary,
     evaluate_patch_retry_eligibility,
@@ -1765,11 +1766,41 @@ def _augment_plan_with_operator_state(plan: ChunkPlanResponse) -> ChunkPlanRespo
     return plan.model_copy(update={"operator_state": operator_state})
 
 
+def _augment_plan_with_reviews(plan: ChunkPlanResponse) -> ChunkPlanResponse:
+    """
+    Attach the read-only ADVISORY reviewer overlay to each chunk.
+
+    Additive, display-only, and fail-closed: it performs NO LLM call, exposes no
+    actions, and any failure leaves the plan unchanged (review stays None). It is
+    applied LAST — after ack and operator_state — so advisory review data can never
+    influence operator_state eligibility, the acknowledgement gate, chunk approval,
+    or final approval. Staleness (current/stale/missing) is computed on read against
+    the existing diff/test-checkpoint identity.
+    """
+    try:
+        updated_chunks = []
+        changed = False
+        for chunk in plan.chunks:
+            review = load_chunk_review_read_model(plan.run_id, chunk.chunk_number)
+            if review is None:
+                updated_chunks.append(chunk)
+                continue
+            updated_chunks.append(chunk.model_copy(update={"review": review}))
+            changed = True
+        if not changed:
+            return plan
+        return plan.model_copy(update={"chunks": updated_chunks})
+    except Exception:
+        # Advisory overlay must never break the read; return the plan unchanged.
+        return plan
+
+
 @router.get("/runs/{run_id}/chunks", response_model=ChunkPlanResponse)
 def get_chunk_plan_route(run_id: str):
     try:
         plan = _augment_plan_with_ack_read_model(get_chunk_plan_status(run_id))
-        return _augment_plan_with_operator_state(plan)
+        plan = _augment_plan_with_operator_state(plan)
+        return _augment_plan_with_reviews(plan)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:
