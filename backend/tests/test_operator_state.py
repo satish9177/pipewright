@@ -259,6 +259,62 @@ def test_chunk_awaiting_approval_state():
     assert _check(state, "tests").status == "passed"
 
 
+@pytest.mark.parametrize("verdict", ["weak", "none"])
+def test_chunk_approval_outranks_weak_ack_gate(verdict):
+    # A chunk awaiting approval while weak/no-test ack is still missing: the
+    # immediate next action is to review the chunk, NOT acknowledge validation.
+    state = _state(
+        chunk_awaiting_approval=True,
+        test_verdict=verdict,
+        test_ack_state="missing",
+    )
+
+    assert state.title == "Review chunk change"
+    assert state.decision_type == OperatorDecisionType.PROGRESS.value
+    assert state.primary_action.id == "approve_chunk"
+    # Weak/no-test signal is not lost: tests still read weak, ack still failed.
+    assert _check(state, "tests").status == "weak"
+    assert _check(state, "test_acknowledgement").status == "failed"
+    # Final approval stays blocked, citing the pending acknowledgement too.
+    assert "approve_final" in _blocked_ids(state)
+    approve_final = next(
+        action for action in state.blocked_actions if action.id == "approve_final"
+    )
+    assert "acknowledged before final approval" in approve_final.blocked_reason
+
+
+def test_recovered_chunk_approval_outranks_weak_ack_gate():
+    # The recovered/expanded-scope retry awaiting approval behaves identically.
+    state = _state(
+        recovered_scope_retry_awaiting_chunk_approval=True,
+        test_verdict="weak",
+        test_ack_state="missing",
+    )
+
+    assert state.title == "Review recovered scoped change"
+    assert state.primary_action.id == "approve_chunk"
+    assert _check(state, "tests").status == "weak"
+    assert _check(state, "test_acknowledgement").status == "failed"
+    assert "approve_final" in _blocked_ids(state)
+
+
+def test_weak_ack_becomes_main_action_once_chunk_approval_done():
+    # Once no chunk is awaiting approval, a still-missing weak/no-test ack is
+    # the main next action again.
+    state = _state(
+        chunk_awaiting_approval=False,
+        recovered_scope_retry_awaiting_chunk_approval=False,
+        test_verdict="weak",
+        test_ack_state="missing",
+    )
+
+    assert state.title == "Acknowledge weak validation"
+    assert [action.id for action in state.neutral_actions] == [
+        "acknowledge_test_validation"
+    ]
+    assert "approve_final" in _blocked_ids(state)
+
+
 def test_final_approval_blocked_state():
     state = _state(
         final_approval_blocked=True,
