@@ -21,11 +21,21 @@ from backend.checkpoint.checkpoint_store import save_checkpoint
 from backend.db.database import engine
 from backend.main import app
 from backend.models.chunk import ChunkDefinition, TriageResult
+from backend.pipeline.approval_gate import create_final_approval_gate
 from backend.pipeline.chunk_store import (
+    approve_chunk_plan,
     create_chunked_run,
+    save_chunk_completion_summary,
     save_chunk_test_run_verdict,
     update_chunk_status,
 )
+from backend.pipeline.patch_failures import (
+    PatchFailureType,
+    build_patch_failure_report,
+    patch_failure_report_to_completion_summary,
+    record_initial_attempt,
+)
+from backend.pipeline.scope_expansion_store import create_scope_expansion_request
 from backend.pipeline.test_run_validation import classify_test_run
 from backend.projects.project_store import create_project
 
@@ -41,6 +51,7 @@ def tracked_runs():
     with engine.begin() as conn:
         for run_id in run_ids:
             for table in (
+                "scope_expansion_requests",
                 "test_validation_acknowledgements",
                 "checkpoints",
                 "approval_gates",
@@ -134,6 +145,54 @@ def _chunk_validation(run_id, chunk_number):
         if chunk["chunk_number"] == chunk_number:
             return chunk["test_validation"]
     raise AssertionError(f"chunk {chunk_number} not found")
+
+
+def _operator_state(run_id):
+    response = client.get(f"/runs/{run_id}/chunks")
+    assert response.status_code == 200
+    body = response.json()
+    assert "chunks" in body
+    assert "chunk_plan_status" in body
+    assert "operator_state" in body
+    return body["operator_state"]
+
+
+def _set_run_status(run_id, status):
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                UPDATE pipeline_runs
+                SET status = :status,
+                    current_step = :status
+                WHERE id = :run_id
+            """),
+            {"run_id": run_id, "status": status},
+        )
+
+
+def _seed_patch_failure(run_id, *, failure_type=PatchFailureType.PATCH_DOES_NOT_APPLY):
+    report = build_patch_failure_report(
+        failure_type,
+        changed_files_attempted=["a.py"],
+        changed_files_actual=[],
+        allowed_files=["a.py"],
+        working_tree_clean=True,
+        chunk_number=1,
+    )
+    report = record_initial_attempt(
+        report,
+        failure_report_id="failure-report-1",
+        attempt_id="attempt-1",
+        started_at="2026-01-01T00:00:00+00:00",
+    )
+    save_chunk_completion_summary(
+        run_id,
+        1,
+        patch_failure_report_to_completion_summary(report),
+    )
+    update_chunk_status(run_id, 1, "failed")
+    _set_run_status(run_id, "failed")
+    return report
 
 
 # ==========================================================================
@@ -257,3 +316,207 @@ def test_multi_chunk_mixed_states(tmp_path, tracked_runs):
     assert v2["acknowledgement_status"] == "current"
     assert v3["requires_acknowledgement"] is True
     assert v3["acknowledgement_status"] == "missing"
+
+
+# ==========================================================================
+# operator_state additive read model
+# ==========================================================================
+
+
+def test_operator_state_present_and_previous_fields_remain(tmp_path, tracked_runs):
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+
+    response = client.get(f"/runs/{run_id}/chunks")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run_id"] == run_id
+    assert body["chunk_plan_status"] == "awaiting_approval"
+    assert isinstance(body["chunks"], list)
+    assert body["operator_state"]["title"] == "Review the chunk plan"
+
+
+def test_operator_state_chunk_plan_awaiting_approval(tmp_path, tracked_runs):
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+
+    state = _operator_state(run_id)
+
+    assert state["decision_type"] == "progress"
+    assert state["primary_action"]["id"] == "approve_plan"
+
+
+def test_operator_state_plan_approved_not_executed(tmp_path, tracked_runs):
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+    approve_chunk_plan(run_id)
+
+    state = _operator_state(run_id)
+
+    assert state["title"] == "Execute approved chunks"
+    assert state["primary_action"]["id"] == "execute_chunks"
+
+
+def test_operator_state_running_has_no_action(tmp_path, tracked_runs):
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+    _set_run_status(run_id, "running_chunks")
+
+    state = _operator_state(run_id)
+
+    assert state["title"] == "Pipewright is running"
+    assert state["waiting_on"] == "system"
+    assert state["primary_action"] is None
+
+
+def test_operator_state_patch_retry_available(tmp_path, tracked_runs):
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+    approve_chunk_plan(run_id)
+    _seed_patch_failure(run_id)
+
+    state = _operator_state(run_id)
+
+    assert state["title"] == "Patch retry is available"
+    assert state["primary_action"]["id"] == "retry_patch"
+
+
+def test_operator_state_pending_scope_expansion_is_risk_decision(
+    tmp_path,
+    tracked_runs,
+):
+    run_id, project = _make_run(tmp_path, tracked_runs)
+    approve_chunk_plan(run_id)
+    _seed_patch_failure(run_id, failure_type=PatchFailureType.SCOPE_VIOLATION)
+    create_scope_expansion_request(
+        run_id,
+        project["id"],
+        1,
+        "failure-report-1",
+        requested_files=["src/extra.py"],
+    )
+
+    state = _operator_state(run_id)
+
+    assert state["title"] == "Scope expansion needs review"
+    assert state["decision_type"] == "risk_decision"
+    assert state["primary_action"] is None
+    assert {action["id"] for action in state["neutral_actions"]} == {
+        "approve_scope_expansion",
+        "reject_scope_expansion",
+    }
+    blocked = {action["id"] for action in state["blocked_actions"]}
+    assert "retry_patch" in blocked
+
+
+def test_operator_state_weak_ack_missing_blocks_final(tmp_path, tracked_runs):
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+    _seed_verdict(run_id, 1, "weak")
+    _seed_diff_hash(run_id, 1, "HASH_A")
+    create_final_approval_gate(run_id, "final summary")
+
+    state = _operator_state(run_id)
+
+    assert state["title"] == "Acknowledge weak validation"
+    assert state["decision_type"] == "risk_decision"
+    assert state["primary_action"] is None
+    assert state["neutral_actions"][0]["id"] == "acknowledge_test_validation"
+
+
+def test_operator_state_current_ack_allows_final(tmp_path, tracked_runs):
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+    _seed_verdict(run_id, 1, "weak")
+    _seed_diff_hash(run_id, 1, "HASH_A")
+    assert _ack(run_id, 1).status_code == 200
+    create_final_approval_gate(run_id, "final summary")
+
+    state = _operator_state(run_id)
+
+    assert state["title"] == "Review final result"
+    assert state["primary_action"]["id"] == "approve_final"
+
+
+def test_operator_state_stale_ack_blocks_final(tmp_path, tracked_runs):
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+    _seed_verdict(run_id, 1, "weak")
+    _seed_diff_hash(run_id, 1, "HASH_A")
+    assert _ack(run_id, 1).status_code == 200
+    _seed_diff_hash(run_id, 1, "HASH_B")
+    create_final_approval_gate(run_id, "final summary")
+
+    state = _operator_state(run_id)
+
+    assert state["title"] == "Test acknowledgement is stale"
+    assert state["decision_type"] == "risk_decision"
+    assert state["primary_action"] is None
+
+
+def test_operator_state_strong_tests_do_not_require_ack(tmp_path, tracked_runs):
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+    _seed_verdict(run_id, 1, "strong")
+    _seed_diff_hash(run_id, 1, "HASH_A")
+    create_final_approval_gate(run_id, "final summary")
+
+    state = _operator_state(run_id)
+
+    assert state["title"] == "Review final result"
+    assert state["primary_action"]["id"] == "approve_final"
+
+
+def test_operator_state_chunk_awaiting_approval(tmp_path, tracked_runs):
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+    update_chunk_status(run_id, 1, "awaiting_chunk_approval")
+    _set_run_status(run_id, "awaiting_chunk_approval")
+
+    state = _operator_state(run_id)
+
+    assert state["title"] == "Review chunk change"
+    assert state["primary_action"]["id"] == "approve_chunk"
+
+
+def test_operator_state_memory_conflict(tmp_path, tracked_runs):
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+    _set_run_status(run_id, "awaiting_memory_conflict_approval")
+
+    state = _operator_state(run_id)
+
+    assert state["title"] == "Resolve memory conflict"
+    assert state["decision_type"] == "risk_decision"
+    assert {action["id"] for action in state["neutral_actions"]} == {
+        "approve_memory_conflict",
+        "reject_memory_conflict",
+    }
+
+
+def test_operator_state_pr_created_or_reused(tmp_path, tracked_runs):
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                UPDATE pipeline_runs
+                SET status = 'complete',
+                    pr_url = 'https://github.com/acme/demo/pull/7',
+                    pr_number = 7
+                WHERE id = :run_id
+            """),
+            {"run_id": run_id},
+        )
+
+    state = _operator_state(run_id)
+
+    assert state["title"] == "Pull request is ready"
+    assert state["primary_action"] is None
+
+
+def test_operator_state_unknown_when_adapter_cannot_map_run(
+    tmp_path,
+    tracked_runs,
+    monkeypatch,
+):
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+    monkeypatch.setattr(
+        "backend.routes.chunks._load_operator_state_run_row",
+        lambda _run_id: None,
+    )
+
+    state = _operator_state(run_id)
+
+    assert state["title"] == "Next safe action is unknown"
+    assert state["primary_action"] is None
+    assert state["unknown_state_warning"]
