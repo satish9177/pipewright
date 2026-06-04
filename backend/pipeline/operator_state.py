@@ -165,6 +165,15 @@ class OperatorStateContext:
     pr_mode: str | None = None
     pr_decision: Any | None = None
 
+    # A prior push/PR attempt failed for this run (#31B). When set, the panel
+    # must say so honestly instead of reusing the "Create pull request" ready
+    # state. The retry path is the existing /push-pr route, so retry stays
+    # available. failure_* carry the classified reason/next action for display.
+    push_failed: bool = False
+    push_failure_summary: str | None = None
+    push_failure_next_action: str | None = None
+    push_failure_retryable: bool = True
+
     local_only_manual_push: bool = False
     unknown: bool = False
 
@@ -213,6 +222,12 @@ def compute_operator_state(context: OperatorStateContext) -> OperatorState:
 
     if context.pr_created:
         return _pr_created_state(context)
+
+    # A recorded push/PR failure must read as a failure, never as "ready to
+    # create a PR" (#31B). This outranks the ready/local-only branches below
+    # because those would otherwise mask push_failed as an offer to push.
+    if context.push_failed:
+        return _push_failed_state(context)
 
     if context.local_only_manual_push or _pr_mode(context) == "local_only":
         if context.pr_ready or _decision_eligible(context.pr_decision):
@@ -778,6 +793,58 @@ def _pr_ready_state(context: OperatorStateContext) -> OperatorState:
             safety_check("final_approval", "Final approval", OperatorSafetyCheckStatus.PASSED, "Final approval is complete."),
             safety_check("pr", "PR", OperatorSafetyCheckStatus.NOT_EVALUATED, "PR creation has not completed yet."),
         ],
+    )
+
+
+def _push_failed_state(context: OperatorStateContext) -> OperatorState:
+    summary = context.push_failure_summary or (
+        "Pipewright could not push the branch or create the pull request."
+    )
+    next_action = context.push_failure_next_action or (
+        "Inspect the error detail, then retry the push."
+    )
+    # Final approval already passed to reach a push attempt; surface that as a
+    # settled fact so the failure is clearly about the PR step, not approval.
+    safety_checks = [
+        safety_check(
+            "final_approval",
+            "Final approval",
+            OperatorSafetyCheckStatus.PASSED,
+            "Final approval is complete.",
+        ),
+        safety_check("pr", "PR", OperatorSafetyCheckStatus.FAILED, summary),
+    ]
+    if context.push_failure_retryable:
+        return _state(
+            title="Pull request could not be created",
+            explanation=(
+                f"{summary} Nothing was merged. {next_action} The branch may "
+                "already be pushed; retrying reuses it and any existing PR."
+            ),
+            waiting_on=OperatorWaitingOn.HUMAN,
+            decision_type=OperatorDecisionType.PROGRESS,
+            primary_action=_action(
+                "create_pr",
+                "Retry push and PR",
+                "Retry pushing the approved branch and creating or reusing the pull request.",
+                severity=OperatorActionSeverity.CAUTION,
+            ),
+            safety_checks=safety_checks,
+            out_of_app_instruction=next_action,
+        )
+    return _state(
+        title="Pull request could not be created",
+        explanation=(
+            f"{summary} Nothing was merged. {next_action} This failure cannot be "
+            "retried from the current state."
+        ),
+        waiting_on=OperatorWaitingOn.HUMAN,
+        decision_type=OperatorDecisionType.NONE,
+        blocked_actions=[
+            _blocked_action("create_pr", "Retry push and PR", next_action),
+        ],
+        safety_checks=safety_checks,
+        out_of_app_instruction=next_action,
     )
 
 
