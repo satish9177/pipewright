@@ -272,6 +272,52 @@ export interface TestRunValidation extends ExtraFields {
   acknowledgement_status?: TestValidationAckStatus
 }
 
+// Read-only ADVISORY reviewer overlay (Adversarial Reviewer v1). Display-only
+// evidence surfaced on chunk reads; it grants no authority and exposes no actions.
+// Mirrors backend ChunkReviewReadModel in backend/models/chunk.py.
+export type ChunkReviewStatus = 'completed' | 'failed' | 'unavailable'
+export type ChunkReviewStaleness = 'current' | 'stale' | 'missing'
+export type ChunkReviewVerdict =
+  | 'approve_with_notes'
+  | 'needs_human_attention'
+  | 'risky'
+export type ReviewFindingCategory =
+  | 'correctness'
+  | 'test_gap'
+  | 'scope'
+  | 'security'
+  | 'maintainability'
+  | 'requirement_mismatch'
+  | 'uncertainty'
+export type ReviewFindingSeverity = 'info' | 'warning' | 'high'
+
+export interface ChunkReviewFinding extends ExtraFields {
+  category: ReviewFindingCategory | string
+  severity: ReviewFindingSeverity | string
+  title: string
+  explanation: string
+  affected_files: string[]
+  suggested_human_check: string
+  confidence?: number | null
+}
+
+export interface ChunkReview extends ExtraFields {
+  review_status: ChunkReviewStatus
+  staleness: ChunkReviewStaleness
+  verdict?: ChunkReviewVerdict | null
+  summary?: string | null
+  findings: ChunkReviewFinding[]
+  test_gap_summary?: string | null
+  scope_summary?: string | null
+  security_or_safety_summary?: string | null
+  recommended_human_action?: string | null
+  reviewed_test_checkpoint_hash?: string | null
+  checkpoint_id?: string | null
+  provider?: string | null
+  model?: string | null
+  created_at?: string | null
+}
+
 export interface ChunkStatus extends ExtraFields {
   run_id: string
   project_id: string
@@ -288,6 +334,8 @@ export interface ChunkStatus extends ExtraFields {
   pending_scope_expansion?: PendingScopeExpansion | null
   // Present only when a runtime test verdict was recorded for this chunk (#28E).
   test_validation?: TestRunValidation | null
+  // Present only when an advisory AI review exists for this chunk. Display-only.
+  review?: ChunkReview | null
 }
 
 // Read-only operator attention state. It is computed on chunk reads and never

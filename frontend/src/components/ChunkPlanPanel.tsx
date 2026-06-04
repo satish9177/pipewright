@@ -19,6 +19,7 @@ import { getStatusDisplay } from '@/utils/statusDisplay'
 import PatchFailureBanner from '@/components/PatchFailureBanner'
 import ScopeExpansionBanner from '@/components/ScopeExpansionBanner'
 import RuntimeTestValidationBanner from '@/components/RuntimeTestValidationBanner'
+import AdvisoryReviewPanel from '@/components/AdvisoryReviewPanel'
 import AttemptHistory from '@/components/AttemptHistory'
 import {
   parsePatchFailureSummary,
@@ -419,6 +420,12 @@ export default function ChunkPlanPanel({
                   <RuntimeTestValidationBanner
                     validation={chunk.test_validation}
                   />
+
+                  {/* Advisory AI Review (display-only). Renders only when a
+                      review exists; never gates approval, exposes no actions,
+                      and is shown below the test-validation banner / above the
+                      chunk's approval controls. */}
+                  <AdvisoryReviewPanel review={chunk.review} />
 
                   {pendingScope && (
                     // #27F: primary recovery action for a pending scope
