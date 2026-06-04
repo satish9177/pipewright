@@ -8,7 +8,7 @@ apply patches, run tests, or create approvals.
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ChunkDefinition(BaseModel):
@@ -144,6 +144,56 @@ class TestRunValidation(BaseModel):
     ] = "not_required"
 
 
+class ChunkReviewFindingReadModel(BaseModel):
+    """One advisory finding, flattened for display. Display hints only — it carries
+    no action id and grants no authority."""
+
+    category: str
+    severity: str
+    title: str
+    explanation: str
+    affected_files: list[str] = Field(default_factory=list)
+    suggested_human_check: str = ""
+    confidence: float | None = None
+
+
+class ChunkReviewReadModel(BaseModel):
+    """
+    Read-only ADVISORY reviewer overlay for a chunk (Adversarial Reviewer v1;
+    docs/design/adversarial-reviewer-stage.md).
+
+    This is display-only evidence produced after a chunk's tests passed. It exposes
+    NO action ids and NO approve/reject controls, and it must never affect
+    operator_state eligibility, chunk approval, or final approval. ``staleness`` is
+    computed on read by comparing the review's bound diff/test-checkpoint identity
+    to the chunk's current identity (the existing #28F hash concept) — never a new
+    hash scheme, never an LLM call. A ``None`` ``review`` on a chunk means "no review
+    exists" (i.e. missing); when a review row exists, ``staleness`` is current/stale
+    and never falsely current for an indeterminate identity.
+    """
+
+    # ``model``/``provider`` are plain metadata names; silence pydantic's
+    # protected-namespace warning for the literal field ``model``.
+    model_config = ConfigDict(protected_namespaces=())
+
+    review_status: Literal["completed", "failed", "unavailable"]
+    staleness: Literal["current", "stale", "missing"]
+    verdict: Literal[
+        "approve_with_notes", "needs_human_attention", "risky"
+    ] | None = None
+    summary: str | None = None
+    findings: list[ChunkReviewFindingReadModel] = Field(default_factory=list)
+    test_gap_summary: str | None = None
+    scope_summary: str | None = None
+    security_or_safety_summary: str | None = None
+    recommended_human_action: str | None = None
+    reviewed_test_checkpoint_hash: str | None = None
+    checkpoint_id: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    created_at: str | None = None
+
+
 class ChunkStatus(BaseModel):
     run_id: str
     project_id: str
@@ -165,6 +215,13 @@ class ChunkStatus(BaseModel):
     # persisted chunk test_run_* columns (#28D). None when no verdict was
     # recorded. Display-only: never gates approval, commit, or PR.
     test_validation: TestRunValidation | None = None
+    # Read-only ADVISORY reviewer overlay (Adversarial Reviewer v1). Populated on
+    # the GET chunk read route from the chunk_reviews store; None when no review
+    # exists (missing). Additive and display-only: it exposes no actions, performs
+    # no LLM call on read, and never affects operator_state, chunk approval, or
+    # final approval. current/stale is computed on read against the existing
+    # diff/test-checkpoint identity.
+    review: ChunkReviewReadModel | None = None
 
 
 class ChunkPlanResponse(BaseModel):
