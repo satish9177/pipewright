@@ -147,9 +147,9 @@ export function parseRecoveredPatchReviewSummary(
 }
 
 const SUGGESTED_ACTION_LABELS: Record<string, string> = {
-  retry: 'Retry',
-  retry_with_instruction: 'Retry with instruction',
-  reindex: 'Re-index and retry',
+  retry: 'Retry code change',
+  retry_with_instruction: 'Retry with guidance',
+  reindex: 'Re-index repo',
   reject_chunk: 'Reject chunk',
   mark_manual_intervention: 'Manual intervention needed',
   view_details: 'View details',
@@ -160,4 +160,124 @@ export function suggestedActionLabel(action: string): string {
   return (
     SUGGESTED_ACTION_LABELS[action] ?? action.replace(/_/g, ' ')
   )
+}
+
+// Plain-language, user-facing explanation for a patch failure, keyed by the
+// backend PatchFailureType (backend/pipeline/patch_failures.py). This is the
+// PRIMARY copy a normal user reads; the technical `failure_type` and `message`
+// stay available as secondary diagnostics. Safety: nothing here implies the
+// retry will succeed, that code is correct, that anything was committed, or that
+// tests ran when they did not.
+//
+// `tests` tracks what we can honestly say about test execution:
+//   'not_run' — the change never applied, so tests could not have run.
+//   'failed'  — the change applied and tests ran, but failed (rolled back).
+//   'unknown' — we cannot tell; stay silent rather than guess.
+interface PatchFailurePlainEntry {
+  headline: string
+  detail: string
+  tests: 'not_run' | 'failed' | 'unknown'
+}
+
+const PATCH_FAILURE_PLAIN: Record<string, PatchFailurePlainEntry> = {
+  PATCH_DOES_NOT_APPLY: {
+    headline: 'Code change could not be applied',
+    detail:
+      'Pipewright generated a change, but the file in your repo did not match what the AI expected, so the change was not applied.',
+    tests: 'not_run',
+  },
+  PATCH_MALFORMED: {
+    headline: 'Code change could not be applied',
+    detail:
+      'Pipewright generated a change in a format it could not apply cleanly, so nothing was changed.',
+    tests: 'not_run',
+  },
+  PATCH_PARTIAL_APPLY_BLOCKED: {
+    headline: 'Code change could not be applied',
+    detail:
+      'Only part of the generated change could be applied, so Pipewright blocked it and applied nothing.',
+    tests: 'not_run',
+  },
+  TARGET_MISSING: {
+    headline: 'Code change could not be applied',
+    detail:
+      'A file the change expected was not found in your repo, so the change was not applied.',
+    tests: 'not_run',
+  },
+  STALE_INDEX_OR_FILE_CHANGED: {
+    headline: 'Code change could not be applied',
+    detail:
+      'A file changed since Pipewright last indexed the repo, so the change no longer matched and was not applied.',
+    tests: 'not_run',
+  },
+  SCOPE_VIOLATION: {
+    headline: 'Change touched files outside the approved scope',
+    detail:
+      'The attempt tried to modify files outside the approved chunk scope, so the change was not applied.',
+    tests: 'not_run',
+  },
+  FORBIDDEN_FILE: {
+    headline: 'Change touched a protected file',
+    detail:
+      'The attempt tried to modify a protected file, so the change was not applied.',
+    tests: 'not_run',
+  },
+  NO_CHANGES: {
+    headline: 'No code change was produced',
+    detail:
+      'Pipewright did not produce any change to apply for this chunk.',
+    tests: 'not_run',
+  },
+  DIRTY_WORKTREE: {
+    headline: 'Code change could not be applied',
+    detail:
+      'The repository working tree was not clean, so Pipewright did not apply the change.',
+    tests: 'not_run',
+  },
+  TEST_FAILURE_AFTER_APPLY: {
+    headline: 'Tests failed after the change was applied',
+    detail:
+      'Pipewright applied the change and ran tests, but the tests failed, so the change was rolled back.',
+    tests: 'failed',
+  },
+  UNKNOWN_PATCH_FAILURE: {
+    headline: 'Code change could not be applied',
+    detail:
+      'Pipewright could not apply the change. See the diagnostic details below.',
+    tests: 'unknown',
+  },
+}
+
+export interface PatchFailurePlainCopy {
+  headline: string
+  detail: string
+  // True for every patch failure: commits only happen after you review and
+  // approve a chunk, and a failed patch never reaches that point.
+  committedNote: string
+  // Honest, non-guessing note about tests; null when we cannot tell.
+  testsNote: string | null
+}
+
+/**
+ * Plain-language copy for a patch failure. Falls back to the safe "unknown"
+ * entry for unrecognised failure types so new backend types never render raw.
+ */
+export function patchFailurePlainCopy(
+  failureType: string | null | undefined,
+): PatchFailurePlainCopy {
+  const entry =
+    (failureType && PATCH_FAILURE_PLAIN[failureType]) ||
+    PATCH_FAILURE_PLAIN.UNKNOWN_PATCH_FAILURE
+  const testsNote =
+    entry.tests === 'not_run'
+      ? 'Tests did not run because the code change was not applied.'
+      : entry.tests === 'failed'
+        ? 'Tests ran and failed, so the change was not kept.'
+        : null
+  return {
+    headline: entry.headline,
+    detail: entry.detail,
+    committedNote: 'Nothing was committed.',
+    testsNote,
+  }
 }
