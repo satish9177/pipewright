@@ -27,6 +27,7 @@ import FinalApprovalPanel from '@/components/FinalApprovalPanel'
 import TestValidationAckPanel from '@/components/TestValidationAckPanel'
 import MemoryConflictPanel from '@/components/MemoryConflictPanel'
 import PushPrPanel from '@/components/PushPrPanel'
+import PrStatusPanel from '@/components/PrStatusPanel'
 import TestCommandQualityWarning from '@/components/TestCommandQualityWarning'
 import ReportView from '@/components/ReportView'
 import PlanView from '@/components/PlanView'
@@ -809,6 +810,10 @@ export default function RunDetailPage() {
     run.status === 'awaiting_memory_conflict_approval'
   const showFinalApprovalPanel = run.status === 'awaiting_final_approval'
   const showPushPrPanel = shouldShowPushPrPanel(run.status, hasPrData)
+  // #31F: the display-only PR status + checks panel shares visibility with the
+  // push section. It never gates the push/approval controls; it only surfaces
+  // the typed PR state and, on explicit refresh, GitHub checks.
+  const showPrStatusPanel = showPushPrPanel
   // #28G: pre-disable Approve Final when any chunk's weak/none verdict is not
   // acknowledged against the current diff. The backend #28F gate stays the
   // source of truth; this only avoids sending the user into an avoidable 409.
@@ -1101,6 +1106,7 @@ export default function RunDetailPage() {
               onPush={() => pushPrMutation.mutate()}
             />
           )}
+          {showPrStatusPanel && <PrStatusPanel run={run} project={project} />}
         </section>
       )}
 
