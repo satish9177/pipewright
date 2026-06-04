@@ -3,6 +3,7 @@ import type {
   ChunkDefinition,
   ChunkPlanResponse,
   ChunkStatus,
+  TestRunValidation,
 } from '@/api/client'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -69,15 +70,22 @@ function getChunkDefinition(
 }
 
 // Display-only marker for a recovered patch awaiting review (#26E3). The patch
-// was regenerated, applied, and passed tests, but is NOT committed — the
-// existing awaiting_chunk_approval UI below still owns approve/commit. This adds
-// no approval controls; it is context only.
+// was regenerated and applied, but is NOT committed — the existing
+// awaiting_chunk_approval UI below still owns approve/commit. This adds no
+// approval controls; it is context only. It must not imply code correctness, and
+// must not claim meaningful tests ran when runtime validation was weak/absent.
 function RecoveredReviewMarker({
   summary,
+  validation,
 }: {
   summary: RecoveredPatchReviewSummary
+  validation?: TestRunValidation | null
 }) {
-  const weakTest = summary.weak_test_warning === true
+  // Trust the recorded runtime verdict over the summary's weak flag: only a
+  // "strong" verdict may claim tests passed. Weak/none/unknown or a missing
+  // verdict means meaningful validation was not confirmed.
+  const strongValidation = validation?.verdict === 'strong'
+  const weakTest = summary.weak_test_warning === true || !strongValidation
 
   return (
     <div className="grid gap-3 rounded border border-green-500 bg-background p-4">
@@ -96,14 +104,15 @@ function RecoveredReviewMarker({
       </div>
 
       <p className="text-sm text-muted-foreground">
-        Retry applied and tests passed. Review the recovered patch before
-        committing.
+        {strongValidation
+          ? 'Retry applied and tests passed. Review the recovered patch before committing.'
+          : 'Retry applied, but meaningful test validation was not confirmed. Review the recovered patch carefully before committing.'}
       </p>
 
       {weakTest && (
         <p className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-          This recovered change passed only a weak test command. Review carefully
-          before approving.
+          Runtime validation for this recovered change was weak or unconfirmed.
+          Review carefully before approving.
         </p>
       )}
 
@@ -458,7 +467,10 @@ export default function ChunkPlanPanel({
                   ) : recoveredReview ? (
                     // Recovered patch awaiting review (#26E3): show a marker
                     // instead of dumping the raw recovered_patch_review JSON.
-                    <RecoveredReviewMarker summary={recoveredReview} />
+                    <RecoveredReviewMarker
+                      summary={recoveredReview}
+                      validation={chunk.test_validation}
+                    />
                   ) : (
                     <>
                       {chunk.completion_summary && (

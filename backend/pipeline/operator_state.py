@@ -691,10 +691,12 @@ def _chunk_approval_state(context: OperatorStateContext) -> OperatorState:
     if ack_pending:
         safety_checks.append(_ack_check(ack_state))
     return _state(
-        title="Review recovered scoped change" if recovered else "Review chunk change",
+        # The recovered flag fires for any recovered patch review (normal manual
+        # retry OR scope-expansion approve-and-retry), so the copy stays neutral
+        # rather than implying scope expansion. It must not imply correctness.
+        title="Review recovered code change" if recovered else "Review chunk change",
         explanation=(
-            "The expanded-scope retry produced a change. Review the actual code "
-            "before it is committed."
+            "Retry produced a change. Review the actual code before it is committed."
             if recovered
             else "The chunk produced a change and is waiting for human review before commit."
         ),

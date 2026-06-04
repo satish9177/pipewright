@@ -202,7 +202,11 @@ def test_wrong_branch_during_scope_approval_fails_closed():
 def test_scope_expansion_success_pauses_at_chunk_approval():
     state = _state(recovered_scope_retry_awaiting_chunk_approval=True)
 
-    assert state.title == "Review recovered scoped change"
+    # Neutral recovery copy: the flag fires for normal retry recovery too, so it
+    # must not claim "scoped"/"expanded-scope" or imply code correctness.
+    assert state.title == "Review recovered code change"
+    assert "scoped" not in state.title.lower()
+    assert "expanded-scope" not in state.explanation.lower()
     assert state.primary_action.id == "approve_chunk"
     assert "approve_final" in _blocked_ids(state)
 
@@ -291,7 +295,8 @@ def test_recovered_chunk_approval_outranks_weak_ack_gate():
         test_ack_state="missing",
     )
 
-    assert state.title == "Review recovered scoped change"
+    assert state.title == "Review recovered code change"
+    assert "scoped" not in state.title.lower()
     assert state.primary_action.id == "approve_chunk"
     assert _check(state, "tests").status == "weak"
     assert _check(state, "test_acknowledgement").status == "failed"
