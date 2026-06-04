@@ -28,6 +28,7 @@ weaken any existing gate.
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Sequence
 
 from sqlalchemy import text
 
@@ -67,6 +68,55 @@ class ChunkAckRequirement:
     verdict: str
     state: str  # ACK_MISSING or ACK_STALE
     current_diff_hash: str | None
+
+
+FINAL_APPROVAL_ACK_ELIGIBLE = "test_validation_acknowledgement_satisfied"
+FINAL_APPROVAL_ACK_REQUIRED = "test_validation_acknowledgement_required"
+
+
+@dataclass(frozen=True)
+class FinalApprovalAckEligibilityDecision:
+    """
+    Read-model-friendly final-approval acknowledgement decision.
+
+    Pure: callers supply the already-computed blocking chunks. This helper never
+    reads storage, mutates state, commits, pushes, or decides the final approval
+    gate. It only packages the same #28F precondition the route already enforces
+    so future operator_state can reuse the route guard result shape.
+    """
+
+    eligible: bool
+    reason: str | None
+    status_code: int | None
+    blocked_requirements: tuple[ChunkAckRequirement, ...] = ()
+
+
+def evaluate_final_approval_ack_eligibility(
+    blocking_requirements: Sequence[ChunkAckRequirement],
+) -> FinalApprovalAckEligibilityDecision:
+    """
+    Decide whether #28F's weak/no-test acknowledgement gate is satisfied.
+
+    The expensive/current-state work remains in chunks_requiring_acknowledgement;
+    this pure helper converts that route guard input into a reusable decision.
+    Empty blocking list means final approval is unblocked by test-validation
+    acknowledgement. Non-empty means final approval must return 409 before any
+    final-approved mutation.
+    """
+    blocked = tuple(blocking_requirements)
+    if blocked:
+        return FinalApprovalAckEligibilityDecision(
+            eligible=False,
+            reason=FINAL_APPROVAL_ACK_REQUIRED,
+            status_code=409,
+            blocked_requirements=blocked,
+        )
+    return FinalApprovalAckEligibilityDecision(
+        eligible=True,
+        reason=FINAL_APPROVAL_ACK_ELIGIBLE,
+        status_code=None,
+        blocked_requirements=(),
+    )
 
 
 def _now_iso() -> str:

@@ -251,6 +251,48 @@ def patch_github(monkeypatch, repo):
     )
 
 
+def test_push_pr_eligibility_allows_remote_modes_after_final_approval():
+    decision = pr_orchestrator.evaluate_push_pr_eligibility(
+        run_status="final_approved",
+        pr_mode="github_cli",
+        has_pr_url=False,
+    )
+    assert decision.eligible is True
+    assert decision.reason == pr_orchestrator.PUSH_PR_ELIGIBLE
+    assert decision.pr_mode == "github_cli"
+
+
+def test_push_pr_eligibility_blocks_remote_modes_before_final_approval():
+    decision = pr_orchestrator.evaluate_push_pr_eligibility(
+        run_status="running",
+        pr_mode="github_cli",
+        has_pr_url=False,
+    )
+    assert decision.eligible is False
+    assert decision.reason == pr_orchestrator.PUSH_PR_INELIGIBLE_STATUS
+    assert decision.status_code == 409
+
+
+def test_push_pr_eligibility_allows_local_only_completed_idempotency():
+    decision = pr_orchestrator.evaluate_push_pr_eligibility(
+        run_status="complete",
+        pr_mode="local_only",
+        has_pr_url=False,
+    )
+    assert decision.eligible is True
+    assert decision.reason == pr_orchestrator.PUSH_PR_LOCAL_ONLY_READY
+
+
+def test_push_pr_eligibility_existing_pr_is_idempotently_eligible():
+    decision = pr_orchestrator.evaluate_push_pr_eligibility(
+        run_status="final_rejected",
+        pr_mode="github_cli",
+        has_pr_url=True,
+    )
+    assert decision.eligible is True
+    assert decision.reason == pr_orchestrator.PUSH_PR_EXISTING_PR
+
+
 def test_push_pr_rejects_run_not_final_approved_or_push_failed(tmp_repo, tracked_runs):
     run_id, _project = create_final_approved_run(tmp_repo, tracked_runs, status="running")
 

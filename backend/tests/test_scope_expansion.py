@@ -23,11 +23,16 @@ from backend.pipeline.scope_expansion import (
     SCOPE_EXPANSION_INELIGIBLE_NO_REQUESTED_FILES,
     SCOPE_EXPANSION_INELIGIBLE_NOT_SCOPE_VIOLATION,
     SCOPE_EXPANSION_INELIGIBLE_STALE_FAILURE_REPORT_ID,
+    SCOPE_EXPANSION_APPROVE_INELIGIBLE_CHUNK_NOT_FAILED,
+    SCOPE_EXPANSION_APPROVE_INELIGIBLE_DIRTY_WORKTREE,
+    SCOPE_EXPANSION_APPROVE_INELIGIBLE_REQUEST_NOT_ACTIONABLE,
+    SCOPE_EXPANSION_APPROVE_INELIGIBLE_STALE_REPORT,
     ScopeExpansionStatus,
     ScopeExpansionValidationError,
     can_approve,
     can_redrive_retry,
     compute_effective_files_expected,
+    evaluate_scope_expansion_approve_retry_eligibility,
     evaluate_scope_expansion_eligibility,
     filter_requestable_files,
     is_in_force,
@@ -160,6 +165,90 @@ def test_matching_failure_report_id_is_eligible():
         )
     )
     assert decision.eligible is True
+
+
+def _approve_retry_kwargs(**overrides):
+    base = dict(
+        chunk_plan_status="approved",
+        request_status=ScopeExpansionStatus.PENDING,
+        chunk_status="failed",
+        has_patch_failure_report=True,
+        report_failure_report_id="frid-1",
+        request_failure_report_id="frid-1",
+        working_tree_clean=True,
+        failure_type=PatchFailureType.SCOPE_VIOLATION,
+        manual_intervention_needed=False,
+        amendments_used=0,
+        requested_extra_files=["src/helper.py"],
+    )
+    base.update(overrides)
+    return base
+
+
+def test_approve_retry_pending_request_is_eligible():
+    decision = evaluate_scope_expansion_approve_retry_eligibility(
+        **_approve_retry_kwargs()
+    )
+    assert decision.eligible is True
+    assert decision.is_pending is True
+    assert decision.is_redrive is False
+
+
+def test_approve_retry_approved_request_is_redrivable_without_cap_recheck():
+    decision = evaluate_scope_expansion_approve_retry_eligibility(
+        **_approve_retry_kwargs(
+            request_status=ScopeExpansionStatus.APPROVED,
+            amendments_used=MAX_SCOPE_AMENDMENTS,
+            requested_extra_files=[],
+        )
+    )
+    assert decision.eligible is True
+    assert decision.is_pending is False
+    assert decision.is_redrive is True
+
+
+@pytest.mark.parametrize(
+    ("request_status", "reason"),
+    [
+        (ScopeExpansionStatus.APPLIED, SCOPE_EXPANSION_APPROVE_INELIGIBLE_REQUEST_NOT_ACTIONABLE),
+        (ScopeExpansionStatus.REJECTED, SCOPE_EXPANSION_APPROVE_INELIGIBLE_REQUEST_NOT_ACTIONABLE),
+        (ScopeExpansionStatus.SUPERSEDED, SCOPE_EXPANSION_APPROVE_INELIGIBLE_REQUEST_NOT_ACTIONABLE),
+    ],
+)
+def test_approve_retry_terminal_request_statuses_are_ineligible(
+    request_status,
+    reason,
+):
+    decision = evaluate_scope_expansion_approve_retry_eligibility(
+        **_approve_retry_kwargs(request_status=request_status)
+    )
+    assert decision.eligible is False
+    assert decision.reason == reason
+    assert decision.status_code == 409
+
+
+def test_approve_retry_rejects_non_failed_chunk():
+    decision = evaluate_scope_expansion_approve_retry_eligibility(
+        **_approve_retry_kwargs(chunk_status="awaiting_chunk_approval")
+    )
+    assert decision.eligible is False
+    assert decision.reason == SCOPE_EXPANSION_APPROVE_INELIGIBLE_CHUNK_NOT_FAILED
+
+
+def test_approve_retry_rejects_stale_failure_report():
+    decision = evaluate_scope_expansion_approve_retry_eligibility(
+        **_approve_retry_kwargs(request_failure_report_id="frid-old")
+    )
+    assert decision.eligible is False
+    assert decision.reason == SCOPE_EXPANSION_APPROVE_INELIGIBLE_STALE_REPORT
+
+
+def test_approve_retry_rejects_dirty_worktree():
+    decision = evaluate_scope_expansion_approve_retry_eligibility(
+        **_approve_retry_kwargs(working_tree_clean=False)
+    )
+    assert decision.eligible is False
+    assert decision.reason == SCOPE_EXPANSION_APPROVE_INELIGIBLE_DIRTY_WORKTREE
 
 
 # ---------------------------------------------------------------------------

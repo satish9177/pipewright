@@ -93,6 +93,17 @@ SCOPE_EXPANSION_INELIGIBLE_STALE_FAILURE_REPORT_ID = "stale_failure_report_id"
 SCOPE_EXPANSION_INELIGIBLE_AMENDMENTS_EXHAUSTED = "scope_amendments_exhausted"
 SCOPE_EXPANSION_INELIGIBLE_NO_REQUESTED_FILES = "no_requestable_files"
 
+# Stable approve-and-retry eligibility reason identifiers. These package the
+# route/orchestrator guards around an existing pending/approved request; the core
+# scope-expansion requestability decision above remains the source of truth for
+# clean SCOPE_VIOLATION eligibility.
+SCOPE_EXPANSION_APPROVE_INELIGIBLE_PLAN_NOT_APPROVED = "chunk_plan_not_approved"
+SCOPE_EXPANSION_APPROVE_INELIGIBLE_REQUEST_NOT_ACTIONABLE = "request_not_actionable"
+SCOPE_EXPANSION_APPROVE_INELIGIBLE_CHUNK_NOT_FAILED = "chunk_not_failed"
+SCOPE_EXPANSION_APPROVE_INELIGIBLE_MISSING_REPORT = "missing_patch_failure_report"
+SCOPE_EXPANSION_APPROVE_INELIGIBLE_STALE_REPORT = "stale_failure_report"
+SCOPE_EXPANSION_APPROVE_INELIGIBLE_DIRTY_WORKTREE = "dirty_worktree"
+
 # Stable approved-file validation reason identifiers (#27A §12 / §22).
 SCOPE_EXPANSION_APPROVED_EMPTY = "approved_files_empty"
 SCOPE_EXPANSION_APPROVED_INVALID_PATH = "approved_file_invalid_path"
@@ -163,6 +174,24 @@ class ScopeExpansionEligibilityDecision(BaseModel):
     amendments_used: int
     max_scope_amendments: int
     requestable_files: list[str] = Field(default_factory=list)
+
+
+class ScopeExpansionApproveRetryEligibilityDecision(BaseModel):
+    """
+    Pure decision for acting on an existing scope-expansion request.
+
+    This is the approve-and-retry companion to evaluate_scope_expansion_eligibility:
+    callers pass already-loaded request/chunk/report/repo observations and get a
+    side-effect-free decision. It does not read DB state, touch git, approve
+    files, flip lifecycle status, execute retry, or commit.
+    """
+
+    eligible: bool
+    reason: str | None = None
+    status_code: int | None = None
+    is_pending: bool = False
+    is_redrive: bool = False
+    scope_decision: ScopeExpansionEligibilityDecision | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +559,137 @@ def evaluate_scope_expansion_eligibility(
         amendments_used=amendments_used,
         max_scope_amendments=max_scope_amendments,
         requestable_files=requestable,
+    )
+
+
+def evaluate_scope_expansion_approve_retry_eligibility(
+    *,
+    chunk_plan_status: str,
+    request_status: ScopeExpansionStatus | str,
+    chunk_status: str,
+    has_patch_failure_report: bool,
+    report_failure_report_id: str | None,
+    request_failure_report_id: str | None,
+    working_tree_clean: bool,
+    failure_type: PatchFailureType | str | None,
+    manual_intervention_needed: bool,
+    amendments_used: int,
+    requested_extra_files: Sequence[str],
+    max_scope_amendments: int = MAX_SCOPE_AMENDMENTS,
+) -> ScopeExpansionApproveRetryEligibilityDecision:
+    """
+    Decide whether an existing request may approve-and-retry or re-drive retry.
+
+    Pure/read-model-safe: all observations are supplied by the caller. The route
+    still owns loading fresh state under the repo lock, branch verification,
+    approved-file validation, lifecycle mutation, and retry execution.
+
+    Pending requests must still satisfy the full #27 eligibility gate. Approved
+    but not applied requests are treated as crash-window re-drives: the approval
+    already happened, so cap/requestability checks are not repeated, but the
+    current chunk, failure, clean-tree, and branch checks still happen elsewhere
+    before retry execution.
+    """
+
+    def _decision(
+        reason: str,
+        status_code: int,
+        *,
+        is_pending: bool = False,
+        is_redrive: bool = False,
+        scope_decision: ScopeExpansionEligibilityDecision | None = None,
+    ) -> ScopeExpansionApproveRetryEligibilityDecision:
+        return ScopeExpansionApproveRetryEligibilityDecision(
+            eligible=False,
+            reason=reason,
+            status_code=status_code,
+            is_pending=is_pending,
+            is_redrive=is_redrive,
+            scope_decision=scope_decision,
+        )
+
+    if chunk_plan_status != "approved":
+        return _decision(
+            SCOPE_EXPANSION_APPROVE_INELIGIBLE_PLAN_NOT_APPROVED,
+            409,
+        )
+
+    try:
+        status = _coerce_status(request_status)
+    except ValueError:
+        return _decision(
+            SCOPE_EXPANSION_APPROVE_INELIGIBLE_REQUEST_NOT_ACTIONABLE,
+            409,
+        )
+
+    is_pending = status == ScopeExpansionStatus.PENDING
+    is_redrive = status == ScopeExpansionStatus.APPROVED
+    if not (is_pending or is_redrive):
+        return _decision(
+            SCOPE_EXPANSION_APPROVE_INELIGIBLE_REQUEST_NOT_ACTIONABLE,
+            409,
+        )
+
+    if chunk_status != "failed":
+        return _decision(
+            SCOPE_EXPANSION_APPROVE_INELIGIBLE_CHUNK_NOT_FAILED,
+            409,
+            is_pending=is_pending,
+            is_redrive=is_redrive,
+        )
+
+    if not has_patch_failure_report:
+        return _decision(
+            SCOPE_EXPANSION_APPROVE_INELIGIBLE_MISSING_REPORT,
+            409,
+            is_pending=is_pending,
+            is_redrive=is_redrive,
+        )
+
+    if (
+        not report_failure_report_id
+        or report_failure_report_id != request_failure_report_id
+    ):
+        return _decision(
+            SCOPE_EXPANSION_APPROVE_INELIGIBLE_STALE_REPORT,
+            409,
+            is_pending=is_pending,
+            is_redrive=is_redrive,
+        )
+
+    if not working_tree_clean:
+        return _decision(
+            SCOPE_EXPANSION_APPROVE_INELIGIBLE_DIRTY_WORKTREE,
+            409,
+            is_pending=is_pending,
+            is_redrive=is_redrive,
+        )
+
+    if is_pending:
+        scope_decision = evaluate_scope_expansion_eligibility(
+            failure_type=failure_type,
+            working_tree_clean=working_tree_clean,
+            manual_intervention_needed=manual_intervention_needed,
+            amendments_used=amendments_used,
+            requested_extra_files=requested_extra_files,
+            report_failure_report_id=report_failure_report_id,
+            requested_failure_report_id=request_failure_report_id,
+            max_scope_amendments=max_scope_amendments,
+        )
+        if not scope_decision.eligible:
+            return _decision(
+                scope_decision.reason or "scope_expansion_ineligible",
+                scope_decision.status_code or 409,
+                is_pending=True,
+                scope_decision=scope_decision,
+            )
+
+    return ScopeExpansionApproveRetryEligibilityDecision(
+        eligible=True,
+        reason=None,
+        status_code=None,
+        is_pending=is_pending,
+        is_redrive=is_redrive,
     )
 
 

@@ -38,6 +38,7 @@ from backend.pipeline.test_validation_ack_store import (
     chunks_requiring_acknowledgement,
     compute_chunk_diff_hash,
     create_acknowledgement,
+    evaluate_final_approval_ack_eligibility,
 )
 from backend.models.chunk import TriageResult
 from backend.pipeline.chunked_orchestrator import (
@@ -1751,10 +1752,11 @@ def _require_test_validation_acknowledged(run_id: str) -> None:
     if _get_pending_final_gate(run_id) is None:
         return
     blocking = chunks_requiring_acknowledgement(run_id)
-    if blocking:
+    decision = evaluate_final_approval_ack_eligibility(blocking)
+    if not decision.eligible:
         raise HTTPException(
-            status_code=409,
-            detail=_build_ack_required_message(blocking),
+            status_code=decision.status_code or 409,
+            detail=_build_ack_required_message(decision.blocked_requirements),
         )
 
 

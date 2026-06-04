@@ -25,6 +25,12 @@ from backend.pipeline.chunk_store import (
     save_chunk_test_run_verdict,
     update_chunk_status,
 )
+from backend.pipeline.test_validation_ack_store import (
+    FINAL_APPROVAL_ACK_ELIGIBLE,
+    FINAL_APPROVAL_ACK_REQUIRED,
+    ChunkAckRequirement,
+    evaluate_final_approval_ack_eligibility,
+)
 from backend.pipeline.test_run_validation import classify_test_run
 from backend.projects.project_store import create_project
 
@@ -272,6 +278,34 @@ def test_acknowledge_without_diff_hash_is_409(tmp_path, tracked_runs):
 # ==========================================================================
 # Final approval guard
 # ==========================================================================
+
+
+def test_final_approval_ack_decision_allows_when_nothing_blocks():
+    decision = evaluate_final_approval_ack_eligibility([])
+    assert decision.eligible is True
+    assert decision.reason == FINAL_APPROVAL_ACK_ELIGIBLE
+    assert decision.status_code is None
+    assert decision.blocked_requirements == ()
+
+
+def test_final_approval_ack_decision_blocks_missing_or_stale_requirements():
+    missing = ChunkAckRequirement(
+        chunk_number=1,
+        verdict="weak",
+        state="missing",
+        current_diff_hash="HASH_A",
+    )
+    stale = ChunkAckRequirement(
+        chunk_number=2,
+        verdict="none",
+        state="stale",
+        current_diff_hash="HASH_B",
+    )
+    decision = evaluate_final_approval_ack_eligibility([missing, stale])
+    assert decision.eligible is False
+    assert decision.reason == FINAL_APPROVAL_ACK_REQUIRED
+    assert decision.status_code == 409
+    assert decision.blocked_requirements == (missing, stale)
 
 
 def test_weak_without_acknowledgement_blocks_final_approval(tmp_path, tracked_runs):
