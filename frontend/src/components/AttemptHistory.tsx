@@ -6,10 +6,15 @@
 // test outcome, timestamp) and never file contents, old_string/new_string, raw
 // model output, or large changed-files blobs.
 
+import type { TestRunVerdict } from '@/api/client'
 import type { PatchRecoveryAttempt } from '@/utils/patchFailure'
 
 interface AttemptHistoryProps {
   attempts?: PatchRecoveryAttempt[]
+  // Runtime test-validation verdict for the chunk these attempts belong to.
+  // Only a "strong" verdict may render a passing attempt as "Tests passed";
+  // weak/none/unknown or a missing verdict stays cautious.
+  validationVerdict?: TestRunVerdict | null
 }
 
 const RECOVERY_MODE_LABELS: Record<string, string> = {
@@ -31,6 +36,18 @@ const TEST_OUTCOME_LABELS: Record<string, string> = {
   not_run: 'Tests not run',
 }
 
+// Label a passing attempt cautiously unless runtime validation was strong. The
+// command may have exited 0 without meaningful tests (e.g. `python --version`).
+function testOutcomeLabel(
+  outcome: string,
+  validationVerdict?: TestRunVerdict | null
+): string {
+  if (outcome === 'passed' && validationVerdict !== 'strong') {
+    return 'Command completed · weak validation'
+  }
+  return TEST_OUTCOME_LABELS[outcome] ?? outcome
+}
+
 function formatStartedAt(value: string | undefined): string | null {
   if (!value) return null
   const date = new Date(value)
@@ -40,7 +57,10 @@ function formatStartedAt(value: string | undefined): string | null {
   return date.toLocaleString()
 }
 
-export default function AttemptHistory({ attempts }: AttemptHistoryProps) {
+export default function AttemptHistory({
+  attempts,
+  validationVerdict,
+}: AttemptHistoryProps) {
   if (!attempts || attempts.length === 0) return null
 
   return (
@@ -54,7 +74,7 @@ export default function AttemptHistory({ attempts }: AttemptHistoryProps) {
             ? OUTCOME_LABELS[attempt.outcome] ?? attempt.outcome
             : null
           const testOutcome = attempt.test_outcome
-            ? TEST_OUTCOME_LABELS[attempt.test_outcome] ?? attempt.test_outcome
+            ? testOutcomeLabel(attempt.test_outcome, validationVerdict)
             : null
           const startedAt = formatStartedAt(attempt.started_at)
 

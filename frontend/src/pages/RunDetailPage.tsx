@@ -7,6 +7,7 @@ import type {
   Run,
   RunStatus,
   RunMemorySuggestionGenerateResponse,
+  TestRunVerdict,
 } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -107,9 +108,29 @@ const RETRY_INELIGIBLE_MESSAGES: Record<string, string> = {
   human_retry_cap_exhausted: 'The retry limit has been reached.',
 }
 
+// The default chunk-approval gate summary (backend) ends with this sentence. It
+// is only honest when runtime validation was strong; for weak/none/unknown or a
+// missing verdict we rewrite just that sentence for display. Custom/AI summaries
+// (e.g. high-risk gates) never contain it, so they pass through unchanged.
+const AUTO_TESTS_PASSED_SENTENCE =
+  'Tests have passed. Commit is pending human approval.'
+
+function approvalSummaryForDisplay(
+  summary: string,
+  verdict?: TestRunVerdict | null
+): string {
+  if (verdict === 'strong') return summary
+  return summary.replace(
+    AUTO_TESTS_PASSED_SENTENCE,
+    'Meaningful test validation was not confirmed. Commit is pending human approval.'
+  )
+}
+
 function retrySuccessMessage(status: string): string {
   if (status === 'awaiting_chunk_approval') {
-    return 'Retry succeeded. Review the recovered patch before committing.'
+    // Neutral: the retry applied the change, but the command exiting 0 does not
+    // mean meaningful tests ran. The recovered-patch marker shows the verdict.
+    return 'Retry applied the change. Review the recovered patch before committing.'
   }
   if (status === 'failed') {
     return 'Retry ran but the patch failed again.'
@@ -438,6 +459,15 @@ export default function RunDetailPage() {
       !isPendingFinalGate(g, runId!) &&
       !isPendingMemoryConflictGate(g, runId!)
   )
+
+  // Runtime verdict for the chunk this gate belongs to, used to keep the Human
+  // Approval card from claiming "Tests have passed" when validation was weak.
+  const pendingGateVerdict: TestRunVerdict | null =
+    pendingGate?.chunk_number != null
+      ? chunkPlan?.chunks.find(
+          chunk => chunk.chunk_number === pendingGate.chunk_number
+        )?.test_validation?.verdict ?? null
+      : null
 
   const approveMutation = useMutation({
     mutationFn: () => {
@@ -948,7 +978,10 @@ export default function RunDetailPage() {
               <div>
                 <p className="text-sm font-medium mb-2">Summary</p>
                 <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                  {pendingGate.ai_summary}
+                  {approvalSummaryForDisplay(
+                    pendingGate.ai_summary,
+                    pendingGateVerdict
+                  )}
                 </p>
               </div>
             )}

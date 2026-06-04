@@ -117,7 +117,10 @@ function RecoveredReviewMarker({
       )}
 
       {summary.attempts && summary.attempts.length > 0 && (
-        <AttemptHistory attempts={summary.attempts} />
+        <AttemptHistory
+          attempts={summary.attempts}
+          validationVerdict={validation?.verdict}
+        />
       )}
     </div>
   )
