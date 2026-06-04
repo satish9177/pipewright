@@ -205,7 +205,7 @@ _FAILURE_MARKERS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("current branch is empty",), PushFailureKind.WRONG_BRANCH),
     (("origin remote does not match",), PushFailureKind.REMOTE_MISMATCH),
     (("no commits ahead",), PushFailureKind.NO_COMMITS_AHEAD),
-    (("rev-list",), PushFailureKind.LOCAL_BASE_REF_ERROR),
+    (("could not compare branch against base", "local base ref may be missing", "rev-list"), PushFailureKind.LOCAL_BASE_REF_ERROR),
     (("could not be parsed",), PushFailureKind.PR_PARSE_UNCONFIRMED),
     (("bad credentials", "auth/repo failed", "auth failed", "401"), PushFailureKind.AUTH_FAILED),
 )

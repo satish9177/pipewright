@@ -1223,3 +1223,231 @@ def test_ensure_remote_base_branch_wraps_git_failure(monkeypatch):
         ensure_remote_base_branch("/repo", "pipewright-staging")
 
     assert exc_info.value.failure_type == "GIT_COMMAND_FAILED"
+
+
+# ---------------------------------------------------------------------------
+# #31C: reload-under-lock, idempotent save, partial-failure recovery
+# ---------------------------------------------------------------------------
+
+def test_push_pr_reloads_run_under_lock(monkeypatch, tmp_repo, tracked_runs):
+    # A concurrent attempt records a PR *after* push_and_create_pr takes its
+    # pre-lock snapshot but *before* the locked body runs. Reloading under the
+    # lock must see the recorded PR and short-circuit instead of re-pushing.
+    from contextlib import contextmanager
+
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, pr_mode="github_cli"
+    )
+    branch_name = f"pipewright/{run_id[:8]}"
+    real_lock = pr_orchestrator.project_repo_lock_sync
+
+    @contextmanager
+    def lock_then_record_pr(project_id):
+        with real_lock(project_id):
+            with engine.begin() as conn:
+                conn.execute(text("""
+                    UPDATE pipeline_runs
+                    SET pr_url = 'https://github.com/acme/demo/pull/700',
+                        pr_number = 700,
+                        branch_name = :branch_name
+                    WHERE id = :run_id
+                """), {"run_id": run_id, "branch_name": branch_name})
+            yield
+
+    monkeypatch.setattr(
+        pr_orchestrator, "project_repo_lock_sync", lock_then_record_pr
+    )
+    monkeypatch.setattr(
+        pr_orchestrator.local_git,
+        "push_branch",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("push must not happen once a PR is already recorded")
+        ),
+    )
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr,
+        "create_pr",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("create_pr must not happen once a PR is recorded")
+        ),
+    )
+
+    result = pr_orchestrator.push_and_create_pr(run_id)
+
+    assert result["pr_number"] == 700
+    assert result["pr_url"].endswith("/700")
+
+
+def test_save_pr_metadata_is_idempotent_first_pr_wins(tmp_repo, tracked_runs):
+    run_id, _project = create_final_approved_run(tmp_repo, tracked_runs)
+    branch_name = f"pipewright/{run_id[:8]}"
+
+    first = pr_orchestrator._save_pr_metadata(
+        run_id, branch_name, "https://github.com/acme/demo/pull/10", 10
+    )
+    assert first["pr_number"] == 10
+
+    # A second save (e.g. a retry that re-derived a different number) must not
+    # clobber the first recorded PR; the durable url/number is returned.
+    second = pr_orchestrator._save_pr_metadata(
+        run_id, branch_name, "https://github.com/acme/demo/pull/999", 999
+    )
+    assert second["pr_number"] == 10
+    assert second["pr_url"].endswith("/10")
+
+    row = _read_run_row(run_id)
+    assert row[1].endswith("/10")
+    assert row[2] == 10
+
+
+def test_github_cli_recovers_unparsed_pr_via_relist(monkeypatch, tmp_repo, tracked_runs):
+    # gh pr create "fails" because its output could not be parsed, but the PR
+    # was really created. A re-list by head/base recovers it instead of marking
+    # the run push_failed.
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, pr_mode="github_cli"
+    )
+    branch_name = f"pipewright/{run_id[:8]}"
+    calls = []
+    patch_git_for_branch(monkeypatch, calls, branch_name, remote_exists=True)
+    _patch_gh_ready(monkeypatch)
+
+    find_results = [
+        None,  # initial find-or-create: none exists yet
+        {  # recovery re-list: the create actually succeeded
+            "url": "https://github.com/acme/demo/pull/202",
+            "number": 202,
+            "title": "x",
+        },
+    ]
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr,
+        "find_open_pr",
+        lambda repo, branch, base: find_results.pop(0),
+    )
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr,
+        "create_pr",
+        lambda *a, **k: (_ for _ in ()).throw(
+            pr_orchestrator.gh_pr.GhCliError(
+                "gh_pr.py: PR was created but its URL/number could not be "
+                "parsed from gh output."
+            )
+        ),
+    )
+
+    result = pr_orchestrator.push_and_create_pr(run_id)
+
+    assert result["status"] == "complete"
+    assert result["pr_number"] == 202
+    row = _read_run_row(run_id)
+    assert row[0] == "complete"
+    assert row[2] == 202
+    assert row[3] is None  # not push_failed
+
+
+def test_github_cli_unparsed_pr_with_no_relist_match_fails(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    # Same unconfirmed-create error, but the re-list finds nothing: the run must
+    # honestly fail rather than silently swallow the error.
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, pr_mode="github_cli"
+    )
+    branch_name = f"pipewright/{run_id[:8]}"
+    calls = []
+    patch_git_for_branch(monkeypatch, calls, branch_name, remote_exists=True)
+    _patch_gh_ready(monkeypatch)
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr, "find_open_pr", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr,
+        "create_pr",
+        lambda *a, **k: (_ for _ in ()).throw(
+            pr_orchestrator.gh_pr.GhCliError(
+                "gh_pr.py: PR was created but its URL/number could not be "
+                "parsed from gh output."
+            )
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="could not be parsed"):
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    row = _read_run_row(run_id)
+    assert row[0] == "push_failed"
+    assert "could not be parsed" in row[3]
+    assert row[1] is None  # no PR url
+
+
+def test_github_cli_other_create_error_is_not_recovered(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    # A non-parse gh error means no PR was created; we must NOT re-list (that
+    # could reuse an unrelated PR) — surface the real failure.
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, pr_mode="github_cli"
+    )
+    branch_name = f"pipewright/{run_id[:8]}"
+    calls = []
+    patch_git_for_branch(monkeypatch, calls, branch_name, remote_exists=True)
+    _patch_gh_ready(monkeypatch)
+
+    find_calls = {"count": 0}
+
+    def fake_find(repo, branch, base):
+        find_calls["count"] += 1
+        return None
+
+    monkeypatch.setattr(pr_orchestrator.gh_pr, "find_open_pr", fake_find)
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr,
+        "create_pr",
+        lambda *a, **k: (_ for _ in ()).throw(
+            pr_orchestrator.gh_pr.GhCliError("gh_pr.py: gh pr create failed: boom")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="gh pr create failed"):
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    # Only the initial find ran; no recovery re-list for a non-parse error.
+    assert find_calls["count"] == 1
+    assert _read_run_row(run_id)[0] == "push_failed"
+
+
+def test_local_base_ref_missing_is_distinct_from_no_commits_ahead(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    # commits_ahead failing outright (rev-list cannot resolve the base ref) is a
+    # local-base problem, not a "zero commits ahead" verdict.
+    run_id, _project = create_final_approved_run(
+        tmp_repo, tracked_runs, pr_mode="github_cli"
+    )
+    branch_name = f"pipewright/{run_id[:8]}"
+    calls = []
+    patch_git_for_branch(monkeypatch, calls, branch_name, remote_exists=True)
+    _patch_gh_ready(monkeypatch)
+    monkeypatch.setattr(
+        pr_orchestrator.local_git,
+        "commits_ahead",
+        lambda base, branch, repo: (_ for _ in ()).throw(
+            RuntimeError("[GIT] git rev-list failed: bad revision")
+        ),
+    )
+    monkeypatch.setattr(
+        pr_orchestrator.gh_pr,
+        "create_pr",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("create_pr must not run when the base compare fails")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="local base ref may be missing"):
+        pr_orchestrator.push_and_create_pr(run_id)
+
+    row = _read_run_row(run_id)
+    assert row[0] == "push_failed"
+    assert "local base ref may be missing" in row[3]
+    assert "no commits ahead" not in row[3].lower()
