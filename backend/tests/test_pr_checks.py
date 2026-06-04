@@ -11,10 +11,12 @@ and checks are surfaced only when a PR actually exists.
 import uuid
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from backend.db.database import engine
 from backend.git import gh_pr
+from backend.main import app
 from backend.models.chunk import ChunkDefinition, TriageResult
 from backend.pipeline import pr_checks
 from backend.pipeline.chunk_store import create_chunked_run
@@ -356,3 +358,106 @@ def test_read_model_checks_unavailable_when_fetch_fails(tmp_repo, tracked_runs):
     result = chunks_routes._augment_plan_with_pr_status(plan, checks_fetcher=boom)
 
     assert result.pr_status["checks"]["state"] == ChecksState.UNAVAILABLE
+
+
+# --------------------------------------------------------------------------- #
+# GET /runs/{run_id}/pr-status (explicit endpoint, mocked gh)                  #
+# --------------------------------------------------------------------------- #
+
+
+def _read_run_columns(run_id):
+    with engine.connect() as conn:
+        return conn.execute(text("""
+            SELECT status, pr_url, pr_number, push_error
+            FROM pipeline_runs WHERE id = :r
+        """), {"r": run_id}).fetchone()
+
+
+def test_pr_status_endpoint_returns_checks_when_pr_exists(monkeypatch, tmp_repo, tracked_runs):
+    run_id = _make_run(
+        tmp_repo,
+        tracked_runs,
+        status="complete",
+        pr_url="https://github.com/acme/demo/pull/12",
+        pr_number=12,
+    )
+    # Mock the gh layer the default fetcher shells out to.
+    monkeypatch.setattr(
+        gh_pr, "get_pr_checks", lambda repo, ident: _checks("pass", "pending")
+    )
+
+    resp = TestClient(app).get(f"/runs/{run_id}/pr-status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["run_id"] == run_id
+    assert body["pr_state"] == "pr_open"
+    assert body["pr_number"] == 12
+    # pass + pending -> pending (pending wins over pass, never red).
+    assert body["checks"]["state"] == ChecksState.PENDING
+    assert body["checks"]["total"] == 2
+
+
+def test_pr_status_endpoint_unavailable_when_gh_fails(monkeypatch, tmp_repo, tracked_runs):
+    run_id = _make_run(
+        tmp_repo,
+        tracked_runs,
+        status="complete",
+        pr_url="https://github.com/acme/demo/pull/12",
+        pr_number=12,
+    )
+
+    def boom(repo, ident):
+        raise gh_pr.GhCliError("gh exploded")
+
+    monkeypatch.setattr(gh_pr, "get_pr_checks", boom)
+
+    resp = TestClient(app).get(f"/runs/{run_id}/pr-status")
+
+    assert resp.status_code == 200
+    # gh failure must read as unavailable, never as a failing build.
+    assert resp.json()["checks"]["state"] == ChecksState.UNAVAILABLE
+
+
+def test_pr_status_endpoint_no_pr_does_not_call_gh(monkeypatch, tmp_repo, tracked_runs):
+    run_id = _make_run(tmp_repo, tracked_runs, status="final_approved")
+
+    monkeypatch.setattr(
+        gh_pr,
+        "get_pr_checks",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("gh must not be called when no PR exists")
+        ),
+    )
+
+    resp = TestClient(app).get(f"/runs/{run_id}/pr-status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["pr_state"] == "ready_to_push"
+    assert body["checks"] is None
+
+
+def test_pr_status_endpoint_unknown_run_is_404(tmp_repo):
+    resp = TestClient(app).get(f"/runs/{uuid.uuid4()}/pr-status")
+    assert resp.status_code == 404
+
+
+def test_pr_status_endpoint_is_read_only(monkeypatch, tmp_repo, tracked_runs):
+    run_id = _make_run(
+        tmp_repo,
+        tracked_runs,
+        status="complete",
+        pr_url="https://github.com/acme/demo/pull/12",
+        pr_number=12,
+    )
+    before = _read_run_columns(run_id)
+    monkeypatch.setattr(
+        gh_pr, "get_pr_checks", lambda repo, ident: _checks("fail")
+    )
+
+    TestClient(app).get(f"/runs/{run_id}/pr-status")
+
+    after = _read_run_columns(run_id)
+    # A failing check must not mutate run status / PR metadata / push state.
+    assert tuple(after) == tuple(before)
