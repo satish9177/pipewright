@@ -125,6 +125,11 @@ class PrStatus:
     pr_created_at: str | None = None
     push_error: str | None = None
     failure: PushFailureClassification | None = None
+    # Display-only PR checks summary (#31D). Present only when a PR exists AND an
+    # explicit caller supplied a freshly fetched summary; None otherwise. It is a
+    # plain dict (ChecksSummary.model_dump()) so this module stays I/O-free and
+    # does not depend on the checks fetcher.
+    checks: dict[str, Any] | None = None
 
     def model_dump(self) -> dict[str, Any]:
         return {
@@ -139,6 +144,7 @@ class PrStatus:
             "pr_created_at": self.pr_created_at,
             "push_error": self.push_error,
             "failure": self.failure.model_dump() if self.failure else None,
+            "checks": self.checks,
         }
 
 
@@ -369,6 +375,7 @@ def build_pr_status(
     pushed_at: str | None = None,
     pr_created_at: str | None = None,
     push_error: str | None = None,
+    checks: dict[str, Any] | None = None,
 ) -> PrStatus:
     """
     Assemble the typed, read-only PrStatus overlay from a run row + pr_mode.
@@ -376,6 +383,12 @@ def build_pr_status(
     Pure. The failure classification is attached only when the derived state is
     PUSH_FAILED, so a stale push_error from a since-recovered run never surfaces
     a failure once a pr_url exists or a fresh push is in flight.
+
+    ``checks`` (#31D) is a pre-fetched, display-only ChecksSummary dict. It is
+    attached ONLY when a PR exists (pr_state == PR_OPEN); for any other state it
+    is dropped, so a stale or mistakenly-passed summary can never imply checks on
+    a run that has no PR. This function performs NO fetch itself — an explicit
+    caller fetches and passes the summary in.
     """
     mode = normalize_pr_mode(pr_mode)
     pr_state = derive_pr_state(
@@ -401,4 +414,5 @@ def build_pr_status(
         pr_created_at=pr_created_at,
         push_error=push_error if pr_state == PrState.PUSH_FAILED else None,
         failure=failure,
+        checks=checks if pr_state == PrState.PR_OPEN else None,
     )

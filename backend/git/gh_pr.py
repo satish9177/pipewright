@@ -115,6 +115,55 @@ def find_open_pr(
     }
 
 
+def get_pr_checks(
+    repo_path: str,
+    identifier: str | int,
+    timeout: int = _GH_TIMEOUT_SECONDS,
+) -> list[dict]:
+    """
+    Return the raw per-check rows for a PR via `gh pr checks ... --json`.
+
+    Read-only: this never merges, comments, re-runs, or mutates anything, and it
+    is only ever called by an explicit checks caller — never on a normal read.
+
+    `gh pr checks` uses its exit code to signal check *results* (it exits
+    non-zero when checks are failing or pending), so the exit code is NOT treated
+    as a fetch error: the JSON on stdout is authoritative and is parsed
+    regardless of return code. A missing PR / no configured checks yields an
+    empty list. Any genuine CLI problem (no JSON, unparseable output) raises
+    GhCliError so the caller can report the checks as *unavailable*, never as
+    failed. The returned rows carry only gh's summary fields — no raw logs.
+    """
+    result = _run_gh(
+        [
+            "pr", "checks", str(identifier),
+            "--json", "name,state,bucket,workflow",
+        ],
+        repo_path,
+        timeout=timeout,
+    )
+
+    raw = (result.stdout or "").strip()
+    if not raw:
+        stderr = (result.stderr or "").lower()
+        if "no check" in stderr:
+            # gh reports "no checks reported on the '<branch>' branch".
+            return []
+        raise GhCliError(
+            f"gh_pr.py: gh pr checks returned no data: "
+            f"{sanitize_for_log((result.stderr or '').strip())}"
+        )
+
+    try:
+        items = json.loads(raw)
+    except json.JSONDecodeError:
+        raise GhCliError("gh_pr.py: gh pr checks output was not valid JSON.")
+
+    if not isinstance(items, list):
+        return []
+    return items
+
+
 def _extract_pr_url(stdout: str | None) -> str:
     """Pull the PR URL out of `gh pr create` stdout (last /pull/ line)."""
     for line in reversed((stdout or "").splitlines()):

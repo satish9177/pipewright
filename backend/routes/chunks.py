@@ -67,6 +67,7 @@ from backend.pipeline.scope_expansion_store import (
     reject_scope_expansion_request,
 )
 from backend.pipeline.pr_orchestrator import evaluate_push_pr_eligibility, push_and_create_pr
+from backend.pipeline.pr_checks import fetch_checks_summary
 from backend.pipeline.pr_status import build_pr_status, classify_push_failure
 from backend.pipeline.implementation_guard import (
     DEFAULT_EXAMPLES,
@@ -1815,33 +1816,58 @@ def _augment_plan_with_reviews(plan: ChunkPlanResponse) -> ChunkPlanResponse:
         return plan
 
 
-def _augment_plan_with_pr_status(plan: ChunkPlanResponse) -> ChunkPlanResponse:
+def _augment_plan_with_pr_status(
+    plan: ChunkPlanResponse,
+    checks_fetcher=None,
+) -> ChunkPlanResponse:
     """
-    Attach the read-only typed PR/push status overlay (#31B).
+    Attach the read-only typed PR/push status overlay (#31B), optionally with a
+    display-only PR checks summary (#31D).
 
-    Additive and fail-closed: derived purely from the already-loaded run row and
-    the project's pr_mode. It performs NO GitHub call, NO git call, NO push, and
-    NO PR creation, and never affects eligibility, approval, or any mutation. Any
-    failure leaves pr_status as None rather than breaking the read.
+    Additive and fail-closed: the PR/push status is derived purely from the
+    already-loaded run row and the project's pr_mode — NO GitHub call, NO git
+    call, NO push, NO PR creation — and never affects eligibility, approval, or
+    any mutation. Any failure leaves pr_status as None rather than breaking the
+    read.
+
+    Checks are surfaced ONLY when an explicit ``checks_fetcher`` is supplied AND
+    a PR exists for the run. The default read route passes no fetcher, so a
+    routine Run Detail / chunk load NEVER calls GitHub. A checks fetch that fails
+    is reported as ``unavailable`` (never ``failed``) by fetch_checks_summary.
     """
     try:
         run = _load_operator_state_run_row(plan.run_id)
         if run is None:
             return plan
         pr_mode = None
+        repo_path = None
         try:
-            pr_mode = get_project(plan.project_id).get("pr_mode")
+            project = get_project(plan.project_id)
+            pr_mode = project.get("pr_mode")
+            repo_path = project.get("repo_path")
         except Exception:
             pr_mode = None
+            repo_path = None
+
+        checks = None
+        pr_url = run.get("pr_url")
+        if checks_fetcher is not None and pr_url and repo_path:
+            identifier = run.get("pr_number") or run.get("branch_name")
+            if identifier:
+                checks = fetch_checks_summary(
+                    repo_path, identifier, fetcher=checks_fetcher
+                ).model_dump()
+
         pr_status = build_pr_status(
             run_status=run.get("status"),
             pr_mode=pr_mode,
             branch_name=run.get("branch_name"),
-            pr_url=run.get("pr_url"),
+            pr_url=pr_url,
             pr_number=run.get("pr_number"),
             pushed_at=run.get("pushed_at"),
             pr_created_at=run.get("pr_created_at"),
             push_error=run.get("push_error"),
+            checks=checks,
         ).model_dump()
         return plan.model_copy(update={"pr_status": pr_status})
     except Exception:

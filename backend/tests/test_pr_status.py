@@ -262,6 +262,43 @@ def test_build_pushing_has_no_failure():
     assert status["failure"] is None
 
 
+def test_build_checks_attached_only_when_pr_open():
+    # #31D: a supplied checks summary surfaces only when a PR exists.
+    checks = {"state": "passed", "total": 1}
+    status = build_pr_status(
+        run_status=RunStatus.COMPLETE,
+        pr_mode=PR_MODE_GITHUB_CLI,
+        pr_url="https://github.com/o/r/pull/4",
+        pr_number=4,
+        checks=checks,
+    ).model_dump()
+    assert status["pr_state"] == PrState.PR_OPEN
+    assert status["checks"] == checks
+
+
+def test_build_checks_dropped_when_no_pr():
+    # A checks summary mistakenly passed for a non-PR state must be dropped, so a
+    # run with no PR can never appear to have checks.
+    status = build_pr_status(
+        run_status=RunStatus.PUSH_FAILED,
+        pr_mode=PR_MODE_GITHUB_CLI,
+        push_error="[GIT] git push failed: rejected non-fast-forward",
+        checks={"state": "passed", "total": 1},
+    ).model_dump()
+    assert status["pr_state"] == PrState.PUSH_FAILED
+    assert status["checks"] is None
+
+
+def test_build_checks_default_is_none():
+    status = build_pr_status(
+        run_status=RunStatus.COMPLETE,
+        pr_mode=PR_MODE_GITHUB_CLI,
+        pr_url="https://github.com/o/r/pull/4",
+    ).model_dump()
+    assert status["pr_state"] == PrState.PR_OPEN
+    assert status["checks"] is None
+
+
 # --------------------------------------------------------------------------- #
 # operator_state: push_failed must NOT read as "Create pull request"          #
 # --------------------------------------------------------------------------- #
