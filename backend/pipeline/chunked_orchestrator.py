@@ -2214,6 +2214,21 @@ async def _execute_retry_attempt(
                 test_outcome="failed",
             )
 
+        # Adversarial Reviewer v1 (advisory, display-only) on the retry-success
+        # path. Mirrors the normal _execute_single_chunk site: the retry patch
+        # applied, tests passed, and the verdict is persisted, so there is a
+        # standing applied diff to review. Best-effort and fully swallowed — it
+        # NEVER changes the retry outcome, gates nothing, and is not run on a
+        # failed retry apply or a rolled-back test failure (both returned above).
+        await _run_advisory_review_safe(
+            run_id,
+            plan_status.project_id,
+            chunk,
+            code,
+            outcome.patch_result,
+            test_result,
+        )
+
         # Success: pause at the existing approval gate. No commit here; the
         # existing approval path commits the newest code checkpoint later.
         return _pause_recovered_chunk(
