@@ -176,14 +176,21 @@ def _save_pr_metadata(
     pr_url: str,
     pr_number: int,
 ) -> dict:
+    # Idempotent save. COALESCE means a PR url/number already recorded for this
+    # run (e.g. by an earlier attempt that committed before a transient retry)
+    # is never clobbered by a second save — the first recorded PR wins. The
+    # status/branch flip to COMPLETE is safe to re-apply. The authoritative
+    # persisted values are read back and returned, so a retry that finds the
+    # same PR reports the durable url/number rather than whatever it just
+    # recomputed.
     pr_created_at = _utc_now()
     with engine.begin() as conn:
         result = conn.execute(text("""
             UPDATE pipeline_runs
             SET status = :status,
                 current_step = :current_step,
-                pr_url = :pr_url,
-                pr_number = :pr_number,
+                pr_url = COALESCE(pr_url, :pr_url),
+                pr_number = COALESCE(pr_number, :pr_number),
                 branch_name = :branch_name,
                 pr_created_at = COALESCE(pr_created_at, :pr_created_at),
                 push_error = NULL
@@ -199,12 +206,19 @@ def _save_pr_metadata(
         })
         if result.rowcount == 0:
             raise ValueError(f"pr_orchestrator.py: run not found: {run_id}")
+        persisted = conn.execute(text("""
+            SELECT pr_url, pr_number, branch_name
+            FROM pipeline_runs
+            WHERE id = :run_id
+        """), {"run_id": run_id}).fetchone()
+    saved = dict(persisted._mapping) if persisted is not None else {}
+    persisted_number = saved.get("pr_number")
     return {
         "status": RunStatus.COMPLETE,
         "run_id": run_id,
-        "branch_name": branch_name,
-        "pr_url": pr_url,
-        "pr_number": pr_number,
+        "branch_name": saved.get("branch_name") or branch_name,
+        "pr_url": saved.get("pr_url") or pr_url,
+        "pr_number": persisted_number if persisted_number is not None else pr_number,
     }
 
 
@@ -345,7 +359,19 @@ def _create_pr(repo, run_id: str, feature_description: str, branch_name: str, ba
 
 
 def _ensure_branch_has_commits_ahead(repo_path: str, branch_name: str, base_branch: str) -> None:
-    ahead_count = local_git.commits_ahead(base_branch, branch_name, repo_path)
+    try:
+        ahead_count = local_git.commits_ahead(base_branch, branch_name, repo_path)
+    except RuntimeError as error:
+        # commits_ahead failing outright (e.g. `git rev-list` could not resolve
+        # the base ref) means we could not compare the branch against the base
+        # locally — typically a missing local base ref. That is a distinct
+        # failure from a successful comparison that simply found zero commits
+        # ahead, so it must not be reported as "no commits ahead".
+        raise RuntimeError(
+            f"pr_orchestrator.py: could not compare branch against base "
+            f"'{base_branch}' locally; the local base ref may be missing "
+            f"({error})."
+        ) from error
     if ahead_count <= 0:
         raise RuntimeError(
             "Branch has no commits ahead of base; cannot push or create PR."
@@ -454,6 +480,43 @@ def _verify_local_branch_for_cli(
     local_git.ensure_clean_worktree(repo_path)
 
 
+def _create_pr_cli_with_recovery(
+    repo_path: str,
+    branch_name: str,
+    base_branch: str,
+    run: dict,
+    run_id: str,
+) -> dict:
+    """
+    Create the PR with gh, recovering from an unconfirmed-create result.
+
+    `gh pr create` can succeed at GitHub yet fail locally because its URL/number
+    could not be parsed from gh's output. In that one case the PR may really
+    exist, so re-list open PRs by head/base once before giving up — converting a
+    false "push failed" into the real (already-created) PR. Any other gh error
+    is surfaced unchanged, and if the re-list finds nothing the original error is
+    re-raised so the failure stays honest. This never creates a second PR.
+    """
+    try:
+        return gh_pr.create_pr(
+            repo_path,
+            branch_name,
+            base_branch,
+            _pr_title(run.get("feature_description"), run_id),
+            build_pr_body(run_id),
+        )
+    except gh_pr.GhCliError as create_error:
+        if "could not be parsed" not in str(create_error).lower():
+            raise
+        try:
+            recovered = gh_pr.find_open_pr(repo_path, branch_name, base_branch)
+        except gh_pr.GhCliError:
+            recovered = None
+        if recovered is not None:
+            return recovered
+        raise
+
+
 def _push_and_create_pr_github_cli(
     run_id: str,
     run: dict,
@@ -491,12 +554,8 @@ def _push_and_create_pr_github_cli(
         if existing is not None:
             pr = existing
         else:
-            pr = gh_pr.create_pr(
-                repo_path,
-                branch_name,
-                base_branch,
-                _pr_title(run.get("feature_description"), run_id),
-                build_pr_body(run_id),
+            pr = _create_pr_cli_with_recovery(
+                repo_path, branch_name, base_branch, run, run_id
             )
         return _save_pr_metadata(
             run_id,
@@ -612,4 +671,10 @@ def push_and_create_pr(run_id: str) -> dict:
             f"pr_orchestrator.py: run is missing project_id. run_id={run_id}"
         )
     with project_repo_lock_sync(project_id):
+        # Reload under the lock so the eligibility and pr_url idempotency checks
+        # act on the authoritative current row, not the snapshot read before the
+        # lock was held. If another attempt recorded a PR (or advanced the run)
+        # while we were waiting for the lock, the reload sees it and the locked
+        # path short-circuits instead of re-pushing.
+        run = _load_run(run_id)
         return _push_and_create_pr_locked(run_id, run)

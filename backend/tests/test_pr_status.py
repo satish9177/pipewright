@@ -171,6 +171,30 @@ def test_classify_forbidden_base_is_not_retryable():
     assert result.retryable is False
 
 
+def test_classify_local_base_ref_missing_message():
+    # The #31C message that distinguishes a local base-compare failure from a
+    # zero-commits-ahead verdict must classify as the local base ref error.
+    result = classify_push_failure(
+        "pr_orchestrator.py: could not compare branch against base "
+        "'pipewright-staging' locally; the local base ref may be missing "
+        "([GIT] git rev-list failed: bad revision)."
+    )
+    assert result is not None
+    assert result.kind == PushFailureKind.LOCAL_BASE_REF_ERROR
+    assert result.retryable is True
+
+
+def test_classify_local_base_ref_not_confused_with_no_commits_ahead():
+    # "no commits ahead" stays its own (non-retryable) kind and is not
+    # swallowed by the local-base-ref markers.
+    result = classify_push_failure(
+        "Branch has no commits ahead of base; cannot push or create PR."
+    )
+    assert result is not None
+    assert result.kind == PushFailureKind.NO_COMMITS_AHEAD
+    assert result.retryable is False
+
+
 # --------------------------------------------------------------------------- #
 # build_pr_status                                                             #
 # --------------------------------------------------------------------------- #
