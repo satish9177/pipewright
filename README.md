@@ -91,6 +91,37 @@ locked by tests (see `docs/stabilization/final-smoke-status.md`).
 - **Final approval before completion.** A run reaches a local commit or a PR only
   after an explicit final human approval.
 
+### Recovery & validation gates (#26–#28, Operator Panel)
+
+These build on the guarantees above and are complete and manually smoke-validated.
+
+- **Patch failure recovery (guarded retry).** When a generated change cannot be
+  applied, the chunk fails cleanly with a plain-English explanation; nothing is
+  committed and a guarded retry is offered. Retry eligibility is revalidated
+  server-side (`docs/architecture/patch-failure-recovery-v2.md`).
+- **Scope expansion requires human approval.** If a chunk tries to touch files
+  outside its approved `files_expected`, the run pauses and shows the requested
+  extra files. A human must explicitly approve the expanded set before any retry;
+  scope is never auto-expanded and `scope_guard` is never weakened
+  (`docs/design/scope-expansion-recovery.md`).
+- **Weak / no-test acknowledgement gate.** Pipewright classifies whether the
+  verification command actually exercised tests (`strong` / `weak` / `none` /
+  `unknown`), joining the command string with runtime evidence. A weak or absent
+  result must be explicitly acknowledged by a human — bound to the exact diff —
+  before final approval. This does **not** prove the code is correct; it only makes
+  thin validation visible and forces an acknowledgement
+  (`docs/design/stronger-test-validation.md`).
+- **Operator Attention Panel (display-only).** A computed, read-only
+  `operator_state` surfaces what Pipewright is waiting for, what action is
+  available, what is blocked and why, and which process safety checks passed /
+  failed / are weak / have not run. It is a display surface only — the existing
+  controls remain the real controls, and routes still revalidate every action
+  (`docs/design/operator-state-attention-panel.md`).
+
+Project status, what is deferred, and the next roadmap choices live in
+[`docs/status/current-state.md`](docs/status/current-state.md) and
+[`docs/roadmap/next-phase.md`](docs/roadmap/next-phase.md).
+
 ---
 
 ## Quick local setup
@@ -302,6 +333,17 @@ version:
 - No per-file approval; approvals are chunk-level and final.
 - `reviewer` / `architect` roles are configurable but **not yet invoked** by the
   pipeline.
+- **The Adversarial Reviewer Stage is design-only**
+  ([`docs/design/adversarial-reviewer-stage.md`](docs/design/adversarial-reviewer-stage.md)).
+  No AI review runs in the pipeline today; the design is merged but implementation
+  is intentionally deferred pending a priority decision.
+- The Operator Attention Panel is **display-only**: it surfaces state but the
+  existing run controls remain the real controls. `operator_state` is currently
+  computed from chunk read data, so a legacy run with no chunk plan may not surface
+  a panel.
+- No durable audit trail / run-history table yet.
+- No role-based PM / manager views yet.
+- No multi-model routing UI — model selection is env-based per role only.
 - Repo indexing and verification-command detection are still improving.
 - SQLite / in-memory live logs / in-process repo locks are single-instance only.
 - GitHub App support is future work (today: `local_only`, `github_cli`,
@@ -352,6 +394,9 @@ execution, checkpoint, approval, and rollback semantics stay explicit.
 - `backend/github/branch_safety.py` — protected base-branch rules
 - `docs/setup/local-dev.md` — detailed local setup
 - `docs/demo/local-self-use-demo.md` — full demo walkthrough + troubleshooting
+- `docs/testing/demo-smoke-checklist.md` — demo / readiness smoke checklist
+- `docs/status/current-state.md` — current project status (completed / deferred)
+- `docs/roadmap/next-phase.md` — recommended next phase and roadmap options
 - `docs/llm/role-based-configuration.md` — per-role LLM configuration
 - `docs/stabilization/final-smoke-status.md` — safety guarantees and their tests
 - `docs/troubleshooting.md` — operational troubleshooting
