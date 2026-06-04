@@ -209,8 +209,8 @@ export default function ChunkPlanPanel({
               <div>
                 <p className="text-sm font-medium">Execution Controls</p>
                 <p className="text-sm text-muted-foreground">
-                  Execute approved chunks or resume the run after an interruption,
-                  failed chunk, or high-risk approval.
+                  Run the approved chunks, or resume the run if it paused after an
+                  interruption or a failed chunk.
                 </p>
               </div>
 

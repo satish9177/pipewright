@@ -855,9 +855,9 @@ export default function RunDetailPage() {
 
       <section className="mb-6">
         <div className="mb-3">
-          <h3 className="text-sm font-semibold">Chunk Plan and Execution</h3>
+          <h3 className="text-sm font-semibold">Chunk Plan Details</h3>
           <p className="text-xs text-muted-foreground">
-            Review the plan, execute approved chunks, and resolve chunk-level
+            The chunk-by-chunk plan, execution controls, and chunk-level
             approvals.
           </p>
         </div>

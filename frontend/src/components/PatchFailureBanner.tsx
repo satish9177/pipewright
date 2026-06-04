@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import AttemptHistory from '@/components/AttemptHistory'
 import {
+  patchFailurePlainCopy,
   suggestedActionLabel,
   type PatchFailureReport,
 } from '@/utils/patchFailure'
@@ -103,6 +104,10 @@ export default function PatchFailureBanner({
     }
   }
 
+  // Primary, plain-language explanation of what happened. The backend
+  // failure_type/message stay available below as secondary diagnostics.
+  const plain = patchFailurePlainCopy(report.failure_type)
+
   const rollbackLabel = report.rollback_performed
     ? 'Rolled back'
     : 'Rollback not performed'
@@ -115,13 +120,29 @@ export default function PatchFailureBanner({
   return (
     <div className="grid gap-3 rounded border border-red-500 bg-background p-4">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-sm font-semibold text-red-500">Patch failed</p>
-        <Badge variant="outline" className="border-red-200 bg-red-100 text-red-700">
+        <p className="text-sm font-semibold text-red-500">{plain.headline}</p>
+        <Badge
+          variant="outline"
+          className="border-red-200 bg-red-100 text-red-700"
+          title="Technical failure code (diagnostic)"
+        >
           {report.failure_type}
         </Badge>
       </div>
 
-      <p className="text-sm text-red-500 whitespace-pre-wrap">{report.message}</p>
+      <div className="grid gap-1 text-sm">
+        <p className="text-foreground">{plain.detail}</p>
+        <p className="text-muted-foreground">{plain.committedNote}</p>
+        {plain.testsNote && (
+          <p className="text-muted-foreground">{plain.testsNote}</p>
+        )}
+      </div>
+
+      {report.message && (
+        <p className="whitespace-pre-wrap text-xs text-muted-foreground">
+          Diagnostic: {report.message}
+        </p>
+      )}
 
       <div className="grid gap-1 text-sm">
         <p className="text-muted-foreground">{rollbackLabel}</p>
@@ -175,7 +196,7 @@ export default function PatchFailureBanner({
                 onClick={() => onRetry!(chunkNumber!, report.failure_report_id!)}
                 disabled={isRetrying}
               >
-                {isRetrying ? 'Retrying…' : 'Retry'}
+                {isRetrying ? 'Retrying…' : 'Retry code change'}
               </Button>
             )}
             {suggestedActions.map(action => {
@@ -229,9 +250,11 @@ export default function PatchFailureBanner({
             <p className="text-xs font-medium text-red-500">{reindexError}</p>
           )}
           <p className="text-xs text-muted-foreground">
-            {reindexEnabled
-              ? 'Re-index is available. Other recovery actions are not wired yet.'
-              : 'Recovery actions are not wired yet. Use the details below to decide the next manual step.'}
+            {canRetry
+              ? 'Retrying asks the AI to generate the change again. It may succeed or fail again, and nothing is committed until you review and approve the result.'
+              : reindexEnabled
+                ? 'Re-indexing refreshes Pipewright’s view of your repo so a retry can match the current files. Use the details below to decide the next step.'
+                : 'Use the details below to decide the next manual step.'}
           </p>
         </div>
       )}
