@@ -67,6 +67,7 @@ from backend.pipeline.scope_expansion_store import (
     reject_scope_expansion_request,
 )
 from backend.pipeline.pr_orchestrator import evaluate_push_pr_eligibility, push_and_create_pr
+from backend.pipeline.pr_status import build_pr_status, classify_push_failure
 from backend.pipeline.implementation_guard import (
     DEFAULT_EXAMPLES,
     DEFAULT_MISSING_DETAILS,
@@ -1515,7 +1516,7 @@ def _load_operator_state_run_row(run_id: str) -> dict | None:
     with engine.connect() as conn:
         row = conn.execute(text("""
             SELECT id, project_id, status, current_step, pr_url, pr_number,
-                   branch_name
+                   branch_name, push_error, pushed_at, pr_created_at
             FROM pipeline_runs
             WHERE id = :run_id
         """), {"run_id": run_id}).fetchone()
@@ -1689,6 +1690,15 @@ def _augment_plan_with_operator_state(plan: ChunkPlanResponse) -> ChunkPlanRespo
                 pr_mode=pr_mode or "local_only",
                 has_pr_url=bool(run.get("pr_url")),
             )
+            # #31B: a recorded push failure (no pr_url yet) must read honestly as
+            # push_failed, not as "ready to create a PR". Classify the persisted,
+            # already-sanitized push_error for a machine-actionable next step.
+            push_failed = (
+                run_status == RunStatus.PUSH_FAILED and not run.get("pr_url")
+            )
+            push_failure = (
+                classify_push_failure(run.get("push_error")) if push_failed else None
+            )
             patch_retry_decision = _patch_retry_decision_for_plan(plan)
             chunk_awaiting_approval = any(
                 chunk.status == ChunkStatusValue.AWAITING_CHUNK_APPROVAL
@@ -1742,6 +1752,16 @@ def _augment_plan_with_operator_state(plan: ChunkPlanResponse) -> ChunkPlanRespo
                     else None
                 ),
                 pr_created=bool(run.get("pr_url")),
+                push_failed=push_failed,
+                push_failure_summary=(
+                    push_failure.summary if push_failure else None
+                ),
+                push_failure_next_action=(
+                    push_failure.next_action if push_failure else None
+                ),
+                push_failure_retryable=(
+                    push_failure.retryable if push_failure else True
+                ),
                 pr_ready=(
                     run_status in {RunStatus.FINAL_APPROVED, RunStatus.PUSH_FAILED}
                     and pr_decision.eligible
@@ -1795,11 +1815,45 @@ def _augment_plan_with_reviews(plan: ChunkPlanResponse) -> ChunkPlanResponse:
         return plan
 
 
+def _augment_plan_with_pr_status(plan: ChunkPlanResponse) -> ChunkPlanResponse:
+    """
+    Attach the read-only typed PR/push status overlay (#31B).
+
+    Additive and fail-closed: derived purely from the already-loaded run row and
+    the project's pr_mode. It performs NO GitHub call, NO git call, NO push, and
+    NO PR creation, and never affects eligibility, approval, or any mutation. Any
+    failure leaves pr_status as None rather than breaking the read.
+    """
+    try:
+        run = _load_operator_state_run_row(plan.run_id)
+        if run is None:
+            return plan
+        pr_mode = None
+        try:
+            pr_mode = get_project(plan.project_id).get("pr_mode")
+        except Exception:
+            pr_mode = None
+        pr_status = build_pr_status(
+            run_status=run.get("status"),
+            pr_mode=pr_mode,
+            branch_name=run.get("branch_name"),
+            pr_url=run.get("pr_url"),
+            pr_number=run.get("pr_number"),
+            pushed_at=run.get("pushed_at"),
+            pr_created_at=run.get("pr_created_at"),
+            push_error=run.get("push_error"),
+        ).model_dump()
+        return plan.model_copy(update={"pr_status": pr_status})
+    except Exception:
+        return plan
+
+
 @router.get("/runs/{run_id}/chunks", response_model=ChunkPlanResponse)
 def get_chunk_plan_route(run_id: str):
     try:
         plan = _augment_plan_with_ack_read_model(get_chunk_plan_status(run_id))
         plan = _augment_plan_with_operator_state(plan)
+        plan = _augment_plan_with_pr_status(plan)
         return _augment_plan_with_reviews(plan)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))

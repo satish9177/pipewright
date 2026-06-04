@@ -235,3 +235,7 @@ class ChunkPlanResponse(BaseModel):
     # Additive read-only operator attention state. It is computed on reads and
     # never persisted; existing clients can ignore it safely.
     operator_state: dict[str, Any] | None = None
+    # Additive read-only PR/push status overlay (#31B). Derived on read from the
+    # run row + project pr_mode; never persisted, never calls GitHub, and never
+    # gates approval or any mutation. None until the run is loadable.
+    pr_status: dict[str, Any] | None = None
