@@ -1874,6 +1874,78 @@ def _augment_plan_with_pr_status(
         return plan
 
 
+def build_run_pr_status(run_id: str, checks_fetcher=None) -> dict:
+    """
+    Build the typed, read-only PR status payload for a single run (#31E).
+
+    This is the EXPLICIT pr-status read path behind GET /runs/{id}/pr-status.
+    Unlike the chunk read overlay (which never fetches), this DOES fetch checks
+    when a PR exists — that is the whole point of the dedicated endpoint — via
+    the #31D helper, which reports a gh/network failure as ``unavailable``,
+    never ``failed``. With no ``checks_fetcher`` the helper uses the real gh
+    fetcher; tests inject a mock.
+
+    Strictly read-only: it loads the run row and project, fetches checks
+    read-only, and returns a dict. It never takes the mutating project lock and
+    never writes run status, approval status, push status, or PR metadata, so it
+    cannot gate or influence final approval, push, or merge. Raises ValueError
+    when the run does not exist (the route maps that to 404).
+    """
+    run = _load_operator_state_run_row(run_id)
+    if run is None:
+        raise ValueError(f"chunks.py: run not found: {run_id}")
+
+    pr_mode = None
+    repo_path = None
+    try:
+        project = get_project(run.get("project_id"))
+        pr_mode = project.get("pr_mode")
+        repo_path = project.get("repo_path")
+    except Exception:
+        pr_mode = None
+        repo_path = None
+
+    checks = None
+    pr_url = run.get("pr_url")
+    if pr_url and repo_path:
+        identifier = run.get("pr_number") or run.get("branch_name")
+        if identifier:
+            checks = fetch_checks_summary(
+                repo_path, identifier, fetcher=checks_fetcher
+            ).model_dump()
+
+    pr_status = build_pr_status(
+        run_status=run.get("status"),
+        pr_mode=pr_mode,
+        branch_name=run.get("branch_name"),
+        pr_url=pr_url,
+        pr_number=run.get("pr_number"),
+        pushed_at=run.get("pushed_at"),
+        pr_created_at=run.get("pr_created_at"),
+        push_error=run.get("push_error"),
+        checks=checks,
+    ).model_dump()
+    return {"run_id": run_id, **pr_status}
+
+
+@router.get("/runs/{run_id}/pr-status")
+def get_pr_status_route(run_id: str):
+    """
+    Explicit, read-only PR status + refreshed checks for a run (#31E).
+
+    Read-only by construction: no mutating lock, no writes. When a PR exists it
+    refreshes checks via gh; a gh/network failure surfaces as
+    checks.state == "unavailable" rather than failing the request or implying a
+    red build. Never gates or triggers final approval, push, or merge.
+    """
+    try:
+        return build_run_pr_status(run_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+
 @router.get("/runs/{run_id}/chunks", response_model=ChunkPlanResponse)
 def get_chunk_plan_route(run_id: str):
     try:
