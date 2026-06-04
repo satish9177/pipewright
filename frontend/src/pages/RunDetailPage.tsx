@@ -196,11 +196,13 @@ function RunMemorySuggestions({ run }: { run: Run }) {
   const extraCount = result ? result.suggestions.length - preview.length : 0
 
   return (
-    <Card className="mb-6">
+    <Card className="mb-6 border-dashed border-muted-foreground/20 bg-muted/20">
       <CardHeader>
-        <CardTitle className="text-base">Memory Suggestions</CardTitle>
+        <CardTitle className="text-sm text-muted-foreground">
+          Memory Suggestions
+        </CardTitle>
         <CardDescription>
-          Generate project memory suggestions from this run's outcome. Suggestions
+          Optional: capture project memory from this run's outcome. Suggestions
           stay pending until you review them in Project Memory.
         </CardDescription>
       </CardHeader>
@@ -394,6 +396,11 @@ export default function RunDetailPage() {
   const [startImplementationError, setStartImplementationError] = useState<
     string | null
   >(null)
+  // Display-only collapse state for the Timeline / live log. `null` means "use
+  // the default for the run's terminality"; once the user toggles, their choice
+  // is remembered. EventLog stays mounted either way, so event behavior is
+  // unchanged — this only hides/shows the rendered log.
+  const [showTimeline, setShowTimeline] = useState<boolean | null>(null)
 
   const { data: run } = useQuery({
     queryKey: ['run', runId],
@@ -805,6 +812,10 @@ export default function RunDetailPage() {
   }
 
   const hasPrData = Boolean(run.pr_url || run.pr_number || run.push_error)
+  const isTerminalRun = TERMINAL_RUN_STATUSES.includes(run.status)
+  // Collapse the live log by default once the run is terminal; keep it open for
+  // active runs. The user's explicit toggle (showTimeline) always wins.
+  const timelineOpen = showTimeline ?? !isTerminalRun
   const showMemoryConflictPanel =
     run.status === 'awaiting_memory_conflict_approval'
   const showFinalApprovalPanel = run.status === 'awaiting_final_approval'
@@ -887,8 +898,7 @@ export default function RunDetailPage() {
         <div className="mb-3">
           <h3 className="text-sm font-semibold">Chunk Plan Details</h3>
           <p className="text-xs text-muted-foreground">
-            The chunk-by-chunk plan, execution controls, and chunk-level
-            approvals.
+            Plan, execution controls, and chunk-level approvals.
           </p>
         </div>
 
@@ -1173,17 +1183,29 @@ export default function RunDetailPage() {
       )}
 
       <section className="mb-6">
-        <div className="mb-3">
-          <h3 className="text-sm font-semibold">Timeline</h3>
-          <p className="text-xs text-muted-foreground">
-            Live run events and status changes from the backend.
-          </p>
-        </div>
-        <Card>
-          <CardContent className="py-4">
-            <EventLog events={events} status={wsStatus} />
-          </CardContent>
-        </Card>
+        {/* Collapsible for scanability: collapsed by default on terminal runs,
+            open on active runs. EventLog stays mounted either way, so live
+            events keep flowing — only the rendered log is hidden/shown. */}
+        <details
+          open={timelineOpen}
+          onToggle={(event) =>
+            setShowTimeline(event.currentTarget.open)
+          }
+        >
+          <summary className="mb-3 cursor-pointer">
+            <span className="text-sm font-semibold">Timeline</span>
+            <span className="ml-2 text-xs text-muted-foreground">
+              {isTerminalRun
+                ? 'Live log (collapsed — click to expand).'
+                : 'Live run events and status changes from the backend.'}
+            </span>
+          </summary>
+          <Card>
+            <CardContent className="py-4">
+              <EventLog events={events} status={wsStatus} />
+            </CardContent>
+          </Card>
+        </details>
       </section>
 
       <div className="mt-4">

@@ -247,6 +247,16 @@ export default function OperatorAttentionPanel({
   return (
     <Card className="mb-6 border-l-4 border-l-amber-400">
       <CardHeader>
+        {/* Section identity + a read-only chip so this panel reads as a status
+            summary, visually distinct from the real controls below it. */}
+        <div className="flex items-center justify-between gap-2">
+          <p className="font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            What needs your attention?
+          </p>
+          <span className="rounded-full border border-muted-foreground/30 bg-muted px-2 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Read-only
+          </span>
+        </div>
         <div className="flex flex-wrap items-center gap-2.5">
           <WaitingPill waitingOn={waiting_on} />
           <DecisionTag decisionType={decision_type} />
