@@ -223,12 +223,44 @@ CREATE TABLE IF NOT EXISTS test_validation_acknowledgements (
     FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
 );
 
+-- chunk_reviews is the isolated, additive home for advisory per-chunk AI reviews
+-- (Adversarial Reviewer Stage v1; docs/design/adversarial-reviewer-stage.md). It is
+-- deliberately separate from checkpoints (resume/safety substrate) and from
+-- chunks.completion_summary (already polymorphic), so advisory LLM evidence never
+-- couples into the resume path or patch-failure data. A review is bound to the
+-- chunk's test-checkpoint / diff identity (reviewed_test_checkpoint_hash, the #28F
+-- hash concept) so review staleness tracks acknowledgement staleness. Reviews are
+-- advisory/display-only: they gate nothing, commit nothing, and grant no authority.
+-- Only a 'completed' review carries a verdict/findings/summaries; 'failed' and
+-- 'unavailable' rows are provably empty. No file contents, secrets, or token-like
+-- values are stored here.
+CREATE TABLE IF NOT EXISTS chunk_reviews (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    chunk_number INTEGER NOT NULL,
+    review_status TEXT NOT NULL,             -- completed / failed / unavailable
+    verdict TEXT,                            -- null unless completed
+    summary TEXT,
+    findings_json TEXT,                      -- json array; '[]' when not completed
+    test_gap_summary TEXT,
+    scope_summary TEXT,
+    security_or_safety_summary TEXT,
+    recommended_human_action TEXT,
+    reviewed_test_checkpoint_hash TEXT,      -- chunk diff identity (#28F concept)
+    checkpoint_id TEXT,
+    provider TEXT,
+    model TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_project ON pipeline_runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);
 CREATE INDEX IF NOT EXISTS idx_chunks_run_status ON chunks(run_id, status);
 CREATE INDEX IF NOT EXISTS idx_approval_gates_run_status ON approval_gates(run_id, approval_type, status);
 CREATE INDEX IF NOT EXISTS idx_scope_expansion_requests_run_chunk_status ON scope_expansion_requests(run_id, chunk_number, status);
 CREATE INDEX IF NOT EXISTS idx_test_validation_ack_run_chunk_status ON test_validation_acknowledgements(run_id, chunk_number, status);
+CREATE INDEX IF NOT EXISTS idx_chunk_reviews_run_chunk ON chunk_reviews(run_id, chunk_number, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_suggestions_pending_dedupe
 ON memory_suggestions(project_id, content_hash)
 WHERE status = 'pending';
