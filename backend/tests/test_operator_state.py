@@ -128,18 +128,37 @@ def test_patch_retry_available_state():
     decision = SimpleNamespace(eligible=True)
     state = _state(patch_failure_present=True, patch_retry_decision=decision)
 
-    assert state.title == "Patch retry is available"
+    # Plain-English, user-facing copy (no "patch"/"retryable"/"read state" jargon).
+    assert state.title == "Code change could not be applied"
+    explanation = state.explanation.lower()
+    assert "code change" in explanation
+    assert "could not apply" in explanation
+    assert "nothing was committed" in explanation
+    assert "tests did not run" in explanation
+
     assert state.primary_action.id == "retry_patch"
+    assert state.primary_action.label == "Retry code change"
+
+    # Blocking final approval reads in plain language, not "patch failure unresolved".
+    approve_final = next(
+        action for action in state.blocked_actions if action.id == "approve_final"
+    )
+    assert approve_final.blocked_reason == (
+        "The requested code change has not been applied yet."
+    )
+
     assert _check(state, "patch").status == "failed"
+    assert _check(state, "patch").label == "Code change"
 
 
 def test_patch_retry_blocked_state():
     decision = SimpleNamespace(eligible=False, reason="dirty_worktree")
     state = _state(patch_failure_present=True, patch_retry_decision=decision)
 
-    assert state.title == "Patch retry is blocked"
+    assert state.title == "Code change could not be applied — retry unavailable"
     assert state.primary_action is None
     assert "retry_patch" in _blocked_ids(state)
+    # Backend reason stays as a secondary/diagnostic detail.
     assert _check(state, "patch").detail == "dirty_worktree"
 
 

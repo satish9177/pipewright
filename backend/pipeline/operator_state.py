@@ -452,7 +452,7 @@ def _wrong_branch_state(context: OperatorStateContext) -> OperatorState:
         waiting_on=OperatorWaitingOn.HUMAN,
         decision_type=OperatorDecisionType.NONE,
         blocked_actions=[
-            _blocked_action("retry_patch", "Retry patch", detail),
+            _blocked_action("retry_patch", "Retry code change", detail),
             _blocked_action("approve_scope_expansion", "Approve scope expansion and retry", detail),
             _blocked_action("approve_final", "Approve final", detail),
         ],
@@ -494,8 +494,8 @@ def _pending_scope_expansion_state(context: OperatorStateContext) -> OperatorSta
         blocked_actions=[
             _blocked_action(
                 "retry_patch",
-                "Retry patch",
-                "A pending scope expansion takes precedence over normal patch retry.",
+                "Retry code change",
+                "A pending scope decision must be resolved before the code change can be retried.",
             ),
             _blocked_action("approve_chunk", "Approve chunk", "The chunk is still failed."),
             _blocked_action("approve_final", "Approve final", "Scope expansion is unresolved."),
@@ -530,12 +530,12 @@ def _scope_expansion_rejected_state(context: OperatorStateContext) -> OperatorSt
         decision_type=OperatorDecisionType.NONE,
         blocked_actions=[
             _blocked_action("approve_scope_expansion", "Approve scope expansion and retry", "The request was rejected."),
-            _blocked_action("retry_patch", "Retry patch", "The failed chunk needs manual review after scope rejection."),
+            _blocked_action("retry_patch", "Retry code change", "The failed chunk needs manual review after scope rejection."),
             _blocked_action("approve_final", "Approve final", "A failed chunk remains unresolved."),
         ],
         safety_checks=[
             safety_check("scope", "Scope", OperatorSafetyCheckStatus.FAILED, "Scope expansion was rejected."),
-            safety_check("patch", "Patch", OperatorSafetyCheckStatus.FAILED, "The chunk remains failed."),
+            safety_check("patch", "Code change", OperatorSafetyCheckStatus.FAILED, "The chunk remains failed."),
             _tests_check(context),
         ],
         out_of_app_instruction="Investigate the failed chunk before proceeding.",
@@ -570,42 +570,61 @@ def _patch_failure_state(context: OperatorStateContext) -> OperatorState:
     decision = context.patch_retry_decision
     if _decision_eligible(decision):
         return _state(
-            title="Patch retry is available",
+            title="Code change could not be applied",
             explanation=(
-                "The patch failed in a retryable way and the current read state "
-                "indicates a human-triggered retry is available."
+                "Pipewright generated a code change, but it could not apply that "
+                "change to the current files in your repo. Nothing was committed, "
+                "and tests did not run. You can try applying the change again."
             ),
             waiting_on=OperatorWaitingOn.HUMAN,
             decision_type=OperatorDecisionType.PROGRESS,
             primary_action=_action(
                 "retry_patch",
-                "Retry patch",
-                "Retry the failed chunk inside the already-approved scope.",
+                "Retry code change",
+                "Try applying the generated change again, using the files already "
+                "approved for this chunk. This may succeed or fail again.",
                 severity=OperatorActionSeverity.CAUTION,
             ),
             blocked_actions=[
                 _blocked_action("approve_chunk", "Approve chunk", "The chunk is failed."),
-                _blocked_action("approve_final", "Approve final", "A patch failure is unresolved."),
+                _blocked_action(
+                    "approve_final",
+                    "Approve final",
+                    "The requested code change has not been applied yet.",
+                ),
             ],
             safety_checks=[
-                safety_check("patch", "Patch", OperatorSafetyCheckStatus.FAILED, "A retryable patch failure is present."),
+                safety_check(
+                    "patch",
+                    "Code change",
+                    OperatorSafetyCheckStatus.FAILED,
+                    "Pipewright could not apply the generated change.",
+                ),
                 _tests_check(context),
             ],
         )
 
-    reason = _decision_reason(decision) or "Patch retry is not eligible."
+    reason = _decision_reason(decision) or "The code change cannot be retried right now."
     return _state(
-        title="Patch retry is blocked",
-        explanation="The failed patch cannot be retried from the current read state.",
+        title="Code change could not be applied — retry unavailable",
+        explanation=(
+            "Pipewright generated a code change but could not apply it, and it "
+            "cannot retry from the current state. Nothing was committed, and tests "
+            "did not run."
+        ),
         waiting_on=OperatorWaitingOn.HUMAN,
         decision_type=OperatorDecisionType.NONE,
         blocked_actions=[
-            _blocked_action("retry_patch", "Retry patch", reason),
+            _blocked_action("retry_patch", "Retry code change", reason),
             _blocked_action("approve_chunk", "Approve chunk", "The chunk is failed."),
-            _blocked_action("approve_final", "Approve final", "A patch failure is unresolved."),
+            _blocked_action(
+                "approve_final",
+                "Approve final",
+                "The requested code change has not been applied yet.",
+            ),
         ],
         safety_checks=[
-            safety_check("patch", "Patch", OperatorSafetyCheckStatus.FAILED, reason),
+            safety_check("patch", "Code change", OperatorSafetyCheckStatus.FAILED, reason),
             _tests_check(context),
         ],
     )
@@ -820,7 +839,7 @@ def _plan_approved_not_executed_state(context: OperatorStateContext) -> Operator
         ],
         safety_checks=[
             safety_check("plan_approval", "Plan approval", OperatorSafetyCheckStatus.PASSED, "The chunk plan is approved."),
-            safety_check("patch", "Patch", OperatorSafetyCheckStatus.NOT_EVALUATED, "Patch application has not run yet."),
+            safety_check("patch", "Code change", OperatorSafetyCheckStatus.NOT_EVALUATED, "No code change has been applied yet."),
             _tests_check(context),
         ],
     )
@@ -836,7 +855,7 @@ def _running_state(context: OperatorStateContext) -> OperatorState:
         waiting_on=OperatorWaitingOn.SYSTEM,
         decision_type=OperatorDecisionType.NONE,
         blocked_actions=[
-            _blocked_action("retry_patch", "Retry patch", "Pipewright is currently running."),
+            _blocked_action("retry_patch", "Retry code change", "Pipewright is currently running."),
             _blocked_action("approve_final", "Approve final", "Pipewright is currently running."),
             _blocked_action("create_pr", "Create PR", "Pipewright is currently running."),
         ],
@@ -857,7 +876,7 @@ def _stalled_state(context: OperatorStateContext) -> OperatorState:
         waiting_on=OperatorWaitingOn.HUMAN,
         decision_type=OperatorDecisionType.NONE,
         blocked_actions=[
-            _blocked_action("retry_patch", "Retry patch", "The run may be stalled."),
+            _blocked_action("retry_patch", "Retry code change", "The run may be stalled."),
             _blocked_action("approve_final", "Approve final", "The run may be stalled."),
             _blocked_action("create_pr", "Create PR", "The run may be stalled."),
         ],
@@ -880,7 +899,7 @@ def _terminal_state(context: OperatorStateContext) -> OperatorState:
         waiting_on=OperatorWaitingOn.NOBODY,
         decision_type=OperatorDecisionType.NONE,
         blocked_actions=[
-            _blocked_action("retry_patch", "Retry patch", f"The run is terminal ({status})."),
+            _blocked_action("retry_patch", "Retry code change", f"The run is terminal ({status})."),
             _blocked_action("approve_final", "Approve final", f"The run is terminal ({status})."),
             _blocked_action("create_pr", "Create PR", f"The run is terminal ({status})."),
         ],
@@ -913,7 +932,7 @@ def _unknown_state() -> OperatorState:
         waiting_on=OperatorWaitingOn.HUMAN,
         decision_type=OperatorDecisionType.NONE,
         blocked_actions=[
-            _blocked_action("retry_patch", "Retry patch", UNKNOWN_STATE_MESSAGE),
+            _blocked_action("retry_patch", "Retry code change", UNKNOWN_STATE_MESSAGE),
             _blocked_action("approve_chunk", "Approve chunk", UNKNOWN_STATE_MESSAGE),
             _blocked_action("approve_final", "Approve final", UNKNOWN_STATE_MESSAGE),
             _blocked_action("create_pr", "Create PR", UNKNOWN_STATE_MESSAGE),
