@@ -64,6 +64,7 @@ from backend.pipeline.patch_failures import (
     recovered_patch_review_to_completion_summary,
 )
 from backend.pipeline.planner import run_planner
+from backend.pipeline.reviewer import run_chunk_review
 from backend.pipeline.run_locks import project_repo_lock, project_repo_lock_sync
 from backend.pipeline.scope_expansion import (
     SCOPE_EXPANSION_APPROVE_INELIGIBLE_CHUNK_NOT_FAILED,
@@ -1194,6 +1195,41 @@ def _persist_test_run_verdict(run_id: str, chunk_number: int, test_result) -> No
         )
 
 
+async def _run_advisory_review_safe(
+    run_id: str,
+    project_id: str,
+    chunk: ChunkDefinition,
+    code: CoderHandoff,
+    patch,
+    test_result,
+) -> None:
+    """
+    Run the advisory Adversarial Reviewer (v1) as a best-effort side effect and
+    swallow everything. This is display-only evidence (stored in chunk_reviews);
+    it NEVER changes the chunk outcome, gates nothing, commits nothing, and does
+    not touch #26/#27/#28 behavior.
+
+    ``run_chunk_review`` is already best-effort and contracted never to raise; this
+    wrapper is a second, defense-in-depth swallow so the chunk outcome is identical
+    whether the reviewer succeeds, fails, times out, or returns malformed output.
+    """
+    try:
+        await run_chunk_review(
+            run_id=run_id,
+            project_id=project_id,
+            chunk=chunk,
+            code=code,
+            patch=patch,
+            test_result=test_result,
+        )
+    except Exception as error:
+        logger.warning(
+            "[CHUNKED] advisory review skipped (best-effort) | "
+            "run_id=%s | chunk=%s | error=%s",
+            run_id, chunk.chunk_number, error,
+        )
+
+
 async def _execute_single_chunk(
     run_id: str,
     project_id: str,
@@ -1314,6 +1350,16 @@ async def _execute_single_chunk(
             failed_step="test",
         )
         return _fail_chunk_with_report(run_id, chunk_number, report)
+
+    # Adversarial Reviewer v1 (advisory, display-only). The patch applied, tests
+    # passed, and the runtime verdict is persisted, so there is a standing applied
+    # diff to review. This runs BEFORE the commit/pause branch below but is purely
+    # best-effort evidence stored in chunk_reviews: it never changes the chunk
+    # outcome, never gates approval, and is fully swallowed on any failure. Not run
+    # on patch-apply failures or rolled-back test failures (both returned above).
+    await _run_advisory_review_safe(
+        run_id, project_id, chunk, code, patch, test_result
+    )
 
     if chunk.requires_human_review:
         return _pause_for_chunk_approval(run_id, chunk, code, branch_name)
