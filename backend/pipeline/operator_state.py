@@ -192,12 +192,18 @@ def compute_operator_state(context: OperatorStateContext) -> OperatorState:
     if context.patch_failure_present:
         return _patch_failure_state(context)
 
+    # Chunk approval outranks the weak/no-test acknowledgement gate. While a
+    # chunk is awaiting human review/approval, the immediate next action is to
+    # review that change; the acknowledgement matters at the final-approval
+    # gate, AFTER the chunk is approved. The weak/no-test signal is not lost —
+    # it still surfaces in this state's safety checks and as a future block on
+    # final approval.
+    if context.chunk_awaiting_approval or context.recovered_scope_retry_awaiting_chunk_approval:
+        return _chunk_approval_state(context)
+
     ack_state = _effective_ack_state(context)
     if ack_state in {"missing", "stale"}:
         return _test_ack_required_state(context, ack_state)
-
-    if context.chunk_awaiting_approval or context.recovered_scope_retry_awaiting_chunk_approval:
-        return _chunk_approval_state(context)
 
     if context.final_approval_available:
         return _final_approval_available_state(context)
@@ -667,6 +673,23 @@ def _test_ack_required_state(context: OperatorStateContext, ack_state: str) -> O
 
 def _chunk_approval_state(context: OperatorStateContext) -> OperatorState:
     recovered = context.recovered_scope_retry_awaiting_chunk_approval
+    ack_state = _effective_ack_state(context)
+    ack_pending = ack_state in {"missing", "stale"}
+    # When a weak/no-test acknowledgement is still outstanding, keep that signal
+    # visible: surface it in safety checks and as part of why final approval is
+    # blocked — but chunk review/approval remains the primary action.
+    final_blocked_reason = (
+        "A chunk is awaiting approval, and weak/no-test validation must still be "
+        "acknowledged before final approval."
+        if ack_pending
+        else "A chunk is awaiting approval."
+    )
+    safety_checks = [
+        safety_check("chunk_approval", "Chunk approval", OperatorSafetyCheckStatus.NOT_EVALUATED, "The chunk is waiting for human approval."),
+        _tests_check(context),
+    ]
+    if ack_pending:
+        safety_checks.append(_ack_check(ack_state))
     return _state(
         title="Review recovered scoped change" if recovered else "Review chunk change",
         explanation=(
@@ -679,13 +702,10 @@ def _chunk_approval_state(context: OperatorStateContext) -> OperatorState:
         decision_type=OperatorDecisionType.PROGRESS,
         primary_action=_action("approve_chunk", "Approve chunk", "Approve and commit this chunk."),
         blocked_actions=[
-            _blocked_action("approve_final", "Approve final", "A chunk is awaiting approval."),
+            _blocked_action("approve_final", "Approve final", final_blocked_reason),
             _blocked_action("create_pr", "Create PR", "Final approval is not complete."),
         ],
-        safety_checks=[
-            safety_check("chunk_approval", "Chunk approval", OperatorSafetyCheckStatus.NOT_EVALUATED, "The chunk is waiting for human approval."),
-            _tests_check(context),
-        ],
+        safety_checks=safety_checks,
     )
 
 
