@@ -6,7 +6,7 @@ These models describe a proposed chunk plan only. They do not execute chunks,
 apply patches, run tests, or create approvals.
 """
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -175,3 +175,6 @@ class ChunkPlanResponse(BaseModel):
     current_chunk_number: int
     triage: TriageResult | None = None
     chunks: list[ChunkStatus]
+    # Additive read-only operator attention state. It is computed on reads and
+    # never persisted; existing clients can ignore it safely.
+    operator_state: dict[str, Any] | None = None

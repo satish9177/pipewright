@@ -4,6 +4,7 @@ Routes for Phase 2B chunk planning, approval, execution, and manual resume.
 """
 
 import logging
+import json
 import os
 import uuid
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
-from backend.core.statuses import ApprovalStatus, RunStatus
+from backend.core.statuses import ApprovalStatus, ChunkPlanStatus, ChunkStatusValue, RunStatus
 from backend.db.database import engine
 from backend.models.handoff import (
     FEATURE_DESCRIPTION_MAX_LENGTH,
@@ -33,12 +34,21 @@ from backend.pipeline.chunk_store import (
 )
 from backend.pipeline.test_validation_ack_store import (
     ACK_REQUIRED_VERDICTS,
+    ChunkAckRequirement,
     TestValidationAckConflictError,
     acknowledgement_state,
     chunks_requiring_acknowledgement,
     compute_chunk_diff_hash,
     create_acknowledgement,
     evaluate_final_approval_ack_eligibility,
+)
+from backend.pipeline.operator_state import (
+    OperatorStateContext,
+    compute_operator_state,
+)
+from backend.pipeline.patch_failures import (
+    patch_failure_report_from_completion_summary,
+    evaluate_patch_retry_eligibility,
 )
 from backend.models.chunk import TriageResult
 from backend.pipeline.chunked_orchestrator import (
@@ -55,7 +65,7 @@ from backend.pipeline.scope_expansion_store import (
     ScopeExpansionConflictError,
     reject_scope_expansion_request,
 )
-from backend.pipeline.pr_orchestrator import push_and_create_pr
+from backend.pipeline.pr_orchestrator import evaluate_push_pr_eligibility, push_and_create_pr
 from backend.pipeline.implementation_guard import (
     DEFAULT_EXAMPLES,
     DEFAULT_MISSING_DETAILS,
@@ -1499,10 +1509,267 @@ def _augment_plan_with_ack_read_model(plan: ChunkPlanResponse) -> ChunkPlanRespo
     return plan
 
 
+def _load_operator_state_run_row(run_id: str) -> dict | None:
+    """Read the small run snapshot needed to adapt operator_state."""
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT id, project_id, status, current_step, pr_url, pr_number,
+                   branch_name
+            FROM pipeline_runs
+            WHERE id = :run_id
+        """), {"run_id": run_id}).fetchone()
+    return dict(row._mapping) if row else None
+
+
+def _completion_summary_dict(value: str | None) -> dict:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _chunk_dependencies_met(plan: ChunkPlanResponse, chunk_number: int) -> bool:
+    status_by_number = {
+        chunk.chunk_number: chunk.status for chunk in plan.chunks
+    }
+    chunk = next(
+        (item for item in plan.chunks if item.chunk_number == chunk_number),
+        None,
+    )
+    if chunk is None:
+        return False
+    return all(
+        status_by_number.get(dependency) == ChunkStatusValue.COMPLETED
+        for dependency in chunk.depends_on
+    )
+
+
+def _patch_retry_decision_for_plan(plan: ChunkPlanResponse):
+    """
+    Best-effort display eligibility for patch retry from already-loaded chunks.
+
+    Uses the persisted PatchFailureReport's clean-tree flag rather than a live
+    git read. Mutating retry still revalidates branch and working tree under its
+    existing lock before execution.
+    """
+    for chunk in plan.chunks:
+        if chunk.status != ChunkStatusValue.FAILED:
+            continue
+        report = patch_failure_report_from_completion_summary(
+            _completion_summary_dict(chunk.completion_summary)
+        )
+        if report is None:
+            continue
+        return evaluate_patch_retry_eligibility(
+            report,
+            requested_failure_report_id=report.failure_report_id,
+            dependencies_met=_chunk_dependencies_met(plan, chunk.chunk_number),
+            working_tree_clean=report.working_tree_clean,
+            chunk_status=chunk.status,
+        )
+    return None
+
+
+def _has_patch_failure(plan: ChunkPlanResponse) -> bool:
+    return any(
+        patch_failure_report_from_completion_summary(
+            _completion_summary_dict(chunk.completion_summary)
+        )
+        is not None
+        for chunk in plan.chunks
+    )
+
+
+def _has_pending_scope_expansion(plan: ChunkPlanResponse) -> bool:
+    return any(chunk.pending_scope_expansion is not None for chunk in plan.chunks)
+
+
+def _has_rejected_scope_expansion(run_id: str) -> bool:
+    try:
+        with engine.connect() as conn:
+            count = conn.execute(text("""
+                SELECT COUNT(*)
+                FROM scope_expansion_requests
+                WHERE run_id = :run_id
+                  AND status = 'rejected'
+            """), {"run_id": run_id}).scalar()
+        return bool(count)
+    except Exception:
+        return False
+
+
+def _has_pending_final_gate(run_id: str) -> bool:
+    return _get_pending_final_gate(run_id) is not None
+
+
+def _ack_decision_from_plan(plan: ChunkPlanResponse):
+    blocking: list[ChunkAckRequirement] = []
+    for chunk in plan.chunks:
+        validation = chunk.test_validation
+        if validation is None or validation.verdict not in ACK_REQUIRED_VERDICTS:
+            continue
+        if validation.acknowledgement_status != "current":
+            blocking.append(ChunkAckRequirement(
+                chunk_number=chunk.chunk_number,
+                verdict=validation.verdict,
+                state=validation.acknowledgement_status,
+                current_diff_hash=None,
+            ))
+    return evaluate_final_approval_ack_eligibility(blocking)
+
+
+def _representative_test_verdict(plan: ChunkPlanResponse) -> str | None:
+    verdicts = [
+        chunk.test_validation.verdict
+        for chunk in plan.chunks
+        if chunk.test_validation is not None
+    ]
+    for verdict in ("weak", "none", "strong", "unknown"):
+        if verdict in verdicts:
+            return verdict
+    return None
+
+
+def _representative_ack_state(plan: ChunkPlanResponse) -> str | None:
+    states = [
+        chunk.test_validation.acknowledgement_status
+        for chunk in plan.chunks
+        if chunk.test_validation is not None
+        and chunk.test_validation.verdict in ACK_REQUIRED_VERDICTS
+    ]
+    if "stale" in states:
+        return "stale"
+    if "missing" in states:
+        return "missing"
+    if "current" in states:
+        return "current"
+    return None
+
+
+def _has_recovered_review(plan: ChunkPlanResponse) -> bool:
+    for chunk in plan.chunks:
+        summary = _completion_summary_dict(chunk.completion_summary)
+        if summary.get("kind") == "recovered_patch_review":
+            return True
+    return False
+
+
+def _augment_plan_with_operator_state(plan: ChunkPlanResponse) -> ChunkPlanResponse:
+    """
+    Compute and attach operator_state to the chunk read model.
+
+    Read-only and additive. If adaptation cannot map the state safely, fail
+    closed by returning an unknown operator_state rather than blocking the read.
+    """
+    try:
+        run = _load_operator_state_run_row(plan.run_id)
+        if run is None:
+            context = OperatorStateContext(unknown=True)
+        else:
+            run_status = run.get("status")
+            is_active_run = run_status in {
+                RunStatus.RUNNING,
+                RunStatus.RUNNING_CHUNKS,
+                RunStatus.PUSHING,
+            }
+            pending_final_gate = _has_pending_final_gate(plan.run_id)
+            ack_decision = _ack_decision_from_plan(plan)
+            pr_mode = None
+            try:
+                project = get_project(plan.project_id)
+                pr_mode = project.get("pr_mode")
+            except Exception:
+                pr_mode = None
+            pr_decision = evaluate_push_pr_eligibility(
+                run_status=run_status,
+                pr_mode=pr_mode or "local_only",
+                has_pr_url=bool(run.get("pr_url")),
+            )
+            patch_retry_decision = _patch_retry_decision_for_plan(plan)
+            chunk_awaiting_approval = any(
+                chunk.status == ChunkStatusValue.AWAITING_CHUNK_APPROVAL
+                for chunk in plan.chunks
+            )
+            context = OperatorStateContext(
+                run_status=run_status,
+                chunk_plan_status=plan.chunk_plan_status,
+                chunk_plan_awaiting_approval=(
+                    plan.chunk_plan_status == ChunkPlanStatus.AWAITING_APPROVAL
+                    and not is_active_run
+                ),
+                plan_approved_not_executed=(
+                    plan.chunk_plan_status == ChunkPlanStatus.APPROVED
+                    and run_status == RunStatus.CHUNK_PLAN_APPROVED
+                ),
+                is_running=is_active_run,
+                is_terminal=run_status in {
+                    RunStatus.FAILED,
+                    RunStatus.REJECTED,
+                    RunStatus.COMPLETE,
+                    RunStatus.FINAL_REJECTED,
+                },
+                terminal_status=run_status,
+                pending_scope_expansion=_has_pending_scope_expansion(plan),
+                scope_expansion_rejected=(
+                    run_status == RunStatus.FAILED
+                    and _has_rejected_scope_expansion(plan.run_id)
+                ),
+                memory_conflict_pending=(
+                    run_status == RunStatus.AWAITING_MEMORY_CONFLICT_APPROVAL
+                ),
+                patch_failure_present=_has_patch_failure(plan),
+                patch_retry_decision=patch_retry_decision,
+                test_verdict=_representative_test_verdict(plan),
+                test_ack_state=_representative_ack_state(plan),
+                final_ack_decision=ack_decision,
+                chunk_awaiting_approval=chunk_awaiting_approval,
+                recovered_scope_retry_awaiting_chunk_approval=(
+                    chunk_awaiting_approval and _has_recovered_review(plan)
+                ),
+                final_approval_available=(
+                    pending_final_gate and ack_decision.eligible
+                ),
+                final_approval_blocked=(
+                    pending_final_gate and not ack_decision.eligible
+                ),
+                final_approval_blocked_reason=(
+                    "Weak/no-test validation acknowledgement is not current."
+                    if pending_final_gate and not ack_decision.eligible
+                    else None
+                ),
+                pr_created=bool(run.get("pr_url")),
+                pr_ready=(
+                    run_status in {RunStatus.FINAL_APPROVED, RunStatus.PUSH_FAILED}
+                    and pr_decision.eligible
+                ),
+                pr_mode=pr_decision.pr_mode,
+                pr_decision=pr_decision,
+                local_only_manual_push=(
+                    pr_decision.pr_mode == "local_only"
+                    and run_status in {
+                        RunStatus.FINAL_APPROVED,
+                        RunStatus.PUSH_FAILED,
+                        RunStatus.COMPLETE,
+                    }
+                    and not run.get("pr_url")
+                ),
+            )
+        operator_state = compute_operator_state(context).model_dump()
+    except Exception:
+        operator_state = compute_operator_state(
+            OperatorStateContext(unknown=True)
+        ).model_dump()
+    return plan.model_copy(update={"operator_state": operator_state})
+
+
 @router.get("/runs/{run_id}/chunks", response_model=ChunkPlanResponse)
 def get_chunk_plan_route(run_id: str):
     try:
-        return _augment_plan_with_ack_read_model(get_chunk_plan_status(run_id))
+        plan = _augment_plan_with_ack_read_model(get_chunk_plan_status(run_id))
+        return _augment_plan_with_operator_state(plan)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:
