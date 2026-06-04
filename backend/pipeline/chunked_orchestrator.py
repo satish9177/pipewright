@@ -2132,6 +2132,16 @@ async def _execute_retry_attempt(
         test_result = run_tests(
             outcome.patch_result, run_id, chunk_number=chunk_number
         )
+
+        # #28D: record the display-only runtime test verdict on the retry path
+        # too, for BOTH pass and fail, before any branch decision. Without this a
+        # retried/recovered chunk would carry a NULL verdict, which the #28F final-
+        # approval gate treats as "no acknowledgement required" — letting a weak
+        # command (e.g. `python --version`) slip past unacknowledged. Display-only:
+        # this writes only the chunk's test_run_* columns and never changes the
+        # outcome below (pass/fail stays exit-code based via test_result.passed).
+        _persist_test_run_verdict(run_id, chunk_number, test_result)
+
         if not test_result.passed:
             clean = local_git.is_working_tree_clean(target_repo_path)
             test_report = build_patch_failure_report(

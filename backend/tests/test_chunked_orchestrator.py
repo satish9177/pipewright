@@ -3463,3 +3463,136 @@ async def test_test_failure_records_verdict_and_fails_by_exit_code(
     assert stored["verdict"] != "strong"
     assert stored["passed_tests"] == 4
     assert stored["failed_tests"] == 1
+
+
+# --------------------------------------------------------------------------
+# #28 bug: every run_tests path must persist the runtime verdict before the
+# pass/fail branch. The auto/no-human-review path (above) already did; the
+# #26D2 human retry path (_execute_retry_attempt) ran tests WITHOUT persisting,
+# so a retried-then-completed chunk carried a NULL verdict and silently slipped
+# past the #28F final-approval acknowledgement gate. These lock that path in.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retry_path_persists_weak_verdict_for_version_probe(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    # A low-risk chunk that failed once and is retried by a human. The project
+    # test command is "python --version" (weak). The retry succeeds and pauses at
+    # the chunk approval gate; the weak verdict MUST be persisted at test time
+    # (before the fix it was NULL here).
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1)
+    patch_git_preflight(monkeypatch, run_id=run_id)
+    patch_retry_pipeline(monkeypatch, run_id)
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    assert result["status"] == "awaiting_chunk_approval"
+    stored = get_chunk_test_run_verdict(run_id, 1)
+    assert stored is not None  # was None before the fix
+    assert stored["verdict"] == "weak"
+    assert stored["command_quality"] == "weak"
+
+
+@pytest.mark.asyncio
+async def test_retry_path_persists_verdict_before_test_failure_branch(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    # The retry's own test run fails. The verdict is still recorded (evidence)
+    # before the failure branch returns; pass/fail stays exit-code based, so the
+    # chunk re-fails.
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(run_id, 1)
+    patch_git_preflight(monkeypatch, run_id=run_id)
+    patch_retry_pipeline(monkeypatch, run_id, tests_ok=False)
+
+    await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    # A weak command that also exited non-zero stays weak (never strong).
+    stored = get_chunk_test_run_verdict(run_id, 1)
+    assert stored is not None
+    assert stored["verdict"] == "weak"
+    assert stored["verdict"] != "strong"
+
+
+# --------------------------------------------------------------------------
+# #28 end-to-end: the low-risk / requires_human_review=false auto path persists
+# the verdict, and that persisted verdict is what the #28F final-approval gate
+# enforces. Proves the reported symptom (PR/approval slipping past on a weak
+# command) is closed end to end.
+# --------------------------------------------------------------------------
+
+
+def _seed_test_checkpoint(run_id, chunk_number, git_hash):
+    # The chunk's latest "test" checkpoint git hash is the canonical diff identity
+    # the acknowledgement is bound to. The mocked pipeline does not write one, so
+    # seed it exactly as the real tester would.
+    save_checkpoint(
+        run_id=run_id,
+        step="test",
+        output={"passed": True},
+        handoff_contract={"passed": True},
+        git_hash=git_hash,
+        tests_passed=True,
+        chunk_number=chunk_number,
+    )
+
+
+@pytest.mark.asyncio
+async def test_low_risk_weak_chunk_blocks_final_approval_until_acknowledged(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)  # "python --version"
+    patch_git_preflight(monkeypatch)
+    patch_success_pipeline(monkeypatch, run_id)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+    assert result["status"] == "awaiting_final_approval"
+
+    # The auto-complete path persisted the weak verdict on the completed chunk.
+    stored = get_chunk_test_run_verdict(run_id, 1)
+    assert stored["verdict"] == "weak"
+
+    client = TestClient(app)
+    # Final approval is blocked until the weak verdict is acknowledged.
+    blocked = client.post(f"/runs/{run_id}/final-approval/approve")
+    assert blocked.status_code == 409
+
+    _seed_test_checkpoint(run_id, 1, "HASH_A")
+    ack = client.post(
+        f"/runs/{run_id}/chunks/1/test-validation/acknowledge",
+        json={"reason": "manually verified"},
+    )
+    assert ack.status_code == 200
+
+    approved = client.post(f"/runs/{run_id}/final-approval/approve")
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "final_approved"
+
+
+@pytest.mark.asyncio
+async def test_low_risk_strong_chunk_final_approval_needs_no_acknowledgement(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = _create_run_with_command(tmp_repo, tracked_runs, "pytest")
+    patch_git_preflight(monkeypatch)
+    patch_success_pipeline(monkeypatch, run_id)
+    _override_tests(monkeypatch, PipelineTestResult(
+        run_id=run_id,
+        passed=True,
+        output="===== 5 passed in 0.10s =====",
+        total_tests=5,
+        passed_tests=5,
+        failed_tests=0,
+    ))
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+    assert result["status"] == "awaiting_final_approval"
+    assert get_chunk_test_run_verdict(run_id, 1)["verdict"] == "strong"
+
+    client = TestClient(app)
+    approved = client.post(f"/runs/{run_id}/final-approval/approve")
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "final_approved"
