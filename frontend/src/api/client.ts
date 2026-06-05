@@ -764,6 +764,33 @@ export const healthApi = {
   get: () => api.get<HealthResponse>('/health').then(r => r.data),
 }
 
+// Read-only per-role provider diagnostics (#33E/#33F). Display/observability
+// only — it never changes provider routing or any config.
+export type LLMDiagnosticStatus =
+  | 'available'
+  | 'unavailable'
+  | 'blocked'
+  | 'unknown'
+
+export interface LLMRoleDiagnostic extends ExtraFields {
+  role: string
+  provider: string
+  model: string
+  status: LLMDiagnosticStatus
+  message: string
+  fake_blocked: boolean
+  validated: boolean
+}
+
+export interface LLMDiagnosticsReport extends ExtraFields {
+  roles: LLMRoleDiagnostic[]
+}
+
+export const llmApi = {
+  diagnostics: () =>
+    api.get<LLMDiagnosticsReport>('/llm/diagnostics').then(r => r.data),
+}
+
 export const projectsApi = {
   list: () => api.get<Project[]>('/projects').then(r => r.data),
   get: (id: string) => api.get<Project>(`/projects/${id}`).then(r => r.data),
