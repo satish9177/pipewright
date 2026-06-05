@@ -393,6 +393,7 @@ execution, checkpoint, approval, and rollback semantics stay explicit.
 - `backend/utils/path_safety.py` — forbidden-path / traversal protection
 - `backend/github/branch_safety.py` — protected base-branch rules
 - `docs/setup/local-dev.md` — detailed local setup
+- `docs/setup/local-state-reset-backup.md` — what local state is stored, plus backup, reset, interruption, and PR-mode guidance
 - `docs/demo/local-self-use-demo.md` — full demo walkthrough + troubleshooting
 - `docs/testing/demo-smoke-checklist.md` — demo / readiness smoke checklist
 - `docs/status/current-state.md` — current project status (completed / deferred)
