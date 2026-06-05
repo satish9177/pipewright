@@ -254,6 +254,34 @@ CREATE TABLE IF NOT EXISTS chunk_reviews (
     FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
 );
 
+-- llm_call_provenance is the isolated, additive home for METADATA-ONLY records of
+-- which provider/model actually produced a role's effective output for a run/chunk
+-- (#33B; docs/design/multi-provider-modes.md). It is deliberately separate from
+-- checkpoints (the resume/safety substrate) and from chunks/completion_summary, so
+-- provenance never couples into the resume path. It is audit/display-only: it gates
+-- nothing, commits nothing, retries nothing, expands no scope, and grants no
+-- authority. METADATA ONLY — no prompts, no LLM responses, no diffs, no file
+-- contents, no API keys/tokens/auth headers, and no raw provider errors are ever
+-- stored here; only provider/model names, the role, an optional selection_source
+-- label, finish_reason, token counts, and audit ids/timestamps. chunk_number is
+-- nullable for pre-chunk roles. selection_source is nullable: it is reserved for a
+-- future slice and is NOT derived here, because deriving it would duplicate or change
+-- resolve_role_config precedence (out of scope for #33B).
+CREATE TABLE IF NOT EXISTS llm_call_provenance (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    chunk_number INTEGER,
+    role TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    selection_source TEXT,
+    finish_reason TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_project ON pipeline_runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);
 CREATE INDEX IF NOT EXISTS idx_chunks_run_status ON chunks(run_id, status);
@@ -261,6 +289,7 @@ CREATE INDEX IF NOT EXISTS idx_approval_gates_run_status ON approval_gates(run_i
 CREATE INDEX IF NOT EXISTS idx_scope_expansion_requests_run_chunk_status ON scope_expansion_requests(run_id, chunk_number, status);
 CREATE INDEX IF NOT EXISTS idx_test_validation_ack_run_chunk_status ON test_validation_acknowledgements(run_id, chunk_number, status);
 CREATE INDEX IF NOT EXISTS idx_chunk_reviews_run_chunk ON chunk_reviews(run_id, chunk_number, created_at);
+CREATE INDEX IF NOT EXISTS idx_llm_call_provenance_run_chunk_role ON llm_call_provenance(run_id, chunk_number, role);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_suggestions_pending_dedupe
 ON memory_suggestions(project_id, content_hash)
 WHERE status = 'pending';

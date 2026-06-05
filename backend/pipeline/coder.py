@@ -22,12 +22,13 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from backend.llm import complete_for_role, log_token_usage
-from backend.llm.base import LLMRequest, Message
+from backend.llm.base import LLMRequest, LLMResponse, Message
 from backend.llm.errors import ProviderRateLimitError
 from backend.llm.role_config import Role
 from backend.models.handoff import PlannerHandoff, CoderHandoff
 from backend.memory.prompt_builder import build_project_memory_block
 from backend.checkpoint.checkpoint_store import save_checkpoint
+from backend.pipeline.llm_call_provenance_store import try_record_llm_call_provenance
 from backend.utils.json_helpers import clean_json_response
 from backend.utils.path_safety import normalize_relative_path, validate_safe_relative_path
 from backend.projects.project_context import get_target_repo_path
@@ -300,10 +301,10 @@ def _build_correction_request(
     )
 
 
-async def _call_llm(request: LLMRequest, run_id: str) -> str:
+async def _call_llm(request: LLMRequest, run_id: str) -> LLMResponse:
     response = await complete_for_role(Role.CODER, request)
     log_token_usage(response, run_id=run_id, role=Role.CODER)
-    return response.text
+    return response
 
 
 def _parse_handoff(raw_text: str, run_id: str) -> CoderHandoff:
@@ -360,23 +361,25 @@ async def run_coder(
         request = _build_llm_request(user_prompt)
 
         raw_text = ""
+        coder_response: LLMResponse | None = None
 
         try:
             logger.info("[CODER] Calling LLM (attempt 1)...")
-            raw_text = await _call_llm(request, run_id)
+            coder_response = await _call_llm(request, run_id)
+            raw_text = coder_response.text
             handoff = _parse_handoff(raw_text, run_id)
             logger.info("[CODER] Handoff validated on attempt 1")
 
         except ValidationError as first_error:
-            handoff = await _retry_after_parse_failure(
+            handoff, coder_response = await _retry_after_parse_failure(
                 user_prompt, raw_text, first_error, run_id
             )
         except json.JSONDecodeError as first_error:
-            handoff = await _retry_after_parse_failure(
+            handoff, coder_response = await _retry_after_parse_failure(
                 user_prompt, raw_text, first_error, run_id
             )
         except ValueError as first_error:
-            handoff = await _retry_after_parse_failure(
+            handoff, coder_response = await _retry_after_parse_failure(
                 user_prompt, raw_text, first_error, run_id
             )
 
@@ -406,6 +409,25 @@ async def run_coder(
             f"run_id={run_id} | error={cp_error}"
         )
 
+    # Metadata-only provenance for the coder's EFFECTIVE output (#33B). Records
+    # which provider/model actually produced this handoff. Best-effort and
+    # isolated: it stores no prompts/responses/diffs/secrets, it never gates,
+    # commits, retries, or expands scope, and a failure here can never change the
+    # coder result (try_* swallows and logs). selection_source is left None — it is
+    # not derived here so resolve_role_config behavior is untouched.
+    if coder_response is not None:
+        try_record_llm_call_provenance(
+            run_id=run_id,
+            chunk_number=chunk_number,
+            role=Role.CODER.value,
+            provider=coder_response.provider,
+            model=coder_response.model,
+            selection_source=None,
+            finish_reason=coder_response.finish_reason,
+            input_tokens=coder_response.input_tokens,
+            output_tokens=coder_response.output_tokens,
+        )
+
     logger.info("[CODER] Complete | run_id=%s", run_id)
     return handoff
 
@@ -415,7 +437,7 @@ async def _retry_after_parse_failure(
     raw_text: str,
     first_error: Exception,
     run_id: str
-) -> CoderHandoff:
+) -> tuple[CoderHandoff, LLMResponse]:
     logger.warning("[CODER] Attempt 1 failed: %s", first_error)
     logger.info("[CODER] Retrying with correction prompt...")
     correction_request = _build_correction_request(
@@ -425,10 +447,10 @@ async def _retry_after_parse_failure(
     )
 
     try:
-        raw_text = await _call_llm(correction_request, run_id)
-        handoff = _parse_handoff(raw_text, run_id)
+        coder_response = await _call_llm(correction_request, run_id)
+        handoff = _parse_handoff(coder_response.text, run_id)
         logger.info("[CODER] Handoff validated on attempt 2")
-        return handoff
+        return handoff, coder_response
     except ValidationError as second_error:
         raise RuntimeError(
             f"coder.py: LLM failed to return valid code handoff "
@@ -451,10 +473,12 @@ async def _retry_after_parse_failure(
             await asyncio.sleep(60)
             logger.info("[CODER] Retrying after rate limit wait...")
             try:
-                raw_text = await _call_llm(_build_llm_request(user_prompt), run_id)
-                handoff = _parse_handoff(raw_text, run_id)
+                coder_response = await _call_llm(
+                    _build_llm_request(user_prompt), run_id
+                )
+                handoff = _parse_handoff(coder_response.text, run_id)
                 logger.info("[CODER] Handoff validated after rate limit retry")
-                return handoff
+                return handoff, coder_response
             except Exception as retry_error:
                 raise RuntimeError(
                     f"coder.py: Failed after rate limit retry. "
