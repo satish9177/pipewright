@@ -83,7 +83,7 @@ The durable runtime never decides on its own to bypass any of these. If a human 
 
 ## 2. Core Requirements
 
-Each requirement maps to one or more roadmap phases (§20).
+Each requirement maps to one or more roadmap phases (section 20).
 
 | # | Requirement | Maps to |
 |---|-------------|---------|
@@ -413,7 +413,7 @@ any active state → failed (terminal)
 ### 7.4 What happens on resume
 
 1. Worker picks up a run in a retryable state (or is told to via API).
-2. Worker acquires the project-repo lock (DB-backed, see §12).
+2. Worker acquires the project-repo lock (DB-backed, see section 12).
 3. Worker validates git state: branch exists, last commit hash matches the expected checkpoint hash, working tree is clean.
 4. Worker resolves "where were we" from the run row + checkpoints + chunk statuses (the same resolution the existing orchestrator already does).
 5. Worker proceeds from the highest verifiable checkpoint, not from the recorded state — because the recorded state could be a write that happened *just before* the crash that wasn't actually completed. Trust checkpoints, not status text.
@@ -581,7 +581,7 @@ A cancelled run never resumes. A new run with the same feature can be created.
 
 ### 9.8 Progress events
 
-See §11 for the durable event log. Workers emit events to a `run_events` table (and to a Redis pub-sub channel for live streaming). The DB write is the source of truth; the Redis push is best-effort live delivery.
+See section 11 for the durable event log. Workers emit events to a `run_events` table (and to a Redis pub-sub channel for live streaming). The DB write is the source of truth; the Redis push is best-effort live delivery.
 
 ### 9.9 Worker crash recovery
 
@@ -589,12 +589,12 @@ On worker crash mid-job, the queue's heartbeat/lease mechanism (both ARQ and Pos
 
 ### 9.10 Exactly-once vs at-least-once
 
-**At-least-once with idempotent side effects.** Exactly-once is not achievable when external side effects exist (GitHub PR creation). The idempotency keys in §8.2 are the practical answer.
+**At-least-once with idempotent side effects.** Exactly-once is not achievable when external side effects exist (GitHub PR creation). The idempotency keys in section 8.2 are the practical answer.
 
 ### 9.11 Preventing duplicate chunk execution
 
 Three layers of defense:
-1. Queue-level dedup (§9.4).
+1. Queue-level dedup (section 9.4).
 2. Run-level DB lock (`pg_advisory_xact_lock` on `run_id`).
 3. Per-chunk idempotency: before executing chunk N, check whether a `chunk_completed` checkpoint already exists. If yes, skip.
 
@@ -613,7 +613,7 @@ CREATE TABLE runs (
     id                       UUID PRIMARY KEY,
     project_id               UUID NOT NULL REFERENCES projects(id),
     feature_description      TEXT NOT NULL,
-    status                   TEXT NOT NULL,                      -- see §7.1
+    status                   TEXT NOT NULL,                      -- see section 7.1
     status_reason            TEXT,
     branch_name              TEXT,
     base_branch              TEXT,
@@ -647,7 +647,7 @@ CREATE TABLE chunks (
     requires_human_review BOOLEAN NOT NULL DEFAULT false,
     estimated_files     INTEGER,
     estimated_tokens    INTEGER,
-    status              TEXT NOT NULL,                            -- see §7.1
+    status              TEXT NOT NULL,                            -- see section 7.1
     status_reason       TEXT,
     commit_hash         TEXT,                                     -- set when chunk_completed
     files_touched       JSONB DEFAULT '[]'::jsonb,
@@ -723,7 +723,7 @@ CREATE TABLE repo_locks (
 );
 ```
 
-See §12 for semantics.
+See section 12 for semantics.
 
 ### 10.6 `llm_calls` (from LLM-M1; carries over)
 
@@ -816,7 +816,7 @@ class RunEvent(BaseModel):
     run_id: str
     chunk_number: int | None
     sequence_number: int                 # monotonic per run
-    event_type: EventType                # see §11.2
+    event_type: EventType                # see section 11.2
     severity: Literal["debug","info","warn","error"]
     payload: dict
     created_at: datetime
@@ -978,7 +978,7 @@ Before applying a patch, check the corresponding `checkpoint` row. If `step='pat
 
 ### 13.7 Creating PR twice after retry
 
-Covered by §13.3 plus the unique constraint plus the pre-call existence check.
+Covered by section 13.3 plus the unique constraint plus the pre-call existence check.
 
 ### 13.8 Accidental merge
 
@@ -1044,7 +1044,7 @@ Approvals have an `expires_at` (default 7 days). When reached, the approval tran
 
 | Meaning | Maps to |
 |---------|---------|
-| User session token expires | Approval flow handles via §14.4 |
+| User session token expires | Approval flow handles via section 14.4 |
 | Provider API key revoked/expired | Provider abstraction emits `ProviderAuthError`; run fails (not auto-retry); operator updates key |
 | Context window overflow | Pre-flight rejection if estimable; runtime detection per call |
 | Rate limit (quota) | `paused_provider_quota` state with `next_attempt_after`; scheduler re-enqueues |
@@ -1101,7 +1101,7 @@ Per Memory-M1: the post-PR hook persists `suggested_memory_entries` from the pla
 
 ### 16.3 Memory poisoning protection
 
-Per Memory-M1 §5/§6:
+Per Memory-M1 section 5/section 6:
 - Failed runs do not write suggestions.
 - Rejected chunks do not produce suggestions.
 - All suggestions pass secret/PII validators.
@@ -1187,7 +1187,7 @@ Adversarial matrix. Each row is a real scenario.
 | 22 | Version mismatch between old job and new code | See #21. | `schema_version` check. |
 | 23 | Approval token leaked | Token has limited scope + expiry. | Tokens are run-specific; leaked token can approve only that run, only once. |
 | 24 | Malicious model output tries to escape allowed paths | `patch_applier` rejects out-of-scope paths. | Existing safeguard; covers this. |
-| 25 | Prompt injection from repo file | Memory has structural separation (Memory-M1 §7); reviewer cross-checks code vs memory. | Layered: structural, semantic, human approval. |
+| 25 | Prompt injection from repo file | Memory has structural separation (Memory-M1 section 7); reviewer cross-checks code vs memory. | Layered: structural, semantic, human approval. |
 | 26 | Failed run tries to write memory | Worker checks final run status before persisting suggestions. | Memory safety rule. |
 | 27 | Run resumed on different worker | Designed for. Worker_id is part of lock owner; reacquire allowed for same run. | DB lock reacquire. |
 | 28 | Network partition between API and worker | API reads DB; worker writes DB. As long as DB is reachable, both work. | Postgres is the only required shared dependency. |

@@ -76,7 +76,7 @@ Pipewright is **not** a faster or cheaper Cursor. It is a safer, auditable, memo
 | Planner | Skipped or merged into coder (single combined prompt). |
 | Coder | Run. |
 | Patch applier | Run. (Always run — this is what produces the diff.) |
-| Tests | Run. (Non-negotiable — see §2.4.) |
+| Tests | Run. (Non-negotiable — see section 2.4.) |
 | Reviewer | Skipped by default. |
 | High-risk approval | Not applicable (no risk classification). |
 | Final approval | **Mandatory.** |
@@ -88,7 +88,7 @@ Pipewright is **not** a faster or cheaper Cursor. It is a safer, auditable, memo
 | Expected tokens | Lowest in Pipewright's spectrum. Still higher than Cursor for the same task. |
 | Expected latency | Lowest in Pipewright's spectrum. Still higher than Cursor. |
 | Risk profile | Highest within Pipewright. Acceptable only because final approval gate remains. |
-| Failure handling | Test failure auto-escalates to Balanced or Safe (see §11). |
+| Failure handling | Test failure auto-escalates to Balanced or Safe (see section 11). |
 | When NOT to use | DB migrations, auth, security, encryption, payments, deletion logic, concurrency primitives, infra/deployment, large refactors, anything that touches > N files (configurable threshold, e.g., 5). |
 
 ### 2.2 Balanced mode
@@ -224,7 +224,7 @@ Multipliers are illustrative, not measured. Real data will only exist after Mode
 Across all modes:
 
 - The provider abstraction (LLM-M1) is the foundation. None of these modes ship before the abstraction.
-- Provider/model selection per role is **immutable per run** once a run starts (see §6.4).
+- Provider/model selection per role is **immutable per run** once a run starts (see section 6.4).
 - A configured provider must exist in the registry and pass startup validation, or the run is rejected.
 - Reviewer = coder is allowed but flagged in audit. Reviewer ≠ coder is recommended in Safe mode.
 
@@ -363,7 +363,7 @@ How each stage behaves under each mode:
 | Planner | Skipped or merged with coder. | Per chunk if chunked, once otherwise. | Per chunk, always. |
 | Coder | Combined with planner. | Per chunk. | Per chunk. |
 | Patch applier | Same as today. | Same. | Same. |
-| Tests | Required. Failure escalates mode (§11). | Required per chunk. Failure rolls back chunk. | Required per chunk. Failure rolls back chunk and may escalate. |
+| Tests | Required. Failure escalates mode (section 11). | Required per chunk. Failure rolls back chunk. | Required per chunk. Failure rolls back chunk and may escalate. |
 | Reviewer | Skipped. | Conditional (risky chunks, large diff chunks). | Every chunk. |
 | High-risk approval | N/A (no chunk-level risk classification). | For marked chunks. | For marked chunks; cannot be bypassed. |
 | Final approval | **Mandatory.** | **Mandatory.** | **Mandatory.** |
@@ -407,7 +407,7 @@ The risk in Fast mode is not the modes that exist alongside it. The risk is that
 - Chunk plan generation.
 - Chunk plan human approval.
 - Reviewer.
-- High-risk approval gate (because Fast should refuse to run on high-risk tasks; see §11).
+- High-risk approval gate (because Fast should refuse to run on high-risk tasks; see section 11).
 
 ### 8.3 What Fast cannot skip
 
@@ -420,7 +420,7 @@ The risk in Fast mode is not the modes that exist alongside it. The risk is that
 
 ### 8.4 When Fast must escalate
 
-See §11 for the full rule set. Summary: Fast escalates to Balanced or Safe when any of:
+See section 11 for the full rule set. Summary: Fast escalates to Balanced or Safe when any of:
 
 - Task description contains high-risk keywords (migration, auth, security, encryption, payment, payroll, deletion, concurrency, locking, worker, deployment, infra, schema).
 - File count to be modified exceeds the Fast threshold.
@@ -664,7 +664,7 @@ Key observations:
 
 | Risk | Trigger | Severity | Mitigation |
 |---|---|---|---|
-| Fast mode skips too much and causes unsafe changes | Wrong eligibility classification | High | Auto-escalation rules (§11); final approval invariant; protected paths cannot be Fast. |
+| Fast mode skips too much and causes unsafe changes | Wrong eligibility classification | High | Auto-escalation rules (section 11); final approval invariant; protected paths cannot be Fast. |
 | Safe mode too expensive/slow for small tasks | Default applied to trivial work | Medium | Fast/Balanced exist; UI recommends mode based on task description. |
 | Balanced mode ambiguity ("when does it chunk?") | Triage threshold unclear to user | Medium | Surface triage's reasoning in UI: "Chose to chunk because: 6 files affected, contains DB code." |
 | User picks weak model for coder/reviewer | Manual mode misuse | High | Capability metadata warns at config time; reviewer warnings in audit. |
@@ -673,13 +673,13 @@ Key observations:
 | Model disagreement (planner says X, coder does Y) | Inter-stage drift | Medium | Pydantic handoff contracts already catch structural drift; semantic drift is human-reviewed at final gate. |
 | Handoff errors (JSON parse failures across roles) | Model output drift | Medium | LLM-M1 retry; correction prompt; same as today. |
 | Provider failure mid-run | Network / 5xx / rate limit | Medium | LLM-M1 retryable error class; resume reads snapshot and uses same provider. No silent cross-provider fallback. |
-| User changes mode/config mid-run | UI permits config change while run active | High | Run mode snapshot is immutable; resume reads snapshot, not project config (§6.4). |
+| User changes mode/config mid-run | UI permits config change while run active | High | Run mode snapshot is immutable; resume reads snapshot, not project config (section 6.4). |
 | Mode snapshot missing on resume | Pre-Modes-M1 runs resumed post-migration | Low–medium | Backfill rule: missing snapshot = Safe. The most conservative interpretation. |
 | Fallback hides real failure | (Deferred — no fallback exists) | N/A | Do not build cross-provider fallback in current phases. |
 | Cost explosion from repeated context injection | Long-running Safe runs re-inject memory per chunk | Medium | Context budget per stage; alert user when run exceeds budget. |
 | High-risk task incorrectly classified as Fast | Classifier false negative | High | Bias classifier toward false positives; protected paths bypass classifier entirely. |
 | Users do not understand modes | Three modes × three model selections = nine combos | Medium | UI surfaces only mode + "use defaults," not nine cells. Defaults are sane. |
-| UI complexity | Too many knobs visible | Medium | Tiered disclosure (§16). |
+| UI complexity | Too many knobs visible | Medium | Tiered disclosure (section 16). |
 | Too many knobs | Power-user options leak into default UI | Medium | Manual + Auto hidden behind "Advanced" toggle. |
 | First-run experience becomes harder | Mode selector before user has run anything | High | Default to Safe + Single. No mode selector in first-run flow. Mode shows up *after* first successful run. |
 
@@ -820,10 +820,10 @@ Strict. Each of these is a temptation to be refused.
 ### 20.2 Which parts are core?
 
 - The data model (ExecutionMode, ModelSelectionMode, RunModeSnapshot).
-- The immutable per-run snapshot rule (§6.4).
+- The immutable per-run snapshot rule (section 6.4).
 - Per-role provider/model audit (LLM-M1-D).
 - Cross-mode invariants (final approval, tests, no autonomous merge).
-- Auto-escalation rules (§11). Without them, Fast is a footgun.
+- Auto-escalation rules (section 11). Without them, Fast is a footgun.
 
 ### 20.3 Which parts are marketing fluff?
 

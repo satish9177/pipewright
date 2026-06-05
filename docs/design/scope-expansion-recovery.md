@@ -151,17 +151,17 @@ read of repo/run state under the lock:
 4. The chunk's current status is `failed`.
 5. The chunk's dependencies are met (`not _unmet_dependencies(...)`) — a chunk
    blocked on an incomplete dependency is not eligible.
-6. `amendments_used < MAX_SCOPE_AMENDMENTS` for this chunk (see §7).
-7. The requested extra files pass write-path validation (see §12 / §22).
+6. `amendments_used < MAX_SCOPE_AMENDMENTS` for this chunk (see section 7).
+7. The requested extra files pass write-path validation (see section 12 / section 22).
 
 If any condition fails, scope expansion is **not** offered; the chunk stays
 failed and the human's options remain reject / manual intervention. In
 particular, **dirty tree or `manual_intervention_needed` always refuses scope
-approval** (invariant 12 / §18).
+approval** (invariant 12 / section 18).
 
 This is a **distinct gate** from #26's `evaluate_patch_retry_eligibility`, which
 hard-rejects `SCOPE_VIOLATION`. #27 introduces its own eligibility helper; it
-does **not** route through the #26 front door (see §16).
+does **not** route through the #26 front door (see section 16).
 
 ---
 
@@ -186,9 +186,9 @@ Proposed table (column names indicative; exact DDL is an implementation slice,
 | `project_id` | lock key / scoping. |
 | `chunk_number` | the chunk this request amends. |
 | `failure_report_id` | the `PatchFailureReport.failure_report_id` this request answers (optimistic-concurrency token; ties the request to the exact failure that motivated it). |
-| `requested_files` | **untrusted** — the extra paths the failed attempt tried to touch (see §23). Diagnostic display only. |
+| `requested_files` | **untrusted** — the extra paths the failed attempt tried to touch (see section 23). Diagnostic display only. |
 | `approved_files` | the human-approved expanded allowlist (normalized safe relative paths). The **authoritative** contribution to effective scope. Empty until approved. |
-| `status` | `pending` / `approved` / `applied` / `rejected` / `superseded` (see §6). |
+| `status` | `pending` / `approved` / `applied` / `rejected` / `superseded` (see section 6). |
 | `created_at`, `decided_at`, `applied_at` | audit timestamps. |
 | `decided_by` / `decision_reason` | who approved/rejected and why (audit). |
 
@@ -218,7 +218,7 @@ Notes:
                               ▼
                           approved  ──── retry writes new attempt/report ────▶ applied
                               │
-                              │  (crash window: see §14 — re-click re-drives retry)
+                              │  (crash window: see section 14 — re-click re-drives retry)
                               ▼
                           applied   ── chunk later reaches completed via approval path
                               │
@@ -229,7 +229,7 @@ State definitions:
 
 - **pending** — a human asked for expansion; nothing is authorized yet.
 - **approved** — a human approved the expanded allowlist; the request now
-  contributes to effective scope (see §8). The retry has been authorized but
+  contributes to effective scope (see section 8). The retry has been authorized but
   may not have produced an attempt record yet.
 - **applied** — an approved request whose retry has produced a fresh attempt /
   failure-report / recovered-review marker. Terminal-ish for the happy path.
@@ -240,7 +240,7 @@ State definitions:
 
 **In-force statuses** (those that contribute to effective scope) are
 `approved` **and** `applied`. `pending`, `rejected`, and `superseded`
-contribute **nothing**. See §8 for why both `approved` and `applied` must stay
+contribute **nothing**. See section 8 for why both `approved` and `applied` must stay
 in force.
 
 ---
@@ -382,7 +382,7 @@ proves one is required. It is not required.
 Keeping the chunk `failed` also keeps dependency blocking correct for free:
 `_unmet_dependencies` treats any non-`completed` status as unmet, so dependents
 stay blocked through the whole pending → approved → applied →
-awaiting_chunk_approval window (§19).
+awaiting_chunk_approval window (section 19).
 
 ---
 
@@ -409,10 +409,10 @@ Request body carries, at minimum:
 3. **Branch precheck** (read-only; verify HEAD is on `pipewright/{run_id[:8]}`,
    reuse the `_retry_branch_precheck` pattern — verify-only, never checkout).
 4. Validate `approved_files` (write-path validation + denylist + normalization;
-   §12 / §22).
+   section 12 / section 22).
 5. **Atomically flip** the request `pending → approved`.
 6. Run the retry using the amended effective scope (reuse #26 internal
-   execution; §16). On a fresh attempt/report being written, flip
+   execution; section 16). On a fresh attempt/report being written, flip
    `approved → applied`.
 
 If a **side-effect-free precheck fails** (branch verification, validation,
@@ -424,7 +424,7 @@ eligibility), the endpoint must:
 - **not** approve, **not** retry, **not** mutate summary/state (except safe
   error reporting if existing conventions require it).
 
-The endpoint is **idempotent** (see §14): a re-click after a crash between
+The endpoint is **idempotent** (see section 14): a re-click after a crash between
 `approved` and the retry write must re-drive the retry, not reject as
 "already approved."
 
@@ -448,7 +448,7 @@ The endpoint is **idempotent** (see §14): a re-click after a crash between
 Before approval is allowed, `approved_files` must pass **write-path** validation
 (not read-path): the same level of strictness `patch_applier` uses for writes.
 Reuse `path_safety.is_forbidden_write_path` and `normalize_relative_path`, and
-add the #27 denylist delta (§22).
+add the #27 denylist delta (section 22).
 
 Each approved path must:
 
@@ -458,13 +458,13 @@ Each approved path must:
 - **reject** symlink escapes (resolve and assert containment under the repo
   root);
 - **reject** forbidden / generated / vendor paths;
-- **reject** high-risk denylist matches (§22);
+- **reject** high-risk denylist matches (section 22);
 - resolve to a path **inside the target repo root**.
 
 Other validations:
 
 - `failure_report_id` must match the current persisted report (else 409 stale).
-- The chunk must currently be eligible (§4); re-evaluate **inside the lock**.
+- The chunk must currently be eligible (section 4); re-evaluate **inside the lock**.
 - `amendments_used < MAX_SCOPE_AMENDMENTS` (else fall back to manual
   intervention; do not approve).
 - `approved_files` must be non-empty (an empty amendment is a no-op and must not
@@ -519,7 +519,7 @@ retry writing a new attempt/report.
 
 `scope_guard` stays **strict and unchanged**. #27 does not modify
 `assert_files_in_scope` or `validate_changed_files_in_scope`. It only changes
-*what allowlist is passed in*, via the effective-scope overlay (§8).
+*what allowlist is passed in*, via the effective-scope overlay (section 8).
 
 - **Pre-apply** `assert_files_in_scope(code, chunk.files_expected)` runs on the
   **effective** allowlist (original ∪ approved extras). A file the human did not
@@ -531,7 +531,7 @@ retry writing a new attempt/report.
 **`scope_guard` is law; the human-approved allowlist is the input, not a
 bypass.** Scope approval changes the bounds; it never disables the check.
 `requested_files` is advisory and is never fed to the guard as authorization
-(§23).
+(section 23).
 
 ---
 
@@ -543,7 +543,7 @@ eligibility / front door**.
 - **Bypass** `evaluate_patch_retry_eligibility`. It hard-rejects
   `SCOPE_VIOLATION` (absent from `_HUMAN_RETRYABLE_FAILURE_TYPES`) and gates on
   `chunk_status == "failed"` + clean tree under the *original* scope. #27 has
-  its own eligibility gate (§4).
+  its own eligibility gate (section 4).
 - **Reuse** `_execute_retry_attempt`: regenerate the coder handoff
   (`_retry_plan_for_chunk` → `run_coder`) → pre-apply `assert_files_in_scope`
   (now on effective scope) → `dry_run_changes` → `apply_patch_guarded`
@@ -566,7 +566,7 @@ A retry under the amended scope can still safely **re-fail** (a fresh
 produce a **new `failure_report_id`** via the existing
 `_persist_retry_patch_failure` path. If it re-fails with `SCOPE_VIOLATION` and
 `amendments_used` has reached `MAX_SCOPE_AMENDMENTS`, it routes to manual
-intervention (§7).
+intervention (section 7).
 
 ---
 
@@ -586,7 +586,7 @@ intervention (§7).
   though rollback restored (or failed to restore) the tree; the checkpoint is
   not consulted to decide eligibility.
 - Rollback failure or a non-clean tree after rollback ⇒ `manual_intervention`
-  ⇒ scope approval refused (§18).
+  ⇒ scope approval refused (section 18).
 
 ---
 
@@ -627,12 +627,12 @@ rebuild. **Not implemented in #27A.**
 - Show, for an eligible `SCOPE_VIOLATION`:
   - the failure category and the original `files_expected`;
   - the **requested extra files** the previous attempt tried to touch
-    (clearly labeled untrusted — §21 / §23);
+    (clearly labeled untrusted — section 21 / section 23);
   - an editable approval list so the human approves an **explicit** expanded
     allowlist (and may approve a subset);
   - the `MAX_SCOPE_AMENDMENTS` budget and how much is used.
 - Provide **Approve scope & retry** and **Reject** actions wired to the two
-  routes (§11).
+  routes (section 11).
 - **Do not** offer scope approval when the chunk is dirty-tree /
   manual-intervention / cap-exhausted; show the manual-intervention message
   instead.
@@ -642,7 +642,7 @@ rebuild. **Not implemented in #27A.**
 - Keep chunk approval **disabled** while the chunk is failed / awaiting scope
   decision.
 - **No high-risk acknowledgement checkbox in v1** (spec decision #11). High-risk
-  files are blocked outright (§22), not approvable with a warning.
+  files are blocked outright (section 22), not approvable with a warning.
 
 ---
 
@@ -745,9 +745,9 @@ touch. It is **diagnostic display only**, never authorization:
   intervention.
 - **No high-risk acknowledgement checkbox** — high-risk files are blocked, not
   approvable-with-warning.
-- **No checkpoint deletion / stale-checkpoint cleanup** (§17).
+- **No checkpoint deletion / stale-checkpoint cleanup** (section 17).
 - **No new chunk status** — chunk stays `failed`; pause is a run status +
-  pending request (§10).
+  pending request (section 10).
 - **No auto-expansion, no auto-approval, no auto-retry, no auto-commit.**
 - **No rename/move auto-retargeting** — that remains its own concern; #27 only
   adds explicitly human-approved files.
@@ -768,18 +768,18 @@ Each slice is small, reversible, and ships behind the existing safety layer.
   overlay yet. Tests for status transitions and audit columns.
 - **#27C — Effective-scope overlay.** Wire the merge into
   `get_chunk_plan_status` keyed on in-force (`approved`/`applied`) request rows.
-  Pin the propagation-chain invariant (§8) with a test that an approved request
+  Pin the propagation-chain invariant (section 8) with a test that an approved request
   reaches `ChunkDefinition.files_expected`, and that `chunks.files_expected`
   stays immutable. No routes yet.
 - **#27D — Eligibility helper + validations.** Pure `SCOPE_VIOLATION`
-  eligibility gate (§4) and `approved_files` write-path/denylist validation
-  (§12/§22), including the `is_forbidden_write_path` delta. Pure-function tests.
-- **#27E — Approve-and-retry + reject routes.** The two endpoints (§11), lock /
-  branch precheck / fresh-load / atomic flip / crash-window idempotency (§13,
-  §14), reusing `_execute_retry_attempt` via a sibling locked orchestrator
-  (§16). Tests for 409/422 paths, dirty-tree refusal, idempotent re-click.
+  eligibility gate (section 4) and `approved_files` write-path/denylist validation
+  (section 12/section 22), including the `is_forbidden_write_path` delta. Pure-function tests.
+- **#27E — Approve-and-retry + reject routes.** The two endpoints (section 11), lock /
+  branch precheck / fresh-load / atomic flip / crash-window idempotency (section 13,
+  section 14), reusing `_execute_retry_attempt` via a sibling locked orchestrator
+  (section 16). Tests for 409/422 paths, dirty-tree refusal, idempotent re-click.
 - **#27F — Frontend approval UI.** Extend `PatchFailureBanner`; requested-files
-  (untrusted) display, explicit approval list, scope-not-code copy (§20/§21).
+  (untrusted) display, explicit approval list, scope-not-code copy (section 20/section 21).
 - **#27G — Smoke tests + docs.** Backend/frontend/manual smoke checklist (below)
   and a short user-facing note.
 
@@ -795,7 +795,7 @@ Each slice is small, reversible, and ships behind the existing safety layer.
 - Approved request ⇒ `get_chunk_plan_status` returns effective scope on
   `ChunkStatus.files_expected`; `chunks.files_expected` unchanged.
 - Effective scope reaches `assert_files_in_scope` **and** the post-apply recheck
-  (propagation-chain invariant, §8).
+  (propagation-chain invariant, section 8).
 - Approving extra files then retrying ⇒ reaches `awaiting_chunk_approval` with
   `recovered_patch_review`; **no commit** until chunk approval.
 - Retry under amended scope can re-fail with a **new `failure_report_id`**.

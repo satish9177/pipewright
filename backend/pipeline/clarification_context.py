@@ -11,7 +11,7 @@ carries that candidate list (plus the original intent and project binding) acros
 the two requests as a single opaque, **integrity-protected** token — without any
 DB row, schema change, or migration.
 
-Design (see docs/decisions/clarification-selection-handoff.md, §4)
+Design (see docs/decisions/clarification-selection-handoff.md, section 4)
 -----------------------------------------------------------------
 - The context is **not secret**; it only needs **integrity**. We therefore HMAC
   (SHA-256) sign a JSON payload rather than encrypt it. No Fernet here.

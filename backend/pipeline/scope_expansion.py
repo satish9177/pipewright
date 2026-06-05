@@ -40,12 +40,12 @@ MAX_SCOPE_AMENDMENTS = 1
 
 # Glob/wildcard metacharacters. Scope approval is per-file only: directory or
 # glob approvals are rejected so an approved allowlist is always concrete (#27A
-# §22: "Do not allow directory/glob approvals").
+# section 22: "Do not allow directory/glob approvals").
 _GLOB_METACHARACTERS = ("*", "?", "[", "]")
 
 
 class ScopeExpansionStatus(str, Enum):
-    """Lifecycle states for a scope expansion request (#27A §6)."""
+    """Lifecycle states for a scope expansion request (#27A section 6)."""
 
     PENDING = "pending"
     APPROVED = "approved"
@@ -54,7 +54,7 @@ class ScopeExpansionStatus(str, Enum):
     SUPERSEDED = "superseded"
 
 
-# Allowed lifecycle transitions (#27A §6 / §14). Idempotent re-drive of an
+# Allowed lifecycle transitions (#27A section 6 / section 14). Idempotent re-drive of an
 # already-approved-but-not-applied request is handled by can_redrive_retry, not
 # modeled as a self-transition here.
 _ALLOWED_TRANSITIONS: dict[ScopeExpansionStatus, frozenset[ScopeExpansionStatus]] = {
@@ -76,14 +76,14 @@ _ALLOWED_TRANSITIONS: dict[ScopeExpansionStatus, frozenset[ScopeExpansionStatus]
     ScopeExpansionStatus.SUPERSEDED: frozenset(),
 }
 
-# In-force statuses contribute approved_files to the effective scope (#27A §8).
+# In-force statuses contribute approved_files to the effective scope (#27A section 8).
 # These are the only statuses the future overlay may honor; pending/rejected/
 # superseded contribute nothing.
 _IN_FORCE_STATUSES: frozenset[ScopeExpansionStatus] = frozenset(
     {ScopeExpansionStatus.APPROVED, ScopeExpansionStatus.APPLIED}
 )
 
-# Stable eligibility reason identifiers (#27A §4). Kept stable so callers/UI can
+# Stable eligibility reason identifiers (#27A section 4). Kept stable so callers/UI can
 # branch on them without string-matching prose.
 SCOPE_EXPANSION_INELIGIBLE_NOT_SCOPE_VIOLATION = "not_scope_violation"
 SCOPE_EXPANSION_INELIGIBLE_DIRTY_WORKTREE = "dirty_worktree"
@@ -104,7 +104,7 @@ SCOPE_EXPANSION_APPROVE_INELIGIBLE_MISSING_REPORT = "missing_patch_failure_repor
 SCOPE_EXPANSION_APPROVE_INELIGIBLE_STALE_REPORT = "stale_failure_report"
 SCOPE_EXPANSION_APPROVE_INELIGIBLE_DIRTY_WORKTREE = "dirty_worktree"
 
-# Stable approved-file validation reason identifiers (#27A §12 / §22).
+# Stable approved-file validation reason identifiers (#27A section 12 / section 22).
 SCOPE_EXPANSION_APPROVED_EMPTY = "approved_files_empty"
 SCOPE_EXPANSION_APPROVED_INVALID_PATH = "approved_file_invalid_path"
 SCOPE_EXPANSION_APPROVED_FORBIDDEN = "approved_file_forbidden"
@@ -126,7 +126,7 @@ class ScopeExpansionValidationError(ValueError):
 
 class ScopeExpansionRequest(BaseModel):
     """
-    Pure data shape for a scope expansion request (#27A §5).
+    Pure data shape for a scope expansion request (#27A section 5).
 
     This is the model only — no DB table is created in #27B (that is a later
     slice). It never carries file contents, old_string/new_string, secrets, or
@@ -141,10 +141,10 @@ class ScopeExpansionRequest(BaseModel):
     project_id: str
     chunk_number: int
     # Optimistic-concurrency token tying the request to the exact failure that
-    # motivated it (#27A §5/§11).
+    # motivated it (#27A section 5/section 11).
     failure_report_id: str
     # Untrusted: the extra paths the failed attempt tried to touch. Diagnostic
-    # display only — never authorization (#27A §23).
+    # display only — never authorization (#27A section 23).
     requested_files: list[str] = Field(default_factory=list)
     # The human-approved expanded allowlist (normalized safe relative paths).
     # Empty until approved. The authoritative contribution to effective scope.
@@ -159,7 +159,7 @@ class ScopeExpansionRequest(BaseModel):
 
 class ScopeExpansionEligibilityDecision(BaseModel):
     """
-    Pure decision about whether a human may request scope expansion (#27A §4).
+    Pure decision about whether a human may request scope expansion (#27A section 4).
 
     Carries no behavior: it does not mutate state or touch disk/git. ``status_code``
     is a *suggested* HTTP status for a future route (#27E) and is None only when
@@ -195,7 +195,7 @@ class ScopeExpansionApproveRetryEligibilityDecision(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Lifecycle helpers (#27A §6 / §14)
+# Lifecycle helpers (#27A section 6 / section 14)
 # ---------------------------------------------------------------------------
 
 
@@ -216,7 +216,7 @@ def can_approve(status: ScopeExpansionStatus | str) -> bool:
     True iff a request in ``status`` may be *newly* approved.
 
     Only a pending request can be newly approved. approved/applied/rejected/
-    superseded cannot (#27A §6). Re-driving an already-approved-but-not-applied
+    superseded cannot (#27A section 6). Re-driving an already-approved-but-not-applied
     request is a separate, idempotent operation — see can_redrive_retry.
     """
     return _coerce_status(status) == ScopeExpansionStatus.PENDING
@@ -224,7 +224,7 @@ def can_approve(status: ScopeExpansionStatus | str) -> bool:
 
 def can_redrive_retry(status: ScopeExpansionStatus | str) -> bool:
     """
-    True iff an approved-but-not-applied request may be re-driven (#27A §14).
+    True iff an approved-but-not-applied request may be re-driven (#27A section 14).
 
     Supports crash-window idempotency: if the process crashed after pending ->
     approved but before the retry wrote a fresh attempt/report (status still
@@ -237,7 +237,7 @@ def can_redrive_retry(status: ScopeExpansionStatus | str) -> bool:
 def is_in_force(status: ScopeExpansionStatus | str) -> bool:
     """
     True iff a request in ``status`` contributes approved_files to effective
-    scope (#27A §8): approved or applied. Pending/rejected/superseded do not.
+    scope (#27A section 8): approved or applied. Pending/rejected/superseded do not.
 
     Both approved and applied are in force so effective scope stays stable from
     approval through commit completion (the chunk re-checks scope at commit time
@@ -247,7 +247,7 @@ def is_in_force(status: ScopeExpansionStatus | str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Path helpers (#27A §12 / §22) — write-path safety, not read-path safety
+# Path helpers (#27A section 12 / section 22) — write-path safety, not read-path safety
 # ---------------------------------------------------------------------------
 
 
@@ -263,7 +263,7 @@ def _is_absolute_path(original: str, normalized: str) -> bool:
 def normalize_safe_relative_path(path: str) -> str | None:
     """
     Normalize a repo-relative path for scope expansion, or return None if it is
-    structurally unsafe (#27A §22).
+    structurally unsafe (#27A section 22).
 
     Pure and filesystem-free. Rejects (returns None for): empty paths, absolute
     paths, ``..`` traversal, and glob/wildcard/directory approvals. Does NOT apply
@@ -304,7 +304,7 @@ def _contains_subsequence(segments: list[str], sub: tuple[str, ...]) -> bool:
 def is_scope_expansion_forbidden(path: str) -> bool:
     """
     True iff ``path`` is high-risk and may never be approved for scope expansion
-    (#27A §22). Uses write-path safety, not read-path safety.
+    (#27A section 22). Uses write-path safety, not read-path safety.
 
     A strict SUPERSET of path_safety.is_forbidden_write_path. The #27 delta — the
     paths is_forbidden_write_path does NOT cover today — is added here:
@@ -340,7 +340,7 @@ def is_scope_expansion_forbidden(path: str) -> bool:
 
 def filter_requestable_files(paths: Sequence[str]) -> list[str]:
     """
-    Normalize, deduplicate, and denylist-filter requested extra files (#27A §22).
+    Normalize, deduplicate, and denylist-filter requested extra files (#27A section 22).
 
     Returns the paths a human could legitimately approve: structurally safe and
     not high-risk. Unsafe or forbidden paths are silently dropped (requested_files
@@ -367,7 +367,7 @@ def validate_approved_files(
     approved_files: Sequence[str],
 ) -> list[str]:
     """
-    Validate a human-approved scope-expansion allowlist (#27A §12 / §22).
+    Validate a human-approved scope-expansion allowlist (#27A section 12 / section 22).
 
     Returns the normalized, deduplicated approved paths on success. Raises
     ScopeExpansionValidationError (with a stable ``reason``) on the first failure:
@@ -380,7 +380,7 @@ def validate_approved_files(
     Pure and filesystem-free. ``approved_files`` must be a subset of the normalized
     ``requested_files`` universe; directory/glob approvals are rejected (each path
     is concrete). Note: this is NOT code approval — it only authorizes retrying
-    under a wider allowlist (#27A §21).
+    under a wider allowlist (#27A section 21).
     """
     if not list(approved_files):
         raise ScopeExpansionValidationError(
@@ -424,7 +424,7 @@ def validate_approved_files(
 
 
 # ---------------------------------------------------------------------------
-# Effective-scope merge (#27A §8) — pure helper, NOT wired into chunk_store yet
+# Effective-scope merge (#27A section 8) — pure helper, NOT wired into chunk_store yet
 # ---------------------------------------------------------------------------
 
 
@@ -433,7 +433,7 @@ def compute_effective_files_expected(
     approved_extra_files: Sequence[str],
 ) -> list[str]:
     """
-    Merge original (immutable) chunk scope with approved extra files (#27A §8).
+    Merge original (immutable) chunk scope with approved extra files (#27A section 8).
 
     effective_files_expected = original_files_expected + approved_extra_files
 
@@ -462,7 +462,7 @@ def compute_effective_files_expected(
 
 
 # ---------------------------------------------------------------------------
-# Eligibility (#27A §4)
+# Eligibility (#27A section 4)
 # ---------------------------------------------------------------------------
 
 
@@ -485,7 +485,7 @@ def evaluate_scope_expansion_eligibility(
     max_scope_amendments: int = MAX_SCOPE_AMENDMENTS,
 ) -> ScopeExpansionEligibilityDecision:
     """
-    Decide whether a human may request scope expansion for a failed chunk (#27A §4).
+    Decide whether a human may request scope expansion for a failed chunk (#27A section 4).
 
     Pure and deterministic: receives already-computed observations and never reads
     disk, calls git, or mutates state. This is a DISTINCT gate from #26's

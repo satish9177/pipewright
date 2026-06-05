@@ -2,7 +2,7 @@
 
 **Status:** Design only. No code, no schema, no API, no UI, no prompt change in this PR (#16A).
 **Phase:** M1.5 — a focused, deterministic slice pulled forward from the M2 "stack
-fingerprint" sketch in [`memory-architecture.md`](./memory-architecture.md) §3.5.
+fingerprint" sketch in [`memory-architecture.md`](./memory-architecture.md) section 3.5.
 **Mode:** Adversarial. The goal is to find where stale memory silently poisons a run,
 not to celebrate that M1 shipped.
 
@@ -11,7 +11,7 @@ not to celebrate that M1 shipped.
 ## 0. Why this exists (the one failure M1 cannot detect)
 
 M1 is project-scoped, human-gated, secret-filtered, and budget-bounded. It has one
-hole, named explicitly in `memory-architecture.md` §15:
+hole, named explicitly in `memory-architecture.md` section 15:
 
 > "The first time a memory entry 'becomes wrong' (because the repo changed), no part
 > of M1 will detect it automatically. The signal will be the model producing weird
@@ -56,7 +56,7 @@ relevant to the requested run**, force a human gate before proceeding.
 - No bulk approval, no cross-project memory, no org/shared memory.
 - No complex UI in the first slices. Detection + exclusion + gate first; resolution UI last.
 - No new prompt format. The exclusion path reuses the existing `is_stale` filter
-  (see §6).
+  (see section 6).
 
 ---
 
@@ -147,7 +147,7 @@ Per relevant category, for a given `project_id`:
 1. Load **active** memory facts for the category
    (`status='active' AND is_stale=0`, scoped by `project_id` — the M1 isolation
    invariant is non-negotiable).
-2. Derive the repo's value for that category from the fingerprint (§3).
+2. Derive the repo's value for that category from the fingerprint (section 3).
 3. Compare:
    - **Same** → call the existing `verify_fact()` to bump `last_verified_at`. (The
      "verify" endpoint already exists and resets staleness signals.) This is the
@@ -164,12 +164,12 @@ Per relevant category, for a given `project_id`:
 `is_stale = 0 AND status = 'active'`. **Setting `is_stale=1` therefore already excludes a
 fact from every injected prompt** — no prompt-builder change is required for exclusion.
 
-> Divergence from the M1 doc: `memory-architecture.md` §2.4/§7.2 describe stale facts as
+> Divergence from the M1 doc: `memory-architecture.md` section 2.4/section 7.2 describe stale facts as
 > *still injected with a `[stale]` tag*. The shipped builder **excludes** them. M1.5 is
 > designed against the shipped behavior (exclude), which is the safer of the two. If the
 > team ever restores `[stale]`-tagged injection, M1.5 must switch to a dedicated
 > `conflict_excluded` flag so conflicting facts stay out regardless. Flagged as an open
-> question in §13.
+> question in section 13.
 
 ### What M1.5 must never do
 
@@ -228,7 +228,7 @@ a visible warning, and the fact is already excluded from the prompt either way.
   filter. No new format, no new builder path.
 - When ≥1 fact was excluded for the role being built, the block **may** carry a single
   short line (kept inside the existing sentinels, one line, no paragraph — consistent with
-  §7.5 of the M1 doc):
+  section 7.5 of the M1 doc):
 
   ```
   Note: 1 memory entry was excluded because it conflicts with current repo signals.
@@ -429,7 +429,7 @@ Each PR is independently shippable and testable. Expand to `test_runner` /
   `is_stale=1`; the M1 doc says stale is injected with a tag. M1.5 relies on exclusion. If
   the team restores tagged-stale injection, M1.5 needs a dedicated `conflict_excluded`
   flag instead of reusing `is_stale`. Recommend: confirm exclusion is the intended shipped
-  behavior and update `memory-architecture.md` §2.4/§7.2 to match.
+  behavior and update `memory-architecture.md` section 2.4/section 7.2 to match.
 - **False positives block real work.** A wrong "block" is worse than a wrong "warn."
   Mitigation: block only on high-severity + exclusive signal + scope match; default to
   warn whenever scope is uncertain; always provide "override once for this run."
@@ -455,6 +455,6 @@ and a cross-reference pointer. It introduces **no** conflict-detection code, **n
 store or any runtime path. The existing `is_stale=0` prompt filter, `verify_fact`,
 `archive_fact`, and bootstrap extractors are described, not modified.
 
-Cross-references: [`memory-architecture.md`](./memory-architecture.md) §3.5
-(signal-driven staleness, foreshadowed as M2), §5 failure modes #12–#16 (stack/repo/test/
-migration changes), and §15 (the undetected-conflict gap this design closes).
+Cross-references: [`memory-architecture.md`](./memory-architecture.md) section 3.5
+(signal-driven staleness, foreshadowed as M2), section 5 failure modes #12–#16 (stack/repo/test/
+migration changes), and section 15 (the undetected-conflict gap this design closes).

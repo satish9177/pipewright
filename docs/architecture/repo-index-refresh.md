@@ -3,7 +3,7 @@
 > Status: **Design only.** This document defines the product behavior and the
 > backend/frontend shape for repo index refresh and stale-index recovery. **No
 > runtime code and no schema change ship with #19A.** Implementation lands in
-> #19B–#19F (see §"PR split").
+> #19B–#19F (see section "PR split").
 
 ## Context
 
@@ -101,14 +101,14 @@ but it is a cache that is only ever populated once.**
 | 6 | User-created file not indexed. | Manual re-index (#19B) and stale explicit-path recovery (#19C). |
 | 7 | Wrong `project_id`. | Endpoint validates the project via `get_project`; unknown → 404. Never scans an unrelated repo. |
 | 8 | Wrong / missing repo path. | `build_repo_index()` already resolves and checks the path exists and is a dir; otherwise raises. Endpoint maps to a safe 400/500 with a sanitized message. |
-| 9 | Dirty worktree during re-index. | Re-index is **read-only** — it never stages/commits/patches. It does **not** require a clean tree and must not (see §"Backend design"). Scanning a dirty tree just indexes current on-disk content, which is correct. |
+| 9 | Dirty worktree during re-index. | Re-index is **read-only** — it never stages/commits/patches. It does **not** require a clean tree and must not (see section "Backend design"). Scanning a dirty tree just indexes current on-disk content, which is correct. |
 | 10 | Stale Pipewright branch / wrong branch checked out. | The scanner walks the working tree as-is (whatever is checked out). Document this: re-index reflects the **current checkout**, not any specific branch. We do not switch branches to index. |
 | 11 | Indexing scans the wrong branch. | Same as #10 — we never change refs; the index always mirrors the live working tree. A note in the UI ("reflects current files on disk") sets the expectation. |
 | 12 | Indexing while a run is executing. | The endpoint refuses (HTTP 409) when `is_project_locked(project_id)` is true. Execution holds `project_repo_lock`; re-index must not race a patch/commit. |
 | 13 | Big-repo scan cost. | Existing skip set (`node_modules`, `.git`, `dist`, caches), 1 MB file cap, and supported-extension filter bound the walk. Re-index is synchronous for MVP; document that very large repos take a few seconds. (Async/streaming is a future option, not MVP.) |
 | 14 | Binary/secrets accidentally indexed. | Already prevented: `should_skip_path()` calls `is_forbidden_path()`, `is_supported_file()` filters extensions, and NUL-byte detection skips binaries. Re-index reuses the exact same scanner — **no new path** can bypass these. |
-| 15 | Unsupported extension. | `is_supported_file()` excludes it from the index. For the stale-recovery flow, a named target that exists on disk but has an unsupported extension is reported as "unsupported", not "not found" (see §"Stale target recovery"). |
-| 16 | Case mismatch `README.md` vs `readme.md` (Windows). | Real hazard: explicit-path resolution is **case-sensitive** against the index, but Windows filesystems are case-insensitive. Mitigation: when an exact (case-sensitive) index miss occurs, surface case-insensitive candidates as a clarification rather than a flat NOT_FOUND (see §"Stale target recovery", open question Q4). |
+| 15 | Unsupported extension. | `is_supported_file()` excludes it from the index. For the stale-recovery flow, a named target that exists on disk but has an unsupported extension is reported as "unsupported", not "not found" (see section "Stale target recovery"). |
+| 16 | Case mismatch `README.md` vs `readme.md` (Windows). | Real hazard: explicit-path resolution is **case-sensitive** against the index, but Windows filesystems are case-insensitive. Mitigation: when an exact (case-sensitive) index miss occurs, surface case-insensitive candidates as a clarification rather than a flat NOT_FOUND (see section "Stale target recovery", open question Q4). |
 | 17 | Index DB out of sync with the configured repo (project's `repo_path` changed). | Re-index always rescans `project.repo_path` and replaces all rows for the `project_id`, so a path change is reconciled on the next re-index. |
 | 18 | Re-index fails midway. | `save_file_index()` runs the delete + all inserts inside one `engine.begin()` transaction. A mid-scan failure rolls back to the **previous** index — never a half-built one. The endpoint returns an error; the old index stays intact. |
 | 19 | Multiple users/runs re-indexing the same project concurrently. | The per-project lock (#12) serializes mutation; re-index acquires/checks the same lock so two re-indexes (or a re-index + a run) cannot interleave. Last writer wins, and each write is atomic. |
@@ -144,7 +144,7 @@ right MVP. Two corrections:
   renames files"** — refresh after **commit**, not after patch apply. A patch
   can apply and then be rolled back by a failing test or rejected at chunk/final
   approval. Indexing post-apply would record files that may be reverted. Index
-  only what has been committed (see §"Post-success index refresh flow").
+  only what has been committed (see section "Post-success index refresh flow").
 
 ---
 
@@ -199,7 +199,7 @@ GET /projects/{project_id}/index   ->  { files_indexed, indexed_at, ... }
 }
 ```
 
-- `indexed_at` — see §"Data/model": derivable from existing rows; no schema
+- `indexed_at` — see section "Data/model": derivable from existing rows; no schema
   change.
 - `target_repo_path` — return the resolved path for transparency. It is a local
   filesystem path (not a secret), but run it through the same project-response
@@ -263,7 +263,7 @@ Safety invariants for this flow:
   in `file_alias_grounding`). It is **not** a filesystem walk and **not** a
   content read.
 - Re-index is attempted **at most once per request**. A boolean "already
-  re-indexed" flag in the request flow prevents any loop (test: §"Tests" — no
+  re-indexed" flag in the request flow prevents any loop (test: section "Tests" — no
   infinite re-index loop).
 - We **never auto-create** a file. A genuinely-missing-on-disk target keeps the
   exact #17C create clarification.

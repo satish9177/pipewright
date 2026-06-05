@@ -394,7 +394,7 @@ Fixed candidate set unless noted:
   "based on the current index; re-index if a file is missing"), if dogfooding
   shows stale-index confusion.
 - **Future only** — LLM advisory ranker behind a default-off flag, *only* if
-  telemetry proves a real tie/weak rate. Built to the §6.1 contract.
+  telemetry proves a real tie/weak rate. Built to the section 6.1 contract.
 
 Each PR has one purpose; #17I and #17J are independently revertible.
 
@@ -434,7 +434,7 @@ This PR adds **only** this document. No module is imported, wired, or modified.
 `file_alias_grounding.py`, `chunks.py`, scope_guard, patch_applier, memory, DB,
 frontend, approvals, git, and providers are untouched. The current ambiguous
 clarification (chunks.py:187) continues to return the existing safe, generic
-message until #17J ships. All safety invariants in §7 hold unchanged.
+message until #17J ships. All safety invariants in section 7 hold unchanged.
 
 ---
 

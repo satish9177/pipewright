@@ -2,7 +2,7 @@
 conflict_scope.py
 Pure, deterministic classifier for whether a run is "DB-sensitive".
 
-Part of Memory M1.5 (design: docs/architecture/memory-conflict-run-gate.md §2).
+Part of Memory M1.5 (design: docs/architecture/memory-conflict-run-gate.md section 2).
 The DB memory conflict run-scope gate (#16D-3/#16D-4) will use this to decide whether
 a clear DB conflict is relevant enough to a run to warn or block. This module is the
 pure scope classifier only — it does NOT gate, warn, mutate memory, or touch the

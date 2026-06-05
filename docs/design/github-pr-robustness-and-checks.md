@@ -55,7 +55,7 @@ does **not** auto-push. This is correct and central to the safety model.
   `push_and_create_pr(run_id)` (pr_orchestrator.py:607).
 - `push_and_create_pr`:
   1. `_load_run(run_id)` — loads the run row (**before** taking the lock; see
-     §3 stale-read note).
+     section 3 stale-read note).
   2. `with project_repo_lock_sync(project_id)` — in-process per-project lock.
   3. `_push_and_create_pr_locked(run_id, run)`:
      - Branch name is derived deterministically: `pipewright/{run_id[:8]}`.
@@ -175,7 +175,7 @@ Every failure path below collapses into `_mark_push_failed` (status
 - `_verify_local_branch*` (branch missing, checkout fail, dirty tree, remote
   mismatch).
 - `_ensure_branch_has_commits_ahead` (0 ahead, **or local base ref missing** —
-  see §3.6).
+  see section 3.6).
 - `push_branch` (network, auth, permission, non-fast-forward).
 - `gh_pr.find_open_pr` / `create_pr` (gh error, JSON parse, **URL/number parse**).
 - `_get_github_repo` / `_create_pr` (PyGithub auth, 403, network, GraphQL).
@@ -196,7 +196,7 @@ typed failure classification, and **no** attempt counter.
 | Invariant | Verdict | Enforced at | Residual trust risk |
 |---|---|---|---|
 | No auto-commit before approval | **Protected** | Chunk commits happen in chunk execution under chunk approval; push/PR is a separate explicit route. | None observed in this flow. |
-| No final-approval bypass | **Protected** | `evaluate_push_pr_eligibility` requires `final_approved`/`push_failed`; `_decide_final_gate` is the only writer of `final_approved`. | Push trusts `run.status`, not a fresh re-read of the gate row, and the run is loaded **before** the lock (§3.1). If any other code path wrote `status='final_approved'` without flipping the gate, push would proceed. |
+| No final-approval bypass | **Protected** | `evaluate_push_pr_eligibility` requires `final_approved`/`push_failed`; `_decide_final_gate` is the only writer of `final_approved`. | Push trusts `run.status`, not a fresh re-read of the gate row, and the run is loaded **before** the lock (section 3.1). If any other code path wrote `status='final_approved'` without flipping the gate, push would proceed. |
 | No auto-merge | **Protected** | No merge call exists anywhere; `gh_pr`/PyGithub paths create/reuse only. | None. |
 | No push/PR before backend final-approval rules pass | **Protected** | Eligibility gate + ack gate. | Same `run.status`-as-proxy + stale-read caveat. |
 | Never push from main/master/develop | **Partially protected** | Push branch is always `pipewright/{run_id[:8]}`; *base* is `validate_base_branch`-checked. The **current checked-out branch** is verified to equal the run branch before push. | Strong for base and head. The head branch can never be a protected branch by construction. OK. |
@@ -208,7 +208,7 @@ typed failure classification, and **no** attempt counter.
 **Net:** the hard safety invariants (no auto-merge, no bypass, no protected-base
 push) are intact. The two soft spots are **(a)** push eligibility trusts a
 pre-lock `run.status` snapshot rather than a fresh under-lock read of the gate,
-and **(b)** the in-process lock is not durable across workers (§3.2).
+and **(b)** the in-process lock is not durable across workers (section 3.2).
 
 ---
 
@@ -285,25 +285,25 @@ remote fails the origin-match check in manual_token / cli-with-owner.
 | Case | Current behavior |
 |---|---|
 | Branch already pushed | Handled: `branch_exists_remote` skips re-push; `pushed_at` COALESCE-preserved. |
-| PR already exists | Reused if **open** (§3.3). |
+| PR already exists | Reused if **open** (section 3.3). |
 | Retry after partial failure (pushed, PR failed) | Handled: re-enters, skips push, find-or-create PR. Good. |
 | gh missing / unauthenticated | Clear `GH_NOT_READY_MESSAGE` before any push. Good. |
 | origin missing | `get_remote_url` raises → `push_failed`; message references the remote. |
 | base branch missing (remote) | `REMOTE_BASE_MISSING` with `git push -u origin <base>` hint. Good. |
-| permission denied | Generic `push_failed`, not classified (§3.5). |
+| permission denied | Generic `push_failed`, not classified (section 3.5). |
 | network failure | Generic `push_failed`, retryable but unclassified. |
 | detached HEAD | `get_current_branch` raises "current branch is empty" → `push_failed`. Reasonable but generic. |
 | wrong branch | Auto-checkout to run branch if branch exists; fails if it cannot. No operator-panel surfacing for push step. |
 | dirty tree | `ensure_clean_worktree` raises with file list. Good. |
-| stale run state | Eligibility recomputed; pre-lock snapshot caveat (§3.1). |
+| stale run state | Eligibility recomputed; pre-lock snapshot caveat (section 3.1). |
 | concurrent final approval | `_decide_final_gate` gate-flip is `WHERE status='pending'`; only one flips, both run-UPDATEs succeed (benign). Not under project lock. |
-| concurrent PR creation | Single-process: 409 via lock. Multi-process: race (§3.2). |
-| checks pending/failing/unavailable | Not represented anywhere (§3.7). |
-| unclear UI after final approval | `operator_state` jumps `final_approved`→`_pr_ready_state` ("Create pull request"); no distinct pushing/failed/checks states (§4). |
+| concurrent PR creation | Single-process: 409 via lock. Multi-process: race (section 3.2). |
+| checks pending/failing/unavailable | Not represented anywhere (section 3.7). |
+| unclear UI after final approval | `operator_state` jumps `final_approved`→`_pr_ready_state` ("Create pull request"); no distinct pushing/failed/checks states (section 4). |
 | local_only confusion | Reasonably handled (`local_only_manual_push`, manual instructions). |
 | manual_token risks | Token decrypted only at push, never returned, errors sanitized. Good. |
 | PR URL not shown clearly | Shown in `PushPrPanel` and the `complete` block; **not** in the operator panel. |
-| failure messages not actionable | §3.5. |
+| failure messages not actionable | section 3.5. |
 
 ---
 
@@ -407,12 +407,12 @@ Surface a typed read model from the run row (do **not** keep returning the raw
 | Field | Source | Notes |
 |---|---|---|
 | `pr_mode` | project | already available |
-| `pr_state` | derived from status + columns | new enum (§5.2) |
+| `pr_state` | derived from status + columns | new enum (section 5.2) |
 | `branch_name` | run | existing |
 | `pr_url`, `pr_number` | run | existing |
 | `pushed_at`, `pr_created_at` | run | existing |
 | `push_error` | run | existing (sanitized) |
-| `failure_kind` | new column or derived | classified taxonomy (§6) |
+| `failure_kind` | new column or derived | classified taxonomy (section 6) |
 | `failure_next_action` | derived from `failure_kind` | one actionable hint |
 | `checks_state` | new (checks refresh) | `unknown/pending/passed/failed/unavailable` |
 | `checks_summary` | new | counts: passed/failed/pending; never raw logs |
@@ -452,10 +452,10 @@ read-only refresh. They never gate anything.
    `UPDATE pipeline_runs SET pr_url=:url WHERE id=:id AND pr_url IS NULL` and
    treat `rowcount=0` as "already recorded, reuse." Closes the multi-worker race
    at the persistence boundary even if two creates happen.
-2. **Reload run under the lock** before eligibility (fix §3.1).
+2. **Reload run under the lock** before eligibility (fix section 3.1).
 3. **Find-before-create** stays, broadened to also detect a just-created PR when
    parsing failed (re-list by head/base after a create error before declaring
-   failure — converts §3.4 false-failures into successes).
+   failure — converts section 3.4 false-failures into successes).
 4. Keep `COALESCE` on `pushed_at`/`pr_created_at`.
 
 ### 5.7 Branch verification strategy
@@ -463,7 +463,7 @@ read-only refresh. They never gate anything.
 - Keep all existing push-time checks.
 - Add: if `commits_ahead` fails because the **local** base ref is missing,
   classify as `LOCAL_BASE_MISSING` with hint "fetch the base branch"
-  (distinct from "0 commits ahead") (fix §3.6).
+  (distinct from "0 commits ahead") (fix section 3.6).
 - Add a push-step **wrong-branch / detached-HEAD** classification so the
   operator panel can show a branch-specific failure rather than a generic one.
 
@@ -580,7 +580,7 @@ display before any new surface.
   concerns). No GitHub calls, no new mutating route, no FE. Unit + store tests.
 - **#31C — PR creation idempotency / recovery hardening.** Reload run under the
   lock; conditional `pr_url IS NULL` write; re-list-after-create to kill
-  false-failures (§3.4); `local_base_missing` vs `no_commits_ahead` split;
+  false-failures (section 3.4); `local_base_missing` vs `no_commits_ahead` split;
   wire `failure_kind` into `_mark_push_failed`. No contract change. Tests for
   each.
 - **#31D — GitHub checks display-only foundation.** Read-only checks reader
@@ -591,7 +591,7 @@ display before any new surface.
   `pushing` / `push_failed` (classified) / `pr_checks_*` operator states;
   single PR status source; checks badge with staleness; `complete` copy fix.
   FE build + operator-state precedence tests.
-- **#31F — Smoke docs / manual checklist.** Promote §5.11 into
+- **#31F — Smoke docs / manual checklist.** Promote section 5.11 into
   `docs/testing/…` smoke checklist; honest status note in README/demo docs.
 
 Slices are independently shippable and each preserves all current safety
@@ -614,8 +614,8 @@ guards. #31B and #31C are backend-only and reversible; #31D adds only reads;
 
 **Deferred (future, not #31):**
 - Durable cross-process lock / DB advisory lock (only if multi-worker deploy
-  becomes real — §3.2). #31C's conditional write is the interim guard.
-- GitHub Enterprise / non-`origin` remote support (§3.8).
+  becomes real — section 3.2). #31C's conditional write is the interim guard.
+- GitHub Enterprise / non-`origin` remote support (section 3.8).
 - Timer/webhook-driven checks auto-refresh (start with on-read only).
 - Rich check logs / annotations (keep summaries compact).
 
@@ -635,10 +635,10 @@ actively **mislead the user or risk a duplicate PR**, because checks built on a
 dishonest base inherit the dishonesty:
 
 1. **`push_failed` showing as "Create pull request" with a green final-approval
-   check (§4.1.1)** — a trust bug. Fix in **#31B/#31E** by giving `push_failed`
+   check (section 4.1.1)** — a trust bug. Fix in **#31B/#31E** by giving `push_failed`
    its own operator state.
-2. **The create-succeeded-but-parse-failed false failure (§3.4)** and **pre-lock
-   stale read / conditional PR write (§3.1, §3.2, §5.6)** — correctness/idempotency.
+2. **The create-succeeded-but-parse-failed false failure (section 3.4)** and **pre-lock
+   stale read / conditional PR write (section 3.1, section 3.2, section 5.6)** — correctness/idempotency.
    Fix in **#31C** *before* #31D checks.
 
 So: **start #31 now, but run #31B → #31C (read model + idempotency/honesty)

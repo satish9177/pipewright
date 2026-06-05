@@ -54,7 +54,7 @@ repos, docs-only work, or legitimate custom test scripts.
   rollback path (tests exit non-zero) is unchanged and is **not** #28's concern.
 - Not LLM-based. v1 classification is purely deterministic.
 - Not a richer command-string taxonomy. The high-value signal #28 adds is
-  *runtime execution evidence*, not more string buckets (see §2).
+  *runtime execution evidence*, not more string buckets (see section 2).
 - Not a new approval that replaces final approval. The acknowledgement is a
   *precondition on* the existing final gate, never a substitute for it.
 
@@ -77,7 +77,7 @@ in project settings and the run review. That banner is exactly what fired on
 `python --version` during the #27 smoke.
 
 **But the string is necessary and not sufficient.** The string classifier cannot
-see what actually happened when the command ran. The dangerous cases in §1 —
+see what actually happened when the command ran. The dangerous cases in section 1 —
 `pytest` collecting 0 items, the npm test stub, deleted tests — all classify as
 `LIKELY_TEST` at the string level and still validate nothing at runtime. A banner
 that only reads the string will *reassure* the user on exactly these cases.
@@ -118,10 +118,10 @@ A single runtime verdict per chunk's test run:
 | `strong` | A recognized test runner ran **and** evidence shows tests actually executed and passed (parsed total ≥ 1, no zero-test markers). |
 | `weak` | The command is a recognized weak/no-op/version command, **or** a recognized test runner that demonstrably ran **0 tests** (collected 0 / no tests ran / total == 0). Looks green, validated nothing. |
 | `none` | No test command configured (blank/empty), so nothing could have validated the change. |
-| `unknown` | An unrecognized custom command that exited 0. Pipewright cannot confirm it ran tests, and **must not accuse it of being weak** (see §16). Informational only. |
+| `unknown` | An unrecognized custom command that exited 0. Pipewright cannot confirm it ran tests, and **must not accuse it of being weak** (see section 16). Informational only. |
 
 Four verdicts is deliberate. We explicitly **reject** adding a "moderate" tier in
-v1 (see §25): a middle bucket invites "is this moderate or strong" bikeshedding
+v1 (see section 25): a middle bucket invites "is this moderate or strong" bikeshedding
 and false alarms *before* runtime evidence exists to justify the distinction.
 
 ---
@@ -167,7 +167,7 @@ Behavior per verdict:
 | Final approval | **Acknowledgement required** when verdict is `weak`/`none`. Not a hard block — a required, audited human affirmation. |
 | PR creation | Inherits the final gate. PR mode (`local_only` / `github_cli` / `manual_token`) is downstream of final approval, so an unacknowledged weak verdict stops before any push/PR. |
 | Warn-only | Rejected as the *primary* mechanism. We already ship a warn-only banner; this design exists because warn-only is ignorable. |
-| Hard block | Rejected (see §25). Breaks docs-only and no-test repos. |
+| Hard block | Rejected (see section 25). Breaks docs-only and no-test repos. |
 
 The acknowledgement at the final gate is the only altitude that satisfies "make
 risk visible" + "don't weaken existing gates" + "don't block all workflows"
@@ -184,7 +184,7 @@ affirmative acknowledgement before the run can commit/PR. Properties:
   understand and want to commit anyway." Not a pre-checked box, not a silent
   default.
 - **Audited.** Stored with who, when, the verdict acknowledged, and the diff hash
-  it was made against (see §9). Mirrors the audit columns on
+  it was made against (see section 9). Mirrors the audit columns on
   `scope_expansion_requests` (#27).
 - **Not a new approval type.** It is a *precondition* on the existing final
   approval, never a replacement. The real final approval still happens.
@@ -243,7 +243,7 @@ acknowledgement was recorded:
   failed attempt's evidence, and must not launder a weak retry into strong.
 
 Stale-acknowledgement-survives-changed-diff is an explicitly rejected behavior
-(see §25). This is the key race the design must defend.
+(see section 25). This is the key race the design must defend.
 
 ---
 
@@ -256,7 +256,7 @@ Strictly additive and orthogonal:
   (tests exited 0). They never touch the same branch.
 - When a #26 retry **succeeds**, #28 computes the verdict on that retry's test
   run and overwrites the chunk verdict; any prior acknowledgement is invalidated
-  by the diff-hash change (§10).
+  by the diff-hash change (section 10).
 - #28 reuses #26/#27's proven architecture shape: a pure deterministic core, a
   thin store, a separate route, "mutates nothing on failure," conflict → 409.
 
@@ -288,7 +288,7 @@ honest path is: surface "no tests ran," let the human own committing anyway.
 Do **not** auto-detect "docs don't need tests" in v1. A docs change can still
 break a doctest or a link checker, and a silent `*.md`-only exemption is exactly
 the kind of hidden heuristic that erodes trust (and is explicitly rejected in
-§25). Instead, the acknowledgement copy offers the honest framing — "no
+section 25). Instead, the acknowledgement copy offers the honest framing — "no
 meaningful tests ran; fine for a docs-only change, risky otherwise" — and the
 human owns the decision. An *explicit, logged, opt-in* docs-only softening is a
 possible v2 nicety, never a silent v1 default.
@@ -303,7 +303,7 @@ set), which already prevents a false `strong`. That is sufficient for v1.
 
 Recognizing these as a distinct *category* (a per-command taxonomy of
 test/lint/typecheck/build/smoke) is **display polish, not a safety change**, and
-is deferred to v2 (see §25/§26). All of them collapse to "not confirmed tests"
+is deferred to v2 (see section 25/section 26). All of them collapse to "not confirmed tests"
 for gating.
 
 ## 16. Why unknown custom commands must not be called weak
@@ -405,7 +405,7 @@ CREATE TABLE IF NOT EXISTS test_validation_acknowledgements (
     run_id TEXT NOT NULL,
     chunk_number INTEGER NOT NULL,
     verdict TEXT NOT NULL,
-    acknowledged_diff_hash TEXT NOT NULL,   -- ties ack to the exact code (§9)
+    acknowledged_diff_hash TEXT NOT NULL,   -- ties ack to the exact code (section 9)
     acknowledged_by TEXT,
     acknowledged_at DATETIME,
     reason TEXT,
@@ -457,7 +457,7 @@ commit/push/PR.
 - Strong string + exit 0 + parseable "12 passed" → `strong`, no ack.
 - "0 passed, 5 skipped" → treated as no meaningful tests → `weak`.
 - **Retry changes the diff after an acknowledgement** → stored ack stale →
-  re-require acknowledgement (the key race, §10).
+  re-require acknowledgement (the key race, section 10).
 - Concurrent final-approval submits (double-click) → idempotent ack, no double
   commit (reuse run locks).
 - Acknowledge attempted when verdict is `strong` → 409 (nothing to acknowledge).
@@ -489,7 +489,7 @@ This design explicitly **rejects** the following for v1:
 - **Hard-blocking all weak tests.** Breaks no-test and docs-only repos; violates
   "don't block all workflows."
 - **Treating unknown custom scripts as weak.** Cries wolf, destroys credibility
-  (§16).
+  (section 16).
 - **LLM-based classification for gating.** Non-deterministic, non-reproducible, a
   new failure mode in a safety gate. (An LLM *suggesting a better command* is a
   possible advisory, non-gating v2 feature.)
@@ -511,7 +511,7 @@ slice is independently shippable and teeth land last, smallest, and most-tested.
 - **#28B** — pure runtime test-evidence classifier (`classify_test_run`), unit
   tested, no wiring.
 - **#28C** — tester output parsing / truncation fix: parse counts and zero-test
-  markers from full output (or the tail) **before** truncation (§18/§19).
+  markers from full output (or the tail) **before** truncation (section 18/section 19).
 - **#28D** — persist the runtime test verdict on the chunk/run, **display-only**,
   no gate.
 - **#28E** — API + frontend runtime validation banner (read-only surfacing).

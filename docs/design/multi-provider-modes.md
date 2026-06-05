@@ -11,7 +11,7 @@ Architecture name used throughout:
 > **This is not a greenfield provider-routing design.** Basic per-role
 > multi-provider routing is already implemented and wired into every pipeline
 > stage. Treating this as a from-scratch feature would re-skin shipped code and
-> call it progress. The genuine gaps are narrow and listed in §6.
+> call it progress. The genuine gaps are narrow and listed in section 6.
 
 ---
 
@@ -40,7 +40,7 @@ claim is only as good as the cited code.
   (`registry.py:46`). `FakeProvider` (`backend/llm/providers/fake.py:8-28`)
   supports only the model `fake-model` (`fake.py:9`) and returns a deterministic
   canned string (`fake.py:18-28`). There is currently **no guard** preventing a
-  real run from resolving to `fake` if configured to do so. See §6 and §12.
+  real run from resolving to `fake` if configured to do so. See section 6 and section 12.
 - Registry is a name→instance map with duplicate-registration protection
   (`ProviderRegistry.register`, `registry.py:13-17`) and a fail-closed lookup:
   unknown provider names raise `UnsupportedProviderError`
@@ -49,7 +49,7 @@ claim is only as good as the cited code.
   (`registry.py:30-31`).
 
 Note (not a gap, an observation): `default_registry()` is constructed fresh on
-each resolution call (see §3). It is stateless today, so this is harmless; it is
+each resolution call (see section 3). It is stateless today, so this is harmless; it is
 recorded here only so a future provider with client/connection state does not
 silently regress latency or correctness.
 
@@ -60,7 +60,7 @@ silently regress latency or correctness.
 **Role enum** (`backend/llm/role_config.py:16-22`):
 `TRIAGE`, `PLANNER`, `CODER`, `REVIEWER`, `SUMMARY`, `ARCHITECT`.
 
-- `ARCHITECT` is **defined but has no call site** (see §3). There is **no
+- `ARCHITECT` is **defined but has no call site** (see section 3). There is **no
   `MEMORY` role** in the enum today.
 
 **Resolver** (`resolve_role_config`, `backend/llm/role_config.py:41-73`)
@@ -105,7 +105,7 @@ with the resolved model (`__init__.py:37`).
 | Coder | `CODER` | `backend/pipeline/coder.py:303-306` | **Discarded** — `_call_llm` returns `response.text` only (`coder.py:306`); `provider`/`model` are logged then dropped |
 | Planner | `PLANNER` | `backend/pipeline/planner.py:127-130` | **Discarded** — returns `response.text` only (`planner.py:130`) |
 | Triage | `TRIAGE` | `backend/pipeline/triage.py:158-164` | **Discarded** — returns `response.text` only (`triage.py:164`) |
-| Intent | `TRIAGE` | `backend/pipeline/intent.py:547-555` | **Discarded**; notable for explicit fail-closed handling (see §4) |
+| Intent | `TRIAGE` | `backend/pipeline/intent.py:547-555` | **Discarded**; notable for explicit fail-closed handling (see section 4) |
 | Reviewer | `REVIEWER` | `backend/pipeline/reviewer.py:331-385` | **Persisted** — `response.provider` / `response.model` flow into the stored record (`reviewer.py:355-364`) |
 | Summary / report analyzer | `SUMMARY` | `backend/pipeline/report_analyzer.py:549-554` | **Discarded** — returns `response.text` only (`report_analyzer.py:554`) |
 
@@ -195,7 +195,7 @@ stores `response.provider` / `response.model` on the review record
   (`backend/models/chunk.py:192-193`).
 
 **Execution-path roles do NOT persist provenance.** Coder, planner, triage,
-intent, and summary discard provider/model after the call (see §3). Their
+intent, and summary discard provider/model after the call (see section 3). Their
 provenance exists only in rotating logs.
 
 ---
@@ -203,23 +203,23 @@ provenance exists only in rotating logs.
 ## 6. Actual gaps
 
 Basic multi-provider routing is **not** a gap — it is implemented and wired
-(§1–§4). The real gaps are:
+(sections 1–4). The real gaps are:
 
 1. **Execution-path provenance.** The coder produced the diff that gets
    committed, yet its provider/model is not persisted (`coder.py:303-306`).
-   Same for planner/triage/summary. Only the reviewer persists (§5).
+   Same for planner/triage/summary. Only the reviewer persists (section 5).
 2. **UI / read-model disclosure.** Outside the reviewer read model, no surface
    shows which provider/model produced a given output.
 3. **Reviewer-independence warning.** Nothing detects or surfaces when the
    reviewer resolves to the *same* provider/model as the coder (a real risk with
-   the shared hardcoded default; see §8, §11).
+   the shared hardcoded default; see section 8, section 11).
 4. **Fake-provider production guard.** `fake` is selectable in a real run with no
-   guard (§1, §12).
+   guard (section 1, section 12).
 5. **Provider availability diagnostics surfacing.** Key/availability checks exist
    but are **log-only** at startup (`startup_diagnostics.py`); there is no
-   per-run, role-scoped pre-flight or operator-visible surface (§13).
+   per-run, role-scoped pre-flight or operator-visible surface (section 13).
 6. **Auto-mode contract.** No reserved provenance fields or disclosure/no-drift
-   guarantees for a future auto policy (§14).
+   guarantees for a future auto policy (section 14).
 
 ---
 
@@ -231,7 +231,7 @@ Basic multi-provider routing is **not** a gap — it is implemented and wired
   hardcoded config. Pure, env-driven. Already exists
   (`resolve_role_config`, `role_config.py:41-73`).
 - **Provenance** — records which provider/model was *actually* used for a given
-  output. Exists for the reviewer (§5); missing on the execution path.
+  output. Exists for the reviewer (section 5); missing on the execution path.
 - **Disclosure** — shows provider/model and trust facts to the operator. Exists
   in the reviewer read model (`chunk.py:192-193`); otherwise missing.
 
@@ -269,11 +269,11 @@ Basic multi-provider routing is **not** a gap — it is implemented and wired
 4. **Silent provider fallback would break trust/provenance.** Auto-retrying a
    failed call on a different provider can change the model behind an approved
    plan or a committed diff, and can re-issue a mutating call after partial side
-   effects. See §10.
+   effects. See section 10.
 5. **Provider drift between plan approval and execution.** If the provider/model
    that produced an approved plan differs from the one that executes it, the
-   operator approved something other than what ran. See §10 and §14.
-6. **Missing API keys must fail closed.** Today they do (§4). The invariant: a
+   operator approved something other than what ran. See section 10 and section 14.
+6. **Missing API keys must fail closed.** Today they do (section 4). The invariant: a
    missing key for a selected provider raises; it must **never** silently route
    to a different provider.
 
@@ -295,7 +295,7 @@ Suggested fields:
 | `role` | `triage` / `planner` / `coder` / `reviewer` / `summary` / … |
 | `provider` | resolved, effective provider name |
 | `model` | resolved, effective model name |
-| `selection_source` | how it was chosen (see §14): `override` / `env_role` / `env_default` / `hardcoded_default` / `auto_policy` |
+| `selection_source` | how it was chosen (see section 14): `override` / `env_role` / `env_default` / `hardcoded_default` / `auto_policy` |
 | `finish_reason` | from `LLMResponse.finish_reason` (`base.py:32`) |
 | `input_tokens` | from `LLMResponse` (`base.py:30`) |
 | `output_tokens` | from `LLMResponse` (`base.py:31`) |
@@ -333,7 +333,7 @@ Storage rules:
 
 - The **coder must never silently retry on a different provider/model.**
 - Today there is **no fallback at all** — `complete_for_role` raises on failure
-  and the pipeline fails closed (§4). This is the correct default and should be
+  and the pipeline fails closed (section 4). This is the correct default and should be
   preserved.
 
 Phrase the stance as a deliberate invariant, not a missing feature: fallback is
@@ -357,7 +357,7 @@ separately and explicitly approved.
   reviewer provider/model equals the *currently resolved* coder provider/model
   (`resolve_role_config(Role.REVIEWER)` vs `resolve_role_config(Role.CODER)`,
   `role_config.py:41-73`). No new persistence required.
-- **Once coder provenance is persisted (§9):** independence must compare the
+- **Once coder provenance is persisted (section 9):** independence must compare the
   **actually persisted** coder provider/model against the **actually persisted**
   reviewer provider/model **for that run/chunk** — not the currently resolved
   config, which can drift after the fact.
@@ -412,12 +412,12 @@ against real code by accident. **Not implemented in this PR.**
 
 Do **not** design selection heuristics now. Reserve only:
 
-- `selection_source = auto_policy` as a reserved value of the §9 field.
+- `selection_source = auto_policy` as a reserved value of the section 9 field.
 - An optional, nullable future `selection_reason` field (why auto chose what it
   chose) — reserved now so auto mode does not later force a migration.
 - **Auto choices must be disclosed** per run (what was chosen, and ideally why).
 - **Auto must not silently change provider/model between an approved plan and its
-  execution** (the §8.5 drift invariant). The provider/model resolved at plan
+  execution** (the section 8.5 drift invariant). The provider/model resolved at plan
   approval must be the one recorded and used at execution, or the change must be
   surfaced and re-approved.
 
@@ -448,31 +448,31 @@ merge, or expand scope.
 ## 16. Recommended next slices (each small, additive, reviewable)
 
 1. **Coder / execution-path LLM provenance persistence** — add the
-   `llm_call_provenance` table (§9) and record coder (then planner/triage/
+   `llm_call_provenance` table (section 9) and record coder (then planner/triage/
    summary) provider/model, reusing the reviewer's isolation pattern. Highest
    value: it ties the committed diff to the model that produced it.
-2. **Reviewer-independence disclosure** — derive and surface the warning (§11),
+2. **Reviewer-independence disclosure** — derive and surface the warning (section 11),
    preferring **actually persisted** coder vs reviewer provenance once slice 1
    lands; display-only, no gating.
-3. **Fake-provider production guard** — implement the §12 rule.
+3. **Fake-provider production guard** — implement the section 12 rule.
 4. **Provider availability diagnostics surfacing** — per-run, role-scoped
-   required/advisory pre-flight (§13), building on existing checks.
+   required/advisory pre-flight (section 13), building on existing checks.
 5. **Provider/model visibility in read models / UI** — disclosure surface beyond
-   the reviewer (§6.2).
+   the reviewer (section 6.2).
 6. **Env docs polish** — document the real `{ROLE}_LLM_*` / `DEFAULT_LLM_*`
    variables (`keys.py:25-38`); no invented names.
 7. **Auto-mode design later** — only after manual provenance + disclosure are
-   stable; honor the §14 reserved contract.
+   stable; honor the section 14 reserved contract.
 
 ---
 
 ## Audit closeout checklist
 
 - [x] Every as-built claim cites real file paths and line numbers.
-- [x] The doc states this is **not** greenfield provider routing (§6 banner, §0).
+- [x] The doc states this is **not** greenfield provider routing (section 6 banner, section 0).
 - [x] The diff adds **only** `docs/design/multi-provider-modes.md`.
 - [x] No backend, frontend, schema, package, or test files changed.
 - [x] No runtime behavior changed.
-- [x] Safety invariants restated and mapped (§15).
+- [x] Safety invariants restated and mapped (section 15).
 - [x] `selection_source` values and the auto-mode contract reserved in writing
-  (§9, §14); no backend `mode` enum proposed (§7).
+  (section 9, section 14); no backend `mode` enum proposed (section 7).

@@ -39,7 +39,7 @@ Three layers, separated by lifetime and trust.
 ### 1.2 Project State Memory (M1 Lite, M2 full)
 
 **Lifetime:** Project lifetime. Survives runs, restarts, and reinstalls.
-**Trust:** Advisory. Source code beats memory on conflict. (See §6.)
+**Trust:** Advisory. Source code beats memory on conflict. (See section 6.)
 **Stores:** Tech stack, repo structure rules, test commands, migration tool, style guides, security rules, architectural decisions, forbidden paths, reviewer preferences.
 **Never stores:** Secrets, API keys, tokens, customer data, PII, file diffs, code blobs, run-specific details, "we did X in run abc123."
 
@@ -160,7 +160,7 @@ Closed enum because open categories degrade into "untyped" overnight. Stays clos
 
 `active` → injected.
 `archived` → not injected. Kept for audit. Reason required.
-`stale` → flagged as possibly outdated. **Still injected**, but tagged in the prompt. (See §7.)
+`stale` → flagged as possibly outdated. **Still injected**, but tagged in the prompt. (See section 7.)
 `pending` is **not** on `memory_facts`. Pending lives on `memory_suggestions`. This separation prevents the "is this real memory or a pending suggestion?" footgun.
 
 ### 2.5 API endpoints (FastAPI, M1)
@@ -176,7 +176,7 @@ Closed enum because open categories degrade into "untyped" overnight. Stays clos
 | `POST` | `/projects/{project_id}/memory/suggestions/{id}/approve` | Promote to `memory_facts` (atomic). |
 | `POST` | `/projects/{project_id}/memory/suggestions/{id}/reject` | Mark rejected with required `reason`. |
 
-There is **no** `DELETE` on `memory_facts` in M1. Archive only. (See §6.)
+There is **no** `DELETE` on `memory_facts` in M1. Archive only. (See section 6.)
 
 ### 2.6 UI surfaces (M1)
 
@@ -252,7 +252,7 @@ class MemoryFactCreate(BaseModel):
     @field_validator("content")
     @classmethod
     def reject_secrets(cls, v: str) -> str:
-        # see §5.1 for the regex set
+        # see section 5.1 for the regex set
         ...
 
 class MemoryFact(MemoryFactCreate):
@@ -287,7 +287,7 @@ class MemorySuggestion(MemorySuggestionCreate):
     created_at: datetime
 ```
 
-**Hard length limit on `content`: 400 chars.** Memory entries that need more than 400 chars are almost always overspecific (see §5, vague vs. overspecific). Force the human to split them.
+**Hard length limit on `content`: 400 chars.** Memory entries that need more than 400 chars are almost always overspecific (see section 5, vague vs. overspecific). Force the human to split them.
 
 ### 2.10 Example memory entries (a real project profile)
 
@@ -408,7 +408,7 @@ Don't age by `created_at`. Instead:
 - Repo indexer (already in Phase 2A) runs a "stack fingerprint" check on each run: detect language, framework, test command, DB, migration tool. Compare against active `stack`, `test`, `db` memory.
 - On mismatch, do **not** silently archive. Mark the conflicting fact `is_stale=true`, write a suggestion to update it, and **fail loudly** at the start of the run with a human gate.
 
-This is the right place to fix Finding #3 fully. M1 can use the naive aging as a transitional measure but **must** also expose the "verify" button per fact (already in §2.5) so humans can refute the stale flag without archiving.
+This is the right place to fix Finding #3 fully. M1 can use the naive aging as a transitional measure but **must** also expose the "verify" button per fact (already in section 2.5) so humans can refute the stale flag without archiving.
 
 > **M1.5 (focused slice, designed separately):** A deterministic, `db`-first version of
 > this signal-driven conflict detection is designed in
@@ -514,7 +514,7 @@ Treat this as the test plan. Each row is something that *will* happen once the s
 
 | # | Failure mode | Mitigation (where) | Detect / fail-stop |
 |---|--------------|--------------------|---------------------|
-| 1 | Too many memory entries | Token budget §2.7; per-category cap | Budget overflow → drop tail with warning |
+| 1 | Too many memory entries | Token budget section 2.7; per-category cap | Budget overflow → drop tail with warning |
 | 2 | Memory token budget overflow | Hard 1500-token ceiling | Log if security+forbidden_paths alone exceed |
 | 3 | Contradictory memories | Same project + same category, surface conflict in UI; show both in prompt with `[CONFLICT]` tag | Suggestion that conflicts with an active fact opens a "resolve" modal |
 | 4 | Stale memories | M1: `is_stale=true` flag; M2: signal-driven (repo index) | Stale facts shown in prompt with `[stale]` tag, not silently dropped |
@@ -532,7 +532,7 @@ Treat this as the test plan. Each row is something that *will* happen once the s
 | 16 | Old memory conflicts with new repo index | M2 conflict UI; M1: manual review via Memory page | Run halt + human gate |
 | 17 | Memory retrieved for wrong project | `project_id` required on every query; raise if missing | Caller passing `project_id=None` logs a loud warning |
 | 18 | Cross-project memory leakage | Backfill of pre-M1 rows to `archived`; FK + index | Test must assert no cross-project read |
-| 19 | Secrets/API keys stored as memory | Secret regex (§5.1) on `add_fact` AND on suggestion insert | Reject with 422; do not log content |
+| 19 | Secrets/API keys stored as memory | Secret regex (section 5.1) on `add_fact` AND on suggestion insert | Reject with 422; do not log content |
 | 20 | PII stored | Same as #19, plus generic PII regex (email, phone, credit card) — best-effort | Same |
 | 21 | Prompt injection inside memory content | Block leading control sequences (`SYSTEM:`, `<|...|>`, `---`, `=== `) at insert; static prefix in injected block makes injection visible | Reject on insert; in injection block, content is line-bounded |
 | 22 | Malicious repo file poisoning AI suggestion | Human approval gate is the backstop; never auto-approve | UI shows suggestion content + source file; human reads before approve |
@@ -603,7 +603,7 @@ Reject these with a 422 and the error message: "Memory entries cannot contain em
 
 ## 7. Prompt Injection Strategy (Format and Discipline)
 
-The exact block is shown in §2.11. The rules around it:
+The exact block is shown in section 2.11. The rules around it:
 
 ### 7.1 Structural separation
 
@@ -655,9 +655,9 @@ For M1, retrieval is rule-based selection from `memory_facts WHERE project_id = 
    3. `priority` ascending.
    4. `last_verified_at` desc (recently verified wins ties).
    5. `is_stale` ascending (non-stale first).
-3. Per-role filter (§2.7).
+3. Per-role filter (section 2.7).
 4. Greedy fill up to 1500 tokens using the `tiktoken`-equivalent estimate from the existing token utils.
-5. Render with the format in §2.11.
+5. Render with the format in section 2.11.
 
 **Reviewer-specific:** boost any `reviewer_pref` to priority 0. Otherwise same algorithm.
 **Triage-specific:** clamp to `category in {stack, structure, test}` and a 300-token budget. Triage is just sizing.
@@ -685,7 +685,7 @@ Hard cap per run: 8 pending suggestions. More than that is noise.
 
 ### 9.2 Suggestion schema
 
-See §2.12.
+See section 2.12.
 
 ### 9.3 What must never become a suggestion
 
@@ -706,7 +706,7 @@ For each pending suggestion the UI shows: content, category, scope, rationale, w
 
 ## 10. Database / API / UI Design for M1 (Concrete)
 
-Schemas and Pydantic shown in §2. This section covers request/response shapes and tests.
+Schemas and Pydantic shown in section 2. This section covers request/response shapes and tests.
 
 ### 10.1 Example API request/response
 
@@ -845,7 +845,7 @@ The following are **out of scope for M1**. Do not start any of them, even partia
 - Complex memory ranking (BM25, learned-to-rank, etc.)
 - Auto-routing models based on memory contents
 - Branch-scoped memory
-- Folder-scoped memory beyond the 5 scope values in §2.3
+- Folder-scoped memory beyond the 5 scope values in section 2.3
 - Run / Thread Memory tables (those are M2)
 - Memory versioning / `memory_fact_history` table (M2)
 - Stack-fingerprint conflict detection (M2)
@@ -861,8 +861,8 @@ If a feature seems borderline, default to "out." M1's only job is: scope memory 
 |-----------|-------------|-------|
 | **M0 (done after this doc)** | This design document committed to `docs/memory-architecture.md`. | No code. |
 | **M1.0 — Migration & fix** | `0001_memory_lite.sql` migration. Backfill of pre-M1 rows to archived. Rewrite of `backend/memory/memory_store.py` with `project_id` required. | Touches `db/schema.sql`, `memory/memory_store.py`. Breaking change to function signatures. |
-| **M1.1 — Injection wired** | `load_hard_facts(project_id)` flowing through planner, coder, reviewer (when added), with token budget, ordering, and per-role filters. Audit-block format from §2.11. | Touches `pipeline/planner.py`, `pipeline/coder.py`, `pipeline/reviewer.py`, `projects/runtime.py`. |
-| **M1.2 — Management API + UI** | All endpoints from §2.5. Memory page (list/create/edit/archive/verify). | Touches `backend/routes/`, `frontend/src/pages/Memory.tsx`. |
+| **M1.1 — Injection wired** | `load_hard_facts(project_id)` flowing through planner, coder, reviewer (when added), with token budget, ordering, and per-role filters. Audit-block format from section 2.11. | Touches `pipeline/planner.py`, `pipeline/coder.py`, `pipeline/reviewer.py`, `projects/runtime.py`. |
+| **M1.2 — Management API + UI** | All endpoints from section 2.5. Memory page (list/create/edit/archive/verify). | Touches `backend/routes/`, `frontend/src/pages/Memory.tsx`. |
 | **M1.3 — Suggestions** | `memory_suggestions` table. Post-PR hook writes pending suggestions from handoffs. Suggestion inbox UI. Approve / Edit & Approve / Reject. | Touches `pipeline/chunked_orchestrator.py`, `routes/memory_suggestions.py`, `frontend/src/pages/Suggestions.tsx`. |
 | **M1.4 — Run-detail Memory tab** | Read-only audit display of the exact memory block injected for the run. Requires snapshotting at run start. | Stores the snapshot as JSON in a new column on `pipeline_runs` (`injected_memory_snapshot`). Cheap. |
 | **M2 (deferred)** | PostgreSQL move + Alembic baseline. Run Memory tables. Audit trail v2. Stack fingerprint. | — |
@@ -876,7 +876,7 @@ M1 is shippable when **all** of the following are true. Each is a test, a smoke 
 
 1. `memory_facts` has `project_id`, `category`, `scope`, `priority`, `content_hash`, `approved_by`, `approved_at`, `last_verified_at` columns.
 2. All pre-M1 rows are archived; none are injected.
-3. `load_hard_facts(project_id=None)` returns `""` and logs a warning. (Test #1 in §10.3.)
+3. `load_hard_facts(project_id=None)` returns `""` and logs a warning. (Test #1 in section 10.3.)
 4. Memory created in project A is **not** visible to project B in any code path. (Test #2.)
 5. Secret regex rejects: OpenAI/Anthropic keys, Gemini keys, GitHub tokens, PEM blocks, JWTs. (Tests #3–#6.)
 6. Memory entries over 400 chars are rejected. (Test #7.)
@@ -903,7 +903,7 @@ A few things that will go wrong even if M1 is built exactly as designed:
 - **`source > memory` will be ignored by models under pressure.** The footer line helps but is not magic. Watch for cases where the reviewer "approves" code that violates memory because memory wasn't visible enough in the prompt. The fix is to also have the reviewer system prompt say "Cross-check the diff against PROJECT MEMORY; flag any conflict explicitly." Bake this into the reviewer prompt template.
 - **Resume runs will diverge from original runs** because M1 re-reads memory on resume. This is acceptable for a single-instance system but will cause real confusion during debugging. Document it in the resume code. M2 fixes it with the run snapshot.
 - **The first time a memory entry "becomes wrong"** (because the repo changed), no part of M1 will detect it automatically. The signal will be the model producing weird output. The Memory tab on Run detail is your only debugging tool. Make sure it is good.
-- **Cross-project leakage will not return** as long as nobody writes a new query that omits `project_id`. The defense is the warning log in `load_hard_facts(None)` and the test in §10.3. Both are necessary; neither is sufficient on its own.
+- **Cross-project leakage will not return** as long as nobody writes a new query that omits `project_id`. The defense is the warning log in `load_hard_facts(None)` and the test in section 10.3. Both are necessary; neither is sufficient on its own.
 
 If any of the above feels uncomfortable to ship, the answer is not to expand M1 — it is to ship M1 fast, see which adversarial case actually bites, and let that drive M2 priorities.
 
@@ -916,17 +916,17 @@ Codex should implement in this order, with a working commit at each step:
 1. **Migration `0001_memory_lite.sql`** — add columns, indexes, `memory_suggestions` table. Backfill pre-M1 rows to `archived`.
 2. **Rewrite `backend/memory/memory_store.py`** — new signatures (`project_id` required), secret/PII validators, content hash + dedup, archive/verify functions, `is_stale` tag preserved in output.
 3. **Pydantic models** — `MemoryFact`, `MemoryFactCreate`, `MemorySuggestion`, `MemorySuggestionCreate`, `SuggestedMemoryEntry`, enum types.
-4. **Unit tests** — all tests in §10.3 up to #15. Run before any wiring.
+4. **Unit tests** — all tests in section 10.3 up to #15. Run before any wiring.
 5. **Wire `project_id` through pipeline** — `planner.py`, `coder.py`, `reviewer.py`, `triage`; thread from `active_project` runtime.
-6. **Prompt block builder** — `backend/memory/prompt_builder.py` implementing §8 algorithm and §2.11 format. Unit-tested in isolation.
+6. **Prompt block builder** — `backend/memory/prompt_builder.py` implementing section 8 algorithm and section 2.11 format. Unit-tested in isolation.
 7. **Run-start snapshot** — add `injected_memory_snapshot` JSON column on `pipeline_runs`; orchestrator writes it once at the start of every run.
-8. **Memory API routes** — endpoints in §2.5.
+8. **Memory API routes** — endpoints in section 2.5.
 9. **Memory page (frontend)** — list / create / edit / archive / verify.
 10. **Post-PR suggestion hook** — orchestrator writes pending suggestions from handoff `suggested_memory_entries` after a successful PR. Gate on run status.
 11. **Suggestion API routes** — list / approve / edit-approve / reject.
 12. **Suggestion inbox (frontend)**.
 13. **Run-detail Memory tab (frontend)** — display the `injected_memory_snapshot`.
 14. **Smoke run** — full 1-chunk and 2-chunk smoke tests from `docs/phase2b-smoke-tests.md`. Then a manual feature on a freshly-seeded project, confirming the planner and coder stop asking basic facts.
-15. **Tag `phase-m1-memory`.** Do not merge to main until all acceptance criteria in §14 pass.
+15. **Tag `phase-m1-memory`.** Do not merge to main until all acceptance criteria in section 14 pass.
 
 Steps 1–4 are non-negotiable prerequisites; steps 5–13 can be re-ordered if convenient but each must remain individually testable.

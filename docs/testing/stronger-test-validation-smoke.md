@@ -129,7 +129,7 @@ Smoke cases to cover:
   changed diff and confirm the acknowledgement becomes stale.
 
 If you cannot easily induce a given runtime state, the focused backend suites in
-§3 exercise the classifier, persistence, ack gate, and read-model
+section 3 exercise the classifier, persistence, ack gate, and read-model
 deterministically.
 
 ## 6. Manual smoke: weak command acknowledgement flow
@@ -255,7 +255,7 @@ Expected:
 
 #28 can be considered complete when:
 
-- The focused backend tests in §3 pass.
+- The focused backend tests in section 3 pass.
 - `npm.cmd run build` passes (frontend type-check + build), with no new lint
   errors beyond the pre-existing baseline.
 - The manual **weak command** smoke passes (banner shows weak, ack required, final

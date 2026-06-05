@@ -110,7 +110,7 @@ a reply that references it.
 - LLM selection or fuzzy matching of the reply.
 - Auto-select while >1 candidate exists.
 - A new approval bypass, scope relaxation, or create-target change.
-- A DB/schema change (kept only as a discussed alternative, §4.3).
+- A DB/schema change (kept only as a discussed alternative, section 4.3).
 - Selecting a path that was not in the previous candidate set.
 
 ---
@@ -193,7 +193,7 @@ require it for clarification signing — doing so would break the default local
 flow. Recommendation:
 
 - Generate a **process-ephemeral HMAC key** at startup (`os.urandom`) when no
-  configured key is present. Clarifications are short-lived (§4.4), so a server
+  configured key is present. Clarifications are short-lived (section 4.4), so a server
   restart invalidating outstanding `clarification_id`s is acceptable — the user
   simply re-submits the original request and gets a fresh clarification.
 - If `PIPEWRIGHT_ENCRYPTION_KEY` *is* configured, derive a stable signing key
@@ -209,7 +209,7 @@ This keeps zero new required configuration while still satisfying req #4.
   design because it pushes the candidate-set constraint (req #3, #4) onto the
   client: the backend would have to trust a client-supplied candidate list, which
   cannot enforce "no path outside the previous candidates" server-side. (The
-  frontend *will* still render buttons — §6 — but it echoes the signed
+  frontend *will* still render buttons — section 6 — but it echoes the signed
   `clarification_id`, it does not own the constraint.)
 - **Option C — reuse run/session/project state.** There is **no run row** to hang
   context on: the ambiguous clarification deliberately returns
@@ -364,7 +364,7 @@ Flow:
 3. `parse_clarification_selection(selection, candidates, recommended_path)`.
    `UNRECOGNIZED` → re-emit the same clarification (same candidates +
    `clarification_id`). No run.
-4. `SELECTED(path)` → rebuild feature_description (§5.2) and **delegate to the
+4. `SELECTED(path)` → rebuild feature_description (section 5.2) and **delegate to the
    existing create-chunked-run core** (the body of
    `create_chunked_run_route`, factored into a shared helper). All guards run.
 
@@ -556,5 +556,5 @@ This PR adds **only** this document. No module is imported, wired, or modified.
 patch_applier, memory, DB/schema, frontend, approvals, git, and providers are
 untouched. The current ambiguous clarification (`chunks.py:198`) continues to
 return the existing safe envelope, and a reply like `yes 1` continues to be
-treated as a new request until #17M ships. All safety invariants in §10 hold
+treated as a new request until #17M ships. All safety invariants in section 10 hold
 unchanged.

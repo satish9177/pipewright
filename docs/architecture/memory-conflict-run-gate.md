@@ -104,7 +104,7 @@ status. No schema change.**
   `approval_type = 'memory_conflict'`. The `approval_type`, `status`, `risk_level`,
   `ai_summary`, and `chunk_number` columns already exist, so this is purely a new value
   in a free-text column — no migration. `risk_level='high'`, `chunk_number=0`,
-  `ai_summary` = the block message (§7).
+  `ai_summary` = the block message (section 7).
 - **Run status:** add a code-only string constant in `backend/core/statuses.py`:
   `RunStatus.AWAITING_MEMORY_CONFLICT_APPROVAL = "awaiting_memory_conflict_approval"`.
   Statuses are plain strings (no enum/migration), so this is not a schema change. A
@@ -146,7 +146,7 @@ once.**
 
 - a clear DB conflict exists *now*: the repo `db` signal is present and **not ambiguous**,
   and an **active or stale** `category='db'` memory fact names a **different** engine; AND
-- the run is **db-sensitive** (§2 strong indicator).
+- the run is **db-sensitive** (section 2 strong indicator).
 
 **Warn** — proceed, surface a non-blocking notice in run detail / the execute response —
 when:
@@ -304,7 +304,7 @@ is independently testable and revertible.
   for M1.5; #16E/telemetry can measure miss rate.
 - **Resume + changed repo.** Re-evaluation on resume must compare the *current* conflict,
   not the one captured at first execute, so an approved override is not honored after the
-  repo changed underneath it. Covered by §6 and test #6.
+  repo changed underneath it. Covered by section 6 and test #6.
 - **Status proliferation.** One new run status is the minimum that keeps the conflict
   pause distinct from chunk approval. Resisting a bespoke state machine (Option B) keeps
   the surface small.

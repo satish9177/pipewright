@@ -1,6 +1,6 @@
 # Patch Failure Recovery (#18A — Design)
 
-> Status: **Design only.** This document defines the recovery model. Implementation lands in #18B–#18F (see §7). No code or schema change ships with #18A.
+> Status: **Design only.** This document defines the recovery model. Implementation lands in #18B–#18F (see section 7). No code or schema change ships with #18A.
 
 ## Context
 
@@ -40,7 +40,7 @@ Closed enum `PatchFailureType` (new module `backend/pipeline/patch_failures.py`)
 | `UNKNOWN_PATCH_FAILURE` | Any uncaught exception in the patch/validate/test path. | "An unexpected error stopped this change. It was rolled back; no changes were kept." | Yes (auto-capped, once) | No | **Yes** if cap hit | chunk=`failed`, run=`failed` |
 
 Notes:
-- "Retry allowed" is the *policy ceiling*; the actual offer is gated by the per-chunk retry budget (see §5). Deterministic categories (`SCOPE_VIOLATION`, `FORBIDDEN_FILE`) are **never** auto-retried — a retry of the same plan produces the same violation.
+- "Retry allowed" is the *policy ceiling*; the actual offer is gated by the per-chunk retry budget (see section 5). Deterministic categories (`SCOPE_VIOLATION`, `FORBIDDEN_FILE`) are **never** auto-retried — a retry of the same plan produces the same violation.
 - `STALE_INDEX_OR_FILE_CHANGED` is the bridge to the Phase 2H stale-index work: its message and the "Re-index" action are the primary recovery, not a plain retry.
 
 ---
@@ -99,8 +99,8 @@ Linear, fail-closed. Lives in `_execute_single_chunk()` / `apply_patch()`. Acqui
 
 Per-concern behavior:
 - **Clean-tree check:** mandatory gate at step 0a. Reuse `local_git.is_working_tree_clean` / `ensure_clean_worktree`.
-- **Pre-patch hash/status capture:** step 0b–0d. HEAD hash + per-file pre-image hashes; the latter feed staleness detection (§8) and are the rollback source of truth alongside the manifest.
-- **Temp branch/worktree/staging:** **rejected** for #18A (see §3). In-place + manifest only.
+- **Pre-patch hash/status capture:** step 0b–0d. HEAD hash + per-file pre-image hashes; the latter feed staleness detection (section 8) and are the rollback source of truth alongside the manifest.
+- **Temp branch/worktree/staging:** **rejected** for #18A (see section 3). In-place + manifest only.
 - **Dry-run / check mode:** step 2, before any write. This is the single biggest reliability win — most `PATCH_DOES_NOT_APPLY` / `PARTIAL_APPLY` cases are caught with zero disk mutation.
 - **Partial-apply prevention:** all-or-nothing. If the dry-run says any file fails, nothing is written (`PATCH_PARTIAL_APPLY_BLOCKED`). The apply loop itself also rolls back on mid-loop exception so a crash can't leave a half-applied tree.
 - **Changed-file scope validation:** step 4 re-checks the **actual** dirty set, not just declared intent — this catches a patch that writes a file it didn't declare.
@@ -146,10 +146,10 @@ New dataclass/Pydantic `PatchFailureReport` in `backend/pipeline/patch_failures.
 ```
 
 Field rules:
-- `failure_type` ∈ the closed enum (§1). `message` is the safe, human headline (no paths to secrets, no tokens).
+- `failure_type` ∈ the closed enum (section 1). `message` is the safe, human headline (no paths to secrets, no tokens).
 - `technical_details` is **sanitized** before storage/return (reuse the existing provider/Git error sanitization path — CLAUDE.md rule 14). Never echo file contents, env values, or tokens.
 - `changed_files_attempted` = what the coder declared/targeted; `changed_files_actual` = `get_dirty_files()` observed post-apply (empty after rollback). The pair makes wrong-file and no-op cases obvious.
-- `suggested_actions` is an ordered subset of the action vocabulary (§5), computed deterministically from `failure_type` + retry budget.
+- `suggested_actions` is an ordered subset of the action vocabulary (section 5), computed deterministically from `failure_type` + retry budget.
 - `rollback_performed` / `working_tree_clean` are **asserted facts**, not hopes — both come from a real post-rollback `is_working_tree_clean()` call.
 - `stale_index_hint` true for `STALE_INDEX_OR_FILE_CHANGED`, `PATCH_DOES_NOT_APPLY`, `TARGET_MISSING`.
 
@@ -182,7 +182,7 @@ Action vocabulary (stable identifiers): `retry`, `retry_with_instruction`, `rein
 | `UNKNOWN_PATCH_FAILURE` | ✅ (cap, once) | ✅ | — | ✅ | ✅ |
 
 Rules:
-- **Every retry re-enters the full lifecycle** (§2) from step 0, including a fresh clean-tree check and dry-run. Retry never resumes mid-flight.
+- **Every retry re-enters the full lifecycle** (section 2) from step 0, including a fresh clean-tree check and dry-run. Retry never resumes mid-flight.
 - **Retry budget (capped-auto):** per-chunk counter (held in `completion_summary` retry block, no schema). Transient categories allow `max_attempts` 1–2; once exhausted, the only offered actions collapse to `reject_chunk`, `mark_manual_intervention`, `view_details`. `reindex` resets/uses a separate counter so a legit stale-index recovery isn't blocked by patch-retry exhaustion.
 - **`reject_chunk`** uses the existing reject endpoint/flow → chunk=`rejected`. **`mark_manual_intervention`** sets a terminal `MANUAL_INTERVENTION_NEEDED` state (can reuse `failed` + a flag in the report to avoid a new status; or add status string — prefer the flag to stay schema-free).
 - **`retry_with_instruction`** appends a human note to the chunk description before re-planning/re-coding — never bypasses scope or approval; the re-planned chunk still honors `files_expected`.
@@ -201,7 +201,7 @@ When a chunk's `completion_summary.kind === "patch_failure"` (or run/chunk statu
 - **Technical details:** collapsed by default; expand via `view_details` (reuse `<pre>` monospace). Already sanitized server-side.
 - **Changed files attempted:** list `changed_files_attempted`; if `changed_files_actual` differs, show both ("attempted X, repo now shows Y").
 - **Rollback status:** explicit line — "✓ Rolled back, working tree clean" (green) when `rollback_performed && working_tree_clean`; **loud red warning** if `working_tree_clean === false` ("Manual intervention needed — repo not clean").
-- **Suggested actions:** render only `report.suggested_actions` as buttons, reusing button patterns (green primary, outline, destructive, `disabled={isPending}`). Wire to the §5 endpoints.
+- **Suggested actions:** render only `report.suggested_actions` as buttons, reusing button patterns (green primary, outline, destructive, `disabled={isPending}`). Wire to the section 5 endpoints.
 - **Stale-index hint:** show the Phase 2H amber note when `report.stale_index_hint` is true; pair it with the `reindex` button.
 - **Disabled approval when patch failed:** while the chunk is failed/awaiting recovery, **disable Approve Chunk and Final Approval controls** (gate the existing buttons in `ChunkPlanPanel`/`FinalApprovalPanel` on a "no active patch failure" predicate). Approval must be impossible over a failed/rolled-back chunk.
 

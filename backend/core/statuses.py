@@ -23,7 +23,7 @@ class RunStatus:
     AWAITING_CHUNK_APPROVAL = "awaiting_chunk_approval"
     # Run-level surfacing for an eligible clean SCOPE_VIOLATION that produced a
     # pending scope_expansion_request (#27). The chunk itself stays `failed`
-    # (design §10); this run status only lets the UI/API distinguish "scope
+    # (design section 10); this run status only lets the UI/API distinguish "scope
     # expansion pending" from an ordinary patch failure. It does not unblock
     # dependents and grants no execution authority.
     AWAITING_SCOPE_APPROVAL = "awaiting_scope_approval"

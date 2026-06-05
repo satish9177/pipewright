@@ -112,7 +112,7 @@ Keep it practical — no special fixtures are required.
    should produce a clean `SCOPE_VIOLATION` and a pending scope request.
 
 If you cannot easily induce a real `SCOPE_VIOLATION`, the focused backend suites
-in §3 already exercise request creation, reject, approve-and-retry, eligibility,
+in section 3 already exercise request creation, reject, approve-and-retry, eligibility,
 and the read-only overlay deterministically.
 
 ## 6. Manual smoke: request creation
@@ -221,7 +221,7 @@ Expected:
 
 #27 can be considered complete when:
 
-- The focused backend tests in §3 pass.
+- The focused backend tests in section 3 pass.
 - `npm.cmd run build` passes (frontend type-check + build), with no new lint
   errors beyond the pre-existing baseline.
 - The manual **reject** smoke passes (request rejected, run settles to `failed`,

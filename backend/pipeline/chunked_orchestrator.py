@@ -151,7 +151,7 @@ def _conflict_signature(report) -> str:
 
 def _build_memory_conflict_summary(report) -> str:
     """
-    Build the human-facing block message (gate ai_summary, §7 of the design doc).
+    Build the human-facing block message (gate ai_summary, section 7 of the design doc).
     Pure. Evidence is the evaluator's path + fixed excerpt only — never secrets.
     """
     memory_values = sorted({entry.memory_value for entry in report.conflicts})
@@ -848,7 +848,7 @@ def _surface_scope_expansion_if_eligible(
     Best-effort: create a pending scope_expansion_request for an eligible clean
     SCOPE_VIOLATION and surface the run as awaiting scope approval (#27).
 
-    The chunk stays `failed` (design §10); only the run-level status is moved to
+    The chunk stays `failed` (design section 10); only the run-level status is moved to
     AWAITING_SCOPE_APPROVAL so the UI/API can distinguish "scope expansion
     pending" from an ordinary patch failure. This adds NO approval, NO retry, NO
     commit, and never mutates chunks.files_expected or scope_guard.
@@ -885,7 +885,7 @@ def settle_run_after_scope_expansion_reject(run_id: str, chunk_number: int) -> N
     Move the run off AWAITING_SCOPE_APPROVAL back to a plain failed state after a
     scope expansion request was rejected (#27 reject slice).
 
-    The chunk itself stays `failed` (design §10), so dependents remain blocked and
+    The chunk itself stays `failed` (design section 10), so dependents remain blocked and
     no execution authority is granted. This only clears the run-level "waiting for
     scope approval" surfacing. It is conservative:
 
@@ -2387,7 +2387,7 @@ async def retry_failed_chunk(
 def _scope_expansion_ineligible_error(decision) -> Exception:
     """
     Map an ineligible #27 eligibility decision onto the right typed error so the
-    route maps it to the documented status code (§11/§12): 422 for validation /
+    route maps it to the documented status code (section 11/section 12): 422 for validation /
     eligibility (not-scope-violation, cap-exhausted, no-requestable-files) and 409
     for state conflicts (dirty tree, manual intervention). Both keep the request
     pending and mutate nothing.
@@ -2416,7 +2416,7 @@ async def _approve_and_retry_scope_expansion_locked(
     the amended effective scope (#27E). Assumes the project repo lock is already
     held by the caller; all eligibility-relevant state is loaded fresh here.
 
-    Mandatory order (design §11, must not be reordered):
+    Mandatory order (design section 11, must not be reordered):
       1/2. (lock + fresh load — done by the caller / at the top here)
       3. request belongs to this run_id + chunk_number
       4. request is pending OR approved-but-not-applied (crash-window re-drive)
@@ -2454,7 +2454,7 @@ async def _approve_and_retry_scope_expansion_locked(
         )
 
     # 4. Only a pending request may be newly approved; an approved-but-not-applied
-    #    request is re-driven (crash-window idempotency, §14). applied / rejected /
+    #    request is re-driven (crash-window idempotency, section 14). applied / rejected /
     #    superseded cannot be acted on (409).
     status = request.status
     if not (
@@ -2504,7 +2504,7 @@ async def _approve_and_retry_scope_expansion_locked(
     target_repo_path = project["repo_path"]
     _validate_target_repo(target_repo_path, require_clean=False)
 
-    # Live dirty-tree re-check (§13/§18): even if the stored report says clean, a
+    # Live dirty-tree re-check (section 13/section 18): even if the stored report says clean, a
     # tree that went dirty since the failure refuses scope approval. Dirty tree
     # means manual intervention only.
     working_tree_clean = local_git.is_working_tree_clean(target_repo_path)
@@ -2627,7 +2627,7 @@ async def _approve_and_retry_scope_expansion_locked(
     # 11/12. Drive the retry under the amended effective scope, then flip
     #        approved -> applied: the approval has been consumed by an attempt
     #        that wrote a fresh result. Only a hard process crash before this
-    #        leaves the request 'approved' (re-drivable, §14).
+    #        leaves the request 'approved' (re-drivable, section 14).
     try:
         try:
             result = await _execute_retry_attempt(

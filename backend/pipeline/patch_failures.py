@@ -65,7 +65,7 @@ RETRY_INELIGIBLE_CAP_EXHAUSTED = "human_retry_cap_exhausted"
 # branch (verify-only; retry never checks out or switches branches).
 RETRY_INELIGIBLE_WRONG_BRANCH = "wrong_branch"
 
-# Stable action identifiers surfaced to the frontend recovery UI (#18A §5).
+# Stable action identifiers surfaced to the frontend recovery UI (#18A section 5).
 ACTION_RETRY = "retry"
 ACTION_RETRY_WITH_INSTRUCTION = "retry_with_instruction"
 ACTION_REINDEX = "reindex"
@@ -85,7 +85,7 @@ _ACTION_ORDER = (
 
 
 class PatchFailureType(str, Enum):
-    """Closed taxonomy of patch failures (#18A §1)."""
+    """Closed taxonomy of patch failures (#18A section 1)."""
 
     PATCH_MALFORMED = "PATCH_MALFORMED"
     PATCH_DOES_NOT_APPLY = "PATCH_DOES_NOT_APPLY"
@@ -208,7 +208,7 @@ _DEFAULT_MESSAGES: dict[PatchFailureType, str] = {
 
 
 class PatchFailureRetryInfo(BaseModel):
-    """Retry budget snapshot for a single patch failure (#18A §5)."""
+    """Retry budget snapshot for a single patch failure (#18A section 5)."""
 
     attempts: int = 0
     max_attempts: int = 0
@@ -253,7 +253,7 @@ class PatchRecoveryAttempt(BaseModel):
 
 
 class PatchFailureReport(BaseModel):
-    """Structured, human-safe patch failure report (#18A §4)."""
+    """Structured, human-safe patch failure report (#18A section 4)."""
 
     failure_type: PatchFailureType
     message: str
@@ -337,7 +337,7 @@ def suggested_actions_for(
     max_attempts: int | None = None,
 ) -> list[str]:
     """
-    Deterministic, bounded recovery action set for a failure (#18A §5).
+    Deterministic, bounded recovery action set for a failure (#18A section 5).
 
     Rules:
       - view_details, reject_chunk, mark_manual_intervention are always offered.

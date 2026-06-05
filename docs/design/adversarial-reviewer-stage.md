@@ -76,7 +76,7 @@ slice):
 - **No PR comments / GitHub interaction.**
 - **No durable audit system** built as part of this stage.
 - **No multi-model routing UI.** Model selection reuses the existing role-based LLM
-  config (see §12); no new UI is introduced here.
+  config (see section 12); no new UI is introduced here.
 
 ---
 
@@ -124,7 +124,7 @@ recorded (`_persist_test_run_verdict`) and **before** the
 - **Never review rolled-back changes as if they still exist.** A review of a change
   that no longer exists is worse than no review — it manufactures false context.
 - **The reviewer result is best-effort evidence, not a gate.** Its success or
-  failure must not influence whether the chunk proceeds (see §6).
+  failure must not influence whether the chunk proceeds (see section 6).
 
 ### Lock-hold caveat (be honest)
 
@@ -136,7 +136,7 @@ call there **increases lock-hold time** for the duration of the review.
   extra seconds per chunk," not a contention bug — there is normally one run at a
   time per project.
 - v1 may accept the in-lock placement **only** with (a) a **strict timeout** and
-  (b) **total failure swallow** (see §6), so a slow or failing provider can never
+  (b) **total failure swallow** (see section 6), so a slow or failing provider can never
   extend the lock indefinitely or break the chunk.
 - **Future improvement:** move the review *out* of the lock by running it against
   **persisted diff/checkpoint evidence** after the lock is released, rather than
@@ -228,7 +228,7 @@ the proposed contract.
 - `security_or_safety_summary`
 - `recommended_human_action`
 - `reviewed_test_checkpoint_hash` — the diff/test-checkpoint identity the review was
-  computed against (see §5; do **not** invent a new identity scheme)
+  computed against (see section 5; do **not** invent a new identity scheme)
 - `checkpoint_id` — the source checkpoint id, if useful
 - `run_id`
 - `chunk_number`
@@ -268,7 +268,7 @@ the proposed contract.
 ## 5. Staleness Model
 
 The reviewer result is **bound to the reviewed test-checkpoint / diff identity**
-(§4). Staleness reuses the same model the #28 acknowledgement gate already uses
+(section 4). Staleness reuses the same model the #28 acknowledgement gate already uses
 (`ACK_CURRENT` / `ACK_STALE` / `ACK_MISSING` semantics in
 [`test_validation_ack_store.py`](../../backend/pipeline/test_validation_ack_store.py)),
 so the two never disagree.
@@ -426,12 +426,12 @@ human gates.
 |---|------|------------|
 | 1 | **LLM call inside repo lock increases latency** (extends lock-hold time). | Strict timeout + total failure swallow in v1; later, run review outside the lock against persisted diff/checkpoint evidence. |
 | 2 | **Stale review shown as current** after #26/#27 changed the diff → false confidence. | Bind review to the test-checkpoint hash; recompute identity on read; demote and warn on `stale`; never show stale as current. |
-| 3 | **Reviewer sycophancy / rubber-stamping** (especially same provider/model as the coder). | Use the existing `REVIEWER` LLM role (§12), defaulting to a different model than `CODER` when configured; adversarial prompt framing; treat `approve_with_notes` as the lowest-signal verdict. |
+| 3 | **Reviewer sycophancy / rubber-stamping** (especially same provider/model as the coder). | Use the existing `REVIEWER` LLM role (section 12), defaulting to a different model than `CODER` when configured; adversarial prompt framing; treat `approve_with_notes` as the lowest-signal verdict. |
 | 4 | **Hallucinated findings** (issues or files not in the diff) → noise → alarm fatigue. | Constrain findings to files present in the reviewed diff; deterministic check drops findings citing absent files; de-emphasize low-confidence findings. |
 | 5 | **Malformed JSON** from the model. | Pydantic validation; failure → `unavailable`; chunk unaffected. |
 | 6 | **Provider timeout / hang.** | Hard time-box, single attempt, swallow. |
 | 7 | **Token / cost blowup on large diffs.** | Bounded, tail-preserving diff cap; bounded test-output preview. |
-| 8 | **Sensitive data egress through the diff** to an external provider. | Diff size cap + redaction + forbidden-path defense-in-depth (§3). |
+| 8 | **Sensitive data egress through the diff** to an external provider. | Diff size cap + redaction + forbidden-path defense-in-depth (section 3). |
 | 9 | **User over-trusts advisory review** (reads it as approval) → erodes human-review discipline. | Subordinate, clearly-labeled UI; explicit "advisory / non-blocking" copy; zero wired actions. |
 | 10 | **User ignores noisy reviews.** | Severity grouping; conservative verdict thresholds; terse output; drop low-value findings. |
 | 11 | **Conflicting signals with the test verdict** (review `risky` vs verdict `strong`, or vice versa). | Document precedence: existing gates and the #28 verdict are authoritative; the review is commentary that never overrides them. |
@@ -439,7 +439,7 @@ human gates.
 | 13 | **Low-risk chunk auto-completes/commits before the human sees the review.** | Accept in v1 (local-only, no push, final approval still required); state plainly; a pre-commit gate would be a separate behavior-changing slice. |
 | 14 | **Schema / coupling creep** if stored in `completion_summary` / `checkpoints`. | Dedicated isolated `chunk_reviews` table; read-only overlay. |
 | 15 | **Unsanitized provider/Git errors** leak secrets into DB/logs/API. | Sanitize all stored/displayed error strings before persistence or return. |
-| 16 | **Scope creep into auto-fix / auto-reject / blocking gate** in a later slice without smoke. | Hard non-goals (§1); any gating/acknowledgement behavior is a separate, smoke-gated slice; enforce via acceptance criteria (§11). |
+| 16 | **Scope creep into auto-fix / auto-reject / blocking gate** in a later slice without smoke. | Hard non-goals (section 1); any gating/acknowledgement behavior is a separate, smoke-gated slice; enforce via acceptance criteria (section 11). |
 
 ---
 
@@ -459,7 +459,7 @@ add any route, call any LLM, or touch any existing flow. Read-only to all existi
 behavior; covered by unit tests for the models, store, and staleness states.
 
 ### Internal advisory reviewer execution after successful tests
-Run the reviewer at the placement in §2, best-effort / time-boxed / fully-swallowed,
+Run the reviewer at the placement in section 2, best-effort / time-boxed / fully-swallowed,
 writing to the storage from the previous slice, bound to the test-checkpoint hash.
 **Must not** add API or UI, change the chunk outcome, gate anything, or alter
 #26/#27/#28. **Required test:** forced reviewer failure leaves the chunk outcome
@@ -471,7 +471,7 @@ the chunk read response, fail-closed. **Must not** call the LLM during a read,
 introduce any action, or change any approval behavior.
 
 ### Frontend advisory review panel
-Display-only panel per §8. **Must not** wire any approve/reject control to reviewer
+Display-only panel per section 8. **Must not** wire any approve/reject control to reviewer
 output, look like approval, or change existing gate UI authority.
 
 ### Deferred optional acknowledgement gate (after smoke)

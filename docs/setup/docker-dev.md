@@ -135,7 +135,7 @@ persisted to a project-local `./data` volume.
   Phase 2G goal. No host repo is mounted, so **no path-translation problem and
   no host blast radius.** Reproducible demo for screenshots/GIF/review.
 - **Drawbacks:** not for working on the user's real repos; the bundled repo is a
-  toy; needs the DB-path handling from §2.
+  toy; needs the DB-path handling from section 2.
 - **Security/trust:** **strong.** `local_only` means no push/PR; no host mount
   means nothing outside the demo is touched; no keys baked into images.
 - **Recommendation:** **the correct first Docker implementation.**
@@ -180,7 +180,7 @@ Scope: a runnable, local-only demo. Likely artifacts:
   `/workspace/demo-repo`), git-initialized at image build time
 - `pr_mode = local_only` only — no GitHub
 - SQLite persisted under a project-local `./data` volume (mounted at the
-  container's `backend/db/`, per the §2 dependency)
+  container's `backend/db/`, per the section 2 dependency)
 - `env_file: .env` for keys at runtime — **never** `COPY .env` into an image
 - **no `gh`** installed in the image; no manual-token flow
 

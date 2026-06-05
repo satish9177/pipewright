@@ -132,7 +132,7 @@ The provider implementation:
 
 The existing chunked orchestrator does not need structural changes. It currently calls `run_planner`, `run_coder`, etc. After LLM-M1, those functions take a `project_id` and internally read from the run snapshot. The orchestrator's job stays the same: drive chunks, hold the lock, save checkpoints, gate approvals.
 
-One small addition: the orchestrator must write the run snapshot to `pipeline_runs.llm_config_snapshot` once, at run creation time, before any chunk starts. (See §6.)
+One small addition: the orchestrator must write the run snapshot to `pipeline_runs.llm_config_snapshot` once, at run creation time, before any chunk starts. (See section 6.)
 
 ---
 
@@ -366,7 +366,7 @@ Only `coder`. Everyone else handles structure, prose, or critique. Architect nee
 
 ### 4.1 Base interface
 
-See §1.2 for the protocol. Repeated here with the full error taxonomy.
+See section 1.2 for the protocol. Repeated here with the full error taxonomy.
 
 ```python
 # backend/llm/errors.py
@@ -444,7 +444,7 @@ Provider responses can contain:
 - Provider-side warning messages that name the API endpoint or version.
 - Rare cases: echoed API keys if the caller embedded one in a prompt (we never do, but defense in depth).
 
-Before any response is logged, it passes through the same secret regex set used in the memory architecture document (§5.1 there): OpenAI keys, Gemini keys, GitHub tokens, PEM blocks, JWTs. Any match is redacted with `[REDACTED:type]`. We log redacted text; we never log raw response body in M1.
+Before any response is logged, it passes through the same secret regex set used in the memory architecture document (section 5.1 there): OpenAI keys, Gemini keys, GitHub tokens, PEM blocks, JWTs. Any match is redacted with `[REDACTED:type]`. We log redacted text; we never log raw response body in M1.
 
 ### 4.5 API key validation (format-only, no network in M1 hot path)
 
@@ -523,7 +523,7 @@ So M1 actually only uses 7 fields. Don't overbuild the metadata table now.
 
 ## 6. Database / API / UI Design for LLM-M1
 
-Schemas in §2.3. Pydantic and routes here.
+Schemas in section 2.3. Pydantic and routes here.
 
 ### 6.1 Pydantic
 
@@ -654,7 +654,7 @@ In `backend/tests/test_llm_*.py`:
 15. `test_run_snapshot_captured_at_run_start`
 16. `test_resume_uses_run_snapshot_not_project_config` — change project config mid-run; resume must use the original snapshot
 17. `test_response_secret_redaction_strips_keys`
-18. `test_no_provider_sdk_leak_outside_adapters` (the linter test from §4.8)
+18. `test_no_provider_sdk_leak_outside_adapters` (the linter test from section 4.8)
 19. `test_warning_when_reviewer_equals_coder`
 20. `test_pipeline_planner_uses_role_config` — set planner to Anthropic, mock anthropic adapter, verify it gets called and gemini does not
 21. `test_preflight_failure_blocks_run_start` — chunked run creation must fail when preflight fails
@@ -767,7 +767,7 @@ Adversarial matrix. Each row is something that will happen.
 | 15 | Cheap triage underestimates risk | Cannot be detected by software in M1 | **The chunk plan is human-approved.** This is the only mitigation. Surfaced in run UI: "Triage used cheap model; review the chunk plan carefully." |
 | 16 | Expensive model accidentally used for every role | Pre-flight summary shows cost tier per role | UI banner: "All roles set to premium tier. This will be expensive." |
 | 17 | User changes config mid-run | Run uses snapshot, not live config | Change takes effect on next run only. UI shows: "Config changes apply to the next run." |
-| 18 | Resume uses different model than original | **Resume reads snapshot, never project config** | Snapshot is immutable. Test #16 in §6.6. |
+| 18 | Resume uses different model than original | **Resume reads snapshot, never project config** | Snapshot is immutable. Test #16 in section 6.6. |
 | 19 | Provider/model deprecated after run starts | Snapshot still references it; provider adapter still calls it | Provider may return its own deprecation error; we map to `ProviderModelDeprecatedError` and fail the run. Acceptable. |
 | 20 | Provider changes model behavior silently | Cannot be detected by software | This is the documented permanent risk. Mitigation: capability table tracks model IDs we've validated; encourage users to pin versions. |
 | 21 | Different providers have different token usage formats | Provider adapter normalizes | Already handled by `LLMResponse`. |
@@ -787,7 +787,7 @@ Adversarial matrix. Each row is something that will happen.
 | 35 | Live log says model succeeded but audit row missing | Symptom of #33 | UI's "LLM Calls" view will show missing rows; live logs are best-effort, the DB is authoritative. |
 | 36 | Cross-project provider config leakage | All queries scoped by `project_id`; FK + tests | Test #21 (cross-project) belongs in `tests/test_llm_config.py`. |
 | 37 | Project A's snapshot used for Project B | Snapshot stored under `pipeline_runs.id` which has `project_id` FK | Read via run, not via project. |
-| 38 | Secrets shown in provider error | Redaction in §8.4 | Tested via #17 in §6.6. |
+| 38 | Secrets shown in provider error | Redaction in section 8.4 | Tested via #17 in section 6.6. |
 | 39 | User changes config while run is paused | Snapshot prevails on resume (test #16) | Resume uses original snapshot. |
 | 40 | Manual override → unsafe model choice | Pre-flight + warning + human approval gate | The human approval gate is the final backstop. The model choice does not bypass it. |
 | 41 | No provider configured on first install | Defaults fill in Gemini for all roles if `GEMINI_API_KEY` set; otherwise pre-flight fails with clear message | First-install UX is "set GEMINI_API_KEY, run". |
@@ -979,10 +979,10 @@ If a feature feels borderline, default to "out." LLM-M1's only job is: replace h
 |-----------|-------------|-------|
 | **LLM-M0** | This document committed to `docs/multi-llm-architecture.md`. | No code. |
 | **LLM-M1.1** | Migration `0002_llm_config.sql`. Pydantic schemas for `RoleConfig`, `ProjectLLMConfig`, `LLMConfigSnapshot`. Capability table module. | Schema only; no callers wired yet. |
-| **LLM-M1.2** | `backend/llm/` package: `provider.py`, `errors.py`, `registry.py`, `providers/gemini.py`, `providers/anthropic.py`. Capability validation. Format-level API key validation. Provider-side retry policy. SDK-leak lint test (§4.8). | The provider layer. Stand-alone; pipeline stages not yet using it. |
+| **LLM-M1.2** | `backend/llm/` package: `provider.py`, `errors.py`, `registry.py`, `providers/gemini.py`, `providers/anthropic.py`. Capability validation. Format-level API key validation. Provider-side retry policy. SDK-leak lint test (section 4.8). | The provider layer. Stand-alone; pipeline stages not yet using it. |
 | **LLM-M1.3** | Rewrite `planner.py`, `coder.py`, `triage.py`, and add `reviewer.py` to use `provider.generate(...)`. Remove direct `google.generativeai` imports. Remove module-level `*_MODEL` constants. Read role config from run snapshot. | The dangerous refactor. Existing smoke tests must keep passing. |
 | **LLM-M1.4** | Run snapshot capture at chunked-run creation. Pre-flight validation. `llm_calls` audit writes. Live-log shape with `provider=`/`model=`. | Audit + safety. |
-| **LLM-M1.5** | API endpoints (§6.2). Frontend Project Settings → LLM Config tab. Run detail → LLM tab and LLM Calls tab. Banner when reviewer == coder. | UI. |
+| **LLM-M1.5** | API endpoints (section 6.2). Frontend Project Settings → LLM Config tab. Run detail → LLM tab and LLM Calls tab. Banner when reviewer == coder. | UI. |
 | **LLM-M2** | Fallback, cost tracking, provider health, per-provider retry policies, API key validation UI (env-only still). | Deferred. |
 | **LLM-M3** | Auto-routing, local models, cost-aware planning, routing feedback loop. | Deferred. |
 
@@ -996,13 +996,13 @@ LLM-M1 is shippable when **all** of the following are true:
 
 1. A project can configure `(provider, model)` for each of: `triage`, `planner`, `architect`, `coder`, `reviewer`, `summary` via API and UI.
 2. Run creation writes the role assignment into `pipeline_runs.llm_config_snapshot` before any chunk executes.
-3. Pipeline stages (planner, coder, triage, reviewer) call providers through the abstraction, not through `google.generativeai` directly. The lint test in §4.8 passes.
+3. Pipeline stages (planner, coder, triage, reviewer) call providers through the abstraction, not through `google.generativeai` directly. The lint test in section 4.8 passes.
 4. Reviewer can be configured with a different `(provider, model)` than coder. The pipeline correctly routes the reviewer call to that provider.
 5. Missing API key fails pre-flight. The run does not start. The error names the env var.
 6. Unsupported or deprecated model fails pre-flight. The error names the model.
 7. Malformed provider JSON output: one correction-prompt retry on the same provider; if still bad, the run fails cleanly with a clear error.
 8. Every LLM call writes a row to `llm_calls` with `status`, `provider`, `model`, `tokens_input`, `tokens_output`, `latency_ms`, `error_class` (if applicable), and a redacted error message.
-9. Resume of an interrupted run uses the original `llm_config_snapshot`, not the current project config. Test #16 in §6.6 covers this.
+9. Resume of an interrupted run uses the original `llm_config_snapshot`, not the current project config. Test #16 in section 6.6 covers this.
 10. UI run detail shows the snapshot (intended config) and the `llm_calls` table (actual calls).
 11. Live logs include `provider=` and `model=` on every LLM-related line.
 12. If `coder.(provider,model) == reviewer.(provider,model)`, pre-flight emits a warning. The run is still allowed to proceed. UI shows the warning banner.
@@ -1039,9 +1039,9 @@ Codex should implement in this order, with a working commit at each step:
 5. **Provider interface** — `backend/llm/provider.py` (`LLMRequest`, `LLMResponse`, `Provider` ABC, `RetryPolicy`).
 6. **Gemini adapter** — `backend/llm/providers/gemini.py`. Translates current direct-SDK code into the adapter. Honor `Retry-After`. Normalize errors. Unit tests with mocked SDK.
 7. **Anthropic adapter** — `backend/llm/providers/anthropic.py`. Uses tool-use for structured JSON. Unit tests with mocked SDK.
-8. **Provider registry** — `backend/llm/registry.py`. SDK-leak lint test from §4.8.
+8. **Provider registry** — `backend/llm/registry.py`. SDK-leak lint test from section 4.8.
 9. **Pre-flight check** — function that, given a `LLMConfigSnapshot`, validates each role and returns a structured report.
-10. **API routes for config + preflight** — endpoints in §6.2.
+10. **API routes for config + preflight** — endpoints in section 6.2.
 11. **Run-creation hook** — chunked-run creation calls preflight, writes snapshot. Refuses to start if preflight fails.
 12. **Audit recorder** — `record_llm_call(run_id, chunk_number, role, role_cfg, response, status, error)`.
 13. **Refactor `triage.py`** — uses provider abstraction. Existing smoke test must still pass with Gemini.
@@ -1056,6 +1056,6 @@ Codex should implement in this order, with a working commit at each step:
 22. **Full smoke test** — 1-chunk and 2-chunk smoke runs from `docs/phase2b-smoke-tests.md`:
     - First with all-Gemini config (parity with existing behavior).
     - Then with Gemini coder + Anthropic reviewer (the headline multi-LLM case).
-23. **Tag `phase-llm-m1`.** Do not merge to main until all acceptance criteria in §16 pass.
+23. **Tag `phase-llm-m1`.** Do not merge to main until all acceptance criteria in section 16 pass.
 
 Steps 1–8 build the abstraction without changing pipeline behavior; steps 13–17 are the actual cutover. If anything goes wrong during cutover, steps 13–17 are revertible without losing the new abstraction.

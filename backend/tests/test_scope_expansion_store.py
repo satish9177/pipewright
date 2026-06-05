@@ -289,7 +289,7 @@ def test_definition_by_number_receives_effective_scope_not_triage(tmp_repo, trac
     assert definitions[1].files_expected == ["a.py", "extra.py"]
     # Crucially, it did NOT come from the immutable triage JSON: the triage chunk
     # still shows only the original scope. This pins the propagation-chain
-    # invariant (§8) so a refactor that reads triage instead of ChunkStatus fails.
+    # invariant (section 8) so a refactor that reads triage instead of ChunkStatus fails.
     triage_chunk = next(c for c in plan.triage.chunks if c.chunk_number == 1)
     assert triage_chunk.files_expected == ["a.py"]
     assert "extra.py" not in triage_chunk.files_expected

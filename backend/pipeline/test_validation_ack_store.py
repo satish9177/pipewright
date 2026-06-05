@@ -4,7 +4,7 @@ Persistence + gate evaluation for runtime test-validation acknowledgements (#28F
 
 This is the durable, audited home for human acknowledgements of a weak/none
 runtime test verdict at the final gate (docs/design/stronger-test-validation.md
-§7–§10). It mirrors the #27 scope_expansion_store shape: boring CRUD over a small
+section 7–section 10). It mirrors the #27 scope_expansion_store shape: boring CRUD over a small
 table, a conflict error the route maps to 409, and read helpers the final-approval
 guard consults.
 
@@ -12,7 +12,7 @@ Safety properties this module owns:
 
   - An acknowledgement is bound to the EXACT diff it was made against
     (``acknowledged_diff_hash``), sourced from the chunk's latest test checkpoint
-    git hash (§9). A retry/amendment (#26/#27) re-runs tests, writes a new test
+    git hash (section 9). A retry/amendment (#26/#27) re-runs tests, writes a new test
     checkpoint with a new hash, and thereby makes any prior acknowledgement stale.
   - Acknowledgement is only ever a PRECONDITION for final approval. It never
     commits, pushes, creates a PR, marks the run approved, replaces final
@@ -125,7 +125,7 @@ def _now_iso() -> str:
 
 def compute_chunk_diff_hash(run_id: str, chunk_number: int) -> str | None:
     """
-    The canonical "current diff identity" for a chunk (§9): the git hash recorded
+    The canonical "current diff identity" for a chunk (section 9): the git hash recorded
     on the chunk's latest successful test checkpoint (the post-patch hash the
     verdict was computed against).
 
@@ -208,7 +208,7 @@ def create_acknowledgement(
 
     Idempotent: a re-acknowledgement of the same (run, chunk, verdict, diff_hash)
     that is already active returns the existing row rather than inserting a
-    duplicate (double-submit safety, §7). Raises
+    duplicate (double-submit safety, section 7). Raises
     ``TestValidationAckConflictError`` if the verdict is not acknowledgeable or
     the diff hash is missing — mutating nothing.
     """
@@ -311,7 +311,7 @@ def acknowledgement_state(
 def chunks_requiring_acknowledgement(run_id: str) -> list[ChunkAckRequirement]:
     """
     The weak/none chunks that BLOCK final approval because they lack an active
-    acknowledgement bound to their current diff hash (§6/§22). Empty list means
+    acknowledgement bound to their current diff hash (section 6/section 22). Empty list means
     final approval is unblocked by #28F.
 
     A chunk with verdict strong/unknown or no recorded verdict never appears here

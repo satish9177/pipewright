@@ -2091,14 +2091,14 @@ async def approve_scope_expansion_route(
     Approve a pending scope expansion request and re-drive the chunk retry under
     the amended effective scope (#27E).
 
-    Scope approval is NOT code approval (design §21): it only authorizes retrying
+    Scope approval is NOT code approval (design section 21): it only authorizes retrying
     under a wider allowlist. A successful expanded retry still pauses at the
     existing awaiting_chunk_approval gate and is committed only later through the
     unchanged approval path — this route never commits and never auto-merges.
 
     The single idempotent endpoint: a re-click after a crash between
     `approved` and the retry write re-drives the retry rather than rejecting it
-    (crash-window idempotency, §14).
+    (crash-window idempotency, section 14).
 
     Error mapping (a side-effect-free precheck failure keeps the request pending
     and mutates nothing):

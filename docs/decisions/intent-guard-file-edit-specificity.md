@@ -128,7 +128,7 @@ edit** when it has all three:
    change (already covered by `_IMPLEMENTATION_PHRASES` in `intent.py` and
    `_GENERIC_VERBS` in `implementation_guard.py`);
 2. **target reference** — an explicit relative path or a known literal-file
-   alias (see §4); and
+   alias (see section 4); and
 3. **change / acceptance clue** — text to add, a value to update, or a rename
    target.
 
@@ -194,7 +194,7 @@ returning exactly one of:
   `is_forbidden_write_path`. A forbidden target produces a safe refusal, not an
   edit and not a create offer.
 - **Never invent a file** unless the user **explicitly** says `create <path>`
-  (see §5). A bare alias that is `NOT_FOUND` results in a *question*, not a
+  (see section 5). A bare alias that is `NOT_FOUND` results in a *question*, not a
   silently-created file.
 - **Deterministic:** identical `feature_description` + identical index → identical
   result across repeated runs. No randomness, no time/order dependence.
@@ -235,7 +235,7 @@ and **before** `run_triage`:
    `scope_guard` unchanged. (This is the only runtime behavior change, and it is
    additive — it narrows scope, never widens it.)
 4. **`NOT_FOUND` / `AMBIGUOUS`** → return `_needs_clarification_response` with the
-   specific message from §5; no run is created.
+   specific message from section 5; no run is created.
 5. **Explicit `create README.md`** → route through the existing create-file path
    **only** when the target is not forbidden and its directory is safe; otherwise
    clarify. Default remains: do not invent files.
@@ -336,7 +336,7 @@ Regression: existing `test_implementation_guard.py`, `test_intent.py`, and
 
 ## 12. #17C implemented (wiring + confirmed root cause)
 
-**Confirmed root cause (supersedes the §10 "unconfirmed" note):** the generic
+**Confirmed root cause (supersedes the section 10 "unconfirmed" note):** the generic
 "too vague" rejection of `add hello in the readme` comes from the deterministic
 9A guard, not the LLM. In `assess_implementation_specificity`, `readme`
 fuzzy-matches the verb `rename` (Levenshtein distance 2 for a length-6 token),
@@ -469,7 +469,7 @@ pre-triage, no LLM), consumed by the IMPLEMENTATION branch of
 `create_chunked_run_route` exactly where #17C wires `GROUNDED`.
 
 A new resolver outcome `CREATE_TARGET(path)` is produced **only** when the target
-is `NOT_FOUND` *and* all §14.3 rules pass. Route handling mirrors `GROUNDED`:
+is `NOT_FOUND` *and* all section 14.3 rules pass. Route handling mirrors `GROUNDED`:
 
 - `CREATE_TARGET(path)` → concrete sanctioned anchor: bypass the vague guard, set
   `pinned_path = path`, run the **normal** triage → planner → coder → patch →

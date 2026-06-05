@@ -4,7 +4,7 @@ Persistence helpers for Scope Expansion Recovery requests (#27C).
 
 This module stores and reads scope_expansion_requests rows. It is the durable,
 audited home for human-approved scope amendments described in
-docs/design/scope-expansion-recovery.md (§5/§6/§8).
+docs/design/scope-expansion-recovery.md (section 5/section 6/section 8).
 
 Scope of this slice (#27C foundations):
 
@@ -423,7 +423,7 @@ def maybe_create_scope_expansion_request_for_failure(
     manual-intervention / non-SCOPE_VIOLATION / all-forbidden / cap-exhausted
     failures create nothing.
 
-    Idempotency / dedup (#27A §6, #27C):
+    Idempotency / dedup (#27A section 6, #27C):
       - A failure with no failure_report_id creates nothing (cannot be tied).
       - If a pending request already exists for this chunk with the SAME
         failure_report_id, it is left unchanged (no duplicate).
