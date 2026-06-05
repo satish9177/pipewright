@@ -19,6 +19,13 @@ backend/backups/
 # Database
 *.db
 *.sqlite
+# SQLite WAL sidecar / journal files (#32D enabled WAL mode). These are
+# transient and must never be committed.
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite-wal
+*.sqlite-shm
 
 # Distribution
 dist/

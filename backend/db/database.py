@@ -6,7 +6,7 @@ Database file lives at backend/db/pipewright.db
 """
 
 import os
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from pathlib import Path
 
@@ -34,6 +34,37 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
     echo=False
 )
+
+# Local SQLite reliability (#32D). Pipewright's local/open-source default is a
+# single SQLite file accessed by the API thread and offloaded worker threads
+# (#32C). Under that concurrency SQLite's default rollback journal + zero busy
+# timeout surfaces "database is locked" errors. WAL lets readers and a writer
+# proceed concurrently, and busy_timeout makes a contended writer wait briefly
+# instead of erroring immediately.
+#
+# This is applied per new DBAPI connection via the SQLAlchemy "connect" event.
+# It is intentionally NOT a schema or migration change: journal_mode=WAL is a
+# property of the database file and busy_timeout is per-connection, so this is
+# idempotent and safe for existing DBs. PRAGMAs are scoped to SQLite only.
+SQLITE_BUSY_TIMEOUT_MS = 5000
+
+
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragmas(dbapi_connection, connection_record):
+    # Guard so SQLite-specific PRAGMAs never run against a non-SQLite backend
+    # (e.g. a future PostgreSQL hosted/team path).
+    if engine.dialect.name != "sqlite":
+        return
+    # Run on the raw DBAPI connection before any transaction begins; WAL cannot
+    # be set inside a transaction. For in-memory SQLite, journal_mode=WAL is a
+    # graceful no-op (it stays "memory") rather than an error.
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    finally:
+        cursor.close()
+
 
 SessionLocal = sessionmaker(
     autocommit=False,
