@@ -301,6 +301,23 @@ export interface ChunkReviewFinding extends ExtraFields {
   confidence?: number | null
 }
 
+export type ReviewerIndependenceStatus =
+  | 'independent'
+  | 'self_review'
+  | 'unknown'
+  | 'unavailable'
+
+// Display-only reviewer-independence disclosure (#33C). Derived on read from
+// persisted coder/reviewer provenance; never gates or authorizes anything.
+export interface ReviewerIndependence extends ExtraFields {
+  status: ReviewerIndependenceStatus
+  coder_provider?: string | null
+  coder_model?: string | null
+  reviewer_provider?: string | null
+  reviewer_model?: string | null
+  message: string
+}
+
 export interface ChunkReview extends ExtraFields {
   review_status: ChunkReviewStatus
   staleness: ChunkReviewStaleness
@@ -316,6 +333,7 @@ export interface ChunkReview extends ExtraFields {
   provider?: string | null
   model?: string | null
   created_at?: string | null
+  reviewer_independence?: ReviewerIndependence | null
 }
 
 export interface ChunkStatus extends ExtraFields {

@@ -157,6 +157,34 @@ class ChunkReviewFindingReadModel(BaseModel):
     confidence: float | None = None
 
 
+class ReviewerIndependenceReadModel(BaseModel):
+    """
+    Display-only disclosure of whether the advisory reviewer used the SAME
+    provider/model as the coder for this exact run/chunk (#33C;
+    docs/design/multi-provider-modes.md).
+
+    Computed on read from PERSISTED provenance only — the reviewer's stored
+    provider/model and the coder's persisted llm_call_provenance row for the same
+    run/chunk — never from current env config (which can change after the run and
+    misreport history). This is advisory evidence: it gates nothing, authorizes
+    nothing, and never affects operator_state, chunk approval, final approval, or
+    reviewer execution. ``status``:
+
+      - ``self_review``  reviewer and coder used the same provider AND model.
+      - ``independent``  reviewer used a different provider/model from the coder.
+      - ``unknown``      coder (or reviewer) provenance is missing, so independence
+                         could not be verified — never reported as independent.
+      - ``unavailable``  no completed review exists, so independence does not apply.
+    """
+
+    status: Literal["independent", "self_review", "unknown", "unavailable"]
+    coder_provider: str | None = None
+    coder_model: str | None = None
+    reviewer_provider: str | None = None
+    reviewer_model: str | None = None
+    message: str
+
+
 class ChunkReviewReadModel(BaseModel):
     """
     Read-only ADVISORY reviewer overlay for a chunk (Adversarial Reviewer v1;
@@ -192,6 +220,9 @@ class ChunkReviewReadModel(BaseModel):
     provider: str | None = None
     model: str | None = None
     created_at: str | None = None
+    # Display-only reviewer-independence disclosure (#33C). Additive: derived on
+    # read from persisted coder/reviewer provenance; never gates or authorizes.
+    reviewer_independence: ReviewerIndependenceReadModel | None = None
 
 
 class ChunkStatus(BaseModel):

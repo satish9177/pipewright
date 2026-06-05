@@ -2,6 +2,7 @@ import type {
   ChunkReview,
   ChunkReviewFinding,
   ChunkReviewVerdict,
+  ReviewerIndependence,
   ReviewFindingSeverity,
 } from '@/api/client'
 import { Badge } from '@/components/ui/badge'
@@ -71,6 +72,48 @@ function formatTimestamp(value?: string | null): string | null {
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return value
   return parsed.toLocaleString()
+}
+
+// Display-only reviewer-independence disclosure (#33C). Renders only for a
+// completed review and only for the three meaningful states; 'unavailable' (no
+// completed review) renders nothing so existing unavailable copy is preserved.
+const INDEPENDENCE_META: Record<
+  string,
+  { label: string; className: string } | undefined
+> = {
+  self_review: {
+    label: 'Not independent',
+    className: 'border-amber-300 bg-amber-100 text-amber-800',
+  },
+  independent: {
+    label: 'Independent reviewer',
+    className: 'border-emerald-300 bg-emerald-100 text-emerald-800',
+  },
+  unknown: {
+    label: 'Independence unverified',
+    className: 'border-slate-300 bg-slate-100 text-slate-600',
+  },
+}
+
+function IndependenceNote({
+  independence,
+}: {
+  independence: ReviewerIndependence
+}) {
+  const meta = INDEPENDENCE_META[independence.status]
+  if (!meta) return null
+  const noteClass =
+    independence.status === 'self_review'
+      ? 'rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800'
+      : 'text-xs text-muted-foreground'
+  return (
+    <div className="grid gap-1">
+      <Badge variant="outline" className={meta.className}>
+        {meta.label}
+      </Badge>
+      <p className={noteClass}>{independence.message}</p>
+    </div>
+  )
 }
 
 function FindingRow({ finding }: { finding: ChunkReviewFinding }) {
@@ -170,6 +213,9 @@ export default function AdvisoryReviewPanel({
         </p>
       ) : (
         <>
+          {review.reviewer_independence && (
+            <IndependenceNote independence={review.reviewer_independence} />
+          )}
           {verdict && (
             <p className="text-slate-700">{verdict.detail}</p>
           )}
