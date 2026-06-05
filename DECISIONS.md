@@ -95,7 +95,7 @@ Issue: ai-workflow-platform Docker container runs
        Swagger showed wrong app when both running.
 
 Fix: Always run Pipewright on port 8001.
-     uvicorn backend.main:app --host 0.0.0.0 --port 8001
+     uvicorn backend.main:app --host 127.0.0.1 --port 8001
      Swagger at http://localhost:8001/docs
 
 ---
@@ -261,7 +261,7 @@ Decision: Use --reload only during code editing.
 
 Commands:
   Development: uvicorn backend.main:app --reload
-  Pipeline:    uvicorn backend.main:app --host 0.0.0.0 --port 8000
+  Pipeline:    uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
 ## 2026-05-23 — Rollback on human rejection
 

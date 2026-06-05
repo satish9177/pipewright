@@ -18,7 +18,7 @@ GitHub fields are present if the demo will create a PR.
 ```powershell
 cd C:\Users\Hp\pipewright
 venv\Scripts\python.exe -m backend.db.database
-uvicorn backend.main:app --host 0.0.0.0 --port 8001
+uvicorn backend.main:app --host 127.0.0.1 --port 8001
 ```
 
 ## 3. Create a chunked run

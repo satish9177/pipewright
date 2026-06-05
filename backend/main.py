@@ -14,6 +14,7 @@ from backend.core.logging_config import configure_logging
 from backend.db.database import init_db
 from backend.db.database import engine
 from backend.runtime.approval_gate_recovery import timeout_stale_approval_gates
+from backend.runtime.startup_diagnostics import run_startup_diagnostics
 from backend.runtime.startup_recovery import recover_interrupted_runs
 from backend.models.handoff import RejectRequest
 from backend.pipeline.approval_gate import (
@@ -39,6 +40,9 @@ async def lifespan(app):
     init_db()
     timeout_stale_approval_gates()
     recover_interrupted_runs()
+    # Log-only local-first setup diagnostics (#32B). Never raises, never blocks
+    # startup; optional gaps warn only.
+    run_startup_diagnostics()
     logger.info("Pipewright started.")
     yield
 

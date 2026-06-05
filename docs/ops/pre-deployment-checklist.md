@@ -122,7 +122,7 @@ Pipeline runs should avoid `--reload` because file watching can restart the
 process while target repositories and backup files are changing:
 
 ```powershell
-venv\Scripts\python.exe -m uvicorn backend.main:app --host 0.0.0.0 --port 8001
+venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8001
 ```
 
 Use port `8001` for Pipewright so port `8000` remains available for target repo

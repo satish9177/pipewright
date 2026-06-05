@@ -198,7 +198,7 @@ Remove-Item Env:\DEFAULT_LLM_MODEL
 
 ## Manual UI Smoke Checklist
 
-- [ ] Start backend: `venv\Scripts\python.exe -m uvicorn backend.main:app --host 0.0.0.0 --port 8001`
+- [ ] Start backend: `venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8001`
 - [ ] Start frontend: `npm.cmd run dev` (from `frontend/`)
 - [ ] Open or create a project with a local repo path
 - [ ] Generate or approve project memory if prompted
