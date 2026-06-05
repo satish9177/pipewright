@@ -7,6 +7,7 @@ operates on its own repository when targeting a project repository.
 """
 
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -201,6 +202,76 @@ def ensure_clean_worktree(repo_path: str) -> None:
         f"[GIT] working tree is dirty: {', '.join(dirty_files)}. "
         "Review changes, then manually run git restore . and git clean -fd if safe."
     )
+
+
+@dataclass(frozen=True)
+class WorktreeStatus:
+    """
+    Read-only classification of a repo's working tree (#32E interruption
+    guidance). `state` is one of:
+
+      "clean"        - git repo with no uncommitted changes
+      "dirty"        - git repo with uncommitted changes (see dirty_files)
+      "missing_path" - repo_path is empty, does not exist, or is not a directory
+      "not_a_repo"   - path exists but is not inside a git work tree
+      "error"        - inspection could not complete (git missing, timeout, etc.)
+    """
+    state: str
+    dirty_files: tuple[str, ...] = ()
+    reason: str = ""
+
+    @property
+    def is_dirty(self) -> bool:
+        return self.state == "dirty"
+
+
+def detect_uncommitted_changes(repo_path: str) -> WorktreeStatus:
+    """
+    Inspect whether repo_path has uncommitted changes — strictly read-only.
+
+    Runs only `git rev-parse` / `git status` (never reset/stash/checkout/clean/
+    commit), never mutates the repo, never raises (unexpected problems are
+    returned as state="error"), and safely handles missing and non-git paths.
+
+    Intended for interruption guidance: detection only. Callers must not use it
+    to drive any automatic Git mutation.
+    """
+    try:
+        if not repo_path or not str(repo_path).strip():
+            return WorktreeStatus("missing_path", reason="repo_path is empty")
+
+        path = Path(repo_path)
+        if not path.exists():
+            return WorktreeStatus(
+                "missing_path", reason=f"repo_path does not exist: {repo_path}"
+            )
+        if not path.is_dir():
+            return WorktreeStatus(
+                "missing_path",
+                reason=f"repo_path is not a directory: {repo_path}",
+            )
+
+        probe = run_git(["rev-parse", "--is-inside-work-tree"], repo_path)
+        if probe.returncode != 0 or probe.stdout.strip() != "true":
+            return WorktreeStatus(
+                "not_a_repo",
+                reason=f"repo_path is not a git repository: {repo_path}",
+            )
+
+        status = run_git(["status", "--porcelain", "-uall"], repo_path)
+        if status.returncode != 0:
+            return WorktreeStatus(
+                "error", reason=f"git status failed: {status.stderr.strip()}"
+            )
+
+        dirty_files = get_dirty_files(repo_path)
+        if dirty_files:
+            return WorktreeStatus("dirty", dirty_files=tuple(dirty_files))
+        return WorktreeStatus("clean")
+    except Exception as error:
+        return WorktreeStatus(
+            "error", reason=f"worktree inspection failed: {error}"
+        )
 
 
 def assert_not_on_stale_pipewright_branch(
