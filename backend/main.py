@@ -24,6 +24,7 @@ from backend.pipeline.approval_gate import (
     get_gate,
 )
 from backend.routes.chunks import router as chunks_router
+from backend.routes.llm import router as llm_router
 from backend.routes.memory import router as memory_router
 from backend.routes.memory import run_memory_router
 from backend.routes.projects import router as projects_router
@@ -67,6 +68,7 @@ app.include_router(memory_router)
 app.include_router(run_memory_router)
 app.include_router(projects_router)
 app.include_router(ws_events_router)
+app.include_router(llm_router)
 
 
 @app.get("/health")
