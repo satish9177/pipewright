@@ -6,6 +6,7 @@ This module executes approved chunks one at a time. It does not implement
 remote push, GitHub PR creation, or remote branch management.
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -1318,7 +1319,16 @@ async def _execute_single_chunk(
         )
         return _fail_chunk_with_report(run_id, chunk_number, report)
 
-    outcome = apply_patch_guarded(
+    # #32C: offload the blocking patch-apply and test subprocess work to a worker
+    # thread so the asyncio event loop (API/UI) stays responsive during a long
+    # run. `await` keeps this coroutine — and therefore the project repo lock it
+    # runs under — held for the full duration, so serialization is unchanged.
+    # asyncio.to_thread propagates the current contextvars (the active_project
+    # ContextVar set by `with active_project(...)` in the caller), so the offloaded
+    # calls resolve the same repo path / test command. Return values, exceptions,
+    # ordering, and side effects are identical to the prior direct calls.
+    outcome = await asyncio.to_thread(
+        apply_patch_guarded,
         code,
         run_id,
         chunk_number=chunk_number,
@@ -1328,7 +1338,9 @@ async def _execute_single_chunk(
         return _fail_chunk_with_report(run_id, chunk_number, outcome.failure)
 
     patch = outcome.patch_result
-    test_result = run_tests(patch, run_id, chunk_number=chunk_number)
+    test_result = await asyncio.to_thread(
+        run_tests, patch, run_id, chunk_number=chunk_number
+    )
 
     # #28D: record the display-only runtime test verdict for BOTH pass and fail,
     # before any branch decision. This writes only the chunk's test_run_* columns
@@ -2169,7 +2181,13 @@ async def _execute_retry_attempt(
                 run_id, chunk_number, dry_report, prior_attempts
             )
 
-        outcome = apply_patch_guarded(
+        # #32C: offload blocking patch-apply / test subprocess work to a worker
+        # thread (same rationale as _execute_single_chunk). The retry path runs
+        # under the project repo lock held by the caller; `await` keeps that lock
+        # held for the full duration and contextvars (active_project) propagate to
+        # the thread, so behavior and serialization are unchanged.
+        outcome = await asyncio.to_thread(
+            apply_patch_guarded,
             code,
             run_id,
             chunk_number=chunk_number,
@@ -2181,8 +2199,8 @@ async def _execute_retry_attempt(
             )
 
         # tester.py rolls back on failure; do NOT roll back again here.
-        test_result = run_tests(
-            outcome.patch_result, run_id, chunk_number=chunk_number
+        test_result = await asyncio.to_thread(
+            run_tests, outcome.patch_result, run_id, chunk_number=chunk_number
         )
 
         # #28D: record the display-only runtime test verdict on the retry path
