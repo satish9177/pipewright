@@ -330,3 +330,45 @@ input-immutability, and a guard asserting the module imports no DB/runtime modul
 
 **Still not done (future slices):** persistence, routes, UI, injection-provenance snapshot (G2), and any
 wiring of these helpers into runtime — all deferred to M3C+.
+
+---
+
+## 15. M3C1 — Persisted injection provenance (implemented)
+
+M3C1 closes **G2** (no injection-provenance snapshot). It makes memory influence auditable: for a given
+run/chunk/role, a human can later see the exact approved memory facts that were injected into that
+role's prompt at execution time — even after those facts are edited, archived, marked stale, or
+superseded. **Visibility-only:** no mutation/resolution routes, no frontend, no change to which memory
+is injected.
+
+**Core decision:** persist immutable snapshots (not a computed-from-current view), because memory facts
+change after a run and a computed view cannot answer "what did the planner/coder actually receive?".
+
+**New table:** `memory_injection_events` (append-only; created via `schema.sql`, applied to existing DBs
+on `init_db` since the schema script runs idempotently). Keyed by `(run_id, chunk_number, role,
+attempt_number)`; stores `project_id`, nullable `attempt_id`/`repo_head_sha`, `token_budget`,
+`category_policy`, `entries_json` (`{"included":[...],"excluded":[...]}`), counts, and a deterministic
+`entries_hash` over the **ordered included entries only** (never the timestamped block header). Pre-M3C
+runs simply have no rows.
+
+**New pure return path:** `build_project_memory_block_detailed(...) -> MemoryBlockBuildResult` produces
+the block string AND structured detail from one computation; `build_project_memory_block(...)` now
+delegates and returns `.block`, **byte-identical** to before. The builder still performs no writes.
+
+**New store:** `backend/memory/injection_store.py` — `record_memory_injection_event` (strict,
+append-only), `capture_memory_injection` (best-effort; never raises), `list_memory_injection_events`
+(read-only, project-scoped). Captured content is **memory entries only** (never prompts/repo files) and
+is re-validated through the write-path safety gate as defense-in-depth (redacted if it somehow fails).
+
+**Wiring:** best-effort capture at the real injection sites — triage (run-level), planner, coder. A
+coder re-run (patch/scope-expansion retry) records a new event at a higher `attempt_number`; the planner
+is not re-run on patch retry, so no phantom planner event is created. Reviewer/summary are **not** wired
+(they do not receive injected memory). Capture failure can never change the prompt or run outcome.
+
+**Endpoint:** `GET /api/v1/runs/{run_id}/memory-injections` (optional `chunk_number`, `role`),
+read-only, project-scoped, dedicated (not on the default run/chunk read model). Per-entry `content_hash`
+is stripped for parity with the rest of the memory API; the event-level `entries_hash` is retained.
+
+**Deferred to later M3 slices:** candidate analysis on read (duplicate/supersession/reality surfacing
+via the M3B helpers), any mutation/resolution routes (M3D), frontend display, retention/pruning, and
+wiring `attempt_id`/`repo_head_sha` to the patch-failure attempt machinery.

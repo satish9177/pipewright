@@ -15,7 +15,8 @@ from pydantic import ValidationError
 from backend.llm import complete_for_role, log_token_usage
 from backend.llm.base import LLMRequest, Message
 from backend.llm.role_config import Role
-from backend.memory.prompt_builder import build_project_memory_block
+from backend.memory.injection_store import capture_memory_injection
+from backend.memory.prompt_builder import build_project_memory_block_detailed
 from backend.models.chunk import TriageResult
 from backend.projects.project_store import require_project
 from backend.repo.repo_indexer import ensure_repo_indexed, get_relevant_files
@@ -233,16 +234,28 @@ async def run_triage(
         )
         relevant_files = []
 
+    memory_result = build_project_memory_block_detailed(
+        project_id=project_id,
+        role="triage",
+        project_name=project.get("name"),
+    )
+    # Best-effort provenance capture from the SAME computation that built the
+    # block. Never raises; failure here must not change the prompt or run.
+    # Triage is run-level: chunk_number is None.
+    capture_memory_injection(
+        memory_result,
+        run_id=run_id,
+        project_id=project_id,
+        role="triage",
+        chunk_number=None,
+    )
+
     prompt = _build_triage_prompt(
         run_id=run_id,
         project_id=project_id,
         feature_description=feature_description,
         relevant_files=relevant_files,
-        project_memory_block=build_project_memory_block(
-            project_id=project_id,
-            role="triage",
-            project_name=project.get("name"),
-        ),
+        project_memory_block=memory_result.block,
     )
 
     raw_text = ""

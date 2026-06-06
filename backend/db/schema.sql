@@ -282,6 +282,39 @@ CREATE TABLE IF NOT EXISTS llm_call_provenance (
     FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
 );
 
+-- memory_injection_events is the append-only, audit/display-only record of which
+-- approved memory facts were injected into a role's prompt for a run/chunk
+-- (M3C1; docs/design/memory-m3-trust-lifecycle.md §14). It exists so a human can
+-- later see the EXACT memory a role received at execution time, even after the
+-- underlying facts are edited, archived, marked stale, or superseded. It is
+-- deliberately separate from checkpoints/chunks so provenance never couples into
+-- the resume path. It gates nothing, commits nothing, retries nothing, mutates no
+-- memory, and grants no authority. MEMORY ENTRIES ONLY — never full prompts, repo
+-- files, handoff contracts, source code, API keys, or tokens. entries_json holds
+-- {"included":[...],"excluded":[...]} of already-approved (write-gate-validated)
+-- memory entries. entries_hash is a deterministic digest of the ordered INCLUDED
+-- entries (never the timestamped block header), for drift/integrity checks.
+-- chunk_number is nullable for run-level roles (e.g. triage). Append-only: rows
+-- are never updated or deleted by the application.
+CREATE TABLE IF NOT EXISTS memory_injection_events (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    chunk_number INTEGER,
+    role TEXT NOT NULL,
+    attempt_number INTEGER DEFAULT 1,
+    attempt_id TEXT,
+    repo_head_sha TEXT,
+    token_budget INTEGER,
+    category_policy TEXT NOT NULL,
+    entries_json TEXT NOT NULL,
+    included_count INTEGER NOT NULL,
+    excluded_count INTEGER NOT NULL,
+    entries_hash TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_project ON pipeline_runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);
 CREATE INDEX IF NOT EXISTS idx_chunks_run_status ON chunks(run_id, status);
@@ -290,6 +323,8 @@ CREATE INDEX IF NOT EXISTS idx_scope_expansion_requests_run_chunk_status ON scop
 CREATE INDEX IF NOT EXISTS idx_test_validation_ack_run_chunk_status ON test_validation_acknowledgements(run_id, chunk_number, status);
 CREATE INDEX IF NOT EXISTS idx_chunk_reviews_run_chunk ON chunk_reviews(run_id, chunk_number, created_at);
 CREATE INDEX IF NOT EXISTS idx_llm_call_provenance_run_chunk_role ON llm_call_provenance(run_id, chunk_number, role);
+CREATE INDEX IF NOT EXISTS idx_memory_injection_events_run_chunk_role ON memory_injection_events(run_id, chunk_number, role);
+CREATE INDEX IF NOT EXISTS idx_memory_injection_events_project ON memory_injection_events(project_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_suggestions_pending_dedupe
 ON memory_suggestions(project_id, content_hash)
 WHERE status = 'pending';

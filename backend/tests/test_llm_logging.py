@@ -11,8 +11,16 @@ Covers:
 import json
 import logging
 import uuid
+from types import SimpleNamespace
 
 import pytest
+
+
+def _empty_memory_result(**kwargs):
+    return SimpleNamespace(
+        block="", role=kwargs.get("role"), token_budget=0,
+        category_policy=(), included_entries=(), excluded_entries=(),
+    )
 
 from backend.llm import log_token_usage
 from backend.llm.base import LLMResponse
@@ -194,7 +202,10 @@ async def test_triage_logs_provider_model(monkeypatch, caplog, tmp_repo):
 async def test_planner_logs_provider_model(monkeypatch, caplog):
     run_id = str(uuid.uuid4())
 
-    monkeypatch.setattr(planner, "build_project_memory_block", lambda **kwargs: "")
+    monkeypatch.setattr(
+        planner, "build_project_memory_block_detailed", _empty_memory_result
+    )
+    monkeypatch.setattr(planner, "capture_memory_injection", lambda *a, **k: None)
     monkeypatch.setattr(planner, "save_checkpoint", lambda **kwargs: None)
 
     async def _fake_complete(role, request, overrides=None):
@@ -231,7 +242,10 @@ async def test_coder_logs_provider_model(monkeypatch, caplog, tmp_repo):
         out_of_scope=[], risks=[], suggested_memory_entries=[],
     )
 
-    monkeypatch.setattr(coder, "build_project_memory_block", lambda **kwargs: "")
+    monkeypatch.setattr(
+        coder, "build_project_memory_block_detailed", _empty_memory_result
+    )
+    monkeypatch.setattr(coder, "capture_memory_injection", lambda *a, **k: None)
     monkeypatch.setattr(coder, "get_target_repo_path", lambda: str(tmp_repo))
     monkeypatch.setattr(coder, "save_checkpoint", lambda **kwargs: None)
 

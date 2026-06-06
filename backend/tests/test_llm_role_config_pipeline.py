@@ -13,8 +13,16 @@ the role function can complete normally.
 
 import json
 import uuid
+from types import SimpleNamespace
 
 import pytest
+
+
+def _empty_memory_result(**kwargs):
+    return SimpleNamespace(
+        block="", role=kwargs.get("role"), token_budget=0,
+        category_policy=(), included_entries=(), excluded_entries=(),
+    )
 
 from backend.config.keys import settings
 from backend.llm import get_provider_for_role, validate_all_roles
@@ -153,12 +161,18 @@ def _patch_triage_infra(monkeypatch, tmp_repo):
 
 
 def _patch_planner_infra(monkeypatch):
-    monkeypatch.setattr(planner, "build_project_memory_block", lambda **kwargs: "")
+    monkeypatch.setattr(
+        planner, "build_project_memory_block_detailed", _empty_memory_result
+    )
+    monkeypatch.setattr(planner, "capture_memory_injection", lambda *a, **k: None)
     monkeypatch.setattr(planner, "save_checkpoint", lambda **kwargs: None)
 
 
 def _patch_coder_infra(monkeypatch, tmp_repo):
-    monkeypatch.setattr(coder, "build_project_memory_block", lambda **kwargs: "")
+    monkeypatch.setattr(
+        coder, "build_project_memory_block_detailed", _empty_memory_result
+    )
+    monkeypatch.setattr(coder, "capture_memory_injection", lambda *a, **k: None)
     monkeypatch.setattr(coder, "get_target_repo_path", lambda: str(tmp_repo))
     monkeypatch.setattr(coder, "save_checkpoint", lambda **kwargs: None)
 

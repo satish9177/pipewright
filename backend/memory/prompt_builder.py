@@ -14,6 +14,7 @@ docs/design/memory-m3-trust-lifecycle.md §8 for the as-built injection map.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import text
@@ -150,7 +151,8 @@ def _scope_rank(scope: str, preferred_scopes: set[str]) -> int:
 def _load_active_memory_rows(project_id: str, categories: set[str]) -> list[dict]:
     with engine.connect() as conn:
         result = conn.execute(text("""
-            SELECT content, category, scope, priority, created_at
+            SELECT id, content, content_hash, category, scope, priority, status,
+                   created_at
             FROM memory_facts
             WHERE project_id = :project_id
               AND is_stale = 0
@@ -163,6 +165,57 @@ def _load_active_memory_rows(project_id: str, categories: set[str]) -> list[dict
     ]
 
 
+@dataclass(frozen=True)
+class InjectedMemoryEntry:
+    """One memory fact as it was considered for a role's prompt block."""
+    fact_id: str | None
+    content: str
+    content_hash: str | None
+    category: str
+    scope: str
+    priority: int
+    status_at_injection: str
+
+
+@dataclass(frozen=True)
+class MemoryBlockBuildResult:
+    """
+    The exact memory block string plus the structured detail of what went into
+    it, produced by a SINGLE computation so the two can never diverge.
+
+    included_entries: facts rendered into ``block``, in render order.
+    excluded_entries: in-policy active facts dropped ONLY because the token
+        budget filled — the actionable "a fact was silently left out" signal.
+        Facts excluded by role category policy or by status are not listed here.
+    """
+    block: str
+    role: str | None
+    token_budget: int
+    category_policy: tuple[str, ...]
+    included_entries: tuple[InjectedMemoryEntry, ...] = ()
+    excluded_entries: tuple[InjectedMemoryEntry, ...] = ()
+
+    @property
+    def included_count(self) -> int:
+        return len(self.included_entries)
+
+    @property
+    def excluded_count(self) -> int:
+        return len(self.excluded_entries)
+
+
+def _row_to_entry(row: dict) -> InjectedMemoryEntry:
+    return InjectedMemoryEntry(
+        fact_id=row.get("id"),
+        content=row.get("content") or "",
+        content_hash=row.get("content_hash"),
+        category=row.get("category") or "other",
+        scope=row.get("scope") or "global",
+        priority=int(row.get("priority") or DEFAULT_PRIORITY),
+        status_at_injection=row.get("status") or "active",
+    )
+
+
 def build_project_memory_block(
     project_id: str,
     role: str | None = None,
@@ -170,19 +223,55 @@ def build_project_memory_block(
     token_budget: int | None = None,
     scopes: list[str] | None = None,
 ) -> str:
+    """
+    Build the role-scoped memory block string.
+
+    Byte-identical to its historical output for the same inputs; this now
+    delegates to build_project_memory_block_detailed and returns only the block
+    string, so existing callers are unaffected.
+    """
+    return build_project_memory_block_detailed(
+        project_id=project_id,
+        role=role,
+        project_name=project_name,
+        token_budget=token_budget,
+        scopes=scopes,
+    ).block
+
+
+def build_project_memory_block_detailed(
+    project_id: str,
+    role: str | None = None,
+    project_name: str | None = None,
+    token_budget: int | None = None,
+    scopes: list[str] | None = None,
+) -> MemoryBlockBuildResult:
+    """
+    Pure builder returning the block string AND the structured injection detail
+    from one computation. Performs NO writes and NO repo/LLM access; it only
+    reads already-approved active memory facts (exactly as before). The ``block``
+    is identical to what build_project_memory_block returns.
+    """
+    role_key = _role_key(role)
+    categories = ROLE_CATEGORIES[role_key]
+    category_policy = tuple(sorted(categories))
+
     if not project_id or not str(project_id).strip():
         logger.warning(
             "prompt_builder.py: build_project_memory_block called without project_id"
         )
-        return ""
+        return MemoryBlockBuildResult(
+            block="",
+            role=role,
+            token_budget=0,
+            category_policy=category_policy,
+        )
 
     project_id = str(project_id).strip()
-    role_key = _role_key(role)
     budget = token_budget if token_budget is not None else ROLE_TOKEN_BUDGETS.get(
         role_key,
         1500,
     )
-    categories = ROLE_CATEGORIES[role_key]
     preferred_scopes = {
         scope for scope in (scopes or [])
         if scope in ALLOWED_SCOPES and scope != "global"
@@ -190,7 +279,12 @@ def build_project_memory_block(
 
     rows = _load_active_memory_rows(project_id, categories)
     if not rows:
-        return ""
+        return MemoryBlockBuildResult(
+            block="",
+            role=role,
+            token_budget=budget,
+            category_policy=category_policy,
+        )
 
     rows.sort(key=lambda row: (
         _category_rank(row.get("category") or "other", role_key),
@@ -200,6 +294,8 @@ def build_project_memory_block(
     ))
 
     selected_lines: list[str] = []
+    included_entries: list[InjectedMemoryEntry] = []
+    excluded_entries: list[InjectedMemoryEntry] = []
     used_tokens = 0
     for row in rows:
         category = row.get("category") or "other"
@@ -208,16 +304,25 @@ def build_project_memory_block(
         line_tokens = _estimate_tokens(line)
         separator_tokens = 1 if selected_lines else 0
         if used_tokens + separator_tokens + line_tokens > budget:
+            excluded_entries.append(_row_to_entry(row))
             continue
         selected_lines.append(line)
+        included_entries.append(_row_to_entry(row))
         used_tokens += separator_tokens + line_tokens
 
     if not selected_lines:
-        return ""
+        return MemoryBlockBuildResult(
+            block="",
+            role=role,
+            token_budget=budget,
+            category_policy=category_policy,
+            included_entries=(),
+            excluded_entries=tuple(excluded_entries),
+        )
 
     generated = datetime.now(timezone.utc).isoformat()
     project_label = project_name or project_id
-    return "\n".join([
+    block = "\n".join([
         "=== PROJECT MEMORY (advisory; source code wins on conflict) ===",
         f"Project: {project_label}",
         f"Generated: {generated}",
@@ -235,3 +340,11 @@ def build_project_memory_block(
         ),
         "=== END PROJECT MEMORY ===",
     ])
+    return MemoryBlockBuildResult(
+        block=block,
+        role=role,
+        token_budget=budget,
+        category_policy=category_policy,
+        included_entries=tuple(included_entries),
+        excluded_entries=tuple(excluded_entries),
+    )

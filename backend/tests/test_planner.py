@@ -6,6 +6,7 @@ API-marked tests make real Gemini calls.
 """
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 import pytest
 from backend.config.keys import settings
 from backend.db.database import engine
@@ -13,10 +14,24 @@ from backend.llm.base import LLMResponse
 from backend.llm.errors import LLMError
 from backend.llm.role_config import Role
 from backend.memory.memory_store import add_fact, archive_fact
-from backend.memory.prompt_builder import build_project_memory_block as real_build_memory_block
+from backend.memory.prompt_builder import (
+    build_project_memory_block_detailed as real_build_memory_block_detailed,
+)
 from backend.pipeline.planner import run_planner
 from backend.pipeline import planner
 from sqlalchemy import text
+
+
+def _empty_memory_result(**kwargs):
+    """Stand-in MemoryBlockBuildResult (duck-typed) for memory-free unit tests."""
+    return SimpleNamespace(
+        block="",
+        role=kwargs.get("role"),
+        token_budget=0,
+        category_policy=(),
+        included_entries=(),
+        excluded_entries=(),
+    )
 
 
 def _planner_response(run_id: str):
@@ -61,7 +76,10 @@ class _PlannerLLM:
 
 
 def _patch_planner_dependencies(monkeypatch, llm):
-    monkeypatch.setattr(planner, "build_project_memory_block", lambda **kwargs: "")
+    monkeypatch.setattr(
+        planner, "build_project_memory_block_detailed", _empty_memory_result
+    )
+    monkeypatch.setattr(planner, "capture_memory_injection", lambda *a, **k: None)
     monkeypatch.setattr(planner, "save_checkpoint", lambda **kwargs: None)
     monkeypatch.setattr(
         planner,
@@ -232,7 +250,9 @@ async def test_planner_prompt_includes_project_memory(monkeypatch):
     project_id = f"planner-project-{uuid.uuid4().hex}"
     llm = _PlannerLLM([_planner_response(run_id)])
     _patch_planner_dependencies(monkeypatch, llm)
-    monkeypatch.setattr(planner, "build_project_memory_block", real_build_memory_block)
+    monkeypatch.setattr(
+        planner, "build_project_memory_block_detailed", real_build_memory_block_detailed
+    )
     add_fact(project_id, "Backend uses FastAPI memory", category="stack", scope="backend")
 
     try:
@@ -253,7 +273,9 @@ async def test_planner_prompt_injection_skips_empty_memory(monkeypatch):
     project_id = f"planner-empty-{uuid.uuid4().hex}"
     llm = _PlannerLLM([_planner_response(run_id)])
     _patch_planner_dependencies(monkeypatch, llm)
-    monkeypatch.setattr(planner, "build_project_memory_block", real_build_memory_block)
+    monkeypatch.setattr(
+        planner, "build_project_memory_block_detailed", real_build_memory_block_detailed
+    )
 
     await run_planner("Add ping endpoint", run_id, project_id=project_id)
 
@@ -272,9 +294,9 @@ async def test_planner_passes_project_id_to_memory_builder(monkeypatch):
 
     def spy_builder(**kwargs):
         calls.append(kwargs)
-        return ""
+        return _empty_memory_result(**kwargs)
 
-    monkeypatch.setattr(planner, "build_project_memory_block", spy_builder)
+    monkeypatch.setattr(planner, "build_project_memory_block_detailed", spy_builder)
 
     await run_planner("Add ping endpoint", run_id, project_id=project_id)
 
@@ -291,7 +313,9 @@ async def test_planner_prompt_injection_is_project_scoped(monkeypatch):
     project_b = f"planner-b-{uuid.uuid4().hex}"
     llm = _PlannerLLM([_planner_response(run_id)])
     _patch_planner_dependencies(monkeypatch, llm)
-    monkeypatch.setattr(planner, "build_project_memory_block", real_build_memory_block)
+    monkeypatch.setattr(
+        planner, "build_project_memory_block_detailed", real_build_memory_block_detailed
+    )
     add_fact(project_a, "Project A planner memory", category="stack")
     add_fact(project_b, "Project B planner memory", category="stack")
 
@@ -313,7 +337,9 @@ async def test_planner_prompt_injection_excludes_archived_stale_historical(monke
     project_id = f"planner-status-{uuid.uuid4().hex}"
     llm = _PlannerLLM([_planner_response(run_id)])
     _patch_planner_dependencies(monkeypatch, llm)
-    monkeypatch.setattr(planner, "build_project_memory_block", real_build_memory_block)
+    monkeypatch.setattr(
+        planner, "build_project_memory_block_detailed", real_build_memory_block_detailed
+    )
     active = add_fact(project_id, "Active planner memory", category="stack")
     archived = add_fact(project_id, "Archived planner memory", category="stack")
     stale = add_fact(project_id, "Stale planner memory", category="stack")
@@ -345,7 +371,9 @@ async def test_pipeline_still_works_without_project_id(monkeypatch):
     run_id = str(uuid.uuid4())
     llm = _PlannerLLM([_planner_response(run_id)])
     _patch_planner_dependencies(monkeypatch, llm)
-    monkeypatch.setattr(planner, "build_project_memory_block", real_build_memory_block)
+    monkeypatch.setattr(
+        planner, "build_project_memory_block_detailed", real_build_memory_block_detailed
+    )
 
     result = await run_planner("Add ping endpoint", run_id)
 
