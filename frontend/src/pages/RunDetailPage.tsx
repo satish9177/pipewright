@@ -29,6 +29,7 @@ import MemoryConflictPanel from '@/components/MemoryConflictPanel'
 import PushPrPanel from '@/components/PushPrPanel'
 import PrStatusPanel from '@/components/PrStatusPanel'
 import ProviderDiagnosticsPanel from '@/components/ProviderDiagnosticsPanel'
+import RunMemoryProvenancePanel from '@/components/RunMemoryProvenancePanel'
 import TestCommandQualityWarning from '@/components/TestCommandQualityWarning'
 import ReportView from '@/components/ReportView'
 import PlanView from '@/components/PlanView'
@@ -1191,6 +1192,16 @@ export default function RunDetailPage() {
             <EventLog events={events} status={wsStatus} />
           </CardContent>
         </Card>
+      </section>
+
+      <section className="mb-6">
+        <div className="mb-3">
+          <h3 className="text-sm font-semibold">Memory Diagnostics</h3>
+          <p className="text-xs text-muted-foreground">
+            Display-only provenance for memory injected during this run.
+          </p>
+        </div>
+        <RunMemoryProvenancePanel runId={run.id} />
       </section>
 
       <section className="mb-6">

@@ -761,6 +761,91 @@ export interface MemorySuggestionFilters {
   status?: MemorySuggestionStatus
 }
 
+export interface MemoryInjectionFilters {
+  chunk_number?: number
+  role?: string
+}
+
+export interface MemoryInjectionEntry extends ExtraFields {
+  fact_id?: string | null
+  content: string
+  category?: string | null
+  scope?: string | null
+  priority?: number | null
+  status_at_injection?: string | null
+}
+
+export interface MemoryInjectionEvent extends ExtraFields {
+  id: string
+  run_id: string
+  project_id: string
+  chunk_number?: number | null
+  role: string
+  attempt_number?: number | null
+  attempt_id?: string | null
+  repo_head_sha?: string | null
+  token_budget?: number | null
+  category_policy: string[]
+  included_entries: MemoryInjectionEntry[]
+  excluded_entries: MemoryInjectionEntry[]
+  included_count?: number | null
+  excluded_count?: number | null
+  entries_hash?: string | null
+  created_at?: string | null
+}
+
+export interface MemoryInjectionListResponse {
+  run_id: string
+  events: MemoryInjectionEvent[]
+}
+
+export interface MemoryInjectionAnalysisRef extends ExtraFields {
+  event_id?: string | null
+  role?: string | null
+  chunk_number?: number | null
+  fact_id?: string | null
+  content: string
+}
+
+export interface MemoryInjectionDuplicateCandidate extends ExtraFields {
+  candidate_type: 'duplicate' | (string & {})
+  relation: string
+  similarity: number
+  reason: string
+  left: MemoryInjectionAnalysisRef
+  right: MemoryInjectionAnalysisRef
+  advisory_only: boolean
+}
+
+export interface MemoryInjectionSupersessionCandidate extends ExtraFields {
+  candidate_type: 'supersession' | (string & {})
+  relation: string
+  dimension: string
+  left: MemoryInjectionAnalysisRef
+  right: MemoryInjectionAnalysisRef
+  left_value: string
+  right_value: string
+  reason: string
+  recency_implies_truth: boolean
+  advisory_only: boolean
+}
+
+export interface MemoryInjectionAnalysisBody extends ExtraFields {
+  total_events: number
+  total_included_entries: number
+  distinct_fact_count: number
+  duplicate_candidate_count: number
+  supersession_candidate_count: number
+  duplicate_candidates: MemoryInjectionDuplicateCandidate[]
+  supersession_candidates: MemoryInjectionSupersessionCandidate[]
+  warnings: string[]
+}
+
+export interface MemoryInjectionAnalysisResponse {
+  run_id: string
+  analysis: MemoryInjectionAnalysisBody
+}
+
 export const healthApi = {
   get: () => api.get<HealthResponse>('/health').then(r => r.data),
 }
@@ -1009,5 +1094,33 @@ export const memoryApi = {
     api.post<RunMemorySuggestionGenerateResponse>(
       `/api/v1/runs/${runId}/memory-suggestions/generate`,
       requestedBy ? { requested_by: requestedBy } : {},
+    ).then(r => r.data),
+  getRunMemoryInjections: (
+    runId: string,
+    filters?: MemoryInjectionFilters,
+  ) =>
+    api.get<MemoryInjectionListResponse>(
+      `/api/v1/runs/${runId}/memory-injections`,
+      {
+        params: filters
+          ? Object.fromEntries(
+              Object.entries(filters).filter(([, value]) => value !== undefined),
+            )
+          : undefined,
+      },
+    ).then(r => r.data),
+  getRunMemoryInjectionAnalysis: (
+    runId: string,
+    filters?: MemoryInjectionFilters,
+  ) =>
+    api.get<MemoryInjectionAnalysisResponse>(
+      `/api/v1/runs/${runId}/memory-injections/analysis`,
+      {
+        params: filters
+          ? Object.fromEntries(
+              Object.entries(filters).filter(([, value]) => value !== undefined),
+            )
+          : undefined,
+      },
     ).then(r => r.data),
 }
