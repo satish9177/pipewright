@@ -2,12 +2,13 @@
 Tests for Memory M1 project-scoped safety foundation.
 """
 
+import inspect
 import uuid
 
 import pytest
 from sqlalchemy import text
 
-from backend.db.database import engine
+from backend.db.database import engine, init_db
 from backend.memory.memory_store import (
     MEMORY_SAFETY_ERROR,
     PRE_M1_ARCHIVE_REASON,
@@ -17,6 +18,7 @@ from backend.memory.memory_store import (
     flag_stale_memories,
     list_facts,
     load_hard_facts,
+    supersede_fact,
     update_fact,
     validate_memory_content,
     verify_fact,
@@ -322,6 +324,91 @@ def test_historical_fact_not_loaded(memory_project_ids):
         """), {"id": fact["id"]})
 
     assert load_hard_facts(project_id) == ""
+
+
+def _stored_fact(memory_id: str) -> dict:
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT status, is_stale, archived_reason, superseded_by_fact_id
+            FROM memory_facts
+            WHERE id = :id
+        """), {"id": memory_id}).fetchone()
+    assert row is not None
+    return dict(row._mapping)
+
+
+def test_memory_facts_has_supersession_column():
+    init_db()
+    with engine.connect() as conn:
+        rows = conn.execute(text("PRAGMA table_info(memory_facts)")).fetchall()
+    columns = {row._mapping["name"] for row in rows}
+    assert "superseded_by_fact_id" in columns
+
+
+def test_supersede_fact_marks_old_historical(memory_project_ids):
+    project_id = make_project_id(memory_project_ids)
+    old = add_fact(project_id, "Backend uses Flask.", category="stack")
+    new = add_fact(project_id, "Backend uses FastAPI.", category="stack")
+
+    result = supersede_fact(
+        project_id,
+        old["id"],
+        new["id"],
+        "FastAPI replaced the old backend framework.",
+    )
+
+    assert result["id"] == old["id"]
+    assert result["status"] == "historical"
+    assert result["is_stale"] in (1, True)
+    assert result["archived_reason"] == "FastAPI replaced the old backend framework."
+    assert result["superseded_by_fact_id"] == new["id"]
+    stored = _stored_fact(old["id"])
+    assert stored["status"] == "historical"
+    assert stored["is_stale"] in (1, True)
+    assert stored["superseded_by_fact_id"] == new["id"]
+    active_ids = {fact["id"] for fact in list_facts(project_id, status="active")}
+    historical_ids = {fact["id"] for fact in list_facts(project_id, status="historical")}
+    assert old["id"] not in active_ids
+    assert new["id"] in active_ids
+    assert old["id"] in historical_ids
+    facts = load_hard_facts(project_id)
+    assert "Backend uses Flask." not in facts
+    assert "Backend uses FastAPI." in facts
+
+
+def test_supersede_fact_rejects_invalid_pairs(memory_project_ids):
+    project_a = make_project_id(memory_project_ids, "project-a")
+    project_b = make_project_id(memory_project_ids, "project-b")
+    old = add_fact(project_a, "Backend uses Flask.", category="stack")
+    new = add_fact(project_a, "Backend uses FastAPI.", category="stack")
+    cross_project = add_fact(project_b, "Project B uses FastAPI.", category="stack")
+
+    with pytest.raises(ValueError, match="itself"):
+        supersede_fact(project_a, old["id"], old["id"], "Self supersession blocked.")
+    with pytest.raises(ValueError, match="not found"):
+        supersede_fact(project_a, old["id"], cross_project["id"], "Wrong project.")
+
+    supersede_fact(project_a, old["id"], new["id"], "FastAPI is current.")
+    newer = add_fact(project_a, "Backend uses Starlette.", category="stack")
+    with pytest.raises(ValueError, match="old memory fact is not active"):
+        supersede_fact(project_a, old["id"], newer["id"], "Already historical.")
+
+
+def test_supersede_store_helpers_do_not_use_analysis_or_trust_helpers():
+    from backend.memory import memory_store
+
+    source = (
+        inspect.getsource(memory_store.supersede_fact_in_conn)
+        + inspect.getsource(memory_store.supersede_fact)
+    )
+    for forbidden in (
+        "analyze_injection_events",
+        "find_duplicate_candidates",
+        "find_supersession_candidates",
+        "memory_trust",
+        "injection_analysis",
+    ):
+        assert forbidden not in source
 
 
 def test_verify_fact_sets_last_verified_at(memory_project_ids):

@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS memory_facts (
     is_stale INTEGER DEFAULT 0,
     status TEXT DEFAULT 'active',
     archived_reason TEXT,
-    content_hash TEXT
+    content_hash TEXT,
+    superseded_by_fact_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS memory_suggestions (

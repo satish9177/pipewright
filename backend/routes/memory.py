@@ -15,6 +15,7 @@ from backend.memory.injection_store import list_memory_injection_events
 
 from backend.memory.bootstrap import (
     ALLOWED_SUGGESTION_STATUSES,
+    approve_suggestion_and_supersede,
     approve_suggestion,
     generate_bootstrap_suggestions,
     list_suggestions,
@@ -29,6 +30,7 @@ from backend.memory.memory_store import (
     archive_fact,
     list_facts,
     mark_fact_stale,
+    supersede_fact,
     update_fact,
     validate_lifecycle_reason,
     verify_fact,
@@ -55,6 +57,7 @@ class MemoryFactResponse(BaseModel):
     approved_at: str | None = None
     last_verified_at: str | None = None
     archived_reason: str | None = None
+    superseded_by_fact_id: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -129,6 +132,30 @@ class MemoryStaleRequest(BaseModel):
         if not value.strip():
             raise ValueError("Stale reason is required")
         return value
+
+
+class MemoryFactSupersedeRequest(BaseModel):
+    new_fact_id: str = Field(min_length=1)
+    reason: str = Field(min_length=4, max_length=400)
+
+    @field_validator("new_fact_id")
+    @classmethod
+    def new_fact_id_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("New fact id is required")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Supersession reason is required")
+        return value
+
+
+class MemoryFactSupersedeResponse(BaseModel):
+    old_fact: MemoryFactResponse
+    new_fact: MemoryFactResponse
 
 
 class MemoryVerifyResponse(BaseModel):
@@ -212,6 +239,33 @@ class MemorySuggestionApproveRequest(BaseModel):
     approved_by: str | None = None
 
 
+class MemorySuggestionApproveAndSupersedeRequest(BaseModel):
+    old_fact_id: str = Field(min_length=1)
+    reason: str = Field(min_length=4, max_length=400)
+    edited_content: str | None = Field(default=None, max_length=400)
+    approved_by: str | None = None
+
+    @field_validator("old_fact_id")
+    @classmethod
+    def old_fact_id_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Old fact id is required")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def supersession_reason_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Supersession reason is required")
+        return value
+
+
+class MemorySuggestionApproveAndSupersedeResponse(BaseModel):
+    suggestion: MemorySuggestionResponse
+    fact: MemoryFactResponse
+    superseded_fact: MemoryFactResponse
+
+
 class MemorySuggestionRejectRequest(BaseModel):
     reason: str = Field(min_length=4, max_length=400)
 
@@ -252,6 +306,10 @@ def _get_fact_for_project(project_id: str, memory_id: str) -> dict:
     raise HTTPException(status_code=404, detail="Memory fact not found")
 
 
+def _is_active_fact(fact: dict) -> bool:
+    return fact.get("status") == "active" and int(fact.get("is_stale") or 0) == 0
+
+
 def _map_memory_error(error: ValueError) -> HTTPException:
     message = str(error)
     if "active duplicate memory fact already exists" in message:
@@ -261,6 +319,15 @@ def _map_memory_error(error: ValueError) -> HTTPException:
         )
     if "memory fact not found" in message:
         return HTTPException(status_code=404, detail="Memory fact not found")
+    if "old memory fact is not active" in message:
+        return HTTPException(status_code=409, detail="Old memory fact must be active")
+    if "new memory fact is not active" in message:
+        return HTTPException(status_code=409, detail="New memory fact must be active")
+    if "supersession precondition failed" in message:
+        return HTTPException(
+            status_code=409,
+            detail="Memory supersession precondition failed",
+        )
     if "run not found" in message:
         return HTTPException(status_code=404, detail="Run not found")
     if "suggestion not found" in message:
@@ -430,6 +497,34 @@ def approve_memory_suggestion(
 
 
 @router.post(
+    "/suggestions/{suggestion_id}/approve-and-supersede",
+    response_model=MemorySuggestionApproveAndSupersedeResponse,
+)
+def approve_memory_suggestion_and_supersede(
+    project_id: str,
+    suggestion_id: str,
+    request: MemorySuggestionApproveAndSupersedeRequest,
+):
+    _require_project(project_id)
+    old_fact = _get_fact_for_project(project_id, request.old_fact_id)
+    if not _is_active_fact(old_fact):
+        raise HTTPException(status_code=409, detail="Old memory fact must be active")
+    try:
+        return approve_suggestion_and_supersede(
+            project_id=project_id,
+            suggestion_id=suggestion_id,
+            old_fact_id=request.old_fact_id,
+            reason=request.reason,
+            approved_by=(request.approved_by if request.approved_by else "api"),
+            edited_content=request.edited_content,
+        )
+    except ValueError as error:
+        raise _map_memory_error(error)
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+
+@router.post(
     "/suggestions/{suggestion_id}/reject",
     response_model=MemorySuggestionResponse,
 )
@@ -446,6 +541,40 @@ def reject_memory_suggestion(
             reason=request.reason,
             rejected_by="api",
         )
+    except ValueError as error:
+        raise _map_memory_error(error)
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+
+@router.post(
+    "/facts/{old_fact_id}/supersede",
+    response_model=MemoryFactSupersedeResponse,
+)
+def supersede_memory_fact(
+    project_id: str,
+    old_fact_id: str,
+    request: MemoryFactSupersedeRequest,
+):
+    _require_project(project_id)
+    old_fact = _get_fact_for_project(project_id, old_fact_id)
+    new_fact = _get_fact_for_project(project_id, request.new_fact_id)
+    if not _is_active_fact(old_fact):
+        raise HTTPException(status_code=409, detail="Old memory fact must be active")
+    if not _is_active_fact(new_fact):
+        raise HTTPException(status_code=409, detail="New memory fact must be active")
+    try:
+        old_fact = supersede_fact(
+            project_id=project_id,
+            old_fact_id=old_fact_id,
+            new_fact_id=request.new_fact_id,
+            reason=request.reason,
+            actor="api",
+        )
+        return {
+            "old_fact": _sanitize_fact(old_fact),
+            "new_fact": _sanitize_fact(new_fact),
+        }
     except ValueError as error:
         raise _map_memory_error(error)
     except RuntimeError as error:

@@ -25,6 +25,7 @@ from backend.memory.memory_store import (
     MEMORY_DUPLICATE_ERROR,
     compute_content_hash,
     insert_fact_in_conn,
+    supersede_fact_in_conn,
     validate_fact_fields,
     validate_memory_content,
 )
@@ -80,6 +81,14 @@ def _row_to_dict(row) -> dict | None:
 
 
 def _sanitize_suggestion(row: dict) -> dict:
+    return {
+        key: value
+        for key, value in row.items()
+        if key != "content_hash"
+    }
+
+
+def _sanitize_fact(row: dict) -> dict:
     return {
         key: value
         for key, value in row.items()
@@ -854,6 +863,80 @@ def list_suggestions(project_id: str, status: str | None = None) -> list[dict]:
     return [_sanitize_suggestion(dict(row._mapping)) for row in rows]
 
 
+def _approve_suggestion_in_conn(
+    conn,
+    *,
+    project_id: str,
+    suggestion_id: str,
+    approved_by: str = "api",
+    edited_content: str | None = None,
+    now: str | None = None,
+) -> dict:
+    edited = edited_content.strip() if edited_content and edited_content.strip() else None
+    now = now or _utc_now()
+    suggestion = _get_suggestion_row(conn, project_id, suggestion_id)
+    if suggestion is None:
+        raise ValueError("bootstrap.py: suggestion not found")
+    if suggestion["status"] != "pending":
+        raise ValueError("bootstrap.py: suggestion is not pending")
+
+    fact_content = edited if edited is not None else suggestion["content"]
+    fact_content, category, scope, priority = validate_fact_fields(
+        fact_content,
+        suggestion["category"],
+        suggestion["scope"],
+        suggestion["priority"],
+    )
+
+    fact = insert_fact_in_conn(
+        conn,
+        project_id=project_id,
+        content=fact_content,
+        category=category,
+        scope=scope,
+        priority=priority,
+        source=suggestion["source"] or BOOTSTRAP_SOURCE,
+        added_by="api",
+        approved_by=approved_by,
+        now=now,
+    )
+
+    result = conn.execute(text("""
+        UPDATE memory_suggestions
+        SET status = 'approved',
+            approved_by = :approved_by,
+            approved_at = :now,
+            updated_at = :now,
+            edited_content = :edited_content,
+            approved_fact_id = :approved_fact_id
+        WHERE project_id = :project_id
+          AND id = :suggestion_id
+          AND status = 'pending'
+    """), {
+        "project_id": project_id,
+        "suggestion_id": suggestion_id,
+        "approved_by": approved_by,
+        "now": now,
+        "edited_content": edited,
+        "approved_fact_id": fact["id"],
+    })
+    if result.rowcount == 0:
+        raise ValueError("bootstrap.py: suggestion is not pending")
+
+    approved_suggestion = _get_suggestion_row(conn, project_id, suggestion_id)
+    return {
+        "suggestion": approved_suggestion,
+        "fact": fact,
+    }
+
+
+def _approval_response(result: dict) -> dict:
+    return {
+        "suggestion": _sanitize_suggestion(result.get("suggestion") or {}),
+        "fact": _sanitize_fact(result.get("fact") or {}),
+    }
+
+
 def approve_suggestion(
     project_id: str,
     suggestion_id: str,
@@ -872,56 +955,18 @@ def approve_suggestion(
     memory_suggestions.edited_content. The original suggestion content is never
     overwritten.
     """
-    edited = edited_content.strip() if edited_content and edited_content.strip() else None
     now = _utc_now()
 
     try:
         with engine.begin() as conn:
-            suggestion = _get_suggestion_row(conn, project_id, suggestion_id)
-            if suggestion is None:
-                raise ValueError("bootstrap.py: suggestion not found")
-            if suggestion["status"] != "pending":
-                raise ValueError("bootstrap.py: suggestion is not pending")
-
-            fact_content = edited if edited is not None else suggestion["content"]
-            fact_content, category, scope, priority = validate_fact_fields(
-                fact_content,
-                suggestion["category"],
-                suggestion["scope"],
-                suggestion["priority"],
-            )
-
-            fact = insert_fact_in_conn(
+            result = _approve_suggestion_in_conn(
                 conn,
                 project_id=project_id,
-                content=fact_content,
-                category=category,
-                scope=scope,
-                priority=priority,
-                source=suggestion["source"] or BOOTSTRAP_SOURCE,
-                added_by="api",
+                suggestion_id=suggestion_id,
                 approved_by=approved_by,
+                edited_content=edited_content,
                 now=now,
             )
-
-            conn.execute(text("""
-                UPDATE memory_suggestions
-                SET status = 'approved',
-                    approved_by = :approved_by,
-                    approved_at = :now,
-                    updated_at = :now,
-                    edited_content = :edited_content,
-                    approved_fact_id = :approved_fact_id
-                WHERE project_id = :project_id
-                  AND id = :suggestion_id
-            """), {
-                "project_id": project_id,
-                "suggestion_id": suggestion_id,
-                "approved_by": approved_by,
-                "now": now,
-                "edited_content": edited,
-                "approved_fact_id": fact["id"],
-            })
     except ValueError:
         raise
     except IntegrityError as error:
@@ -929,13 +974,55 @@ def approve_suggestion(
     except Exception as error:
         raise RuntimeError(f"bootstrap.py: approve_suggestion failed: {error}") from error
 
+    return _approval_response(result)
+
+
+def approve_suggestion_and_supersede(
+    project_id: str,
+    suggestion_id: str,
+    old_fact_id: str,
+    reason: str,
+    approved_by: str = "api",
+    edited_content: str | None = None,
+) -> dict:
+    """
+    Approve a pending suggestion and mark an old active fact historical.
+
+    This composes the existing approval validation/insert path with the M3D2
+    supersession helper in a single transaction.
+    """
+    now = _utc_now()
+    try:
+        with engine.begin() as conn:
+            approval = _approve_suggestion_in_conn(
+                conn,
+                project_id=project_id,
+                suggestion_id=suggestion_id,
+                approved_by=approved_by,
+                edited_content=edited_content,
+                now=now,
+            )
+            superseded_fact = supersede_fact_in_conn(
+                conn,
+                project_id=project_id,
+                old_fact_id=old_fact_id,
+                new_fact_id=approval["fact"]["id"],
+                reason=reason,
+                now=now,
+            )
+    except ValueError:
+        raise
+    except IntegrityError as error:
+        raise ValueError(MEMORY_DUPLICATE_ERROR) from error
+    except Exception as error:
+        raise RuntimeError(
+            f"bootstrap.py: approve_suggestion_and_supersede failed: {error}"
+        ) from error
+
     return {
-        "suggestion": _sanitize_suggestion(_get_suggestion(project_id, suggestion_id) or {}),
-        "fact": {
-            key: value
-            for key, value in fact.items()
-            if key != "content_hash"
-        },
+        "suggestion": _sanitize_suggestion(approval.get("suggestion") or {}),
+        "fact": _sanitize_fact(approval.get("fact") or {}),
+        "superseded_fact": _sanitize_fact(superseded_fact),
     }
 
 

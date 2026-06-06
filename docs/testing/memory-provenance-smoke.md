@@ -191,11 +191,10 @@ require live keys.
 ## 9. Known limitations / deferred work
 
 - No **frontend UI** yet (no memory-provenance panel).
-- **Supersession / approve-and-supersede** routes are not built yet (M3D2+). The
-  human-controlled **mark-stale** route shipped in M3D1
-  (`POST /api/v1/projects/{project_id}/memory/facts/{fact_id}/stale`, active-only)
-  and the archive route already existed; marking a fact stale leaves recorded
-  provenance snapshots immutable.
+- **Supersession / approve-and-supersede** routes shipped in M3D2 as human-controlled
+  backend-only mutation routes. They mark old active facts `historical` via
+  `superseded_by_fact_id` and leave recorded provenance snapshots immutable.
+  There is still no frontend UI for this path.
 - No **reality-check analysis** against live repo signals yet — M3C2 must not scan
   the repo, so `check_fact_against_signal` is not surfaced until a later slice can
   pass an already-computed signal in safely.
