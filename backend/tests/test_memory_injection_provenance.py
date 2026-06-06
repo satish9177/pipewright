@@ -25,7 +25,7 @@ from backend.memory.injection_store import (
     list_memory_injection_events,
     record_memory_injection_event,
 )
-from backend.memory.memory_store import add_fact
+from backend.memory.memory_store import add_fact, supersede_fact
 from backend.memory.prompt_builder import (
     build_project_memory_block,
     build_project_memory_block_detailed,
@@ -259,6 +259,59 @@ def test_store_has_no_update_or_delete_api():
     # Append-only: the module must not expose mutation of existing rows.
     for name in ("update_memory_injection_event", "delete_memory_injection_event"):
         assert not hasattr(injection_store, name)
+
+
+def test_supersession_does_not_mutate_recorded_injection_snapshot():
+    run_id = f"mi-super-{uuid.uuid4().hex}"
+    project_id = f"mi-superp-{uuid.uuid4().hex}"
+    old = add_fact(project_id, "Backend uses Flask.", category="stack")
+    new = add_fact(project_id, "Backend uses FastAPI.", category="stack")
+    try:
+        event = record_memory_injection_event(
+            run_id=run_id,
+            project_id=project_id,
+            role="planner",
+            chunk_number=1,
+            token_budget=1200,
+            category_policy=["stack"],
+            included_entries=[_entry(
+                old["id"],
+                old["content"],
+                category="stack",
+                scope="global",
+            )],
+        )
+        with engine.connect() as conn:
+            raw_before = conn.execute(text("""
+                SELECT entries_json, entries_hash
+                FROM memory_injection_events
+                WHERE id = :id
+            """), {"id": event["id"]}).fetchone()
+
+        supersede_fact(
+            project_id,
+            old["id"],
+            new["id"],
+            "FastAPI replaced Flask after the captured run.",
+        )
+
+        with engine.connect() as conn:
+            raw_after = conn.execute(text("""
+                SELECT entries_json, entries_hash
+                FROM memory_injection_events
+                WHERE id = :id
+            """), {"id": event["id"]}).fetchone()
+        after = list_memory_injection_events(run_id, project_id=project_id)
+
+        assert raw_before._mapping["entries_json"] == raw_after._mapping["entries_json"]
+        assert raw_before._mapping["entries_hash"] == raw_after._mapping["entries_hash"]
+        snap = after[0]["included_entries"][0]
+        assert snap["fact_id"] == old["id"]
+        assert snap["content"] == old["content"]
+        assert snap["status_at_injection"] == "active"
+    finally:
+        _delete_run(run_id)
+        _cleanup_project(project_id)
 
 
 def test_record_requires_project_id():

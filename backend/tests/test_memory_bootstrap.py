@@ -3,6 +3,7 @@ test_memory_bootstrap.py
 Tests for deterministic bootstrap memory suggestions.
 """
 
+import inspect
 import shutil
 import uuid
 from pathlib import Path
@@ -696,6 +697,13 @@ def _approve_path(project_id: str, suggestion_id: str) -> str:
     )
 
 
+def _approve_and_supersede_path(project_id: str, suggestion_id: str) -> str:
+    return (
+        f"/api/v1/projects/{project_id}/memory/suggestions/"
+        f"{suggestion_id}/approve-and-supersede"
+    )
+
+
 def _reject_path(project_id: str, suggestion_id: str) -> str:
     return (
         f"/api/v1/projects/{project_id}/memory/suggestions/"
@@ -740,6 +748,29 @@ def _active_facts(client, project_id: str) -> list[dict]:
     )
     assert response.status_code == 200
     return response.json()["facts"]
+
+
+def _facts_by_status(client, project_id: str, status: str) -> list[dict]:
+    response = client.get(
+        f"/api/v1/projects/{project_id}/memory",
+        params={"status": status},
+    )
+    assert response.status_code == 200
+    return response.json()["facts"]
+
+
+def _set_fact_status(memory_id: str, status: str, is_stale: int) -> None:
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE memory_facts
+            SET status = :status,
+                is_stale = :is_stale
+            WHERE id = :id
+        """), {
+            "id": memory_id,
+            "status": status,
+            "is_stale": is_stale,
+        })
 
 
 def _suggestion_by_id(client, project_id: str, suggestion_id: str) -> dict:
@@ -870,3 +901,207 @@ def test_reject_stores_reason_and_blocks_later_approval(
     approve = client.post(_approve_path(project_id, suggestion_id))
     assert approve.status_code == 409
     assert _active_facts(client, project_id) == []
+
+
+def test_approve_and_supersede_approves_new_fact_and_historicizes_old(
+    client,
+    project_factory,
+    project_repo,
+):
+    project_id = project_factory(project_repo)
+    old = add_fact(project_id, "Backend uses Flask.", category="stack")
+    suggestion_id = _insert_pending_suggestion(
+        project_id,
+        "Backend uses FastAPI.",
+        category="stack",
+    )
+
+    response = client.post(
+        _approve_and_supersede_path(project_id, suggestion_id),
+        json={
+            "old_fact_id": old["id"],
+            "reason": "FastAPI replaced Flask after migration.",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["suggestion"]["status"] == "approved"
+    assert data["suggestion"]["approved_fact_id"] == data["fact"]["id"]
+    assert data["fact"]["content"] == "Backend uses FastAPI."
+    assert data["fact"]["status"] == "active"
+    assert data["superseded_fact"]["id"] == old["id"]
+    assert data["superseded_fact"]["status"] == "historical"
+    assert data["superseded_fact"]["superseded_by_fact_id"] == data["fact"]["id"]
+    historical = _facts_by_status(client, project_id, "historical")
+    assert [fact["id"] for fact in historical] == [old["id"]]
+    assert [fact["content"] for fact in _active_facts(client, project_id)] == [
+        "Backend uses FastAPI."
+    ]
+
+
+def test_approve_and_supersede_edited_content_path(
+    client,
+    project_factory,
+    project_repo,
+):
+    project_id = project_factory(project_repo)
+    old = add_fact(project_id, "Tests use unittest.", category="test")
+    suggestion_id = _insert_pending_suggestion(
+        project_id,
+        "Tests use pytest.",
+        category="test",
+    )
+
+    response = client.post(
+        _approve_and_supersede_path(project_id, suggestion_id),
+        json={
+            "old_fact_id": old["id"],
+            "reason": "Pytest is now the current test runner.",
+            "edited_content": "Tests use pytest unit markers.",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["fact"]["content"] == "Tests use pytest unit markers."
+    assert data["suggestion"]["content"] == "Tests use pytest."
+    assert data["suggestion"]["edited_content"] == "Tests use pytest unit markers."
+    assert data["superseded_fact"]["superseded_by_fact_id"] == data["fact"]["id"]
+
+
+@pytest.mark.parametrize("edited", [
+    "Auto-merge after tests pass",
+    r"Use C:\Users\satish\secret as repo root",
+])
+def test_approve_and_supersede_unsafe_edit_rolls_back(
+    client,
+    project_factory,
+    project_repo,
+    edited,
+):
+    project_id = project_factory(project_repo)
+    old = add_fact(project_id, "Repo indexer uses project isolation.", category="db")
+    suggestion_id = _insert_pending_suggestion(
+        project_id,
+        "Repo indexer uses project-scoped rows.",
+        category="db",
+    )
+
+    response = client.post(
+        _approve_and_supersede_path(project_id, suggestion_id),
+        json={
+            "old_fact_id": old["id"],
+            "reason": "Replacement should not commit on unsafe edit.",
+            "edited_content": edited,
+        },
+    )
+
+    assert response.status_code == 422
+    assert _suggestion_by_id(client, project_id, suggestion_id)["status"] == "pending"
+    assert _facts_by_status(client, project_id, "historical") == []
+    assert [fact["id"] for fact in _active_facts(client, project_id)] == [old["id"]]
+
+
+def test_approve_and_supersede_old_non_active_rolls_back(
+    client,
+    project_factory,
+    project_repo,
+):
+    project_id = project_factory(project_repo)
+    old = add_fact(project_id, "Backend uses Flask.", category="stack")
+    _set_fact_status(old["id"], "stale", 1)
+    suggestion_id = _insert_pending_suggestion(
+        project_id,
+        "Backend uses FastAPI.",
+        category="stack",
+    )
+
+    response = client.post(
+        _approve_and_supersede_path(project_id, suggestion_id),
+        json={
+            "old_fact_id": old["id"],
+            "reason": "Cannot supersede an already stale fact.",
+        },
+    )
+
+    assert response.status_code == 409
+    assert _suggestion_by_id(client, project_id, suggestion_id)["status"] == "pending"
+    assert _facts_by_status(client, project_id, "historical") == []
+    assert _facts_by_status(client, project_id, "stale")[0]["id"] == old["id"]
+    assert all(
+        fact["content"] != "Backend uses FastAPI."
+        for fact in _active_facts(client, project_id)
+    )
+
+
+def test_approve_and_supersede_forced_failure_rolls_back(
+    client,
+    project_factory,
+    project_repo,
+    monkeypatch,
+):
+    project_id = project_factory(project_repo)
+    old = add_fact(project_id, "Backend uses Flask.", category="stack")
+    suggestion_id = _insert_pending_suggestion(
+        project_id,
+        "Backend uses FastAPI.",
+        category="stack",
+    )
+
+    def boom(*args, **kwargs):
+        raise ValueError("memory_store.py: supersession precondition failed")
+
+    monkeypatch.setattr(bootstrap, "supersede_fact_in_conn", boom)
+
+    response = client.post(
+        _approve_and_supersede_path(project_id, suggestion_id),
+        json={
+            "old_fact_id": old["id"],
+            "reason": "Injected failure after fact insert.",
+        },
+    )
+
+    assert response.status_code == 409
+    assert _suggestion_by_id(client, project_id, suggestion_id)["status"] == "pending"
+    assert _facts_by_status(client, project_id, "historical") == []
+    assert [fact["id"] for fact in _active_facts(client, project_id)] == [old["id"]]
+
+
+def test_approve_and_supersede_duplicate_active_content_remains_safe(
+    client,
+    project_factory,
+    project_repo,
+):
+    project_id = project_factory(project_repo)
+    old = add_fact(project_id, "Backend uses FastAPI.", category="stack")
+    suggestion_id = _insert_pending_suggestion(
+        project_id,
+        "Backend uses FastAPI.",
+        category="stack",
+    )
+
+    response = client.post(
+        _approve_and_supersede_path(project_id, suggestion_id),
+        json={
+            "old_fact_id": old["id"],
+            "reason": "Duplicate active content should not bypass dedupe.",
+        },
+    )
+
+    assert response.status_code == 409
+    assert _suggestion_by_id(client, project_id, suggestion_id)["status"] == "pending"
+    assert _facts_by_status(client, project_id, "historical") == []
+    assert [fact["id"] for fact in _active_facts(client, project_id)] == [old["id"]]
+
+
+def test_approve_and_supersede_helper_does_not_use_analysis_or_trust_helpers():
+    source = inspect.getsource(bootstrap.approve_suggestion_and_supersede)
+    for forbidden in (
+        "analyze_injection_events",
+        "find_duplicate_candidates",
+        "find_supersession_candidates",
+        "memory_trust",
+        "injection_analysis",
+    ):
+        assert forbidden not in source

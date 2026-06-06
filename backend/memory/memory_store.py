@@ -63,6 +63,13 @@ CATEGORY_ORDER = {
     "other": 10,
 }
 
+_FACT_SELECT_COLUMNS = """
+    id, project_id, content, category, scope, priority,
+    status, is_stale, source, added_by, approved_by,
+    approved_at, last_verified_at, archived_reason,
+    superseded_by_fact_id, content_hash, created_at, updated_at
+"""
+
 SECRET_PATTERNS = [
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
     re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"),
@@ -314,6 +321,13 @@ def _validate_project_id(project_id: str | None) -> str:
     return str(project_id).strip()
 
 
+def _validate_fact_id(fact_id: str | None, field_name: str) -> str:
+    value = (fact_id or "").strip()
+    if not value:
+        raise ValueError(f"memory_store.py: {field_name} is required")
+    return value
+
+
 def _validate_category(category: str | None) -> str:
     value = (category or "other").strip()
     if value not in ALLOWED_CATEGORIES:
@@ -445,6 +459,7 @@ def insert_fact_in_conn(
         "added_by": added_by,
         "approved_by": approved_by,
         "content_hash": content_hash,
+        "superseded_by_fact_id": None,
     }
 
 
@@ -514,10 +529,7 @@ def list_facts(
     try:
         with engine.connect() as conn:
             result = conn.execute(text(f"""
-                SELECT id, project_id, content, category, scope, priority,
-                       status, is_stale, source, added_by, approved_by,
-                       approved_at, last_verified_at, archived_reason,
-                       content_hash, created_at, updated_at
+                SELECT {_FACT_SELECT_COLUMNS}
                 FROM memory_facts
                 WHERE {" AND ".join(filters)}
                 ORDER BY created_at DESC
@@ -712,6 +724,118 @@ def mark_fact_stale(
         raise RuntimeError(f"memory_store.py: mark_fact_stale failed: {error}") from error
 
 
+def get_fact_in_conn(conn, project_id: str, memory_id: str) -> dict | None:
+    project_id = _validate_project_id(project_id)
+    memory_id = _validate_fact_id(memory_id, "memory_id")
+    row = conn.execute(text(f"""
+        SELECT {_FACT_SELECT_COLUMNS}
+        FROM memory_facts
+        WHERE project_id = :project_id
+          AND id = :memory_id
+    """), {
+        "project_id": project_id,
+        "memory_id": memory_id,
+    }).fetchone()
+    return dict(row._mapping) if row is not None else None
+
+
+def _fact_is_active(row: dict) -> bool:
+    return row.get("status") == "active" and int(row.get("is_stale") or 0) == 0
+
+
+def supersede_fact_in_conn(
+    conn,
+    *,
+    project_id: str,
+    old_fact_id: str,
+    new_fact_id: str,
+    reason: str,
+    now: str | None = None,
+) -> dict:
+    """
+    Mark one active fact historical because another active fact replaces it.
+
+    The caller owns the transaction. Preconditions are checked before the
+    mutation for clear errors and repeated in the UPDATE WHERE clause so races
+    cannot silently supersede a non-active fact.
+    """
+    project_id = _validate_project_id(project_id)
+    old_fact_id = _validate_fact_id(old_fact_id, "old_fact_id")
+    new_fact_id = _validate_fact_id(new_fact_id, "new_fact_id")
+    if old_fact_id == new_fact_id:
+        raise ValueError("memory_store.py: cannot supersede memory fact with itself")
+    reason_value = validate_lifecycle_reason(reason)
+
+    old_fact = get_fact_in_conn(conn, project_id, old_fact_id)
+    new_fact = get_fact_in_conn(conn, project_id, new_fact_id)
+    if old_fact is None or new_fact is None:
+        raise ValueError("memory_store.py: memory fact not found")
+    if not _fact_is_active(old_fact):
+        raise ValueError("memory_store.py: old memory fact is not active")
+    if not _fact_is_active(new_fact):
+        raise ValueError("memory_store.py: new memory fact is not active")
+
+    now = now or _utc_now()
+    result = conn.execute(text("""
+        UPDATE memory_facts
+        SET status = 'historical',
+            is_stale = 1,
+            archived_reason = :reason,
+            superseded_by_fact_id = :new_fact_id,
+            updated_at = :now
+        WHERE id = :old_fact_id
+          AND project_id = :project_id
+          AND status = 'active'
+          AND is_stale = 0
+          AND EXISTS (
+              SELECT 1
+              FROM memory_facts AS new_fact
+              WHERE new_fact.id = :new_fact_id
+                AND new_fact.project_id = :project_id
+                AND new_fact.status = 'active'
+                AND new_fact.is_stale = 0
+          )
+    """), {
+        "project_id": project_id,
+        "old_fact_id": old_fact_id,
+        "new_fact_id": new_fact_id,
+        "reason": reason_value,
+        "now": now,
+    })
+    if result.rowcount == 0:
+        raise ValueError("memory_store.py: supersession precondition failed")
+
+    updated = get_fact_in_conn(conn, project_id, old_fact_id)
+    if updated is None:
+        raise ValueError("memory_store.py: memory fact not found")
+    return updated
+
+
+def supersede_fact(
+    project_id: str,
+    old_fact_id: str,
+    new_fact_id: str,
+    reason: str,
+    actor: str | None = None,
+) -> dict:
+    del actor  # Reserved for a later audit table; no schema added in M3D2.
+    try:
+        with engine.begin() as conn:
+            return supersede_fact_in_conn(
+                conn,
+                project_id=project_id,
+                old_fact_id=old_fact_id,
+                new_fact_id=new_fact_id,
+                reason=reason,
+            )
+    except ValueError:
+        raise
+    except Exception as error:
+        raise RuntimeError(
+            f"memory_store.py: supersede_fact failed: {error}"
+        ) from error
+
+
 def update_fact(
     project_id: str,
     memory_id: str,
@@ -833,7 +957,8 @@ def list_all_facts(project_id: str | None = None) -> list[dict]:
             if project_id:
                 result = conn.execute(text("""
                     SELECT id, project_id, content, category, scope, priority,
-                           source, added_by, created_at, is_stale, status
+                           source, added_by, created_at, is_stale, status,
+                           superseded_by_fact_id
                     FROM memory_facts
                     WHERE project_id = :project_id
                     ORDER BY created_at DESC
@@ -841,7 +966,8 @@ def list_all_facts(project_id: str | None = None) -> list[dict]:
             else:
                 result = conn.execute(text("""
                     SELECT id, project_id, content, category, scope, priority,
-                           source, added_by, created_at, is_stale, status
+                           source, added_by, created_at, is_stale, status,
+                           superseded_by_fact_id
                     FROM memory_facts
                     WHERE project_id IS NOT NULL
                     ORDER BY created_at DESC

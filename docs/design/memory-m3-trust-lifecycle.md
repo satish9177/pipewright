@@ -449,7 +449,40 @@ lifecycle reason must never become a control channel). It does **not** run the f
 **Provenance immutable:** marking a fact stale never touches `memory_injection_events`; a snapshot keeps
 its `status_at_injection` and `entries_hash` (regression-tested).
 
-**Deferred to later M3D slices:** supersession route, approve-and-supersede, `superseded_by_fact_id`
-column / lineage table, a `historical` producer, frontend, scheduled stale-sweep wiring, candidate
-acknowledgement, and any detector-gated mutation. No schema, no auto-resolution, no prompt/pipeline
-behavior change in this slice.
+**Deferred to later M3D slices:** frontend, scheduled stale-sweep wiring, candidate acknowledgement,
+and any detector-gated mutation. No auto-resolution or prompt/pipeline behavior change in this slice.
+
+---
+
+## 18. M3D2 - Supersession lineage + human-controlled routes (implemented)
+
+M3D2 gives `historical` its first explicit producer: a human can mark one approved active fact as
+historical because another approved active fact replaces it. This preserves the core rule:
+**system detects, human decides**. M3B/M3C candidates remain advisory only and are not required for
+mutation.
+
+**Schema:** `memory_facts.superseded_by_fact_id TEXT NULL` was added through the additive SQLite
+migration pattern and `schema.sql`. On an old row, this points to the active fact that superseded it.
+There is no `memory_fact_lineage` table, no new status, no deletion, and no pruning in this slice.
+
+**Existing-fact route:** `POST /api/v1/projects/{project_id}/memory/facts/{old_fact_id}/supersede`
+with `{ new_fact_id, reason }`. It is explicitly directional: old/new ids come from the request, never
+from recency or `created_at`. Both facts must belong to the same project and be active/non-stale. The
+old row becomes `status='historical'`, `is_stale=1`, stores the human reason in `archived_reason`, and
+sets `superseded_by_fact_id` to the new fact id. The new fact is not mutated.
+
+**Approve-and-supersede route:** `POST /api/v1/projects/{project_id}/memory/suggestions/{suggestion_id}/approve-and-supersede`
+with `{ old_fact_id, reason, edited_content? }`. It reuses the existing suggestion approval validation
+and fact insertion path, including edited-content validation, then supersedes the old fact in the same
+transaction. If either step fails, neither the suggestion approval nor the supersession is committed.
+
+**API/read model:** memory fact responses include `superseded_by_fact_id`; `content_hash` remains
+hidden. Historical facts can be listed with the existing `status=historical` filter. Active memory
+injection remains unchanged because prompt builders already select only `status='active' AND is_stale=0`.
+
+**Provenance immutable:** supersession never touches `memory_injection_events`; snapshots keep their
+captured content, `status_at_injection`, raw `entries_json`, and `entries_hash`.
+
+**Out of scope:** no frontend, no automatic candidate resolution, no latest-wins, no auto-stale/archive/
+supersede, no LLM truth decision, no embeddings/vector/pgvector, no prompt/injection behavior change,
+and no planner/coder/triage/reviewer/runtime behavior change.

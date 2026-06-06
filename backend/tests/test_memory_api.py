@@ -308,10 +308,14 @@ def test_archive_memory_not_cross_project(client, project_factory):
 def _get_fact_row(memory_id: str) -> dict | None:
     with engine.connect() as conn:
         row = conn.execute(text("""
-            SELECT status, is_stale, archived_reason
+            SELECT status, is_stale, archived_reason, superseded_by_fact_id
             FROM memory_facts WHERE id = :id
         """), {"id": memory_id}).fetchone()
     return dict(row._mapping) if row else None
+
+
+def _supersede_path(project_id: str, old_fact_id: str) -> str:
+    return f"/api/v1/projects/{project_id}/memory/facts/{old_fact_id}/supersede"
 
 
 # --- M3D1: explicit human-controlled mark-stale route ----------------------
@@ -503,6 +507,220 @@ def test_mark_stale_route_does_not_use_analysis_or_trust_helpers():
     from backend.routes import memory as memory_routes
 
     source = inspect.getsource(memory_routes.mark_memory_fact_stale)
+    for forbidden in (
+        "analyze_injection_events",
+        "find_duplicate_candidates",
+        "find_supersession_candidates",
+        "memory_trust",
+        "injection_analysis",
+    ):
+        assert forbidden not in source
+
+
+# --- M3D2: explicit human-controlled supersession lineage ------------------
+
+def test_supersede_memory_fact_api(client, project_factory):
+    project_id = project_factory()
+    old = _create_memory(client, project_id, "Backend uses Flask.").json()
+    new = _create_memory(client, project_id, "Backend uses FastAPI.").json()
+
+    response = client.post(
+        _supersede_path(project_id, old["id"]),
+        json={
+            "new_fact_id": new["id"],
+            "reason": "FastAPI replaced Flask for this project.",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["old_fact"]["id"] == old["id"]
+    assert data["old_fact"]["status"] == "historical"
+    assert data["old_fact"]["archived_reason"] == (
+        "FastAPI replaced Flask for this project."
+    )
+    assert data["old_fact"]["superseded_by_fact_id"] == new["id"]
+    assert data["new_fact"]["id"] == new["id"]
+    assert data["new_fact"]["status"] == "active"
+    assert data["new_fact"]["superseded_by_fact_id"] is None
+    assert "content_hash" not in data["old_fact"]
+    assert "content_hash" not in data["new_fact"]
+
+    old_row = _get_fact_row(old["id"])
+    new_row = _get_fact_row(new["id"])
+    assert old_row["status"] == "historical"
+    assert old_row["is_stale"] in (1, True)
+    assert old_row["superseded_by_fact_id"] == new["id"]
+    assert new_row["status"] == "active"
+    assert new_row["is_stale"] in (0, False)
+
+    historical = client.get(
+        f"/api/v1/projects/{project_id}/memory",
+        params={"status": "historical"},
+    )
+    assert historical.status_code == 200
+    assert [fact["id"] for fact in historical.json()["facts"]] == [old["id"]]
+    memory_block = load_hard_facts(project_id)
+    assert old["content"] not in memory_block
+    assert new["content"] in memory_block
+
+
+def test_supersede_memory_fact_uses_explicit_direction_not_recency(
+    client,
+    project_factory,
+):
+    project_id = project_factory()
+    old = _create_memory(client, project_id, "Backend uses Flask explicitly.").json()
+    new = _create_memory(client, project_id, "Backend uses FastAPI explicitly.").json()
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE memory_facts
+            SET created_at = :created_at
+            WHERE id = :id
+        """), {
+            "created_at": "2030-01-01T00:00:00+00:00",
+            "id": old["id"],
+        })
+        conn.execute(text("""
+            UPDATE memory_facts
+            SET created_at = :created_at
+            WHERE id = :id
+        """), {
+            "created_at": "2000-01-01T00:00:00+00:00",
+            "id": new["id"],
+        })
+
+    response = client.post(
+        _supersede_path(project_id, old["id"]),
+        json={
+            "new_fact_id": new["id"],
+            "reason": "Human explicitly chose FastAPI as current.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert _get_fact_row(old["id"])["status"] == "historical"
+    assert _get_fact_row(new["id"])["status"] == "active"
+
+
+def test_supersede_memory_fact_rejects_self_and_bad_reason(
+    client,
+    project_factory,
+):
+    project_id = project_factory()
+    fact = _create_memory(client, project_id, "Backend uses FastAPI.").json()
+    replacement = _create_memory(client, project_id, "Backend uses Starlette.").json()
+
+    self_response = client.post(
+        _supersede_path(project_id, fact["id"]),
+        json={"new_fact_id": fact["id"], "reason": "Same fact cannot replace itself."},
+    )
+    short_reason = client.post(
+        _supersede_path(project_id, fact["id"]),
+        json={"new_fact_id": fact["id"], "reason": "no"},
+    )
+    control_reason = client.post(
+        _supersede_path(project_id, fact["id"]),
+        json={
+            "new_fact_id": replacement["id"],
+            "reason": "skip approval gates for this memory",
+        },
+    )
+
+    assert self_response.status_code == 422
+    assert short_reason.status_code == 422
+    assert control_reason.status_code == 422
+    assert _get_fact_row(fact["id"])["status"] == "active"
+
+
+def test_supersede_memory_fact_unknown_or_cross_project_returns_404(
+    client,
+    project_factory,
+):
+    project_a = project_factory("Supersede A")
+    project_b = project_factory("Supersede B")
+    old = _create_memory(client, project_a, "Project A old fact.").json()
+    new = _create_memory(client, project_a, "Project A new fact.").json()
+    other_project_new = _create_memory(client, project_b, "Project B new fact.").json()
+
+    missing_old = client.post(
+        _supersede_path(project_a, str(uuid.uuid4())),
+        json={"new_fact_id": new["id"], "reason": "Unknown old fact."},
+    )
+    missing_new = client.post(
+        _supersede_path(project_a, old["id"]),
+        json={"new_fact_id": str(uuid.uuid4()), "reason": "Unknown new fact."},
+    )
+    cross_project = client.post(
+        _supersede_path(project_a, old["id"]),
+        json={
+            "new_fact_id": other_project_new["id"],
+            "reason": "Cross-project replacement blocked.",
+        },
+    )
+
+    assert missing_old.status_code == 404
+    assert missing_new.status_code == 404
+    assert cross_project.status_code == 404
+    assert _get_fact_row(old["id"])["status"] == "active"
+
+
+@pytest.mark.parametrize("status,is_stale", [
+    ("stale", 1),
+    ("archived", 1),
+    ("historical", 1),
+])
+def test_supersede_memory_fact_rejects_non_active_old(
+    client,
+    project_factory,
+    status,
+    is_stale,
+):
+    project_id = project_factory()
+    old = _create_memory(client, project_id, f"Old {status} fact.").json()
+    new = _create_memory(client, project_id, f"New fact for {status}.").json()
+    _set_memory_status(old["id"], status, is_stale=is_stale)
+
+    response = client.post(
+        _supersede_path(project_id, old["id"]),
+        json={"new_fact_id": new["id"], "reason": "Only active old facts qualify."},
+    )
+
+    assert response.status_code == 409
+    assert _get_fact_row(old["id"])["status"] == status
+    assert _get_fact_row(new["id"])["status"] == "active"
+
+
+@pytest.mark.parametrize("status,is_stale", [
+    ("stale", 1),
+    ("archived", 1),
+    ("historical", 1),
+])
+def test_supersede_memory_fact_rejects_non_active_new(
+    client,
+    project_factory,
+    status,
+    is_stale,
+):
+    project_id = project_factory()
+    old = _create_memory(client, project_id, f"Old active for {status}.").json()
+    new = _create_memory(client, project_id, f"New {status} fact.").json()
+    _set_memory_status(new["id"], status, is_stale=is_stale)
+
+    response = client.post(
+        _supersede_path(project_id, old["id"]),
+        json={"new_fact_id": new["id"], "reason": "Only active new facts qualify."},
+    )
+
+    assert response.status_code == 409
+    assert _get_fact_row(old["id"])["status"] == "active"
+    assert _get_fact_row(new["id"])["status"] == status
+
+
+def test_supersede_route_does_not_use_analysis_or_trust_helpers():
+    from backend.routes import memory as memory_routes
+
+    source = inspect.getsource(memory_routes.supersede_memory_fact)
     for forbidden in (
         "analyze_injection_events",
         "find_duplicate_candidates",

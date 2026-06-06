@@ -165,6 +165,11 @@ def _migrate_db(conn) -> None:
                 "ALTER TABLE memory_facts ADD COLUMN content_hash TEXT",
             ),
             (
+                "memory_facts",
+                "superseded_by_fact_id",
+                "ALTER TABLE memory_facts ADD COLUMN superseded_by_fact_id TEXT",
+            ),
+            (
                 "pipeline_runs",
                 "project_id",
                 "ALTER TABLE pipeline_runs ADD COLUMN project_id TEXT",
