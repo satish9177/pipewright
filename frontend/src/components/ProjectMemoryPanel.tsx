@@ -21,6 +21,14 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
@@ -82,6 +90,27 @@ interface MemoryFormState {
   priority: string
 }
 
+interface MarkStaleDialogState {
+  fact: MemoryFact
+  reason: string
+  error: string | null
+}
+
+interface SupersedeDialogState {
+  oldFact: MemoryFact
+  newFactId: string
+  reason: string
+  error: string | null
+}
+
+interface ApproveSupersedeDialogState {
+  suggestion: MemorySuggestion
+  oldFactId: string
+  editedContent: string
+  reason: string
+  error: string | null
+}
+
 const emptyForm: MemoryFormState = {
   content: '',
   category: 'other',
@@ -136,6 +165,32 @@ function getSuggestionErrorMessage(error: unknown) {
   }
 
   return 'Failed to update memory suggestions.'
+}
+
+function getLifecycleErrorMessage(error: unknown, fallback: string) {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'response' in error
+  ) {
+    const response = (error as {
+      response?: { status?: number; data?: { detail?: unknown } }
+    }).response
+    if (typeof response?.data?.detail === 'string') {
+      return response.data.detail
+    }
+    if (Array.isArray(response?.data?.detail)) {
+      return 'Memory lifecycle validation failed. Check the selected facts and reason.'
+    }
+    if (response?.status === 404) {
+      return 'Memory fact or suggestion not found for this project.'
+    }
+    if (response?.status === 409) {
+      return 'The backend rejected this lifecycle change. Refresh and check that the selected facts are still active.'
+    }
+  }
+
+  return fallback
 }
 
 function formatDate(value?: string | null) {
@@ -231,6 +286,12 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
   const [error, setError] = useState<string | null>(null)
   const [suggestionMessage, setSuggestionMessage] = useState<string | null>(null)
   const [suggestionError, setSuggestionError] = useState<string | null>(null)
+  const [markStaleDialog, setMarkStaleDialog] =
+    useState<MarkStaleDialogState | null>(null)
+  const [supersedeDialog, setSupersedeDialog] =
+    useState<SupersedeDialogState | null>(null)
+  const [approveSupersedeDialog, setApproveSupersedeDialog] =
+    useState<ApproveSupersedeDialogState | null>(null)
 
   const filters = useMemo(() => {
     return {
@@ -249,6 +310,11 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
       scopeFilter,
     ],
     queryFn: () => memoryApi.listProjectMemory(projectId, filters),
+  })
+
+  const activeFactsQuery = useQuery({
+    queryKey: ['project-memory-active', projectId],
+    queryFn: () => memoryApi.listProjectMemory(projectId, { status: 'active' }),
   })
 
   const suggestionFilters = useMemo(() => {
@@ -277,6 +343,12 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
       return (a.priority ?? 100) - (b.priority ?? 100)
     })
   }, [memoryQuery.data?.facts])
+
+  const activeFacts = useMemo(() => {
+    return [...(activeFactsQuery.data?.facts ?? [])].sort((a, b) => {
+      return (a.priority ?? 100) - (b.priority ?? 100)
+    })
+  }, [activeFactsQuery.data?.facts])
 
   const factsById = useMemo(() => {
     return new Map(
@@ -308,6 +380,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
 
   function refreshMemory() {
     queryClient.invalidateQueries({ queryKey: ['project-memory', projectId] })
+    queryClient.invalidateQueries({ queryKey: ['project-memory-active', projectId] })
     queryClient.invalidateQueries({
       queryKey: ['project-memory-preview', projectId],
     })
@@ -361,6 +434,62 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
     onError: (mutationError: unknown) => {
       setMessage(null)
       setError(getErrorMessage(mutationError))
+    },
+  })
+
+  const markStaleMutation = useMutation({
+    mutationFn: ({ factId, reason }: { factId: string; reason: string }) =>
+      memoryApi.markMemoryFactStale(projectId, factId, reason),
+    onSuccess: () => {
+      setMarkStaleDialog(null)
+      setMessage('Memory fact marked stale.')
+      setError(null)
+      refreshMemory()
+    },
+    onError: (mutationError: unknown) => {
+      setMarkStaleDialog(previous =>
+        previous
+          ? {
+              ...previous,
+              error: getLifecycleErrorMessage(
+                mutationError,
+                'Failed to mark memory fact stale.',
+              ),
+            }
+          : previous,
+      )
+    },
+  })
+
+  const supersedeMutation = useMutation({
+    mutationFn: ({
+      oldFactId,
+      newFactId,
+      reason,
+    }: {
+      oldFactId: string
+      newFactId: string
+      reason: string
+    }) =>
+      memoryApi.supersedeMemoryFact(projectId, oldFactId, newFactId, reason),
+    onSuccess: () => {
+      setSupersedeDialog(null)
+      setMessage('Memory fact superseded.')
+      setError(null)
+      refreshMemory()
+    },
+    onError: (mutationError: unknown) => {
+      setSupersedeDialog(previous =>
+        previous
+          ? {
+              ...previous,
+              error: getLifecycleErrorMessage(
+                mutationError,
+                'Failed to supersede memory fact.',
+              ),
+            }
+          : previous,
+      )
     },
   })
 
@@ -419,6 +548,47 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
     onError: (mutationError: unknown) => {
       setSuggestionMessage(null)
       setSuggestionError(getSuggestionErrorMessage(mutationError))
+    },
+  })
+
+  const approveAndSupersedeMutation = useMutation({
+    mutationFn: ({
+      suggestionId,
+      oldFactId,
+      reason,
+      editedContent,
+    }: {
+      suggestionId: string
+      oldFactId: string
+      reason: string
+      editedContent?: string
+    }) =>
+      memoryApi.approveSuggestionAndSupersede(
+        projectId,
+        suggestionId,
+        oldFactId,
+        reason,
+        editedContent,
+      ),
+    onSuccess: () => {
+      setApproveSupersedeDialog(null)
+      setSuggestionMessage('Suggestion approved and old memory fact replaced.')
+      setSuggestionError(null)
+      refreshSuggestions()
+      refreshMemory()
+    },
+    onError: (mutationError: unknown) => {
+      setApproveSupersedeDialog(previous =>
+        previous
+          ? {
+              ...previous,
+              error: getLifecycleErrorMessage(
+                mutationError,
+                'Failed to approve suggestion and supersede old fact.',
+              ),
+            }
+          : previous,
+      )
     },
   })
 
@@ -489,6 +659,47 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
     setError(null)
   }
 
+  function startMarkStale(fact: MemoryFact) {
+    setMarkStaleDialog({ fact, reason: '', error: null })
+    setMessage(null)
+    setError(null)
+  }
+
+  function confirmMarkStale() {
+    if (!markStaleDialog) return
+    const reason = markStaleDialog.reason.trim()
+    if (reason.length < 4) return
+    markStaleMutation.mutate({ factId: markStaleDialog.fact.id, reason })
+  }
+
+  function startSupersede(fact: MemoryFact) {
+    setSupersedeDialog({
+      oldFact: fact,
+      newFactId: '',
+      reason: '',
+      error: null,
+    })
+    setMessage(null)
+    setError(null)
+  }
+
+  function confirmSupersede() {
+    if (!supersedeDialog) return
+    const reason = supersedeDialog.reason.trim()
+    if (
+      !supersedeDialog.newFactId ||
+      supersedeDialog.newFactId === supersedeDialog.oldFact.id ||
+      reason.length < 4
+    ) {
+      return
+    }
+    supersedeMutation.mutate({
+      oldFactId: supersedeDialog.oldFact.id,
+      newFactId: supersedeDialog.newFactId,
+      reason,
+    })
+  }
+
   function archiveFact(fact: MemoryFact) {
     const reason = (archiveReasons[fact.id] ?? '').trim()
     if (reason.length < 4) {
@@ -519,6 +730,41 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
     setSuggestionError(null)
   }
 
+  function startApproveAndSupersede(suggestion: MemorySuggestion) {
+    setApproveSupersedeDialog({
+      suggestion,
+      oldFactId: '',
+      editedContent: suggestion.content,
+      reason: '',
+      error: null,
+    })
+    setSuggestionMessage(null)
+    setSuggestionError(null)
+  }
+
+  function confirmApproveAndSupersede() {
+    if (!approveSupersedeDialog) return
+    const reason = approveSupersedeDialog.reason.trim()
+    const editedContent = approveSupersedeDialog.editedContent.trim()
+    if (
+      !approveSupersedeDialog.oldFactId ||
+      reason.length < 4 ||
+      editedContent.length < 4 ||
+      editedContent.length > 400
+    ) {
+      return
+    }
+    approveAndSupersedeMutation.mutate({
+      suggestionId: approveSupersedeDialog.suggestion.id,
+      oldFactId: approveSupersedeDialog.oldFactId,
+      reason,
+      editedContent:
+        editedContent === approveSupersedeDialog.suggestion.content.trim()
+          ? undefined
+          : editedContent,
+    })
+  }
+
   function approveEditedSuggestion(suggestion: MemorySuggestion) {
     const editedContent = (editedContents[suggestion.id] ?? '').trim()
     if (editedContent.length < 4 || editedContent.length > 400) {
@@ -531,6 +777,36 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
       editedContent,
     })
   }
+
+  const activeStatusDisplay = getMemoryStatusDisplay('active')
+  const staleStatusDisplay = getMemoryStatusDisplay('stale')
+  const historicalStatusDisplay = getMemoryStatusDisplay('historical')
+  const markStaleCanConfirm = Boolean(
+    markStaleDialog && markStaleDialog.reason.trim().length >= 4,
+  )
+  const supersedeReplacementFacts = supersedeDialog
+    ? activeFacts.filter(fact => fact.id !== supersedeDialog.oldFact.id)
+    : []
+  const selectedReplacementFact = supersedeDialog
+    ? activeFacts.find(fact => fact.id === supersedeDialog.newFactId)
+    : undefined
+  const supersedeCanConfirm = Boolean(
+    supersedeDialog &&
+      selectedReplacementFact &&
+      supersedeDialog.reason.trim().length >= 4,
+  )
+  const selectedApproveOldFact = approveSupersedeDialog
+    ? activeFacts.find(fact => fact.id === approveSupersedeDialog.oldFactId)
+    : undefined
+  const approveSupersedeContent =
+    approveSupersedeDialog?.editedContent.trim() ?? ''
+  const approveSupersedeCanConfirm = Boolean(
+    approveSupersedeDialog &&
+      selectedApproveOldFact &&
+      approveSupersedeDialog.reason.trim().length >= 4 &&
+      approveSupersedeContent.length >= 4 &&
+      approveSupersedeContent.length <= 400,
+  )
 
   return (
     <Card className="mb-6">
@@ -686,6 +962,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
           )}
           {sortedFacts.map(fact => {
             const isEditing = editingId === fact.id
+            const isActive = fact.status === 'active'
             const isArchived = fact.status === 'archived'
             const statusDisplay = getMemoryStatusDisplay(fact.status)
             const replacementFact = fact.superseded_by_fact_id
@@ -721,6 +998,24 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                     >
                       Verify
                     </Button>
+                    {isActive && (
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => startMarkStale(fact)}
+                        >
+                          Mark stale
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => startSupersede(fact)}
+                        >
+                          Supersede
+                        </Button>
+                      </>
+                    )}
                     {!isArchived && (
                       <Button
                         variant="outline"
@@ -976,6 +1271,13 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                           ? 'Cancel edit'
                           : 'Edit & approve'}
                       </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => startApproveAndSupersede(suggestion)}
+                      >
+                        Approve & supersede...
+                      </Button>
                     </div>
                   )}
                 </div>
@@ -1116,6 +1418,426 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
             </pre>
           )}
         </div>
+
+        <Dialog
+          open={Boolean(markStaleDialog)}
+          onOpenChange={open => {
+            if (!open && !markStaleMutation.isPending) setMarkStaleDialog(null)
+          }}
+        >
+          <DialogContent className="sm:max-w-xl">
+            {markStaleDialog && (
+              <>
+                <DialogHeader>
+                  <DialogTitle>Mark memory fact stale</DialogTitle>
+                  <DialogDescription>
+                    Confirm this human lifecycle change before the backend
+                    applies it.
+                  </DialogDescription>
+                </DialogHeader>
+
+                <div className="grid gap-3">
+                  <div className="grid gap-1">
+                    <p className="text-xs font-medium text-muted-foreground">
+                      Fact content
+                    </p>
+                    <p className="whitespace-pre-wrap rounded border bg-muted/30 p-3 text-sm leading-6">
+                      {markStaleDialog.fact.content}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span>Current status:</span>
+                    <Badge
+                      variant="outline"
+                      className={activeStatusDisplay.className}
+                    >
+                      {activeStatusDisplay.label}
+                    </Badge>
+                    <span>Resulting status:</span>
+                    <Badge
+                      variant="outline"
+                      className={staleStatusDisplay.className}
+                    >
+                      {staleStatusDisplay.label} / stale
+                    </Badge>
+                  </div>
+
+                  <p className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                    This fact will stop being injected into future AI prompts.
+                    Nothing is deleted.
+                  </p>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="mark-stale-reason">Reason</Label>
+                    <Input
+                      id="mark-stale-reason"
+                      value={markStaleDialog.reason}
+                      onChange={event =>
+                        setMarkStaleDialog(previous =>
+                          previous
+                            ? {
+                                ...previous,
+                                reason: event.target.value,
+                                error: null,
+                              }
+                            : previous,
+                        )
+                      }
+                      placeholder="Outdated after framework migration."
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      At least 4 characters. Stored as the lifecycle reason.
+                    </p>
+                  </div>
+
+                  {markStaleDialog.error && (
+                    <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+                      {markStaleDialog.error}
+                    </p>
+                  )}
+                </div>
+
+                <DialogFooter>
+                  <Button
+                    variant="outline"
+                    onClick={() => setMarkStaleDialog(null)}
+                    disabled={markStaleMutation.isPending}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    onClick={confirmMarkStale}
+                    disabled={!markStaleCanConfirm || markStaleMutation.isPending}
+                  >
+                    {markStaleMutation.isPending ? 'Marking...' : 'Mark stale'}
+                  </Button>
+                </DialogFooter>
+              </>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={Boolean(supersedeDialog)}
+          onOpenChange={open => {
+            if (!open && !supersedeMutation.isPending) setSupersedeDialog(null)
+          }}
+        >
+          <DialogContent className="sm:max-w-2xl">
+            {supersedeDialog && (
+              <>
+                <DialogHeader>
+                  <DialogTitle>Supersede memory fact</DialogTitle>
+                  <DialogDescription>
+                    Choose the approved active fact that replaces the old fact.
+                    The backend revalidates both facts before changing anything.
+                  </DialogDescription>
+                </DialogHeader>
+
+                <div className="grid gap-3">
+                  <div className="grid gap-1">
+                    <p className="text-xs font-medium text-muted-foreground">
+                      OLD FACT
+                    </p>
+                    <p className="whitespace-pre-wrap rounded border bg-muted/30 p-3 text-sm leading-6">
+                      {supersedeDialog.oldFact.content}
+                    </p>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="supersede-replacement">
+                      Replacement active fact
+                    </Label>
+                    <select
+                      id="supersede-replacement"
+                      value={supersedeDialog.newFactId}
+                      onChange={event =>
+                        setSupersedeDialog(previous =>
+                          previous
+                            ? {
+                                ...previous,
+                                newFactId: event.target.value,
+                                error: null,
+                              }
+                            : previous,
+                        )
+                      }
+                      className="h-8 w-full rounded-lg border border-input bg-background px-2.5 py-1 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                      disabled={
+                        activeFactsQuery.isLoading ||
+                        supersedeReplacementFacts.length === 0
+                      }
+                    >
+                      <option value="">
+                        {activeFactsQuery.isLoading
+                          ? 'Loading active facts...'
+                          : 'Select replacement fact'}
+                      </option>
+                      {supersedeReplacementFacts.map(fact => (
+                        <option key={fact.id} value={fact.id}>
+                          {fact.content}
+                        </option>
+                      ))}
+                    </select>
+                    {supersedeReplacementFacts.length === 0 &&
+                      !activeFactsQuery.isLoading && (
+                        <p className="text-xs text-muted-foreground">
+                          No other active facts are available as replacements.
+                        </p>
+                      )}
+                  </div>
+
+                  {selectedReplacementFact && (
+                    <div className="grid gap-1">
+                      <p className="text-xs font-medium text-muted-foreground">
+                        NEW FACT
+                      </p>
+                      <p className="whitespace-pre-wrap rounded border bg-muted/30 p-3 text-sm leading-6">
+                        {selectedReplacementFact.content}
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="grid gap-2 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+                    <p>
+                      This will move OLD FACT from In use to Replaced. NEW FACT
+                      will remain In use.
+                    </p>
+                    <p>
+                      The old fact will no longer be injected into future prompts.
+                      Nothing is deleted.
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge
+                        variant="outline"
+                        className={activeStatusDisplay.className}
+                      >
+                        {activeStatusDisplay.label}
+                      </Badge>
+                      <span>to</span>
+                      <Badge
+                        variant="outline"
+                        className={historicalStatusDisplay.className}
+                      >
+                        {historicalStatusDisplay.label}
+                      </Badge>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="supersede-reason">Reason</Label>
+                    <Input
+                      id="supersede-reason"
+                      value={supersedeDialog.reason}
+                      onChange={event =>
+                        setSupersedeDialog(previous =>
+                          previous
+                            ? {
+                                ...previous,
+                                reason: event.target.value,
+                                error: null,
+                              }
+                            : previous,
+                        )
+                      }
+                      placeholder="Replaced after confirmed framework migration."
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      At least 4 characters. The selected direction is explicit.
+                    </p>
+                  </div>
+
+                  {supersedeDialog.error && (
+                    <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+                      {supersedeDialog.error}
+                    </p>
+                  )}
+                </div>
+
+                <DialogFooter>
+                  <Button
+                    variant="outline"
+                    onClick={() => setSupersedeDialog(null)}
+                    disabled={supersedeMutation.isPending}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    onClick={confirmSupersede}
+                    disabled={!supersedeCanConfirm || supersedeMutation.isPending}
+                  >
+                    {supersedeMutation.isPending
+                      ? 'Superseding...'
+                      : 'Supersede old fact'}
+                  </Button>
+                </DialogFooter>
+              </>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={Boolean(approveSupersedeDialog)}
+          onOpenChange={open => {
+            if (!open && !approveAndSupersedeMutation.isPending) {
+              setApproveSupersedeDialog(null)
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-2xl">
+            {approveSupersedeDialog && (
+              <>
+                <DialogHeader>
+                  <DialogTitle>Approve suggestion and supersede</DialogTitle>
+                  <DialogDescription>
+                    Approve this pending suggestion as a new active fact while
+                    replacing one old active fact in the same confirmed action.
+                  </DialogDescription>
+                </DialogHeader>
+
+                <div className="grid gap-3">
+                  <div className="grid gap-2">
+                    <Label htmlFor="approve-supersede-content">
+                      Suggestion content
+                    </Label>
+                    <Textarea
+                      id="approve-supersede-content"
+                      value={approveSupersedeDialog.editedContent}
+                      maxLength={400}
+                      rows={3}
+                      onChange={event =>
+                        setApproveSupersedeDialog(previous =>
+                          previous
+                            ? {
+                                ...previous,
+                                editedContent: event.target.value,
+                                error: null,
+                              }
+                            : previous,
+                        )
+                      }
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {approveSupersedeContent.length}/400 characters. Edits
+                      are validated by the backend before approval.
+                    </p>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="approve-supersede-old-fact">
+                      Old active fact to replace
+                    </Label>
+                    <select
+                      id="approve-supersede-old-fact"
+                      value={approveSupersedeDialog.oldFactId}
+                      onChange={event =>
+                        setApproveSupersedeDialog(previous =>
+                          previous
+                            ? {
+                                ...previous,
+                                oldFactId: event.target.value,
+                                error: null,
+                              }
+                            : previous,
+                        )
+                      }
+                      className="h-8 w-full rounded-lg border border-input bg-background px-2.5 py-1 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                      disabled={activeFactsQuery.isLoading || activeFacts.length === 0}
+                    >
+                      <option value="">
+                        {activeFactsQuery.isLoading
+                          ? 'Loading active facts...'
+                          : 'Select old active fact'}
+                      </option>
+                      {activeFacts.map(fact => (
+                        <option key={fact.id} value={fact.id}>
+                          {fact.content}
+                        </option>
+                      ))}
+                    </select>
+                    {activeFacts.length === 0 && !activeFactsQuery.isLoading && (
+                      <p className="text-xs text-muted-foreground">
+                        No active facts are available to replace.
+                      </p>
+                    )}
+                  </div>
+
+                  {selectedApproveOldFact && (
+                    <div className="grid gap-1">
+                      <p className="text-xs font-medium text-muted-foreground">
+                        Selected old fact
+                      </p>
+                      <p className="whitespace-pre-wrap rounded border bg-muted/30 p-3 text-sm leading-6">
+                        {selectedApproveOldFact.content}
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="grid gap-2 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+                    <p>
+                      This suggestion will become a new active memory fact. The
+                      selected old fact will become Replaced and stop being
+                      injected.
+                    </p>
+                    <p>Nothing is deleted. Backend validation remains the source of truth.</p>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="approve-supersede-reason">Reason</Label>
+                    <Input
+                      id="approve-supersede-reason"
+                      value={approveSupersedeDialog.reason}
+                      onChange={event =>
+                        setApproveSupersedeDialog(previous =>
+                          previous
+                            ? {
+                                ...previous,
+                                reason: event.target.value,
+                                error: null,
+                              }
+                            : previous,
+                        )
+                      }
+                      placeholder="Suggestion replaces outdated approved memory."
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      At least 4 characters. The selected old fact becomes
+                      Replaced only after backend approval succeeds.
+                    </p>
+                  </div>
+
+                  {approveSupersedeDialog.error && (
+                    <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+                      {approveSupersedeDialog.error}
+                    </p>
+                  )}
+                </div>
+
+                <DialogFooter>
+                  <Button
+                    variant="outline"
+                    onClick={() => setApproveSupersedeDialog(null)}
+                    disabled={approveAndSupersedeMutation.isPending}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    onClick={confirmApproveAndSupersede}
+                    disabled={
+                      !approveSupersedeCanConfirm ||
+                      approveAndSupersedeMutation.isPending
+                    }
+                  >
+                    {approveAndSupersedeMutation.isPending
+                      ? 'Approving...'
+                      : 'Approve and supersede'}
+                  </Button>
+                </DialogFooter>
+              </>
+            )}
+          </DialogContent>
+        </Dialog>
       </CardContent>
     </Card>
   )

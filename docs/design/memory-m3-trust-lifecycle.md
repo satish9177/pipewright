@@ -529,3 +529,24 @@ did not change memory, and repeats that newer does not mean true: human decides.
 mark-stale/archive/supersede/approve-and-supersede buttons, no candidate-to-action flow, no
 project-level provenance aggregation, no prompt/injection behavior change, and no auto-resolution or
 latest-wins behavior. M3E3 lifecycle action UI remains deferred.
+
+---
+
+## 21. M3E3 - Frontend lifecycle action UI (implemented)
+
+M3E3 adds human-confirmed Project Memory UI actions over the existing M3D backend routes: mark stale,
+supersede an active fact with another active fact, and approve a pending suggestion while superseding an
+old active fact. The backend remains the source of truth and revalidates project ownership, active-only
+preconditions, duplicate safety, edited content, and lifecycle reasons before any mutation commits.
+
+**Confirmation UX:** every new lifecycle action opens a modal before it can run. The modals show the
+exact content involved, current and resulting plain-English statuses, injection impact, "Nothing is
+deleted" copy, and a required reason. Supersession direction is explicit: the old fact moves from
+In use to Replaced, and the replacement/new fact remains In use.
+
+**Boundaries preserved:** no backend/schema/route change, no prompt or injection behavior change, no
+pipeline/runtime change, no LLM/vector/embedding behavior, no auto-resolution, and no latest-wins
+language. The Run Detail provenance viewer remains read-only and has no mutation shortcuts.
+
+**Deferred:** archive confirmation is still the pre-M3E3 inline archive flow and should be harmonized
+with the confirmation-modal lifecycle UX later. M3E4 smoke/docs closeout remains deferred.
