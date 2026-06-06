@@ -28,7 +28,9 @@ from backend.memory.memory_store import (
     add_fact,
     archive_fact,
     list_facts,
+    mark_fact_stale,
     update_fact,
+    validate_lifecycle_reason,
     verify_fact,
 )
 from backend.memory.prompt_builder import ROLE_CATEGORIES, build_project_memory_block
@@ -115,6 +117,17 @@ class MemoryArchiveRequest(BaseModel):
     def reason_must_not_be_blank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("Archive reason is required")
+        return value
+
+
+class MemoryStaleRequest(BaseModel):
+    reason: str = Field(min_length=4, max_length=400)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Stale reason is required")
         return value
 
 
@@ -470,6 +483,39 @@ def archive_memory_fact(
             reason=request.reason,
             archived_by="api",
         )
+        return _sanitize_fact(_get_fact_for_project(project_id, memory_id))
+    except ValueError as error:
+        raise _map_memory_error(error)
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+
+@router.post("/{memory_id}/stale", response_model=MemoryFactResponse)
+def mark_memory_fact_stale(
+    project_id: str,
+    memory_id: str,
+    request: MemoryStaleRequest,
+):
+    """
+    Human-controlled mark-stale (M3D1). Explicitly flags one ACTIVE fact stale so
+    it is no longer injected into prompts (the builder selects active, non-stale
+    facts only). It mutates a single memory fact's status/reason and nothing else:
+    no supersession/lineage, no provenance mutation, no auto-resolution, no LLM /
+    repo / git / vector / GitHub, and no prompt/pipeline behavior change.
+
+    Revalidates before mutating: project ownership (404), active-only precondition
+    (409 for stale/archived/historical), and the reason (422).
+    """
+    _require_project(project_id)
+    fact = _get_fact_for_project(project_id, memory_id)
+    if fact.get("status") != "active":
+        raise HTTPException(
+            status_code=409,
+            detail="Only active memory facts can be marked stale",
+        )
+    try:
+        reason = validate_lifecycle_reason(request.reason)
+        mark_fact_stale(project_id=project_id, memory_id=memory_id, reason=reason)
         return _sanitize_fact(_get_fact_for_project(project_id, memory_id))
     except ValueError as error:
         raise _map_memory_error(error)

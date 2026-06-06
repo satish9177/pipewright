@@ -288,6 +288,26 @@ def validate_memory_content(content: str) -> str:
     return value
 
 
+def validate_lifecycle_reason(reason: str | None) -> str:
+    """
+    Validate a human-provided memory lifecycle reason (mark-stale / archive-style).
+
+    Narrow on purpose: it enforces the same >=4 char floor that archive_fact
+    already requires and blocks control-plane bypass phrases so a lifecycle
+    reason can never become a control channel. It does NOT run the full memory
+    content gate — a reason is lifecycle metadata, not injected memory text.
+    Returns the stripped reason; raises ValueError on failure.
+    """
+    value = (reason or "").strip()
+    if len(value) < CONTENT_MIN_LENGTH:
+        raise ValueError("memory_store.py: lifecycle reason is required")
+    if _contains_control_plane_bypass(value):
+        raise ValueError(
+            "memory_store.py: reason contains a control-plane bypass instruction"
+        )
+    return value
+
+
 def _validate_project_id(project_id: str | None) -> str:
     if not project_id or not str(project_id).strip():
         raise ValueError("memory_store.py: project_id is required")
