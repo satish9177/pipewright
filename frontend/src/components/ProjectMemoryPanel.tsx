@@ -24,6 +24,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { getMemoryStatusDisplay } from '@/utils/memoryStatusDisplay'
 
 const CATEGORIES: MemoryCategory[] = [
   'stack',
@@ -275,6 +276,24 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
       if (statusDelta !== 0) return statusDelta
       return (a.priority ?? 100) - (b.priority ?? 100)
     })
+  }, [memoryQuery.data?.facts])
+
+  const factsById = useMemo(() => {
+    return new Map(
+      (memoryQuery.data?.facts ?? []).map(fact => [fact.id, fact]),
+    )
+  }, [memoryQuery.data?.facts])
+
+  const historicalFactsByReplacementId = useMemo(() => {
+    const lineage = new Map<string, MemoryFact[]>()
+
+    for (const fact of memoryQuery.data?.facts ?? []) {
+      if (fact.status !== 'historical' || !fact.superseded_by_fact_id) continue
+      const existing = lineage.get(fact.superseded_by_fact_id) ?? []
+      lineage.set(fact.superseded_by_fact_id, [...existing, fact])
+    }
+
+    return lineage
   }, [memoryQuery.data?.facts])
 
   const sortedSuggestions = useMemo(() => {
@@ -668,12 +687,24 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
           {sortedFacts.map(fact => {
             const isEditing = editingId === fact.id
             const isArchived = fact.status === 'archived'
+            const statusDisplay = getMemoryStatusDisplay(fact.status)
+            const replacementFact = fact.superseded_by_fact_id
+              ? factsById.get(fact.superseded_by_fact_id)
+              : undefined
+            const supersededFacts = fact.status === 'active'
+              ? historicalFactsByReplacementId.get(fact.id) ?? []
+              : []
+
             return (
               <div key={fact.id} className="rounded-lg border p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="outline" className={statusClass(fact.status)}>
-                      {fact.status}
+                    <Badge
+                      variant="outline"
+                      className={statusDisplay.className}
+                      title={statusDisplay.tooltip}
+                    >
+                      {statusDisplay.label}
                     </Badge>
                     <Badge variant="outline">{fact.category}</Badge>
                     <Badge variant="outline">{fact.scope}</Badge>
@@ -750,6 +781,30 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                   </div>
                 ) : (
                   <p className="mt-3 text-sm leading-6">{fact.content}</p>
+                )}
+
+                {fact.status === 'historical' && fact.superseded_by_fact_id && (
+                  <p className="mt-3 rounded-lg bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                    {replacementFact
+                      ? `Replaced by your approval -> ${replacementFact.content}`
+                      : 'Replaced by another approved fact.'}
+                  </p>
+                )}
+
+                {fact.status === 'active' && supersededFacts.length > 0 && (
+                  <div className="mt-3 grid gap-1 rounded-lg bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                    {supersededFacts.slice(0, 3).map(historicalFact => (
+                      <p key={historicalFact.id}>
+                        Supersedes &lt;- {historicalFact.content}
+                      </p>
+                    ))}
+                    {supersededFacts.length > 3 && (
+                      <p>
+                        Supersedes {supersededFacts.length - 3} more historical
+                        facts.
+                      </p>
+                    )}
+                  </div>
                 )}
 
                 <div className="mt-3 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">

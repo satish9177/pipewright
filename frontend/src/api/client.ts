@@ -656,6 +656,7 @@ export interface MemoryFact extends ExtraFields {
   approved_at?: string | null
   last_verified_at?: string | null
   archived_reason?: string | null
+  superseded_by_fact_id?: string | null
   created_at?: string | null
   updated_at?: string | null
 }

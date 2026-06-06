@@ -486,3 +486,24 @@ captured content, `status_at_injection`, raw `entries_json`, and `entries_hash`.
 **Out of scope:** no frontend, no automatic candidate resolution, no latest-wins, no auto-stale/archive/
 supersede, no LLM truth decision, no embeddings/vector/pgvector, no prompt/injection behavior change,
 and no planner/coder/triage/reviewer/runtime behavior change.
+
+---
+
+## 19. M3E1 - Frontend lineage visibility (implemented)
+
+M3E1 adds read-only visibility for the M3D2 lineage fields in the existing Project Memory UI. It is not a
+new workflow surface and does not add mutation actions.
+
+**Frontend read model:** `MemoryFact` now includes optional `superseded_by_fact_id`. The existing memory
+fact list resolves lineage client-side from the already-loaded facts: historical facts can show which
+approved fact replaced them when that replacement is loaded, and active facts can show historical facts
+that point to them.
+
+**Status display:** memory fact badges now use plain-English labels and tooltips:
+`active` -> "In use", `stale` -> "Possibly outdated", `archived` -> "Retired", and `historical` ->
+"Replaced". The copy explains injection impact without implying deletion, latest-wins, or automatic
+system resolution.
+
+**Out of scope:** no new routes, no backend/schema/runtime change, no mark-stale/supersede/
+approve-and-supersede buttons, no provenance UI, and no advisory candidate UI. Provenance display and
+human mutation controls remain deferred.
