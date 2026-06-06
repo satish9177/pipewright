@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import text
 
 from backend.db.database import engine
+from backend.memory.injection_analysis import analyze_injection_events
 from backend.memory.injection_store import list_memory_injection_events
 
 from backend.memory.bootstrap import (
@@ -632,3 +633,133 @@ def list_run_memory_injections(
             ],
         })
     return {"run_id": run_id, "events": shaped}
+
+
+# Read-only memory injection ANALYSIS (M3C2). A dedicated sibling of the list
+# endpoint so the default provenance payload stays byte-identical and the Run
+# Detail read model is never bloated. Analysis is computed on read from the
+# immutable M3C1 snapshots via the pure M3B trust helpers: it triggers no GitHub,
+# no LLM, no repo scan, no git, and no memory mutation. Every candidate is
+# advisory only — never an automatic truth/supersession decision.
+
+
+class MemoryInjectionAnalysisRef(BaseModel):
+    event_id: str | None = None
+    role: str | None = None
+    chunk_number: int | None = None
+    fact_id: str | None = None
+    content: str = ""
+
+
+class MemoryInjectionDuplicateCandidate(BaseModel):
+    candidate_type: str = "duplicate"
+    relation: str
+    similarity: float
+    reason: str
+    left: MemoryInjectionAnalysisRef
+    right: MemoryInjectionAnalysisRef
+    advisory_only: bool = True
+
+
+class MemoryInjectionSupersessionCandidate(BaseModel):
+    candidate_type: str = "supersession"
+    relation: str = "possible_supersession"
+    dimension: str
+    left: MemoryInjectionAnalysisRef
+    right: MemoryInjectionAnalysisRef
+    left_value: str
+    right_value: str
+    reason: str
+    # Direction is undecided; recency never implies truth.
+    recency_implies_truth: bool = False
+    advisory_only: bool = True
+
+
+class MemoryInjectionAnalysisBody(BaseModel):
+    total_events: int = 0
+    total_included_entries: int = 0
+    distinct_fact_count: int = 0
+    duplicate_candidate_count: int = 0
+    supersession_candidate_count: int = 0
+    duplicate_candidates: list[MemoryInjectionDuplicateCandidate] = []
+    supersession_candidates: list[MemoryInjectionSupersessionCandidate] = []
+    warnings: list[str] = []
+
+
+class MemoryInjectionAnalysisResponse(BaseModel):
+    run_id: str
+    analysis: MemoryInjectionAnalysisBody
+
+
+def _ref_for_response(ref) -> dict:
+    return {
+        "event_id": ref.event_id,
+        "role": ref.role,
+        "chunk_number": ref.chunk_number,
+        "fact_id": ref.fact_id,
+        "content": ref.content or "",
+    }
+
+
+def _analysis_for_response(analysis) -> dict:
+    return {
+        "total_events": analysis.total_events,
+        "total_included_entries": analysis.total_included_entries,
+        "distinct_fact_count": analysis.distinct_fact_count,
+        "duplicate_candidate_count": analysis.duplicate_candidate_count,
+        "supersession_candidate_count": analysis.supersession_candidate_count,
+        "duplicate_candidates": [
+            {
+                "candidate_type": candidate.candidate_type,
+                "relation": candidate.relation,
+                "similarity": candidate.similarity,
+                "reason": candidate.reason,
+                "left": _ref_for_response(candidate.left),
+                "right": _ref_for_response(candidate.right),
+                "advisory_only": candidate.advisory_only,
+            }
+            for candidate in analysis.duplicate_candidates
+        ],
+        "supersession_candidates": [
+            {
+                "candidate_type": candidate.candidate_type,
+                "relation": candidate.relation,
+                "dimension": candidate.dimension,
+                "left": _ref_for_response(candidate.left),
+                "right": _ref_for_response(candidate.right),
+                "left_value": candidate.left_value,
+                "right_value": candidate.right_value,
+                "reason": candidate.reason,
+                "recency_implies_truth": candidate.recency_implies_truth,
+                "advisory_only": candidate.advisory_only,
+            }
+            for candidate in analysis.supersession_candidates
+        ],
+        "warnings": list(analysis.warnings),
+    }
+
+
+@memory_injections_router.get(
+    "/analysis", response_model=MemoryInjectionAnalysisResponse
+)
+def analyze_run_memory_injections(
+    run_id: str,
+    chunk_number: int | None = Query(default=None),
+    role: str | None = Query(default=None),
+):
+    """
+    Read-only advisory analysis of the memory injected for this run: possible
+    duplicate and possible supersession candidates among the injected facts,
+    computed on read from the immutable provenance snapshots. Project-scoped to
+    the run's owning project. Returns empty analysis for runs with no recorded
+    provenance. No mutation, no external calls, no automatic decisions.
+    """
+    project_id = _resolve_run_project_id(run_id)
+    events = list_memory_injection_events(
+        run_id,
+        project_id=project_id or None,
+        chunk_number=chunk_number,
+        role=role,
+    )
+    analysis = analyze_injection_events(events)
+    return {"run_id": run_id, "analysis": _analysis_for_response(analysis)}

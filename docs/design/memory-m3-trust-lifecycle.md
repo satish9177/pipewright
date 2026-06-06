@@ -372,3 +372,52 @@ is stripped for parity with the rest of the memory API; the event-level `entries
 **Deferred to later M3 slices:** candidate analysis on read (duplicate/supersession/reality surfacing
 via the M3B helpers), any mutation/resolution routes (M3D), frontend display, retention/pruning, and
 wiring `attempt_id`/`repo_head_sha` to the patch-failure attempt machinery.
+
+---
+
+## 16. M3C2 — Read-only injection analysis / surfacing (implemented)
+
+M3C2 turns the immutable M3C1 snapshots into *advisory* analysis without changing memory, prompts,
+runtime behavior, or pipeline decisions. It is **read-only and compute-on-read**: nothing is persisted,
+so the evolving M3B heuristics never leave stale stored state behind.
+
+**Core decision:** compute analysis on read from the immutable provenance, using only the pure M3B
+helpers. No analysis table, no stored verdicts, no automatic decisions — every output is labelled a
+*candidate/advisory*, never a fact.
+
+**New pure helper:** `backend/memory/injection_analysis.py` —
+`analyze_injection_events(events, *, threshold=0.6) -> InjectionAnalysis`. It is stdlib + `memory_trust`
+only (no DB/LLM/embeddings/repo/git/network — guard-tested), operating on the event dicts already
+fetched by `list_memory_injection_events`. It flattens each event's `included_entries` into **distinct
+facts** (keyed by `fact_id`, then `content_hash`, then normalized content) so the *same* approved fact
+injected into multiple roles collapses to one entry and is never flagged as a duplicate of itself; two
+*different* facts that read alike remain separate and can be flagged. It then runs
+`find_duplicate_candidates` and `find_supersession_candidates` and maps each candidate back to a primary
+occurrence (`event_id`, `role`, `chunk_number`, `fact_id`, content) for human traceability.
+
+**Return model (advisory only):** `InjectionAnalysis` with summary counts (`total_events`,
+`total_included_entries`, `distinct_fact_count`, `duplicate_candidate_count`,
+`supersession_candidate_count`), `DuplicateFinding`s (relation `exact`/`near`, `similarity`, reason,
+left/right refs, `advisory_only=True`), and `SupersessionFinding`s (`dimension`, left/right values,
+`relation="possible_supersession"`, `recency_implies_truth=False`, `advisory_only=True`). Supersession
+direction stays undecided — a newer fact is never automatically correct.
+
+**Endpoint:** `GET /api/v1/runs/{run_id}/memory-injections/analysis` (optional `chunk_number`, `role`) —
+a **dedicated sibling** of the M3C1 list endpoint, chosen over a query flag so the default provenance
+payload stays byte-identical and the Run Detail read model is never bloated. Read-only, project-scoped,
+returns empty analysis for runs with no provenance, 404 for unknown runs. Per-entry `content_hash` is
+not exposed (parity with the rest of the memory API).
+
+**Reality-check analysis deferred:** M3C2 must not scan the repo, so it computes no reality checks. The
+M3B `check_fact_against_signal` comparison can be surfaced only by a later slice that passes an
+already-computed repo/project signal in safely.
+
+**Tests:** `backend/tests/test_memory_injection_analysis.py` (empty input, duplicate/supersession
+candidates, distinct-fact collapsing across roles, traceability refs, advisory-only labels, input
+immutability, import-purity guard; endpoint returns/scopes/404/empty, content_hash parity, and the
+default list response unchanged).
+
+**Out of scope (unchanged invariants):** no mutation/resolution routes, no frontend, no stale/archive/
+supersede/resolve, no auto-resolve, no LLM/embeddings/vector/pgvector, no repo scan or git calls, no
+change to memory injection filtering or prompt text/budgets/categories/order, and no default run/chunk
+payload changes.
