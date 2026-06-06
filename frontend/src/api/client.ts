@@ -691,6 +691,20 @@ export interface MemoryArchiveRequest {
   reason: string
 }
 
+export interface MemoryStaleRequest {
+  reason: string
+}
+
+export interface MemoryFactSupersedeRequest {
+  new_fact_id: string
+  reason: string
+}
+
+export interface MemoryFactSupersedeResponse {
+  old_fact: MemoryFact
+  new_fact: MemoryFact
+}
+
 export interface MemoryVerifyResponse {
   id: string
   project_id: string
@@ -755,6 +769,18 @@ export interface BootstrapSuggestionsResponse {
 export interface MemorySuggestionApprovalResponse {
   suggestion: MemorySuggestion
   fact: MemoryFact
+}
+
+export interface MemorySuggestionApproveAndSupersedeRequest {
+  old_fact_id: string
+  reason: string
+  edited_content?: string
+}
+
+export interface MemorySuggestionApproveAndSupersedeResponse {
+  suggestion: MemorySuggestion
+  fact: MemoryFact
+  superseded_fact: MemoryFact
 }
 
 export interface MemorySuggestionFilters {
@@ -1043,6 +1069,28 @@ export const memoryApi = {
       `/api/v1/projects/${projectId}/memory/${memoryId}/archive`,
       { reason } satisfies MemoryArchiveRequest,
     ).then(r => r.data),
+  markMemoryFactStale: (
+    projectId: string,
+    factId: string,
+    reason: string,
+  ) =>
+    api.post<MemoryFact>(
+      `/api/v1/projects/${projectId}/memory/${factId}/stale`,
+      { reason } satisfies MemoryStaleRequest,
+    ).then(r => r.data),
+  supersedeMemoryFact: (
+    projectId: string,
+    oldFactId: string,
+    newFactId: string,
+    reason: string,
+  ) =>
+    api.post<MemoryFactSupersedeResponse>(
+      `/api/v1/projects/${projectId}/memory/facts/${oldFactId}/supersede`,
+      {
+        new_fact_id: newFactId,
+        reason,
+      } satisfies MemoryFactSupersedeRequest,
+    ).then(r => r.data),
   verifyProjectMemory: (projectId: string, memoryId: string) =>
     api.post<MemoryVerifyResponse>(
       `/api/v1/projects/${projectId}/memory/${memoryId}/verify`,
@@ -1080,6 +1128,21 @@ export const memoryApi = {
     api.post<MemorySuggestionApprovalResponse>(
       `/api/v1/projects/${projectId}/memory/suggestions/${suggestionId}/approve`,
       editedContent ? { edited_content: editedContent } : undefined,
+    ).then(r => r.data),
+  approveSuggestionAndSupersede: (
+    projectId: string,
+    suggestionId: string,
+    oldFactId: string,
+    reason: string,
+    editedContent?: string,
+  ) =>
+    api.post<MemorySuggestionApproveAndSupersedeResponse>(
+      `/api/v1/projects/${projectId}/memory/suggestions/${suggestionId}/approve-and-supersede`,
+      {
+        old_fact_id: oldFactId,
+        reason,
+        ...(editedContent ? { edited_content: editedContent } : {}),
+      } satisfies MemorySuggestionApproveAndSupersedeRequest,
     ).then(r => r.data),
   rejectMemorySuggestion: (
     projectId: string,
