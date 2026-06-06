@@ -507,3 +507,25 @@ system resolution.
 **Out of scope:** no new routes, no backend/schema/runtime change, no mark-stale/supersede/
 approve-and-supersede buttons, no provenance UI, and no advisory candidate UI. Provenance display and
 human mutation controls remain deferred.
+
+---
+
+## 20. M3E2 - Run Detail provenance viewer (implemented)
+
+M3E2 adds a read-only Memory Provenance panel to Run Detail. The panel is collapsed by default and loads
+only when opened, so normal Run Detail rendering does not call the provenance endpoints.
+
+**Frontend read model:** the API client now types `GET /api/v1/runs/{run_id}/memory-injections` and
+`GET /api/v1/runs/{run_id}/memory-injections/analysis`, including role/chunk filters. The panel shows
+the immutable injected-memory events for triage/planner/coder roles, included entries labeled as injected
+during the run, budget-excluded entries as not injected, and event metadata such as attempt number,
+token budget, category policy, created time, and `entries_hash`.
+
+**Advisory analysis:** the same panel displays duplicate and possible replacement candidates computed
+from stored provenance. The copy labels them as possible/advisory observations, states that the system
+did not change memory, and repeats that newer does not mean true: human decides.
+
+**Out of scope:** no backend/schema/runtime change, no new routes, no mutation actions, no
+mark-stale/archive/supersede/approve-and-supersede buttons, no candidate-to-action flow, no
+project-level provenance aggregation, no prompt/injection behavior change, and no auto-resolution or
+latest-wins behavior. M3E3 lifecycle action UI remains deferred.
