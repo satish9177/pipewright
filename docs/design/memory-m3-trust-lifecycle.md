@@ -421,3 +421,35 @@ default list response unchanged).
 supersede/resolve, no auto-resolve, no LLM/embeddings/vector/pgvector, no repo scan or git calls, no
 change to memory injection filtering or prompt text/budgets/categories/order, and no default run/chunk
 payload changes.
+
+---
+
+## 17. M3D1 — Human-controlled mark-stale route (implemented)
+
+M3D1 is the smallest M3D mutation slice: one explicit, human-controlled route that flags a single
+**active** memory fact stale. "System detects, human decides" — the route is invoked only by a human and
+gates on nothing but structural validation; it never auto-resolves and is not coupled to the M3B/M3C2
+advisory detectors.
+
+**New route:** `POST /api/v1/projects/{project_id}/memory/facts/{fact_id}/stale` with `{ reason }`. It
+revalidates before mutating: project ownership (404 if the fact is missing or in another project),
+**active-only precondition** (409 for `stale`/`archived`/`historical`/non-active — no mutation), and a
+required reason. It then calls the **existing** `mark_fact_stale` helper (wrapped, not refactored), which
+sets `status='stale', is_stale=1, archived_reason=COALESCE(reason,…)`. The response is the sanitized fact
+(per-entry `content_hash` stripped, as elsewhere in the memory API). Because the prompt builder selects
+only `status='active' AND is_stale=0`, a stale fact is immediately excluded from future injection — no
+prompt-format or filter change was needed.
+
+**New shared helper:** `memory_store.validate_lifecycle_reason(reason)` — narrow and additive. It enforces
+the same `>=4` char floor `archive_fact` already requires and blocks control-plane bypass phrases (a
+lifecycle reason must never become a control channel). It does **not** run the full memory content gate
+(a reason is metadata, not injected memory). `archive_fact`/`verify_fact`/`update_fact`/`approve_suggestion`/
+`add_fact` are unchanged.
+
+**Provenance immutable:** marking a fact stale never touches `memory_injection_events`; a snapshot keeps
+its `status_at_injection` and `entries_hash` (regression-tested).
+
+**Deferred to later M3D slices:** supersession route, approve-and-supersede, `superseded_by_fact_id`
+column / lineage table, a `historical` producer, frontend, scheduled stale-sweep wiring, candidate
+acknowledgement, and any detector-gated mutation. No schema, no auto-resolution, no prompt/pipeline
+behavior change in this slice.
