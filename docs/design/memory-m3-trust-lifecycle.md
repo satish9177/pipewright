@@ -297,3 +297,36 @@ Pipewright → repo-grounded truth + human-gated promotion (already the backbone
 
 **Reject:** auto ADD/UPDATE/DELETE, agent self-editing memory, latest-wins, LLM-decides-truth, automatic
 conflict resolution, and semantic/vector memory before the trust lifecycle is complete.
+
+---
+
+## 14. M3B — Trust helper foundations (implemented)
+
+M3B adds **pure, deterministic helper foundations** and reconciles the stale docs from §10. It adds
+**no runtime wiring, no schema, no routes, no UI, and no mutation behavior** — the helpers are not
+imported by any planner/coder/triage/reviewer/orchestrator path.
+
+**New module:** `backend/memory/memory_trust.py` (stdlib-only; no DB/SQLAlchemy/FastAPI/LLM/git/filesystem import).
+
+| Helper | Purpose | Decision authority |
+|---|---|---|
+| `find_duplicate_candidates(items, threshold=0.6)` / `duplicate_similarity(a, b)` | Flag near-duplicate facts/suggestions by deterministic token overlap (stopword-filtered, lightly stemmed). Returns `DuplicateCandidate` with `similarity`, `relation` (`exact`/`near`), `shared_tokens`, `reason`. | Advisory only. Does **not** replace exact-hash write dedupe; never merges. |
+| `check_fact_against_signal(dimension, content, repo_value)` | Pure comparison of one fact against an **already-computed** repo signal value (no scanning). Returns `RealityCheckResult` with status `match`/`mismatch`/`unknown`/`unsupported_category`. Dimensions: `db_engine`, `backend_framework`, `frontend_framework`, `test_runner`, `migration_tool`, `package_manager`. | Advisory only. Never marks stale/archives/writes. Conservative: ambiguous/absent → `unknown`. |
+| `find_supersession_candidates(items)` | Flag pairs that assert different single values for the same dimension (contradiction). Returns `SupersessionCandidate` with `recency_implies_truth=False`. | Advisory only. Direction undecided; human decides in M3D. No latest-wins. |
+| `find_trust_candidates(items)` | Convenience aggregate of the two finders. | Advisory only. |
+
+**Addresses gaps:** G3 (near-duplicate/contradiction flagging), and the *comparison* foundation for G1
+(non-DB reality check) — both as pure logic, deferred wiring. G4 supersession is represented as a
+candidate model only (no columns, no lineage persistence).
+
+**Docs reconciled in M3B:** the `prompt_builder.py` docstring (now states it is wired into
+triage/planner/coder and that reviewer/summary are not), and `memory-architecture.md` (the "M3 =
+semantic/pgvector" naming collision → relabeled M4/future; the stale "post-PR hook is the only write
+site" and "reviewer reads memory" claims now carry inline as-built corrections).
+
+**Tests:** `backend/tests/test_memory_trust.py` (exact/near duplicates, non-duplicates,
+contradiction-as-candidate, reality match/mismatch/unknown/unsupported, supersession candidates,
+input-immutability, and a guard asserting the module imports no DB/runtime modules).
+
+**Still not done (future slices):** persistence, routes, UI, injection-provenance snapshot (G2), and any
+wiring of these helpers into runtime — all deferred to M3C+.

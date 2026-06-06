@@ -1,9 +1,14 @@
 """
 prompt_builder.py
-Builds compact project memory blocks for future prompt injection.
+Builds compact, role-scoped project memory blocks for prompt injection.
 
-This module does not wire memory into planner/coder/triage. It only formats
-already-approved project memory facts.
+This module only formats already-approved, active project memory facts; it does
+not store, mutate, approve, or decide anything. build_project_memory_block is
+wired into the triage, planner, and coder roles today (see
+backend/pipeline/triage.py, planner.py, coder.py). The reviewer and summary
+role policies defined below exist for the /prompt-preview route but are not yet
+wired into reviewer/summary execution. See
+docs/design/memory-m3-trust-lifecycle.md §8 for the as-built injection map.
 """
 
 from __future__ import annotations

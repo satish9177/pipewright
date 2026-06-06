@@ -1,8 +1,18 @@
-# Pipewright Memory Architecture — M1, M2, M3 Design
+# Pipewright Memory Architecture — Original M1/M2/Semantic Design
 
-**Status:** Design only. Implement M1. Do not implement M2 or M3 yet.
-**Audience:** Pipewright maintainers and Codex (implementer).
+**Status:** Historical design doc. M1 is implemented. M2 partially landed (M1.5
+repo-reality + M2 suggestion lifecycle). The semantic/pgvector phase remains future.
+**Audience:** Pipewright maintainers and implementers.
 **Mode:** Adversarial. The point of this document is to find what breaks, not to celebrate what works.
+
+> **⚠️ Terminology note (M3A reconciliation).** This document predates the current
+> phase naming and uses **"M3"** to mean *Semantic / pgvector memory*. That meaning is
+> **superseded**. As of the M3A audit, **"M3" now means the memory trust/lifecycle phase**
+> (see [`../design/memory-m3-trust-lifecycle.md`](../design/memory-m3-trust-lifecycle.md)).
+> The semantic/vector/pgvector work described here as "M3" is renamed **"M4 — Semantic
+> Memory (future)"**. Embeddings, vector search, and pgvector remain explicitly out of
+> scope until the trust lifecycle is complete. Section headings below have been relabeled
+> accordingly; deep cross-references in the prose may still say "M3" in the old sense.
 
 ---
 
@@ -43,7 +53,7 @@ Three layers, separated by lifetime and trust.
 **Stores:** Tech stack, repo structure rules, test commands, migration tool, style guides, security rules, architectural decisions, forbidden paths, reviewer preferences.
 **Never stores:** Secrets, API keys, tokens, customer data, PII, file diffs, code blobs, run-specific details, "we did X in run abc123."
 
-### 1.3 Semantic Memory (M3)
+### 1.3 Semantic Memory (M4, future — was labeled "M3")
 
 **Lifetime:** Project lifetime, but each entry is recall-on-demand only.
 **Trust:** Hint-only. Lower priority than Project State Memory in conflicts.
@@ -60,7 +70,7 @@ Three layers, separated by lifetime and trust.
                                                                 v
                                                   [Project State Memory] -> injected
                                                                 |
-                                            (M3) summarized + embedded
+                                            (M4) summarized + embedded
                                                                 v
                                                        [Semantic Memory] -> retrieved
 ```
@@ -436,7 +446,7 @@ Concrete cases that bite once workers exist:
 
 ---
 
-## 4. Phase M3 — Semantic Memory (Sketch — Do Not Build Now)
+## 4. Phase M4 — Semantic Memory (Sketch — Do Not Build Now; was labeled "M3")
 
 ### 4.1 pgvector schema
 
@@ -818,6 +828,7 @@ Where each pipeline stage loads or writes memory in M1:
 | Per-chunk coder | Read: coder-filtered memory, scope-boosted by chunk's file paths | `backend/pipeline/coder.py` (already calls `load_hard_facts`) |
 | Per-chunk tests | None | — |
 | Per-chunk reviewer | Read: reviewer-filtered memory with `reviewer_pref` boost | `backend/pipeline/reviewer.py` |
+| _As-built (M3A correction)_ | The reviewer does **not** currently read injected memory. The `reviewer` role policy in `prompt_builder.py` exists for `/prompt-preview` only and is not wired into `reviewer.py`. | See `../design/memory-m3-trust-lifecycle.md` §8 |
 | High-risk per-chunk approval | Read: top-5 security + forbidden_paths only, in the approval summary shown to human | `backend/pipeline/chunked_orchestrator.py:_chunk_approval_summary` |
 | Final review | Read: same as reviewer | reviewer + final approval gate |
 | Final approval gate | Read-only (audit display) | `backend/routes/runs.py` |
@@ -826,6 +837,12 @@ Where each pipeline stage loads or writes memory in M1:
 | Run resume/recovery | **M1 limitation:** re-loads memory at resume time. Document this. Memory may differ from original run. | resume path in `chunked_orchestrator.py` |
 
 **The post-PR hook is the only write site for AI suggestions.** Centralizing it makes the "failed runs don't write" rule trivially enforceable (Failure Mode #29).
+
+> **As-built (M3A correction):** no post-PR orchestrator hook was built. Suggestion
+> generation (bootstrap and run-outcome) is **API/human-triggered only** via
+> `backend/routes/memory.py`; nothing in `backend/pipeline/**` generates or promotes
+> suggestions. This is safer than the design above (no automatic write site), but the
+> claim that the hook exists is stale. See `../design/memory-m3-trust-lifecycle.md` §3.
 
 ---
 
@@ -866,7 +883,7 @@ If a feature seems borderline, default to "out." M1's only job is: scope memory 
 | **M1.3 — Suggestions** | `memory_suggestions` table. Post-PR hook writes pending suggestions from handoffs. Suggestion inbox UI. Approve / Edit & Approve / Reject. | Touches `pipeline/chunked_orchestrator.py`, `routes/memory_suggestions.py`, `frontend/src/pages/Suggestions.tsx`. |
 | **M1.4 — Run-detail Memory tab** | Read-only audit display of the exact memory block injected for the run. Requires snapshotting at run start. | Stores the snapshot as JSON in a new column on `pipeline_runs` (`injected_memory_snapshot`). Cheap. |
 | **M2 (deferred)** | PostgreSQL move + Alembic baseline. Run Memory tables. Audit trail v2. Stack fingerprint. | — |
-| **M3 (deferred)** | pgvector. Semantic memory. Embedding abstraction. Retrieval. | — |
+| **M4 (deferred; was "M3")** | pgvector. Semantic memory. Embedding abstraction. Retrieval. | — |
 
 ---
 
