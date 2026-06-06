@@ -24,7 +24,8 @@ from backend.llm.base import LLMRequest, Message
 from backend.llm.errors import ProviderRateLimitError
 from backend.llm.role_config import Role
 from backend.models.handoff import PlannerHandoff
-from backend.memory.prompt_builder import build_project_memory_block
+from backend.memory.injection_store import capture_memory_injection
+from backend.memory.prompt_builder import build_project_memory_block_detailed
 from backend.checkpoint.checkpoint_store import save_checkpoint
 from backend.utils.json_helpers import clean_json_response
 
@@ -160,10 +161,20 @@ async def run_planner(
     """
     logger.info("[PLANNER] Starting | run_id=%s", run_id)
 
-    project_memory_block = build_project_memory_block(
+    memory_result = build_project_memory_block_detailed(
         project_id=project_id,
         role="planner",
         project_name=project_name,
+    )
+    project_memory_block = memory_result.block
+    # Best-effort provenance capture from the SAME computation. Never raises;
+    # failure must not change the prompt or run outcome.
+    capture_memory_injection(
+        memory_result,
+        run_id=run_id,
+        project_id=project_id,
+        role="planner",
+        chunk_number=chunk_number,
     )
     fact_count = len([
         line for line in project_memory_block.splitlines()

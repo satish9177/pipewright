@@ -9,6 +9,7 @@ Coder reads files from there but never writes.
 
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
@@ -19,7 +20,21 @@ from backend.llm.base import LLMResponse
 from backend.llm.errors import LLMError
 from backend.llm.role_config import Role
 from backend.memory.memory_store import add_fact
-from backend.memory.prompt_builder import build_project_memory_block as real_build_memory_block
+from backend.memory.prompt_builder import (
+    build_project_memory_block_detailed as real_build_memory_block_detailed,
+)
+
+
+def _empty_memory_result(**kwargs):
+    """Stand-in MemoryBlockBuildResult (duck-typed) for memory-free unit tests."""
+    return SimpleNamespace(
+        block="",
+        role=kwargs.get("role"),
+        token_budget=0,
+        category_policy=(),
+        included_entries=(),
+        excluded_entries=(),
+    )
 from backend.models.handoff import PlannerHandoff
 from backend.pipeline import coder
 from backend.pipeline.coder import run_coder
@@ -96,7 +111,10 @@ class _CoderLLM:
 
 
 def _patch_coder_dependencies(monkeypatch, llm, tmp_repo):
-    monkeypatch.setattr(coder, "build_project_memory_block", lambda **kwargs: "")
+    monkeypatch.setattr(
+        coder, "build_project_memory_block_detailed", _empty_memory_result
+    )
+    monkeypatch.setattr(coder, "capture_memory_injection", lambda *a, **k: None)
     monkeypatch.setattr(coder, "get_target_repo_path", lambda: str(tmp_repo))
     monkeypatch.setattr(coder, "save_checkpoint", lambda **kwargs: None)
     monkeypatch.setattr(coder, "complete_for_role", llm.complete)
@@ -284,7 +302,9 @@ async def test_coder_prompt_includes_project_memory(monkeypatch, tmp_repo):
     plan = make_test_plan(run_id)
     llm = _CoderLLM([_coder_response(run_id)])
     _patch_coder_dependencies(monkeypatch, llm, tmp_repo)
-    monkeypatch.setattr(coder, "build_project_memory_block", real_build_memory_block)
+    monkeypatch.setattr(
+        coder, "build_project_memory_block_detailed", real_build_memory_block_detailed
+    )
     add_fact(project_id, "Backend uses FastAPI memory", category="stack", scope="backend")
 
     try:
@@ -306,7 +326,9 @@ async def test_coder_prompt_injection_skips_empty_memory(monkeypatch, tmp_repo):
     plan = make_test_plan(run_id)
     llm = _CoderLLM([_coder_response(run_id)])
     _patch_coder_dependencies(monkeypatch, llm, tmp_repo)
-    monkeypatch.setattr(coder, "build_project_memory_block", real_build_memory_block)
+    monkeypatch.setattr(
+        coder, "build_project_memory_block_detailed", real_build_memory_block_detailed
+    )
 
     await run_coder(plan=plan, run_id=run_id, project_id=project_id)
 
@@ -326,9 +348,9 @@ async def test_coder_passes_project_id_to_memory_builder(monkeypatch, tmp_repo):
 
     def spy_builder(**kwargs):
         calls.append(kwargs)
-        return ""
+        return _empty_memory_result(**kwargs)
 
-    monkeypatch.setattr(coder, "build_project_memory_block", spy_builder)
+    monkeypatch.setattr(coder, "build_project_memory_block_detailed", spy_builder)
 
     await run_coder(plan=plan, run_id=run_id, project_id=project_id)
 
@@ -346,7 +368,9 @@ async def test_coder_prompt_injection_is_project_scoped(monkeypatch, tmp_repo):
     plan = make_test_plan(run_id)
     llm = _CoderLLM([_coder_response(run_id)])
     _patch_coder_dependencies(monkeypatch, llm, tmp_repo)
-    monkeypatch.setattr(coder, "build_project_memory_block", real_build_memory_block)
+    monkeypatch.setattr(
+        coder, "build_project_memory_block_detailed", real_build_memory_block_detailed
+    )
     add_fact(project_a, "Project A coder memory", category="stack")
     add_fact(project_b, "Project B coder memory", category="stack")
 

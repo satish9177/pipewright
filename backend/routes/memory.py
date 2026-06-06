@@ -7,6 +7,10 @@ from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator, model_validator
+from sqlalchemy import text
+
+from backend.db.database import engine
+from backend.memory.injection_store import list_memory_injection_events
 
 from backend.memory.bootstrap import (
     ALLOWED_SUGGESTION_STATUSES,
@@ -528,3 +532,103 @@ def generate_run_suggestions(
         "blocked_count": result.blocked_count,
         "suggestions": result.generated,
     }
+
+
+# Read-only memory injection provenance (M3C1). Dedicated router so it never
+# bloats the default run/chunk read model. Visibility-only: it triggers no
+# GitHub, no LLM, no repo scan, and no memory mutation. content_hash is stripped
+# from per-entry output for parity with the rest of the memory API; the
+# event-level entries_hash digest is retained for integrity/drift checks.
+memory_injections_router = APIRouter(
+    prefix="/api/v1/runs/{run_id}/memory-injections"
+)
+
+
+class MemoryInjectionEntryResponse(BaseModel):
+    fact_id: str | None = None
+    content: str
+    category: str | None = None
+    scope: str | None = None
+    priority: int | None = None
+    status_at_injection: str | None = None
+
+
+class MemoryInjectionEventResponse(BaseModel):
+    id: str
+    run_id: str
+    project_id: str
+    chunk_number: int | None = None
+    role: str
+    attempt_number: int | None = None
+    attempt_id: str | None = None
+    repo_head_sha: str | None = None
+    token_budget: int | None = None
+    category_policy: list[str] = []
+    included_entries: list[MemoryInjectionEntryResponse] = []
+    excluded_entries: list[MemoryInjectionEntryResponse] = []
+    included_count: int | None = None
+    excluded_count: int | None = None
+    entries_hash: str | None = None
+    created_at: str | None = None
+
+
+class MemoryInjectionListResponse(BaseModel):
+    run_id: str
+    events: list[MemoryInjectionEventResponse]
+
+
+def _resolve_run_project_id(run_id: str) -> str:
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT project_id FROM pipeline_runs WHERE id = :id"),
+            {"id": run_id},
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return (dict(row._mapping).get("project_id") or "").strip()
+
+
+def _entry_for_response(entry: dict) -> dict:
+    # Strip content_hash for parity with _sanitize_fact in the memory API.
+    return {
+        "fact_id": entry.get("fact_id"),
+        "content": entry.get("content") or "",
+        "category": entry.get("category"),
+        "scope": entry.get("scope"),
+        "priority": entry.get("priority"),
+        "status_at_injection": entry.get("status_at_injection"),
+    }
+
+
+@memory_injections_router.get("", response_model=MemoryInjectionListResponse)
+def list_run_memory_injections(
+    run_id: str,
+    chunk_number: int | None = Query(default=None),
+    role: str | None = Query(default=None),
+):
+    """
+    Read-only provenance of memory injected for this run. Project-scoped to the
+    run's owning project. Returns an empty list for runs with no recorded
+    provenance (e.g. pre-M3C runs). No mutation, no external calls.
+    """
+    project_id = _resolve_run_project_id(run_id)
+    events = list_memory_injection_events(
+        run_id,
+        project_id=project_id or None,
+        chunk_number=chunk_number,
+        role=role,
+    )
+    shaped = []
+    for event in events:
+        shaped.append({
+            **event,
+            "included_entries": [
+                _entry_for_response(entry)
+                for entry in event.get("included_entries", [])
+            ],
+            "excluded_entries": [
+                _entry_for_response(entry)
+                for entry in event.get("excluded_entries", [])
+            ],
+        })
+    return {"run_id": run_id, "events": shaped}

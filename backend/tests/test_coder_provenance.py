@@ -9,9 +9,17 @@ test_coder.py.
 """
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
+
+
+def _empty_memory_result(**kwargs):
+    return SimpleNamespace(
+        block="", role=kwargs.get("role"), token_budget=0,
+        category_policy=(), included_entries=(), excluded_entries=(),
+    )
 
 from backend.db.database import engine
 from backend.llm.base import LLMResponse
@@ -83,7 +91,10 @@ class _FakeLLM:
 
 
 def _patch_coder(monkeypatch, llm, tmp_repo):
-    monkeypatch.setattr(coder, "build_project_memory_block", lambda **kwargs: "")
+    monkeypatch.setattr(
+        coder, "build_project_memory_block_detailed", _empty_memory_result
+    )
+    monkeypatch.setattr(coder, "capture_memory_injection", lambda *a, **k: None)
     monkeypatch.setattr(coder, "get_target_repo_path", lambda: str(tmp_repo))
     monkeypatch.setattr(coder, "save_checkpoint", lambda **kwargs: None)
     monkeypatch.setattr(coder, "complete_for_role", llm.complete)
