@@ -373,7 +373,7 @@ def test_operator_state_patch_retry_available(tmp_path, tracked_runs):
 
     state = _operator_state(run_id)
 
-    assert state["title"] == "Patch retry is available"
+    assert state["title"] == "Code change could not be applied"
     assert state["primary_action"]["id"] == "retry_patch"
 
 
