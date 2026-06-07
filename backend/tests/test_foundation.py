@@ -259,3 +259,38 @@ def test_init_migration_adds_approval_gate_created_at():
     assert created_at is not None
     assert gate_defaults[0] == 0
     assert gate_defaults[1] == "legacy"
+
+
+def test_init_migration_adds_nullable_run_start_context_columns():
+    temp_engine = create_engine("sqlite:///:memory:")
+    with temp_engine.connect() as conn:
+        conn.execute(text("""
+            CREATE TABLE pipeline_runs (
+                id TEXT PRIMARY KEY,
+                feature_description TEXT NOT NULL
+            )
+        """))
+        conn.commit()
+
+        database._migrate_db(conn)
+        database._migrate_db(conn)
+        conn.execute(text("""
+            INSERT INTO pipeline_runs (id, feature_description)
+            VALUES ('run-1', 'legacy run')
+        """))
+        conn.commit()
+
+        columns = conn.execute(text(
+            "PRAGMA table_info(pipeline_runs)"
+        )).fetchall()
+        column_names = {row._mapping["name"] for row in columns}
+        row = conn.execute(text("""
+            SELECT start_branch, start_head_sha
+            FROM pipeline_runs
+            WHERE id = 'run-1'
+        """)).fetchone()
+
+    assert "start_branch" in column_names
+    assert "start_head_sha" in column_names
+    assert row[0] is None
+    assert row[1] is None

@@ -25,7 +25,6 @@ from backend.pipeline.chunk_store import create_chunked_run
 from backend.pipeline.run_locks import (
     PROJECT_LOCK_CONFLICT_MESSAGE,
     ProjectRepoLockError,
-    project_repo_lock_sync,
 )
 from backend.projects.project_store import create_project
 
@@ -965,7 +964,8 @@ def test_plan_only_chunked_run_stores_plan_without_executable_chunks(
     assert data["chunks"] == []
     with engine.connect() as conn:
         run = conn.execute(text("""
-            SELECT status, current_step, intent, chunk_plan
+            SELECT status, current_step, intent, chunk_plan,
+                   start_branch, start_head_sha
             FROM pipeline_runs
             WHERE id = :run_id
         """), {"run_id": data["run_id"]}).fetchone()
@@ -979,6 +979,8 @@ def test_plan_only_chunked_run_stores_plan_without_executable_chunks(
     assert run[1] == "plan_ready"
     assert run[2] == "plan_only"
     assert "Route chunk" in run[3]
+    assert run[4] is None
+    assert run[5] is None
     assert chunk_count == 0
     assert gate_count == 0
 
@@ -1358,6 +1360,31 @@ def test_execute_route_maps_project_lock_conflict_to_409(monkeypatch):
 
     assert response.status_code == 409
     assert response.json()["detail"] == PROJECT_LOCK_CONFLICT_MESSAGE
+
+
+def test_execute_route_maps_start_context_drift_to_409(monkeypatch):
+    async def fake_execute(run_id):
+        return {
+            "status": "start_context_drifted",
+            "status_code": 409,
+            "message": "checkout start branch",
+            "captured_start": {
+                "branch": "feature/start",
+                "head_sha_short": "abcdef123456",
+            },
+            "current": {
+                "branch": "feature/other",
+                "head_sha_short": "111111111111",
+            },
+        }
+
+    monkeypatch.setattr("backend.routes.chunks.execute_approved_chunks", fake_execute)
+    client = TestClient(app)
+
+    response = client.post("/runs/run-123/chunks/execute")
+
+    assert response.status_code == 409
+    assert response.json()["status"] == "start_context_drifted"
 
 
 def test_resume_route_maps_project_lock_conflict_to_409(monkeypatch):

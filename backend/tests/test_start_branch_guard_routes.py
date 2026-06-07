@@ -22,6 +22,8 @@ from backend.projects.project_store import create_project
 
 pytestmark = pytest.mark.unit
 
+FULL_SHA = "abcdef1234567890abcdef1234567890abcdef1234"
+
 
 @pytest.fixture()
 def tracked_runs():
@@ -71,6 +73,16 @@ def count_runs(project_id: str) -> int:
             SELECT COUNT(*) FROM pipeline_runs WHERE project_id = :project_id
         """), {"project_id": project_id}).fetchone()
     return int(row[0])
+
+
+def read_start_context(run_id: str) -> tuple[str | None, str | None]:
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT start_branch, start_head_sha
+            FROM pipeline_runs
+            WHERE id = :run_id
+        """), {"run_id": run_id}).fetchone()
+    return row[0], row[1]
 
 
 def make_triage(run_id: str, project_id: str) -> TriageResult:
@@ -234,6 +246,7 @@ def test_implementation_creation_on_normal_branch_proceeds(
         monkeypatch,
         StartBranchInspection(
             current_branch="feature/start",
+            head_sha=FULL_SHA,
             head_sha_short="abcdef123456",
         ),
     )
@@ -254,6 +267,7 @@ def test_implementation_creation_on_normal_branch_proceeds(
     tracked_runs.append(data["run_id"])
     assert data.get("status") != "unsafe_start_branch"
     assert data["chunk_plan_status"] == "awaiting_approval"
+    assert read_start_context(data["run_id"]) == ("feature/start", FULL_SHA)
 
 
 def test_report_only_on_pipewright_branch_is_not_guarded(
@@ -298,6 +312,7 @@ def test_report_only_on_pipewright_branch_is_not_guarded(
     tracked_runs.append(data["run_id"])
     assert data["chunk_plan_status"] == "none"
     assert data["triage"] is None
+    assert read_start_context(data["run_id"]) == (None, None)
 
 
 def test_clarification_selection_reentry_uses_start_branch_guard(

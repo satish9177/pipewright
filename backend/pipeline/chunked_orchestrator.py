@@ -1004,6 +1004,97 @@ def _validate_target_repo(repo_path: str, require_clean: bool = True) -> None:
         local_git.ensure_clean_worktree(repo_path)
 
 
+def _load_start_context(run_id: str) -> dict[str, str | None]:
+    init_db()
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT start_branch, start_head_sha
+            FROM pipeline_runs
+            WHERE id = :run_id
+        """), {"run_id": run_id}).fetchone()
+    if row is None:
+        raise ValueError(f"chunked_orchestrator.py: run not found: {run_id}")
+    data = dict(row._mapping)
+    return {
+        "start_branch": data.get("start_branch"),
+        "start_head_sha": data.get("start_head_sha"),
+    }
+
+
+def _short_sha(head_sha: str | None) -> str | None:
+    if not head_sha:
+        return None
+    return head_sha[:12]
+
+
+def _checkout_label(branch: str | None, head_sha_short: str | None) -> str:
+    branch_label = branch or "detached HEAD"
+    sha_label = head_sha_short or "unknown"
+    return f"{branch_label}@{sha_label}"
+
+
+def _start_context_drift_response(
+    *,
+    run_id: str,
+    start_branch: str,
+    start_head_sha: str,
+    current_branch: str | None,
+    current_head_sha_short: str | None,
+) -> dict:
+    captured_short = _short_sha(start_head_sha)
+    return {
+        "status": "start_context_drifted",
+        "status_code": 409,
+        "run_id": run_id,
+        "message": (
+            "This run was planned against "
+            f"{_checkout_label(start_branch, captured_short)}. "
+            "The repo is now on "
+            f"{_checkout_label(current_branch, current_head_sha_short)}. "
+            f"Checkout {start_branch} to execute this run, or create a new run "
+            "for the current branch."
+        ),
+        "captured_start": {
+            "branch": start_branch,
+            "head_sha_short": captured_short,
+        },
+        "current": {
+            "branch": current_branch,
+            "head_sha_short": current_head_sha_short,
+        },
+    }
+
+
+def _verify_start_context_for_fresh_execution(
+    run_id: str,
+    repo_path: str,
+) -> dict | None:
+    context = _load_start_context(run_id)
+    start_branch = context.get("start_branch")
+    start_head_sha = context.get("start_head_sha")
+    if not start_branch or not start_head_sha:
+        return None
+
+    inspection = local_git.inspect_start_branch(repo_path)
+    if (
+        inspection.error
+        or not inspection.current_branch
+        or not inspection.head_sha
+        or inspection.current_branch != start_branch
+        or inspection.head_sha != start_head_sha
+    ):
+        return _start_context_drift_response(
+            run_id=run_id,
+            start_branch=start_branch,
+            start_head_sha=start_head_sha,
+            current_branch=inspection.current_branch,
+            current_head_sha_short=(
+                inspection.head_sha_short or _short_sha(inspection.head_sha)
+            ),
+        )
+    return None
+
+
 def _project_runtime_for_plan(plan_status: ChunkPlanResponse) -> tuple[dict, ProjectRuntimeConfig]:
     project = require_project(plan_status.project_id)
     runtime = ProjectRuntimeConfig(
@@ -1431,6 +1522,10 @@ async def _execute_approved_chunks_locked(
     )
     if pause is not None:
         return pause
+
+    drift = _verify_start_context_for_fresh_execution(run_id, target_repo_path)
+    if drift is not None:
+        return drift
 
     branch_name = f"pipewright/{run_id[:8]}"
     local_git.assert_not_on_stale_pipewright_branch(target_repo_path, run_id)

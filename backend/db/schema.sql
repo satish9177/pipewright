@@ -92,6 +92,8 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     pr_created_at DATETIME,
     push_error TEXT,
     source_plan_run_id TEXT,
+    start_branch TEXT,
+    start_head_sha TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id),
     FOREIGN KEY (source_plan_run_id) REFERENCES pipeline_runs(id)

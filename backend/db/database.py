@@ -243,6 +243,16 @@ def _migrate_db(conn) -> None:
                 "ALTER TABLE pipeline_runs ADD COLUMN source_plan_run_id TEXT",
             ),
             (
+                "pipeline_runs",
+                "start_branch",
+                "ALTER TABLE pipeline_runs ADD COLUMN start_branch TEXT",
+            ),
+            (
+                "pipeline_runs",
+                "start_head_sha",
+                "ALTER TABLE pipeline_runs ADD COLUMN start_head_sha TEXT",
+            ),
+            (
                 "projects",
                 "branch",
                 "ALTER TABLE projects ADD COLUMN branch TEXT DEFAULT 'main'",

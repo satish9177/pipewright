@@ -17,6 +17,7 @@ from backend.db.database import engine
 from backend.events.event_bus import clear_all_events_for_tests, get_buffered_events
 from backend.main import app
 from backend.checkpoint.checkpoint_store import save_checkpoint
+from backend.git.local_git import StartBranchInspection
 from backend.models.chunk import ChunkDefinition, TriageResult
 from backend.models.handoff import (
     CoderHandoff,
@@ -64,6 +65,9 @@ pytestmark = pytest.mark.unit
 # both, so fakes track whether a patch has been applied this chunk: clean before
 # apply, dirty after apply, clean again after commit.
 _worktree_applied = {"value": False}
+START_BRANCH = "feature/start"
+START_SHA = "abcdef1234567890abcdef1234567890abcdef1234"
+OTHER_SHA = "1111111111111111111111111111111111111111"
 
 
 def reset_worktree_state() -> None:
@@ -172,6 +176,52 @@ def create_run(
     if approved:
         approve_chunk_plan(run_id)
     return run_id, project
+
+
+def set_run_start_context(
+    run_id: str,
+    *,
+    branch: str | None = START_BRANCH,
+    head_sha: str | None = START_SHA,
+) -> None:
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE pipeline_runs
+            SET start_branch = :branch,
+                start_head_sha = :head_sha
+            WHERE id = :run_id
+        """), {
+            "run_id": run_id,
+            "branch": branch,
+            "head_sha": head_sha,
+        })
+
+
+def run_status(run_id: str) -> str:
+    with engine.connect() as conn:
+        return conn.execute(text("""
+            SELECT status FROM pipeline_runs WHERE id = :run_id
+        """), {"run_id": run_id}).fetchone()[0]
+
+
+def patch_start_inspection(
+    monkeypatch,
+    *,
+    branch: str | None = START_BRANCH,
+    head_sha: str | None = START_SHA,
+    error: str | None = None,
+) -> None:
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "inspect_start_branch",
+        lambda _repo: StartBranchInspection(
+            current_branch=branch,
+            head_sha=head_sha,
+            head_sha_short=head_sha[:12] if head_sha else None,
+            is_detached=branch is None,
+            error=error,
+        ),
+    )
 
 
 def make_planner_result(run_id: str) -> PlannerHandoff:
@@ -658,6 +708,126 @@ async def test_fresh_execute_rejects_stale_pipewright_branch_before_checkout(
 
     assert not any(call[0] == "branch" for call in calls)
     assert not any(call[0] == "planner" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_start_context_no_drift_allows_branch_creation(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, project = create_run(tmp_repo, tracked_runs)
+    set_run_start_context(run_id)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_start_inspection(monkeypatch)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert ("branch", f"pipewright/{run_id[:8]}", project["repo_path"]) in calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("current_branch", "current_head_sha"),
+    [
+        ("feature/other", START_SHA),
+        (START_BRANCH, OTHER_SHA),
+        (None, START_SHA),
+        ("pipewright/old-run", START_SHA),
+    ],
+)
+async def test_start_context_drift_blocks_before_branch_creation(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+    current_branch,
+    current_head_sha,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    set_run_start_context(run_id)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_start_inspection(
+        monkeypatch,
+        branch=current_branch,
+        head_sha=current_head_sha,
+    )
+    _forbid_execution(monkeypatch)
+    _forbid_branch_switch(monkeypatch)
+    before_status = run_status(run_id)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "start_context_drifted"
+    assert result["status_code"] == 409
+    assert result["captured_start"] == {
+        "branch": START_BRANCH,
+        "head_sha_short": START_SHA[:12],
+    }
+    assert result["current"] == {
+        "branch": current_branch,
+        "head_sha_short": current_head_sha[:12] if current_head_sha else None,
+    }
+    assert "Checkout feature/start" in result["message"]
+    assert run_status(run_id) == before_status
+    assert not any(call[0] == "branch" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_start_context_inspection_error_blocks_without_mutation(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    set_run_start_context(run_id)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_start_inspection(
+        monkeypatch,
+        branch=None,
+        head_sha=None,
+        error="git failed",
+    )
+    _forbid_execution(monkeypatch)
+    _forbid_branch_switch(monkeypatch)
+    before_status = run_status(run_id)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "start_context_drifted"
+    assert result["status_code"] == 409
+    assert result["current"] == {
+        "branch": None,
+        "head_sha_short": None,
+    }
+    assert run_status(run_id) == before_status
+    assert not any(call[0] == "branch" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_null_start_context_skips_drift_check(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "inspect_start_branch",
+        lambda _repo: (_ for _ in ()).throw(
+            AssertionError("legacy null start context must skip drift check")
+        ),
+    )
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert ("branch", f"pipewright/{run_id[:8]}", project["repo_path"]) in calls
 
 
 @pytest.mark.asyncio
@@ -1408,7 +1578,6 @@ async def test_final_approval_gate_is_idempotent(monkeypatch, tmp_repo, tracked_
 
 
 def test_scope_guard_no_final_approval_push_or_pr():
-    paths = {route.path for route in app.routes}
     assert not hasattr(chunked_orchestrator, "create_pull_request")
     assert not hasattr(chunked_orchestrator.local_git, "push_was_called")
     assert not hasattr(chunked_orchestrator, "final_approval")
@@ -1817,6 +1986,31 @@ async def test_resume_reruns_chunk_without_test_checkpoint(monkeypatch, tmp_repo
     assert any(call[0] == "commit" for call in calls)
     status = get_chunk_plan_status(run_id)
     assert status.chunks[0].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_resume_does_not_verify_start_context(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    set_run_start_context(run_id, branch=START_BRANCH, head_sha=START_SHA)
+    calls = []
+    patch_resume_git(monkeypatch, calls)
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "inspect_start_branch",
+        lambda _repo: (_ for _ in ()).throw(
+            AssertionError("resume must not run start-context drift check")
+        ),
+    )
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+    assert result["status"] == "awaiting_final_approval"
+    assert any(call[0] == "planner" and call[1] == 1 for call in calls)
 
 
 @pytest.mark.asyncio

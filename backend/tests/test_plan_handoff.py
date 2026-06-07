@@ -20,6 +20,8 @@ from backend.projects.project_store import create_project
 
 pytestmark = pytest.mark.unit
 
+FULL_SHA = "abcdef1234567890abcdef1234567890abcdef1234"
+
 
 @pytest.fixture()
 def tracked_runs():
@@ -186,6 +188,46 @@ def test_plan_seed_is_present_in_new_implementation_run(tmp_repo, tracked_runs):
     # The seed is re-stamped with the new run_id so downstream stages
     # do not confuse it with the source plan.
     assert seed["run_id"] == new_run_id
+
+
+def test_plan_handoff_persists_fresh_implementation_start_context(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    project = _make_project(tmp_repo)
+    plan_run_id = str(uuid.uuid4())
+    tracked_runs.append(plan_run_id)
+    _insert_plan_ready_run(plan_run_id, project["id"], "Add login")
+    monkeypatch.setattr(
+        "backend.routes.chunks.inspect_start_branch",
+        lambda _repo_path: StartBranchInspection(
+            current_branch="feature/handoff",
+            head_sha=FULL_SHA,
+            head_sha_short=FULL_SHA[:12],
+        ),
+    )
+
+    client = TestClient(app)
+    response = client.post(f"/runs/{plan_run_id}/start-implementation")
+
+    assert response.status_code == 200
+    new_run_id = response.json()["run_id"]
+    tracked_runs.append(new_run_id)
+    with engine.connect() as conn:
+        source = conn.execute(text("""
+            SELECT start_branch, start_head_sha
+            FROM pipeline_runs
+            WHERE id = :run_id
+        """), {"run_id": plan_run_id}).fetchone()
+        implementation = conn.execute(text("""
+            SELECT start_branch, start_head_sha
+            FROM pipeline_runs
+            WHERE id = :run_id
+        """), {"run_id": new_run_id}).fetchone()
+
+    assert (source[0], source[1]) == (None, None)
+    assert (implementation[0], implementation[1]) == ("feature/handoff", FULL_SHA)
 
 
 def test_source_plan_run_remains_unchanged_after_handoff(tmp_repo, tracked_runs):
