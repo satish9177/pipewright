@@ -26,6 +26,37 @@ from backend.tests.test_chunk_routes import (
 )
 
 pytestmark = pytest.mark.unit
+_TRACKED_RUNS_FIXTURE = tracked_runs
+
+
+def _dirty_only_stale_freshness(*args, **kwargs):
+    return {
+        "state": "stale",
+        "reasons": ["dirty_digest_mismatch"],
+        "current": {
+            "branch_name": "main",
+            "detached": False,
+            "detached_head_label": None,
+            "head_sha_short": "aaaaaaaaaaaa",
+            "dirty_files_count": 1,
+            "git_available": True,
+            "is_git_repo": True,
+        },
+        "indexed": {
+            "branch_name": "main",
+            "detached": False,
+            "detached_head_label": None,
+            "head_sha_short": "aaaaaaaaaaaa",
+            "dirty_files_count": 0,
+            "index_row_count": 1,
+            "captured_at": "2026-06-07T00:00:00+00:00",
+            "updated_at": "2026-06-07T00:00:00+00:00",
+            "snapshot_state": "current",
+        },
+        "index_row_count": 1,
+        "has_index_rows": True,
+        "has_snapshot": True,
+    }
 
 
 def _spy_build_repo_index(monkeypatch, *, passthrough: bool):
@@ -59,6 +90,10 @@ def test_stale_explicit_target_on_disk_reindexes_once_and_grounds(
     seed_file_index(project["id"], ["backend/app.py"])
 
     calls = _spy_build_repo_index(monkeypatch, passthrough=True)
+    monkeypatch.setattr(
+        "backend.routes.chunks.get_project_index_freshness",
+        _dirty_only_stale_freshness,
+    )
 
     async def fake_triage(run_id, project_id, feature_description):
         return make_triage_with_files(
@@ -80,6 +115,9 @@ def test_stale_explicit_target_on_disk_reindexes_once_and_grounds(
     # Re-indexed exactly once, then proceeded to a normal chunk plan.
     assert len(calls) == 1
     assert data.get("status") != "needs_clarification"
+    assert data.get("status") != "stale_index"
+    assert data["index_freshness"]["state"] == "stale"
+    assert data["index_freshness"]["reasons"] == ["dirty_digest_mismatch"]
     assert data["chunk_plan_status"] == "awaiting_approval"
     assert data["chunks"][0]["files_expected"] == ["README.md"]
 

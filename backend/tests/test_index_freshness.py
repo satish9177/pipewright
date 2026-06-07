@@ -3,6 +3,7 @@ test_index_freshness.py
 Focused tests for #34B working-tree/index freshness fingerprints.
 """
 
+import json
 import subprocess
 import uuid
 from pathlib import Path
@@ -15,12 +16,18 @@ from backend.db.database import engine
 from backend.repo.index_freshness import (
     DETACHED_HEAD_PREFIX,
     IndexFreshnessState,
+    HARD_STALE_REASONS,
     StoredIndexFingerprint,
     WorkingTreeFingerprint,
     compare_index_freshness,
     compute_working_tree_fingerprint,
     dirty_digest_from_status,
+    ensure_repo_indexed_and_record,
     get_index_fingerprint_snapshot,
+    get_project_index_freshness,
+    get_project_index_row_count,
+    is_hard_stale,
+    reindex_and_record,
     save_index_fingerprint_snapshot,
 )
 
@@ -99,6 +106,23 @@ def _insert_project(project_id: str, repo_path: Path) -> None:
         })
 
 
+def _seed_file_index(project_id: str, paths: list[str]) -> None:
+    with engine.begin() as conn:
+        for path in paths:
+            conn.execute(text("""
+                INSERT INTO file_index
+                (id, project_id, path, file_type, summary, key_imports,
+                 last_modified, token_estimate, line_count, size_bytes)
+                VALUES
+                (:id, :project_id, :path, 'unknown', NULL, '[]',
+                 NULL, 100, 10, 100)
+            """), {
+                "id": str(uuid.uuid4()),
+                "project_id": project_id,
+                "path": path,
+            })
+
+
 def test_compare_current_when_identity_matches():
     comparison = compare_index_freshness(
         _known_fingerprint(),
@@ -159,6 +183,89 @@ def test_compare_stale_reasons(current_overrides, stored_overrides, reason):
 
     assert comparison.state is IndexFreshnessState.STALE
     assert reason in comparison.reasons
+
+
+def test_hard_stale_reason_set_is_checkout_identity_only():
+    assert HARD_STALE_REASONS == frozenset({
+        "repo_path_mismatch",
+        "branch_name_mismatch",
+        "branch_detached_state_mismatch",
+        "detached_head_label_mismatch",
+        "head_sha_mismatch",
+    })
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "repo_path_mismatch",
+        "branch_name_mismatch",
+        "branch_detached_state_mismatch",
+        "detached_head_label_mismatch",
+        "head_sha_mismatch",
+    ],
+)
+def test_is_hard_stale_for_checkout_identity_reasons(reason):
+    comparison = compare_index_freshness(
+        _known_fingerprint(),
+        _stored_snapshot(**{
+            "repo_path_resolved": (
+                "C:/other"
+                if reason == "repo_path_mismatch"
+                else _known_fingerprint().repo_path_resolved
+            ),
+            "branch_name": (
+                "feature/other"
+                if reason == "branch_name_mismatch"
+                else _known_fingerprint().branch_name
+            ),
+            "branch_is_detached": (
+                True
+                if reason == "branch_detached_state_mismatch"
+                else _known_fingerprint().branch_is_detached
+            ),
+            "detached_head_label": (
+                f"{DETACHED_HEAD_PREFIX}{'b' * 12}"
+                if reason == "detached_head_label_mismatch"
+                else _known_fingerprint().detached_head_label
+            ),
+            "head_sha": (
+                "b" * 40
+                if reason == "head_sha_mismatch"
+                else _known_fingerprint().head_sha
+            ),
+        }),
+        current_index_row_count=2,
+    )
+
+    assert comparison.state is IndexFreshnessState.STALE
+    assert reason in comparison.reasons
+    assert is_hard_stale(comparison) is True
+    assert is_hard_stale({
+        "state": comparison.state.value,
+        "reasons": list(comparison.reasons),
+    }) is True
+
+
+@pytest.mark.parametrize("reason", ["dirty_digest_mismatch", "index_row_count_mismatch"])
+def test_is_hard_stale_false_for_soft_warning_reasons(reason):
+    current = _known_fingerprint(
+        dirty_digest=("c" * 64 if reason == "dirty_digest_mismatch" else None)
+        or _known_fingerprint().dirty_digest
+    )
+    comparison = compare_index_freshness(
+        current,
+        _stored_snapshot(),
+        current_index_row_count=(3 if reason == "index_row_count_mismatch" else 2),
+    )
+
+    assert comparison.state is IndexFreshnessState.STALE
+    assert comparison.reasons == (reason,)
+    assert is_hard_stale(comparison) is False
+    assert is_hard_stale({
+        "state": comparison.state.value,
+        "reasons": list(comparison.reasons),
+    }) is False
 
 
 def test_dirty_digest_normalization_is_deterministic():
@@ -293,6 +400,143 @@ def test_save_snapshot_rejects_empty_project_id():
 def test_save_snapshot_rejects_negative_index_row_count():
     with pytest.raises(RuntimeError, match="index_row_count must be >= 0"):
         save_index_fingerprint_snapshot("project-negative", _known_fingerprint(), -1)
+
+
+def test_ensure_repo_indexed_and_record_cold_start_stamps_snapshot(tmp_repo):
+    _init_repo(tmp_repo)
+    (tmp_repo / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    _run_git(tmp_repo, "add", "app.py")
+    _run_git(tmp_repo, "commit", "-m", "add app")
+    project_id = f"index-freshness-cold-start-{uuid.uuid4()}"
+    _insert_project(project_id, tmp_repo)
+
+    result = ensure_repo_indexed_and_record(project_id, tmp_repo)
+
+    snapshot = get_index_fingerprint_snapshot(project_id)
+    row_count = get_project_index_row_count(project_id)
+    assert result["files_indexed"] == row_count
+    assert row_count > 0
+    assert snapshot is not None
+    assert snapshot.index_row_count == row_count
+    assert snapshot.snapshot_state == "current"
+
+
+def test_project_index_freshness_read_model_redacts_git_details(tmp_repo):
+    _init_repo(tmp_repo)
+    project_id = f"index-freshness-privacy-{uuid.uuid4()}"
+    _insert_project(project_id, tmp_repo)
+    _seed_file_index(project_id, ["README.md"])
+    fingerprint = compute_working_tree_fingerprint(tmp_repo)
+    save_index_fingerprint_snapshot(project_id, fingerprint, 1)
+
+    secretish_name = "secret-token-value.txt"
+    (tmp_repo / secretish_name).write_text("do not expose path\n", encoding="utf-8")
+    model = get_project_index_freshness(project_id, tmp_repo)
+    serialized = json.dumps(model)
+
+    assert model["state"] == "stale"
+    assert model["current"]["dirty_files_count"] == 1
+    assert secretish_name not in serialized
+    assert str(tmp_repo.resolve()) not in serialized
+    assert fingerprint.head_sha not in serialized
+    assert fingerprint.head_sha[:12] in serialized
+
+
+def test_reindex_and_record_toctou_mismatch_is_not_current(monkeypatch, tmp_repo):
+    project_id = f"index-freshness-toctou-{uuid.uuid4()}"
+    _insert_project(project_id, tmp_repo)
+    repo_path = str(tmp_repo.resolve())
+    fingerprints = iter([
+        _known_fingerprint(
+            repo_path_resolved=repo_path,
+            branch_name="main",
+            head_sha="a" * 40,
+            dirty_digest="a" * 64,
+        ),
+        _known_fingerprint(
+            repo_path_resolved=repo_path,
+            branch_name="main",
+            head_sha="b" * 40,
+            dirty_digest="b" * 64,
+        ),
+        _known_fingerprint(
+            repo_path_resolved=repo_path,
+            branch_name="main",
+            head_sha="c" * 40,
+            dirty_digest="c" * 64,
+        ),
+    ])
+    calls = {"build": 0}
+
+    def fake_build_repo_index(project_id_arg, repo_path_arg):
+        calls["build"] += 1
+        assert project_id_arg == project_id
+        assert repo_path_arg == repo_path
+        return {"files_indexed": 3}
+
+    monkeypatch.setattr(
+        "backend.repo.index_freshness.compute_working_tree_fingerprint",
+        lambda _repo_path: next(fingerprints),
+    )
+    monkeypatch.setattr(
+        "backend.repo.repo_indexer.build_repo_index",
+        fake_build_repo_index,
+    )
+
+    result = reindex_and_record(project_id, repo_path)
+    snapshot = get_index_fingerprint_snapshot(project_id)
+    comparison = compare_index_freshness(
+        current=result.after,
+        stored=snapshot,
+        current_index_row_count=3,
+    )
+
+    assert calls["build"] == 2
+    assert result.state is IndexFreshnessState.UNKNOWN
+    assert result.reasons == ("fingerprint_changed_during_scan",)
+    assert snapshot is not None
+    assert snapshot.snapshot_state == "unknown"
+    assert snapshot.snapshot_reason == "fingerprint_changed_during_scan"
+    assert comparison.state is IndexFreshnessState.UNKNOWN
+    assert "stored_snapshot_not_current" in comparison.reasons
+
+
+def test_reindex_and_record_unknown_fingerprint_does_not_retry(monkeypatch, tmp_repo):
+    project_id = f"index-freshness-unknown-{uuid.uuid4()}"
+    _insert_project(project_id, tmp_repo)
+    repo_path = str(tmp_repo.resolve())
+    unknown = _known_fingerprint(
+        repo_path_resolved=repo_path,
+        is_git_repo=False,
+        branch_name=None,
+        head_sha=None,
+        dirty_digest=None,
+        git_error="not a git repository",
+    )
+    fingerprints = iter([unknown, unknown])
+    calls = {"build": 0}
+
+    def fake_build_repo_index(project_id_arg, repo_path_arg):
+        calls["build"] += 1
+        assert project_id_arg == project_id
+        assert repo_path_arg == repo_path
+        return {"files_indexed": 3}
+
+    monkeypatch.setattr(
+        "backend.repo.index_freshness.compute_working_tree_fingerprint",
+        lambda _repo_path: next(fingerprints),
+    )
+    monkeypatch.setattr(
+        "backend.repo.repo_indexer.build_repo_index",
+        fake_build_repo_index,
+    )
+
+    result = reindex_and_record(project_id, repo_path)
+
+    assert calls["build"] == 1
+    assert result.state is IndexFreshnessState.UNKNOWN
+    assert result.reasons == ("fingerprint_unknown_during_scan",)
+    assert get_index_fingerprint_snapshot(project_id) is None
 
 
 def test_idempotent_schema_creation_migration():

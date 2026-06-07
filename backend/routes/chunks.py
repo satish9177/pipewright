@@ -126,6 +126,7 @@ from backend.pipeline.run_locks import (
 )
 from backend.pipeline.triage import run_triage
 from backend.projects.project_store import get_project
+from backend.repo.index_freshness import get_project_index_freshness, is_hard_stale
 from backend.repo.repo_indexer import build_repo_index, is_supported_file
 from backend.utils.path_safety import is_forbidden_path
 
@@ -183,6 +184,69 @@ def _non_actionable_response() -> JSONResponse:
             "message": NON_ACTIONABLE_MESSAGE,
             "missing_details": NON_ACTIONABLE_MISSING_DETAILS,
             "examples": NON_ACTIONABLE_EXAMPLES,
+        },
+    )
+
+
+def _unknown_index_freshness(project_id: str) -> dict:
+    return {
+        "state": "unknown",
+        "reasons": ["freshness_check_failed"],
+        "current": None,
+        "indexed": None,
+        "index_row_count": 0,
+        "has_index_rows": False,
+        "has_snapshot": False,
+        "project_id": project_id,
+    }
+
+
+def _run_creation_index_freshness(
+    project_id: str,
+    target_repo_path: str | None,
+) -> dict:
+    if not target_repo_path:
+        logger.warning(
+            "[INDEX-FRESHNESS] Project has no repo path; proceeding as unknown. "
+            "project_id=%s",
+            project_id,
+        )
+        return _unknown_index_freshness(project_id)
+    try:
+        return get_project_index_freshness(project_id, target_repo_path)
+    except Exception as error:
+        logger.warning(
+            "[INDEX-FRESHNESS] Freshness check failed; proceeding as unknown. "
+            "project_id=%s | error=%s",
+            project_id,
+            error,
+        )
+        return _unknown_index_freshness(project_id)
+
+
+def _stale_index_response(project_id: str, freshness: dict) -> JSONResponse:
+    """
+    Safe no-run response when run creation sees a known stale repo index.
+
+    The freshness model is intentionally summary-only: no raw git status,
+    full SHA, dirty file names, or absolute local paths are exposed.
+    """
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "stale_index",
+            "outcome": "stale_index",
+            "run_created": False,
+            "intent": IMPLEMENTATION,
+            "project_id": project_id,
+            "recommended_action": "reindex",
+            "reindex_endpoint": f"/projects/{project_id}/reindex",
+            "message": (
+                "The repository index is stale for the current checkout. "
+                "Re-index the project, then submit the implementation request "
+                "again."
+            ),
+            "index_freshness": freshness,
         },
     )
 
@@ -1037,6 +1101,7 @@ async def _create_chunked_run_core(
     # implementation branch below; None means "no pin / unchanged flow".
     pinned_path: str | None = None
     create_target_path: str | None = None
+    index_freshness: dict | None = None
 
     try:
         if intent == REPORT_ONLY:
@@ -1086,6 +1151,20 @@ async def _create_chunked_run_core(
             )
 
         if intent == IMPLEMENTATION:
+            index_freshness = _run_creation_index_freshness(
+                project_id,
+                target_repo_path,
+            )
+            if is_hard_stale(index_freshness):
+                logger.info(
+                    "[INDEX-FRESHNESS] Hard-stale index blocked run creation. "
+                    "run_id=%s | project_id=%s | reasons=%s",
+                    run_id,
+                    project_id,
+                    index_freshness.get("reasons"),
+                )
+                return _stale_index_response(project_id, index_freshness)
+
             # #20B-1: clarification-selection handoff. When the user picked an
             # exact path from a previously-shown, signed candidate set, that
             # selected path is AUTHORITATIVE over any (possibly wrong-case) alias
@@ -1360,12 +1439,22 @@ async def _create_chunked_run_core(
                 chunks=[],
             )
 
-        return create_chunked_run(
+        plan = create_chunked_run(
             run_id=run_id,
             project_id=project_id,
             feature_description=feature_description,
             triage_result=triage_result,
         )
+        if intent == IMPLEMENTATION:
+            # Re-read after triage so a cold-start lazy index build can surface
+            # the snapshot it just stamped. This is display-only and does not
+            # introduce a second hot grounding gate.
+            index_freshness = _run_creation_index_freshness(
+                project_id,
+                target_repo_path,
+            )
+            return plan.model_copy(update={"index_freshness": index_freshness})
+        return plan
     except HTTPException:
         raise
     except Exception as error:

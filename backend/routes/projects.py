@@ -28,10 +28,11 @@ from backend.projects.project_store import (
     list_projects as list_stored_projects,
     update_project,
 )
-from backend.repo.repo_indexer import (
-    build_repo_index,
-    get_project_index_status,
+from backend.repo.index_freshness import (
+    get_project_index_freshness,
+    reindex_and_record,
 )
+from backend.repo.repo_indexer import get_project_index_status
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,20 @@ def get_project_index_route(project_id: str):
     return get_project_index_status(project_id)
 
 
+@router.get("/projects/{project_id}/index/freshness")
+def get_project_index_freshness_route(project_id: str):
+    """
+    Return live repo-index freshness status for a project (#34C).
+
+    This endpoint may run cheap Git subprocess checks. Keep
+    GET /projects/{project_id}/index as the pure DB count/age endpoint.
+    """
+    project = get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return get_project_index_freshness(project_id, project.get("repo_path"))
+
+
 @router.post("/projects/{project_id}/reindex")
 def reindex_project_route(project_id: str):
     """
@@ -162,7 +177,7 @@ def reindex_project_route(project_id: str):
     repo_path = project.get("repo_path")
     try:
         with project_repo_lock_sync(project_id):
-            build_repo_index(project_id, repo_path)
+            record_result = reindex_and_record(project_id, repo_path)
             status = get_project_index_status(project_id)
     except ProjectRepoLockError as error:
         raise HTTPException(status_code=409, detail=str(error))
@@ -189,5 +204,9 @@ def reindex_project_route(project_id: str):
         "target_repo_path": repo_path,
         "files_indexed": files_indexed,
         "indexed_at": status["indexed_at"],
+        "freshness": {
+            "state": record_result.state.value,
+            "reasons": list(record_result.reasons),
+        },
         "message": f"Re-indexed {files_indexed} files.",
     }

@@ -270,3 +270,8 @@ class ChunkPlanResponse(BaseModel):
     # run row + project pr_mode; never persisted, never calls GitHub, and never
     # gates approval or any mutation. None until the run is loadable.
     pr_status: dict[str, Any] | None = None
+    # Additive read-only repo-index freshness overlay (#34C). Present on run
+    # creation responses when a live freshness check was performed. It never
+    # gates existing approval/execution paths; stale run creation returns a
+    # separate no-run JSON envelope before this model is built.
+    index_freshness: dict[str, Any] | None = None

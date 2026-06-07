@@ -157,6 +157,8 @@ CREATE TABLE IF NOT EXISTS project_index_fingerprints (
     index_row_count INTEGER DEFAULT 0,
     captured_at DATETIME NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    snapshot_state TEXT DEFAULT 'current',
+    snapshot_reason TEXT,
     FOREIGN KEY (project_id) REFERENCES projects(id)
 );
 
