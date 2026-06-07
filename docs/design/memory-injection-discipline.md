@@ -460,3 +460,61 @@ change *which facts are injected*. Any actual injection tightening is deferred t
 
 The guiding principle for the whole phase: **surface before suppress.** System detects; human decides;
 source code / user instruction / tests / safety rules beat memory.
+
+---
+
+## 14. M3F2a — Free exclusion surfacing (implemented)
+
+M3F2a implements the *free* half of M3F2 (per the review split): the two exclusions that are already
+knowable from the rows the builder loads, with **no SQL widening, no prompt-byte change, and no change
+to which facts are injected.**
+
+**What it surfaces** (deterministic, execution-time reasons):
+
+- `category_not_allowed_for_role` — active, non-stale facts whose category is outside the role's
+  policy. The active-only query already loads these (the category filter was a post-fetch Python step),
+  so they are classified, not re-queried.
+- `budget_dropped` — unchanged from before, now carrying the explicit reason.
+
+**Builder (`prompt_builder.py`):**
+
+- `_load_active_memory_rows` now returns `(in_policy_rows, out_of_policy_rows)` from the **same,
+  unchanged** `status='active' AND is_stale=0` query. No inactive facts are loaded.
+- `build_project_memory_block_detailed` renders the block from `in_policy_rows` exactly as before
+  (same sort, same budget math, same lines). It additionally emits `excluded_entries` = budget-dropped
+  (in render order) + category-excluded (deterministically sorted). Out-of-policy facts can never reach
+  the render path, so the block string stays **byte-identical**.
+- `InjectedMemoryEntry` gained `exclusion_reason: str | None = None` (None for included entries). New
+  constants `EXCLUSION_BUDGET_DROPPED`, `EXCLUSION_CATEGORY_NOT_ALLOWED`.
+
+**Provenance (`injection_store.py`):** `exclusion_reason` added to `_ENTRY_KEYS` so it persists in the
+append-only snapshot. `compute_entries_hash` is unchanged (it digests included-entry identity only), so
+`entries_hash` is unaffected by excluded entries. Capture remains best-effort and never mutates memory.
+
+**Endpoints / API (`routes/memory.py`):**
+
+- `GET …/memory-injections` per-entry shape gained `exclusion_reason`; `content_hash` still stripped.
+- `GET …/memory/prompt-preview` now uses the **same** `build_project_memory_block_detailed` computation
+  and returns a read-only `excluded_entries` list (computed live, nothing persisted). `memory_block` is
+  byte-identical to before.
+
+**Frontend (`RunMemoryProvenancePanel.tsx`, `client.ts`):** the excluded section is collapsed, shows a
+reason summary count, labels `category_not_allowed_for_role` ("this role does not use this memory
+category") and `budget_dropped` ("role memory budget was full"), and highlights
+**"Safety memory was budget-dropped."** when a `security`/`forbidden_paths` fact is budget-dropped. No
+mutation actions.
+
+**Explicitly deferred to M3F2b:** `status_excluded` (stale/archived/historical) — those require widening
+the active-only query and returning an unbounded set, so they are **not loaded or surfaced** here. M3F2b
+should surface them as a **bounded count summary**, not full per-entry rows. All advisory reasons
+(reality/duplicate/supersession/unverified) remain M3F3, compute-on-read.
+
+**Invariants held:** prompt block byte-identical; included entries unchanged; injection unchanged;
+`ROLE_CATEGORIES`/`ROLE_TOKEN_BUDGETS` unchanged; SQL status filter unchanged; reviewer/summary unwired;
+no mutation/auto-resolution; no LLM/embeddings/vector; no repo/git scan in `prompt_builder`.
+
+**Tests:** `backend/tests/test_memory_free_exclusions.py` (byte-identical block with out-of-policy facts
+present; included entries carry no reason; category-excluded surfaced incl. the no-in-policy case;
+budget vs. category reasons distinct; status-excluded facts neither loaded nor surfaced; provenance
+persists the category reason; `entries_hash` ignores excluded entries; no memory mutation;
+reviewer pipeline does not import capture/builder).

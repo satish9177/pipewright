@@ -49,6 +49,10 @@ _ENTRY_KEYS = (
     "scope",
     "priority",
     "status_at_injection",
+    # M3F2a: deterministic exclusion reason (None for included entries). Persisted
+    # so a human can later audit WHY a fact was not injected. Not part of
+    # compute_entries_hash, which digests included-entry identity only.
+    "exclusion_reason",
 )
 
 

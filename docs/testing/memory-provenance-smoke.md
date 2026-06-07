@@ -142,6 +142,20 @@ Use the standard local setup — do not invent new commands:
       parity with the rest of the memory API); the event-level `entries_hash`
       digest **is** retained.
 
+### Excluded reasons (M3F2a)
+
+- [ ] Each excluded entry carries an `exclusion_reason`: `budget_dropped` (in-policy
+      fact dropped because the role token budget filled) or
+      `category_not_allowed_for_role` (active fact whose category is outside the
+      role's policy). Included entries carry no reason.
+- [ ] Status-excluded facts (stale/archived/historical) are **not** loaded or
+      surfaced as excluded entries in M3F2a — the active-only query is unchanged;
+      that summary is deferred to M3F2b.
+- [ ] `GET /…/memory/prompt-preview` returns the same `memory_block` **plus** a
+      read-only `excluded_entries` list computed live (nothing persisted).
+- [ ] In Run Detail, a budget-dropped `security`/`forbidden_paths` fact shows the
+      "Safety memory was budget-dropped." highlight.
+
 ## 7. Smoke checklist — analysis endpoint (M3C2)
 
 - [ ] `GET /api/v1/runs/{run_id}/memory-injections/analysis` returns summary

@@ -716,6 +716,8 @@ export interface MemoryPromptPreviewResponse {
   role: MemoryPreviewRole | null
   memory_block: string
   empty: boolean
+  // M3F2a: read-only structured exclusions computed live for this preview.
+  excluded_entries?: MemoryInjectionEntry[]
 }
 
 export interface MemorySuggestion extends ExtraFields {
@@ -799,6 +801,9 @@ export interface MemoryInjectionEntry extends ExtraFields {
   scope?: string | null
   priority?: number | null
   status_at_injection?: string | null
+  // M3F2a: null/undefined for included entries; a deterministic reason
+  // (e.g. 'budget_dropped' | 'category_not_allowed_for_role') for excluded ones.
+  exclusion_reason?: string | null
 }
 
 export interface MemoryInjectionEvent extends ExtraFields {

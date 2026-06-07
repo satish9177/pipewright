@@ -28,6 +28,14 @@ from backend.memory.memory_store import (
 
 logger = logging.getLogger(__name__)
 
+# Deterministic, execution-time exclusion reasons (M3F2a). These describe why a
+# fact was NOT rendered into the block; they are observability metadata only and
+# never affect which facts are injected. status_excluded_* reasons are
+# intentionally NOT produced here — surfacing inactive facts would require
+# widening the active-only query and is deferred to M3F2b.
+EXCLUSION_BUDGET_DROPPED = "budget_dropped"
+EXCLUSION_CATEGORY_NOT_ALLOWED = "category_not_allowed_for_role"
+
 # Per-role token budgets. Deliberately conservative: a role should receive only
 # enough advisory memory to be useful, never a large block that competes with the
 # current request / source code.
@@ -148,7 +156,20 @@ def _scope_rank(scope: str, preferred_scopes: set[str]) -> int:
     return 2
 
 
-def _load_active_memory_rows(project_id: str, categories: set[str]) -> list[dict]:
+def _load_active_memory_rows(
+    project_id: str, categories: set[str]
+) -> tuple[list[dict], list[dict]]:
+    """
+    Load active, non-stale facts ONCE and partition them by the role's category
+    policy. Returns ``(in_policy_rows, out_of_policy_rows)``.
+
+    The SQL is unchanged from before M3F2a — it still selects only
+    ``status='active' AND is_stale=0`` — so stale/archived/historical facts are
+    never loaded. The category split happens in Python over the same rows that
+    were already fetched: the in-policy rows feed the (unchanged) block render,
+    and the out-of-policy rows are surfaced read-only as
+    ``category_not_allowed_for_role`` exclusions at zero extra query cost.
+    """
     with engine.connect() as conn:
         result = conn.execute(text("""
             SELECT id, content, content_hash, category, scope, priority, status,
@@ -159,15 +180,25 @@ def _load_active_memory_rows(project_id: str, categories: set[str]) -> list[dict
               AND status = 'active'
         """), {"project_id": project_id})
         rows = [dict(row._mapping) for row in result.fetchall()]
-    return [
-        row for row in rows
-        if (row.get("category") or "other") in categories
-    ]
+    in_policy: list[dict] = []
+    out_of_policy: list[dict] = []
+    for row in rows:
+        if (row.get("category") or "other") in categories:
+            in_policy.append(row)
+        else:
+            out_of_policy.append(row)
+    return in_policy, out_of_policy
 
 
 @dataclass(frozen=True)
 class InjectedMemoryEntry:
-    """One memory fact as it was considered for a role's prompt block."""
+    """
+    One memory fact as it was considered for a role's prompt block.
+
+    ``exclusion_reason`` is None for included entries. For excluded entries it is
+    a deterministic, execution-time reason (EXCLUSION_BUDGET_DROPPED or
+    EXCLUSION_CATEGORY_NOT_ALLOWED in M3F2a).
+    """
     fact_id: str | None
     content: str
     content_hash: str | None
@@ -175,6 +206,7 @@ class InjectedMemoryEntry:
     scope: str
     priority: int
     status_at_injection: str
+    exclusion_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -184,9 +216,14 @@ class MemoryBlockBuildResult:
     it, produced by a SINGLE computation so the two can never diverge.
 
     included_entries: facts rendered into ``block``, in render order.
-    excluded_entries: in-policy active facts dropped ONLY because the token
-        budget filled — the actionable "a fact was silently left out" signal.
-        Facts excluded by role category policy or by status are not listed here.
+    excluded_entries: active, non-stale facts that were considered but NOT
+        rendered, each carrying a deterministic ``exclusion_reason`` (M3F2a):
+          - EXCLUSION_BUDGET_DROPPED: in-policy fact dropped because the token
+            budget filled — the "a fact was silently left out" signal.
+          - EXCLUSION_CATEGORY_NOT_ALLOWED: active fact whose category is not in
+            the role's policy (surfaced from the same query, zero extra cost).
+        Facts excluded by status (stale/archived/historical) are NOT listed here
+        — that requires widening the active-only query and is deferred to M3F2b.
     """
     block: str
     role: str | None
@@ -204,7 +241,9 @@ class MemoryBlockBuildResult:
         return len(self.excluded_entries)
 
 
-def _row_to_entry(row: dict) -> InjectedMemoryEntry:
+def _row_to_entry(
+    row: dict, exclusion_reason: str | None = None
+) -> InjectedMemoryEntry:
     return InjectedMemoryEntry(
         fact_id=row.get("id"),
         content=row.get("content") or "",
@@ -213,6 +252,18 @@ def _row_to_entry(row: dict) -> InjectedMemoryEntry:
         scope=row.get("scope") or "global",
         priority=int(row.get("priority") or DEFAULT_PRIORITY),
         status_at_injection=row.get("status") or "active",
+        exclusion_reason=exclusion_reason,
+    )
+
+
+def _excluded_sort_key(row: dict) -> tuple:
+    """Deterministic ordering for surfaced exclusions (display/provenance only)."""
+    return (
+        row.get("category") or "other",
+        row.get("scope") or "global",
+        int(row.get("priority") or DEFAULT_PRIORITY),
+        row.get("created_at") or "",
+        str(row.get("id") or ""),
     )
 
 
@@ -277,16 +328,29 @@ def build_project_memory_block_detailed(
         if scope in ALLOWED_SCOPES and scope != "global"
     }
 
-    rows = _load_active_memory_rows(project_id, categories)
-    if not rows:
+    in_policy_rows, out_of_policy_rows = _load_active_memory_rows(
+        project_id, categories
+    )
+
+    # Category-policy exclusions: active facts whose category is outside the
+    # role's policy. Surfaced read-only from the SAME query; never rendered and
+    # never able to influence included selection or the block bytes.
+    category_excluded_entries = [
+        _row_to_entry(row, EXCLUSION_CATEGORY_NOT_ALLOWED)
+        for row in sorted(out_of_policy_rows, key=_excluded_sort_key)
+    ]
+
+    if not in_policy_rows:
         return MemoryBlockBuildResult(
             block="",
             role=role,
             token_budget=budget,
             category_policy=category_policy,
+            included_entries=(),
+            excluded_entries=tuple(category_excluded_entries),
         )
 
-    rows.sort(key=lambda row: (
+    in_policy_rows.sort(key=lambda row: (
         _category_rank(row.get("category") or "other", role_key),
         _scope_rank(row.get("scope") or "global", preferred_scopes),
         int(row.get("priority") or DEFAULT_PRIORITY),
@@ -295,20 +359,26 @@ def build_project_memory_block_detailed(
 
     selected_lines: list[str] = []
     included_entries: list[InjectedMemoryEntry] = []
-    excluded_entries: list[InjectedMemoryEntry] = []
+    budget_excluded_entries: list[InjectedMemoryEntry] = []
     used_tokens = 0
-    for row in rows:
+    for row in in_policy_rows:
         category = row.get("category") or "other"
         scope = row.get("scope") or "global"
         line = f"[{category}/{scope}] {row['content']}"
         line_tokens = _estimate_tokens(line)
         separator_tokens = 1 if selected_lines else 0
         if used_tokens + separator_tokens + line_tokens > budget:
-            excluded_entries.append(_row_to_entry(row))
+            budget_excluded_entries.append(
+                _row_to_entry(row, EXCLUSION_BUDGET_DROPPED)
+            )
             continue
         selected_lines.append(line)
         included_entries.append(_row_to_entry(row))
         used_tokens += separator_tokens + line_tokens
+
+    # Budget drops first (the actionable "silently left out" signal), then the
+    # category-policy exclusions. Ordering is display/provenance only.
+    excluded_entries = budget_excluded_entries + category_excluded_entries
 
     if not selected_lines:
         return MemoryBlockBuildResult(
