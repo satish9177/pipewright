@@ -235,6 +235,8 @@ def create_chunked_run(
     *,
     intent: str | None = None,
     source_plan_run_id: str | None = None,
+    start_branch: str | None = None,
+    start_head_sha: str | None = None,
 ) -> ChunkPlanResponse:
     """
     Create one parent pipeline run and its proposed chunks transactionally.
@@ -252,14 +254,16 @@ def create_chunked_run(
                     id, project_id, feature_description, status,
                     current_step, intent, chunk_plan_status, chunk_plan,
                     total_chunks, current_chunk_number,
-                    source_plan_run_id, created_at
+                    source_plan_run_id, start_branch, start_head_sha,
+                    created_at
                 )
                 VALUES
                 (
                     :id, :project_id, :feature_description,
                     :status, 'chunk_plan', :intent,
                     :chunk_plan_status, :chunk_plan, :total_chunks,
-                    0, :source_plan_run_id, :created_at
+                    0, :source_plan_run_id, :start_branch, :start_head_sha,
+                    :created_at
                 )
             """), {
                 "id": run_id,
@@ -271,6 +275,8 @@ def create_chunked_run(
                 "chunk_plan": triage_result.model_dump_json(),
                 "total_chunks": triage_result.total_chunks,
                 "source_plan_run_id": source_plan_run_id,
+                "start_branch": start_branch,
+                "start_head_sha": start_head_sha,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             })
             _insert_chunks(conn, run_id, project_id, triage_result)

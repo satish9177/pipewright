@@ -282,6 +282,15 @@ def _unsafe_start_branch_response(
 def _guard_unsafe_start_branch(
     target_repo_path: str | None,
 ) -> JSONResponse | None:
+    inspection = _inspect_start_branch_for_creation(target_repo_path)
+    if inspection is None:
+        return None
+    return _unsafe_start_branch_guard_response(inspection, target_repo_path)
+
+
+def _inspect_start_branch_for_creation(
+    target_repo_path: str | None,
+) -> StartBranchInspection | None:
     if not target_repo_path:
         logger.warning(
             "[START-BRANCH] Project has no repo path; skipping start-branch "
@@ -297,6 +306,13 @@ def _guard_unsafe_start_branch(
             inspection.error,
         )
         return None
+    return inspection
+
+
+def _unsafe_start_branch_guard_response(
+    inspection: StartBranchInspection,
+    target_repo_path: str | None,
+) -> JSONResponse | None:
     if inspection.is_detached:
         logger.info(
             "[START-BRANCH] Detached HEAD blocked implementation run creation. "
@@ -314,6 +330,19 @@ def _guard_unsafe_start_branch(
         )
         return _unsafe_start_branch_response(inspection)
     return None
+
+
+def _start_context_from_inspection(
+    inspection: StartBranchInspection | None,
+) -> tuple[str | None, str | None]:
+    if (
+        inspection is None
+        or inspection.error
+        or not inspection.current_branch
+        or not inspection.head_sha
+    ):
+        return None, None
+    return inspection.current_branch, inspection.head_sha
 
 
 # PR #17C: explicit-edit-target grounding. Canonical filename used in
@@ -1066,9 +1095,18 @@ async def start_implementation_from_plan_route(run_id: str):
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error))
 
-    unsafe_start = _guard_unsafe_start_branch(project.get("repo_path"))
+    start_inspection = _inspect_start_branch_for_creation(project.get("repo_path"))
+    unsafe_start = (
+        _unsafe_start_branch_guard_response(
+            start_inspection,
+            project.get("repo_path"),
+        )
+        if start_inspection is not None
+        else None
+    )
     if unsafe_start is not None:
         return unsafe_start
+    start_branch, start_head_sha = _start_context_from_inspection(start_inspection)
 
     try:
         seed_triage = TriageResult.model_validate_json(source_run["chunk_plan"])
@@ -1095,6 +1133,8 @@ async def start_implementation_from_plan_route(run_id: str):
             triage_result=seed_triage,
             intent=IMPLEMENTATION,
             source_plan_run_id=run_id,
+            start_branch=start_branch,
+            start_head_sha=start_head_sha,
         )
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error))
@@ -1171,6 +1211,7 @@ async def _create_chunked_run_core(
     pinned_path: str | None = None
     create_target_path: str | None = None
     index_freshness: dict | None = None
+    start_inspection: StartBranchInspection | None = None
 
     try:
         if intent == REPORT_ONLY:
@@ -1220,9 +1261,14 @@ async def _create_chunked_run_core(
         )
 
         if intent == IMPLEMENTATION:
-            unsafe_start = _guard_unsafe_start_branch(target_repo_path)
-            if unsafe_start is not None:
-                return unsafe_start
+            start_inspection = _inspect_start_branch_for_creation(target_repo_path)
+            if start_inspection is not None:
+                unsafe_start = _unsafe_start_branch_guard_response(
+                    start_inspection,
+                    target_repo_path,
+                )
+                if unsafe_start is not None:
+                    return unsafe_start
 
             index_freshness = _run_creation_index_freshness(
                 project_id,
@@ -1512,11 +1558,16 @@ async def _create_chunked_run_core(
                 chunks=[],
             )
 
+        start_branch, start_head_sha = _start_context_from_inspection(
+            start_inspection if intent == IMPLEMENTATION else None
+        )
         plan = create_chunked_run(
             run_id=run_id,
             project_id=project_id,
             feature_description=feature_description,
             triage_result=triage_result,
+            start_branch=start_branch,
+            start_head_sha=start_head_sha,
         )
         if intent == IMPLEMENTATION:
             # Re-read after triage so a cold-start lazy index build can surface
@@ -2147,7 +2198,14 @@ def reject_chunk_plan_route(run_id: str, request: RejectChunkPlanRequest):
 async def execute_chunks_route(run_id: str):
     try:
         _ensure_mutating_run(run_id)
-        return await execute_approved_chunks(run_id)
+        result = await execute_approved_chunks(run_id)
+        if (
+            isinstance(result, dict)
+            and result.get("status") == "start_context_drifted"
+            and isinstance(result.get("status_code"), int)
+        ):
+            return JSONResponse(status_code=result["status_code"], content=result)
+        return result
     except ProjectRepoLockError as error:
         raise HTTPException(status_code=409, detail=str(error))
     except ValueError as error:

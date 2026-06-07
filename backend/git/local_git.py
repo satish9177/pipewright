@@ -171,6 +171,7 @@ def get_current_branch(repo_path: str) -> str:
 @dataclass(frozen=True)
 class StartBranchInspection:
     current_branch: str | None = None
+    head_sha: str | None = None
     head_sha_short: str | None = None
     is_detached: bool = False
     error: str | None = None
@@ -178,7 +179,7 @@ class StartBranchInspection:
 
 def inspect_start_branch(repo_path: str) -> StartBranchInspection:
     """
-    Read the current branch + short HEAD for run-creation safety checks.
+    Read the current branch + HEAD for run-creation safety checks.
 
     This is deliberately non-raising and read-only. It never checks out,
     creates, deletes, or mutates branches. Unknown/error states are returned as
@@ -194,26 +195,27 @@ def inspect_start_branch(repo_path: str) -> StartBranchInspection:
                 )
             )
 
-        head_result = run_git(["rev-parse", "--short=12", "HEAD"], repo_path)
+        head_result = run_git(["rev-parse", "HEAD"], repo_path)
         if head_result.returncode != 0:
             return StartBranchInspection(
                 error=(
-                    "git rev-parse --short=12 HEAD failed: "
+                    "git rev-parse HEAD failed: "
                     f"{head_result.stderr.strip()}"
                 )
             )
 
         branch = branch_result.stdout.strip() or None
-        head_sha_short = head_result.stdout.strip() or None
-        if head_sha_short is None:
+        head_sha = head_result.stdout.strip() or None
+        if head_sha is None:
             return StartBranchInspection(
                 current_branch=branch,
                 is_detached=branch is None,
-                error="git rev-parse --short=12 HEAD returned empty hash",
+                error="git rev-parse HEAD returned empty hash",
             )
         return StartBranchInspection(
             current_branch=branch,
-            head_sha_short=head_sha_short,
+            head_sha=head_sha,
+            head_sha_short=head_sha[:12],
             is_detached=branch is None,
         )
     except Exception as error:

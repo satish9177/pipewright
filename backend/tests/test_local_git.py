@@ -171,6 +171,7 @@ def test_inspect_start_branch_returns_branch_and_short_head(git_repo):
 
     assert inspection == StartBranchInspection(
         current_branch="feature/start",
+        head_sha=full_hash,
         head_sha_short=full_hash[:12],
         is_detached=False,
         error=None,
@@ -185,6 +186,7 @@ def test_inspect_start_branch_handles_detached_head(git_repo):
     inspection = inspect_start_branch(str(git_repo))
 
     assert inspection.current_branch is None
+    assert inspection.head_sha == full_hash
     assert inspection.head_sha_short == full_hash[:12]
     assert inspection.is_detached is True
     assert inspection.error is None
@@ -202,6 +204,7 @@ def test_inspect_start_branch_does_not_raise_on_git_error(git_repo):
         inspection = inspect_start_branch(str(git_repo))
 
     assert inspection.current_branch is None
+    assert inspection.head_sha is None
     assert inspection.head_sha_short is None
     assert inspection.is_detached is False
     assert "git branch --show-current failed" in (inspection.error or "")
@@ -219,11 +222,11 @@ def test_inspect_start_branch_uses_only_read_only_git_commands(git_repo):
                 stdout="main\n",
                 stderr="",
             )
-        if args == ["rev-parse", "--short=12", "HEAD"]:
+        if args == ["rev-parse", "HEAD"]:
             return subprocess.CompletedProcess(
                 args=["git", *args],
                 returncode=0,
-                stdout="abcdef123456\n",
+                stdout="abcdef1234567890abcdef1234567890abcdef1234\n",
                 stderr="",
             )
         raise AssertionError(f"unexpected git command: {args}")
@@ -232,10 +235,11 @@ def test_inspect_start_branch_uses_only_read_only_git_commands(git_repo):
         inspection = inspect_start_branch(str(git_repo))
 
     assert inspection.current_branch == "main"
+    assert inspection.head_sha == "abcdef1234567890abcdef1234567890abcdef1234"
     assert inspection.head_sha_short == "abcdef123456"
     assert calls == [
         ["branch", "--show-current"],
-        ["rev-parse", "--short=12", "HEAD"],
+        ["rev-parse", "HEAD"],
     ]
     assert not any(
         command in call
