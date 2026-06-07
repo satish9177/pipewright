@@ -28,13 +28,13 @@ class RoleConfig:
     model: str
 
 
-def _setting_or_env(attr_name: str, env_name: str) -> str | None:
-    value = getattr(settings, attr_name.lower(), None)
-    if value:
-        return value
+def _env_or_setting(attr_name: str, env_name: str) -> str | None:
     value = os.getenv(env_name)
     if value and value.strip():
         return value.strip()
+    value = getattr(settings, attr_name.lower(), None)
+    if value:
+        return value
     return None
 
 
@@ -49,23 +49,23 @@ def resolve_role_config(
     model = overrides.get(f"{role_value}_model")
 
     if not provider:
-        provider = _setting_or_env(
+        provider = _env_or_setting(
             f"{role_value}_llm_provider",
             f"{role_value.upper()}_LLM_PROVIDER",
         )
     if not model:
-        model = _setting_or_env(
+        model = _env_or_setting(
             f"{role_value}_llm_model",
             f"{role_value.upper()}_LLM_MODEL",
         )
 
     if not provider:
-        provider = _setting_or_env(
+        provider = _env_or_setting(
             "default_llm_provider",
             "DEFAULT_LLM_PROVIDER",
         )
     if not model:
-        model = _setting_or_env("default_llm_model", "DEFAULT_LLM_MODEL")
+        model = _env_or_setting("default_llm_model", "DEFAULT_LLM_MODEL")
 
     return RoleConfig(
         provider=provider or DEFAULT_PROVIDER,
