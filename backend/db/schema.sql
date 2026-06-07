@@ -145,6 +145,21 @@ CREATE TABLE IF NOT EXISTS file_index (
     UNIQUE(project_id, path)
 );
 
+CREATE TABLE IF NOT EXISTS project_index_fingerprints (
+    project_id TEXT PRIMARY KEY,
+    repo_path_resolved TEXT NOT NULL,
+    branch_name TEXT,
+    branch_is_detached INTEGER NOT NULL DEFAULT 0,
+    detached_head_label TEXT,
+    head_sha TEXT NOT NULL,
+    dirty_digest TEXT NOT NULL,
+    dirty_files_count INTEGER DEFAULT 0,
+    index_row_count INTEGER DEFAULT 0,
+    captured_at DATETIME NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+
 CREATE TABLE IF NOT EXISTS chunks (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
@@ -320,6 +335,7 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_runs_project ON pipeline_runs(project_id
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);
 CREATE INDEX IF NOT EXISTS idx_chunks_run_status ON chunks(run_id, status);
 CREATE INDEX IF NOT EXISTS idx_approval_gates_run_status ON approval_gates(run_id, approval_type, status);
+CREATE INDEX IF NOT EXISTS idx_project_index_fingerprints_updated ON project_index_fingerprints(updated_at);
 CREATE INDEX IF NOT EXISTS idx_scope_expansion_requests_run_chunk_status ON scope_expansion_requests(run_id, chunk_number, status);
 CREATE INDEX IF NOT EXISTS idx_test_validation_ack_run_chunk_status ON test_validation_acknowledgements(run_id, chunk_number, status);
 CREATE INDEX IF NOT EXISTS idx_chunk_reviews_run_chunk ON chunk_reviews(run_id, chunk_number, created_at);
