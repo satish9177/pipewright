@@ -583,9 +583,9 @@ def _ensure_project_index_fingerprints_shape(conn) -> None:
     uniqueness stay untouched.
 
     #34B introduced this table, so this helper creates it when absent. Unlike
-    older shape-repair helpers, it does not migrate or rebuild a pre-existing
-    wrong-shaped table. Future column changes should add explicit migration or
-    shape-handling logic.
+    older shape-repair helpers, it does not rebuild a pre-existing wrong-shaped
+    table. Future shape changes should add explicit migration or shape-handling
+    logic, as #34C does below for additive snapshot metadata columns.
     """
     try:
         conn.execute(text("""
@@ -601,9 +601,24 @@ def _ensure_project_index_fingerprints_shape(conn) -> None:
                 index_row_count INTEGER DEFAULT 0,
                 captured_at DATETIME NOT NULL,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                snapshot_state TEXT DEFAULT 'current',
+                snapshot_reason TEXT,
                 FOREIGN KEY (project_id) REFERENCES projects(id)
             )
         """))
+        _add_column_if_missing(
+            conn,
+            "project_index_fingerprints",
+            "snapshot_state",
+            "ALTER TABLE project_index_fingerprints "
+            "ADD COLUMN snapshot_state TEXT DEFAULT 'current'",
+        )
+        _add_column_if_missing(
+            conn,
+            "project_index_fingerprints",
+            "snapshot_reason",
+            "ALTER TABLE project_index_fingerprints ADD COLUMN snapshot_reason TEXT",
+        )
         conn.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_project_index_fingerprints_updated
             ON project_index_fingerprints(updated_at)

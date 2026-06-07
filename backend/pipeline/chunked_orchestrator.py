@@ -96,7 +96,8 @@ from backend.projects.project_context import (
     get_test_command,
 )
 from backend.projects.project_store import require_project
-from backend.repo.repo_indexer import build_repo_index, get_relevant_files
+from backend.repo.index_freshness import reindex_and_record
+from backend.repo.repo_indexer import get_relevant_files
 from backend.utils.path_safety import normalize_relative_path
 
 logger = logging.getLogger(__name__)
@@ -686,7 +687,7 @@ def _refresh_index_after_success(
     must never fail the chunk or run: it is logged and swallowed.
     """
     try:
-        build_repo_index(project_id, target_repo_path)
+        reindex_and_record(project_id, target_repo_path)
     except Exception as error:
         logger.warning(
             "[CHUNKED] post-commit index refresh failed, ignored | "

@@ -3,12 +3,13 @@ test_project_reindex.py
 Tests for the #19B backend repo re-index endpoint and index status.
 
   GET  /projects/{project_id}/index   -> read-only status (no scan)
-  POST /projects/{project_id}/reindex -> forced rebuild via build_repo_index
+  POST /projects/{project_id}/reindex -> forced rebuild and freshness snapshot
 
 Re-index is read-only on the repo (no git mutation, no clean-tree requirement)
 and lock-aware (409 while a run holds the project repo lock).
 """
 
+import subprocess
 import uuid
 
 import pytest
@@ -19,6 +20,7 @@ from backend.db.database import engine
 from backend.main import app
 from backend.pipeline.run_locks import project_repo_lock_sync
 from backend.projects.project_store import create_project
+from backend.repo.index_freshness import get_index_fingerprint_snapshot
 
 pytestmark = pytest.mark.unit
 
@@ -51,6 +53,29 @@ def seed_file_index(project_id: str, paths: list[str]) -> None:
             })
 
 
+def _run_git(repo_path, *args: str) -> None:
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def init_git_repo(repo_path) -> None:
+    subprocess.run(
+        ["git", "init", str(repo_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    _run_git(repo_path, "config", "user.email", "pipewright-test@example.com")
+    _run_git(repo_path, "config", "user.name", "Pipewright Test")
+    _run_git(repo_path, "add", ".")
+    _run_git(repo_path, "commit", "-m", "initial")
+
+
 def indexed_paths(project_id: str) -> set[str]:
     with engine.connect() as conn:
         rows = conn.execute(text("""
@@ -67,22 +92,21 @@ def indexed_paths(project_id: str) -> set[str]:
 def test_get_index_unknown_project_returns_404(monkeypatch):
     import backend.repo.repo_indexer as repo_indexer
 
-    called = {"build": False}
-    monkeypatch.setattr(
-        "backend.routes.projects.build_repo_index",
-        lambda *a, **k: called.__setitem__("build", True),
-    )
-    # Also guard the underlying function in case of indirection.
+    called = {"scan": False}
     monkeypatch.setattr(
         repo_indexer,
         "build_repo_index",
-        lambda *a, **k: called.__setitem__("build", True),
+        lambda *a, **k: called.__setitem__("scan", True),
+    )
+    monkeypatch.setattr(
+        "backend.routes.projects.reindex_and_record",
+        lambda *a, **k: called.__setitem__("scan", True),
     )
 
     response = client.get("/projects/does-not-exist/index")
 
     assert response.status_code == 404
-    assert called["build"] is False
+    assert called["scan"] is False
 
 
 def test_get_index_when_no_rows_returns_not_indexed(tmp_repo):
@@ -132,16 +156,16 @@ def test_get_index_when_rows_exist_returns_indexed(tmp_repo):
 
 
 def test_reindex_unknown_project_returns_404(monkeypatch):
-    called = {"build": False}
+    called = {"reindex": False}
     monkeypatch.setattr(
-        "backend.routes.projects.build_repo_index",
-        lambda *a, **k: called.__setitem__("build", True),
+        "backend.routes.projects.reindex_and_record",
+        lambda *a, **k: called.__setitem__("reindex", True),
     )
 
     response = client.post("/projects/does-not-exist/reindex")
 
     assert response.status_code == 404
-    assert called["build"] is False
+    assert called["reindex"] is False
 
 
 def test_reindex_builds_and_replaces_index(tmp_repo):
@@ -179,6 +203,23 @@ def test_reindex_adds_newly_created_file(tmp_repo):
 
     assert response.status_code == 200
     assert "README.md" in indexed_paths(project["id"])
+
+
+def test_reindex_records_freshness_snapshot_for_git_repo(tmp_repo):
+    (tmp_repo / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    init_git_repo(tmp_repo)
+    project = make_project(tmp_repo)
+
+    response = client.post(f"/projects/{project['id']}/reindex")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["freshness"]["state"] == "current"
+    snapshot = get_index_fingerprint_snapshot(project["id"])
+    assert snapshot is not None
+    assert snapshot.index_row_count == body["files_indexed"]
+    assert snapshot.head_sha
+    assert snapshot.snapshot_state == "current"
 
 
 def test_reindex_removes_deleted_file(tmp_repo):
@@ -247,19 +288,19 @@ def test_reindex_returns_409_when_lock_held(tmp_repo, monkeypatch):
     (tmp_repo / "app.py").write_text("print('hi')\n", encoding="utf-8")
     project = make_project(tmp_repo)
 
-    called = {"build": False}
+    called = {"reindex": False}
     monkeypatch.setattr(
-        "backend.routes.projects.build_repo_index",
-        lambda *a, **k: called.__setitem__("build", True),
+        "backend.routes.projects.reindex_and_record",
+        lambda *a, **k: called.__setitem__("reindex", True),
     )
 
     # Hold the project repo lock the way an active run would; the endpoint must
-    # refuse with 409 and never call build_repo_index.
+    # refuse with 409 and never rebuild the index.
     with project_repo_lock_sync(project["id"]):
         response = client.post(f"/projects/{project['id']}/reindex")
 
     assert response.status_code == 409
-    assert called["build"] is False
+    assert called["reindex"] is False
 
 
 def test_reindex_error_is_sanitized(tmp_repo, monkeypatch):
@@ -268,7 +309,7 @@ def test_reindex_error_is_sanitized(tmp_repo, monkeypatch):
     def _boom(*args, **kwargs):
         raise RuntimeError("boom internal traceback secret-ish detail")
 
-    monkeypatch.setattr("backend.routes.projects.build_repo_index", _boom)
+    monkeypatch.setattr("backend.routes.projects.reindex_and_record", _boom)
 
     response = client.post(f"/projects/{project['id']}/reindex")
 

@@ -19,7 +19,10 @@ from backend.memory.injection_store import capture_memory_injection
 from backend.memory.prompt_builder import build_project_memory_block_detailed
 from backend.models.chunk import TriageResult
 from backend.projects.project_store import require_project
-from backend.repo.repo_indexer import ensure_repo_indexed, get_relevant_files
+from backend.repo.index_freshness import (
+    ensure_repo_indexed_and_record as ensure_repo_indexed,
+)
+from backend.repo.repo_indexer import get_relevant_files
 from backend.utils.json_helpers import clean_json_response
 
 TRIAGE_MODEL = "gemini-2.5-flash-lite"

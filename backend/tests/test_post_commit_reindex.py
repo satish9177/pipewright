@@ -38,6 +38,7 @@ from backend.tests.test_chunked_orchestrator import (
 )
 
 pytestmark = pytest.mark.unit
+_TRACKED_RUNS_FIXTURE = tracked_runs
 
 
 def _indexed_paths(project_id: str) -> set[str]:
@@ -65,14 +66,14 @@ def _seed_index_row(project_id: str, path: str) -> None:
 
 
 def _spy_reindex(monkeypatch):
-    """Record-only spy for build_repo_index (does not scan)."""
+    """Record-only spy for reindex_and_record (does not scan)."""
     calls = []
 
     def spy(project_id, repo_path):
         calls.append((project_id, repo_path))
         return {"status": "complete", "project_id": project_id, "files_indexed": 0}
 
-    monkeypatch.setattr(chunked_orchestrator, "build_repo_index", spy)
+    monkeypatch.setattr(chunked_orchestrator, "reindex_and_record", spy)
     return calls
 
 
@@ -110,7 +111,7 @@ def test_refresh_runs_after_commit(monkeypatch, tmp_repo, tracked_runs):
     def spy_reindex(project_id, repo_path):
         calls.append(('reindex', project_id, repo_path))
 
-    monkeypatch.setattr(chunked_orchestrator, "build_repo_index", spy_reindex)
+    monkeypatch.setattr(chunked_orchestrator, "reindex_and_record", spy_reindex)
 
     chunked_orchestrator._commit_and_complete_chunk(
         run_id,
@@ -136,7 +137,7 @@ def test_create_file_commit_refreshes_index(monkeypatch, tmp_repo, tracked_runs)
     run_id, project = create_run(tmp_repo, tracked_runs)
     chunk = get_chunk_plan_status(run_id).triage.chunks[0]
 
-    # The file Pipewright "created" is really on disk; the real build_repo_index
+    # The file Pipewright "created" is really on disk; the real reindex wrapper
     # (NOT mocked here) must pick it up after the commit.
     (tmp_repo / "README.md").write_text("# Title\n", encoding="utf-8")
     assert "README.md" not in _indexed_paths(project["id"])
@@ -203,7 +204,7 @@ def test_refresh_failure_does_not_fail_chunk_or_run(
     def boom(project_id, repo_path):
         raise RuntimeError("index boom")
 
-    monkeypatch.setattr(chunked_orchestrator, "build_repo_index", boom)
+    monkeypatch.setattr(chunked_orchestrator, "reindex_and_record", boom)
 
     # Capture the warning directly off the module logger (robust to the
     # project's log-propagation config).
