@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from backend.db.database import engine
+from backend.git.local_git import StartBranchInspection
 from backend.main import app
 from backend.models.chunk import ChunkDefinition, TriageResult
 from backend.projects.project_store import create_project
@@ -229,6 +230,54 @@ def test_handoff_is_idempotent(tmp_repo, tracked_runs):
             WHERE source_plan_run_id = :source
         """), {"source": plan_run_id}).fetchone()[0]
     assert count == 1
+
+
+def test_plan_handoff_on_pipewright_branch_returns_no_run(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    project = _make_project(tmp_repo)
+    plan_run_id = str(uuid.uuid4())
+    tracked_runs.append(plan_run_id)
+    _insert_plan_ready_run(plan_run_id, project["id"])
+    monkeypatch.setattr(
+        "backend.routes.chunks.inspect_start_branch",
+        lambda _repo_path: StartBranchInspection(
+            current_branch="pipewright/old-run",
+            head_sha_short="abcdef123456",
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.ground_triage_result_paths",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("plan handoff must not re-ground after unsafe start")
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.create_chunked_run",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("plan handoff must not create an unsafe run")
+        ),
+    )
+
+    client = TestClient(app)
+    response = client.post(f"/runs/{plan_run_id}/start-implementation")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "unsafe_start_branch"
+    assert body["outcome"] == "unsafe_start_branch"
+    assert body["run_created"] is False
+    assert body["current_branch"] == "pipewright/old-run"
+    assert body["current_head_sha_short"] == "abcdef123456"
+    assert "run_id" not in body
+    with engine.connect() as conn:
+        count = conn.execute(text("""
+            SELECT COUNT(*) FROM pipeline_runs
+            WHERE source_plan_run_id = :source
+        """), {"source": plan_run_id}).fetchone()[0]
+    assert count == 0
 
 
 # ---------------------------------------------------------------------------

@@ -168,6 +168,58 @@ def get_current_branch(repo_path: str) -> str:
     return branch
 
 
+@dataclass(frozen=True)
+class StartBranchInspection:
+    current_branch: str | None = None
+    head_sha_short: str | None = None
+    is_detached: bool = False
+    error: str | None = None
+
+
+def inspect_start_branch(repo_path: str) -> StartBranchInspection:
+    """
+    Read the current branch + short HEAD for run-creation safety checks.
+
+    This is deliberately non-raising and read-only. It never checks out,
+    creates, deletes, or mutates branches. Unknown/error states are returned as
+    data so callers can avoid blocking run creation on an unverifiable repo.
+    """
+    try:
+        branch_result = run_git(["branch", "--show-current"], repo_path)
+        if branch_result.returncode != 0:
+            return StartBranchInspection(
+                error=(
+                    "git branch --show-current failed: "
+                    f"{branch_result.stderr.strip()}"
+                )
+            )
+
+        head_result = run_git(["rev-parse", "--short=12", "HEAD"], repo_path)
+        if head_result.returncode != 0:
+            return StartBranchInspection(
+                error=(
+                    "git rev-parse --short=12 HEAD failed: "
+                    f"{head_result.stderr.strip()}"
+                )
+            )
+
+        branch = branch_result.stdout.strip() or None
+        head_sha_short = head_result.stdout.strip() or None
+        if head_sha_short is None:
+            return StartBranchInspection(
+                current_branch=branch,
+                is_detached=branch is None,
+                error="git rev-parse --short=12 HEAD returned empty hash",
+            )
+        return StartBranchInspection(
+            current_branch=branch,
+            head_sha_short=head_sha_short,
+            is_detached=branch is None,
+        )
+    except Exception as error:
+        return StartBranchInspection(error=f"start branch inspection failed: {error}")
+
+
 def is_working_tree_clean(repo_path: str) -> bool:
     result = run_git(["status", "--porcelain", "-uall"], repo_path)
     return result.stdout.strip() == ""
@@ -282,8 +334,8 @@ def assert_not_on_stale_pipewright_branch(
     Block fresh execution from starting on an old pipewright/* branch.
 
     This guard intentionally does not auto-checkout, delete, clean, or guess a
-    base branch. Operators must move the target repo to its configured base
-    branch before starting a new run.
+    base branch. Operators must move the target repo to the branch they want
+    Pipewright to start from before starting a new run.
     """
     if not current_run_id or not current_run_id.strip():
         raise RuntimeError("[GIT] current_run_id is required")
@@ -307,7 +359,7 @@ def assert_not_on_stale_pipewright_branch(
     raise RuntimeError(
         f"[GIT] Target repo is on stale Pipewright branch '{current_branch}'. "
         f"Expected branch for this run is '{expected_branch}'. Checkout the "
-        "configured base branch before starting a new run."
+        "branch you want Pipewright to start from before starting a new run."
     )
 
 
