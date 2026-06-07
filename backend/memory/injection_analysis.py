@@ -20,24 +20,30 @@ Hard constraints (this module is intentionally pure):
     snapshots on every call so evolving heuristics never leave stale stored
     state. Everything returned is labelled candidate/advisory, never fact.
 
-Reality-check analysis is deliberately NOT performed here: it would require a
-repo/project signal that M3C2 must not compute (no repo scanning). It remains
-deferred to a later slice that can pass an already-computed signal in safely.
+Reality-check analysis (M3F3) is performed ONLY when the caller passes in an
+already-computed repo signal map (``repo_signals``). This module never scans the
+repo, never calls git, never reads the filesystem: it stays pure, exactly like
+the M3B ``check_fact_against_signal`` helper it delegates to. The endpoint owns
+the (capped, read-only) repo-signal extraction and hands the result in. With no
+signal, no reality warnings are produced.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from backend.memory.memory_trust import (
     DEFAULT_DUPLICATE_THRESHOLD,
+    REALITY_MISMATCH,
+    check_fact_against_signal,
     find_duplicate_candidates,
     find_supersession_candidates,
 )
 
 DUPLICATE = "duplicate"
 SUPERSESSION = "supersession"
+REALITY_MISMATCH_CANDIDATE = "reality_mismatch_candidate"
 
 
 # --- Read-only result models ------------------------------------------------
@@ -89,6 +95,28 @@ class SupersessionFinding:
 
 
 @dataclass(frozen=True)
+class RealityWarning:
+    """
+    One injected fact whose asserted value for a repo dimension disagrees with an
+    already-computed repo signal. Advisory only — never a stale/archive/supersede
+    decision and never "newer wins". Only ``mismatch`` status is emitted; match /
+    unknown / unsupported are intentionally not surfaced as warnings.
+    """
+    warning_type: str  # REALITY_MISMATCH_CANDIDATE
+    dimension: str
+    status: str  # always REALITY_MISMATCH for emitted warnings
+    fact_id: str | None
+    event_id: str | None
+    role: str | None
+    chunk_number: int | None
+    memory_content: str
+    memory_value: str | None
+    repo_value: str | None
+    reason: str
+    advisory_only: bool = True
+
+
+@dataclass(frozen=True)
 class InjectionAnalysis:
     """Aggregate advisory analysis for one run's injection provenance."""
     total_events: int = 0
@@ -99,6 +127,13 @@ class InjectionAnalysis:
     duplicate_candidates: tuple[DuplicateFinding, ...] = ()
     supersession_candidates: tuple[SupersessionFinding, ...] = ()
     warnings: tuple[str, ...] = ()
+    # M3F3 read-only repo-reality warnings (computed only when a repo signal is
+    # passed in). reality_signal_available is True when at least one usable signal
+    # was provided, so the UI can distinguish "checked, no mismatch" from "no
+    # signal to check against".
+    reality_signal_available: bool = False
+    reality_warning_count: int = 0
+    reality_warnings: tuple[RealityWarning, ...] = ()
 
 
 # --- Internal accumulation --------------------------------------------------
@@ -152,6 +187,7 @@ def analyze_injection_events(
     events: Iterable[dict],
     *,
     threshold: float = DEFAULT_DUPLICATE_THRESHOLD,
+    repo_signals: Mapping[str, str] | None = None,
 ) -> InjectionAnalysis:
     """
     Compute advisory duplicate/supersession candidates over a run's injection
@@ -159,10 +195,23 @@ def analyze_injection_events(
     injection_store.list_memory_injection_events (or the equivalent shape). No
     DB/LLM/repo/git access; nothing is mutated or persisted.
 
+    ``repo_signals`` (M3F3) is an optional ``{dimension: canonical_repo_value}``
+    map the CALLER has already computed (e.g. ``{"db_engine": "postgresql"}``).
+    When provided, each distinct injected fact is compared against each signal via
+    the pure M3B ``check_fact_against_signal`` helper, and only unambiguous
+    ``mismatch`` results are surfaced as advisory ``RealityWarning``s. This module
+    still performs NO repo/git/filesystem access — the signal is passed in.
+
     Returns an empty analysis when there are no events / no usable included
     entries. All findings are advisory candidates, never decisions.
     """
     materialized = list(events or [])
+    usable_signals = {
+        dimension: value
+        for dimension, value in (repo_signals or {}).items()
+        if value
+    }
+    reality_signal_available = bool(usable_signals)
     distinct_order: list[str] = []
     distinct: dict[str, _DistinctFact] = {}
     total_included = 0
@@ -196,7 +245,10 @@ def analyze_injection_events(
                 existing.occurrences.append(occurrence)
 
     if not distinct_order:
-        return InjectionAnalysis(total_events=len(materialized))
+        return InjectionAnalysis(
+            total_events=len(materialized),
+            reality_signal_available=reality_signal_available,
+        )
 
     items = [{"id": key, "content": distinct[key].content} for key in distinct_order]
 
@@ -235,6 +287,37 @@ def analyze_injection_events(
         for candidate in find_supersession_candidates(items)
     )
 
+    # M3F3: advisory repo-reality warnings. Only unambiguous mismatches are
+    # surfaced; match/unknown/unsupported are intentionally silent (never scary).
+    # The repo signal was computed by the caller — this stays pure.
+    reality_warnings: list[RealityWarning] = []
+    if usable_signals:
+        for key in distinct_order:
+            fact = distinct[key]
+            primary = fact.occurrences[0]
+            for dimension, repo_value in usable_signals.items():
+                check = check_fact_against_signal(dimension, fact.content, repo_value)
+                if check.status != REALITY_MISMATCH:
+                    continue
+                reality_warnings.append(RealityWarning(
+                    warning_type=REALITY_MISMATCH_CANDIDATE,
+                    dimension=dimension,
+                    status=check.status,
+                    fact_id=fact.fact_id,
+                    event_id=primary.event_id,
+                    role=primary.role,
+                    chunk_number=primary.chunk_number,
+                    memory_content=fact.content,
+                    memory_value=check.memory_value,
+                    repo_value=check.repo_value,
+                    reason=(
+                        "Repo signal suggests this memory may be outdated: memory "
+                        f"indicates '{check.memory_value}' but the repository "
+                        f"signal indicates '{check.repo_value}' for {dimension}. "
+                        "Advisory candidate only; the system did not change memory."
+                    ),
+                ))
+
     return InjectionAnalysis(
         total_events=len(materialized),
         total_included_entries=total_included,
@@ -243,4 +326,7 @@ def analyze_injection_events(
         supersession_candidate_count=len(supersessions),
         duplicate_candidates=duplicates,
         supersession_candidates=supersessions,
+        reality_signal_available=reality_signal_available,
+        reality_warning_count=len(reality_warnings),
+        reality_warnings=tuple(reality_warnings),
     )

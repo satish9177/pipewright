@@ -42,6 +42,7 @@ from backend.memory.prompt_builder import (
 from backend.memory.repo_reality import verify_project_db_memory_against_repo
 from backend.memory.run_outcome_suggestions import generate_run_memory_suggestions
 from backend.projects.project_store import get_project
+from backend.repo.repo_fingerprint import build_repo_fingerprint
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/memory")
 
@@ -848,12 +849,15 @@ def list_run_memory_injections(
     return {"run_id": run_id, "events": shaped}
 
 
-# Read-only memory injection ANALYSIS (M3C2). A dedicated sibling of the list
-# endpoint so the default provenance payload stays byte-identical and the Run
+# Read-only memory injection ANALYSIS (M3C2 + M3F3). A dedicated sibling of the
+# list endpoint so the default provenance payload stays byte-identical and the Run
 # Detail read model is never bloated. Analysis is computed on read from the
 # immutable M3C1 snapshots via the pure M3B trust helpers: it triggers no GitHub,
-# no LLM, no repo scan, no git, and no memory mutation. Every candidate is
-# advisory only — never an automatic truth/supersession decision.
+# no LLM, no git, and no memory mutation. M3F3 additionally surfaces advisory
+# repo-reality warnings; the repo signal is extracted on THIS read path via the
+# capped, traversal-safe repo_fingerprint (never inside prompt_builder, never
+# during injection), and ambiguous/unknown signals never warn. Every candidate /
+# warning is advisory only — never an automatic truth/supersession/stale decision.
 
 
 class MemoryInjectionAnalysisRef(BaseModel):
@@ -888,6 +892,21 @@ class MemoryInjectionSupersessionCandidate(BaseModel):
     advisory_only: bool = True
 
 
+class MemoryInjectionRealityWarning(BaseModel):
+    warning_type: str = "reality_mismatch_candidate"
+    dimension: str
+    status: str
+    fact_id: str | None = None
+    event_id: str | None = None
+    role: str | None = None
+    chunk_number: int | None = None
+    memory_content: str = ""
+    memory_value: str | None = None
+    repo_value: str | None = None
+    reason: str = ""
+    advisory_only: bool = True
+
+
 class MemoryInjectionAnalysisBody(BaseModel):
     total_events: int = 0
     total_included_entries: int = 0
@@ -897,6 +916,10 @@ class MemoryInjectionAnalysisBody(BaseModel):
     duplicate_candidates: list[MemoryInjectionDuplicateCandidate] = []
     supersession_candidates: list[MemoryInjectionSupersessionCandidate] = []
     warnings: list[str] = []
+    # M3F3 read-only repo-reality warnings (advisory only; only mismatches).
+    reality_signal_available: bool = False
+    reality_warning_count: int = 0
+    reality_warnings: list[MemoryInjectionRealityWarning] = []
 
 
 class MemoryInjectionAnalysisResponse(BaseModel):
@@ -949,7 +972,55 @@ def _analysis_for_response(analysis) -> dict:
             for candidate in analysis.supersession_candidates
         ],
         "warnings": list(analysis.warnings),
+        "reality_signal_available": analysis.reality_signal_available,
+        "reality_warning_count": analysis.reality_warning_count,
+        "reality_warnings": [
+            {
+                "warning_type": warning.warning_type,
+                "dimension": warning.dimension,
+                "status": warning.status,
+                "fact_id": warning.fact_id,
+                "event_id": warning.event_id,
+                "role": warning.role,
+                "chunk_number": warning.chunk_number,
+                "memory_content": warning.memory_content,
+                "memory_value": warning.memory_value,
+                "repo_value": warning.repo_value,
+                "reason": warning.reason,
+                "advisory_only": warning.advisory_only,
+            }
+            for warning in analysis.reality_warnings
+        ],
     }
+
+
+def _repo_reality_signals(project_id: str) -> dict[str, str]:
+    """
+    Best-effort, read-only repo-reality signals for advisory M3F3 warnings.
+
+    Computed OUTSIDE prompt_builder, on the analysis read path only, via the
+    existing capped/traversal-safe repo_fingerprint abstraction (the same one
+    /memory/verify-repo uses). Returns ``{dimension: canonical_value}`` and is
+    conservative by construction:
+      - missing project / missing repo_path -> {}
+      - unknown or AMBIGUOUS repo signal    -> {} (ambiguity never warns)
+      - any failure                         -> {} (analysis never fails on this)
+    Only an unambiguous, present signal is returned.
+    """
+    try:
+        project = get_project(project_id)
+        if not project:
+            return {}
+        repo_path = (project.get("repo_path") or "").strip()
+        if not repo_path:
+            return {}
+        fingerprint = build_repo_fingerprint(repo_path)
+        signals: dict[str, str] = {}
+        if fingerprint.db is not None and not fingerprint.db_ambiguous:
+            signals["db_engine"] = fingerprint.db.value
+        return signals
+    except Exception:
+        return {}
 
 
 @memory_injections_router.get(
@@ -962,10 +1033,14 @@ def analyze_run_memory_injections(
 ):
     """
     Read-only advisory analysis of the memory injected for this run: possible
-    duplicate and possible supersession candidates among the injected facts,
-    computed on read from the immutable provenance snapshots. Project-scoped to
-    the run's owning project. Returns empty analysis for runs with no recorded
-    provenance. No mutation, no external calls, no automatic decisions.
+    duplicate and possible supersession candidates among the injected facts, plus
+    advisory repo-reality warnings (M3F3) when an unambiguous repo signal is
+    available. Computed on read from the immutable provenance snapshots; the repo
+    signal is extracted here (read path) via the capped, traversal-safe
+    repo_fingerprint, never in prompt_builder and never during injection.
+    Project-scoped to the run's owning project. Returns empty analysis for runs
+    with no recorded provenance. No mutation, no GitHub/LLM/git calls, no
+    automatic decisions; ambiguous/unknown repo signals never warn.
     """
     project_id = _resolve_run_project_id(run_id)
     events = list_memory_injection_events(
@@ -974,5 +1049,8 @@ def analyze_run_memory_injections(
         chunk_number=chunk_number,
         role=role,
     )
-    analysis = analyze_injection_events(events)
+    # M3F3: compute repo-reality signals on the read path (never in prompt_builder,
+    # never during injection). Best-effort: no signal -> no reality warnings.
+    repo_signals = _repo_reality_signals(project_id) if project_id else {}
+    analysis = analyze_injection_events(events, repo_signals=repo_signals or None)
     return {"run_id": run_id, "analysis": _analysis_for_response(analysis)}

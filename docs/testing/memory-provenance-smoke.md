@@ -156,6 +156,20 @@ Use the standard local setup — do not invent new commands:
 - [ ] In Run Detail, a budget-dropped `security`/`forbidden_paths` fact shows the
       "Safety memory was budget-dropped." highlight.
 
+### Repo-reality warnings (M3F3)
+
+- [ ] `GET /…/memory-injections/analysis` includes `reality_signal_available`,
+      `reality_warning_count`, and `reality_warnings` (advisory-only).
+- [ ] When the project's repo has an **unambiguous** DB signal that disagrees with
+      an injected `db` fact (e.g. repo says MongoDB, memory says PostgreSQL), one
+      `reality_mismatch_candidate` warning appears — and the fact is **not** marked
+      stale (the analysis endpoint never mutates; only `/memory/verify-repo` does).
+- [ ] **Ambiguous** or **unknown** repo signals produce **no** warning
+      (`reality_signal_available: false`); `match`/`unknown`/`unsupported` never
+      show a scary warning.
+- [ ] In Run Detail, the "Repo reality warnings" section is read-only with no
+      action buttons and the copy "The system did not change memory."
+
 ## 7. Smoke checklist — analysis endpoint (M3C2)
 
 - [ ] `GET /api/v1/runs/{run_id}/memory-injections/analysis` returns summary
