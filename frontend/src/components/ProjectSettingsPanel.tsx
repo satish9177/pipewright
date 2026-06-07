@@ -1,6 +1,8 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
+  IndexFreshnessResponse,
+  IndexFreshnessSummary,
   PrMode,
   Project,
   ProjectDetectResponse,
@@ -100,6 +102,32 @@ function formatIndexedAt(value: string | null | undefined): string {
   return date.toLocaleString()
 }
 
+function freshnessStateLabel(value: string | undefined): string {
+  if (!value) return 'Unknown'
+  return value.replace(/_/g, ' ')
+}
+
+function checkoutSummary(summary: IndexFreshnessSummary | null | undefined) {
+  if (!summary) return 'Unavailable'
+  const branch = summary.detached
+    ? summary.detached_head_label ?? 'detached HEAD'
+    : summary.branch_name ?? 'unknown branch'
+  const head = summary.head_sha_short ?? 'unknown'
+  return `${branch}@${head}`
+}
+
+function isSoftStale(freshness: IndexFreshnessResponse) {
+  const softReasons = new Set([
+    'dirty_digest_mismatch',
+    'index_row_count_mismatch',
+  ])
+  return (
+    freshness.state === 'stale' &&
+    freshness.reasons.length > 0 &&
+    freshness.reasons.every(reason => softReasons.has(reason))
+  )
+}
+
 export default function ProjectSettingsPanel({
   project,
 }: ProjectSettingsPanelProps) {
@@ -127,6 +155,10 @@ export default function ProjectSettingsPanel({
     queryFn: () => projectsApi.getIndexStatus(project.id),
   })
 
+  const freshnessMutation = useMutation({
+    mutationFn: () => projectsApi.getIndexFreshness(project.id),
+  })
+
   const reindexMutation = useMutation({
     mutationFn: () => projectsApi.reindex(project.id),
     onSuccess: (data: ProjectReindexResponse) => {
@@ -141,6 +173,7 @@ export default function ProjectSettingsPanel({
         indexed_at: data.indexed_at,
         status: data.files_indexed > 0 ? 'indexed' : 'not_indexed',
       })
+      freshnessMutation.reset()
       queryClient.invalidateQueries({ queryKey: ['project-index', project.id] })
     },
     onError: (reindexErr: unknown) => {
@@ -155,7 +188,14 @@ export default function ProjectSettingsPanel({
     reindexMutation.mutate()
   }
 
+  const handleFreshnessCheck = () => {
+    freshnessMutation.mutate()
+  }
+
   useEffect(() => {
+    // Existing form behavior: reset editable fields when the selected project
+    // changes underneath this panel.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setBasic(basicFromProject(project))
     setGithub(githubFromProject(project))
     setMode(normalizeMode(project.pr_mode))
@@ -292,6 +332,95 @@ export default function ProjectSettingsPanel({
               </div>
             </div>
           )}
+
+          <div className="grid gap-3 rounded border border-dashed p-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium">Index freshness</p>
+                <p className="text-xs text-muted-foreground">
+                  Checks the current checkout against the last repository index.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleFreshnessCheck}
+                disabled={freshnessMutation.isPending}
+              >
+                {freshnessMutation.isPending
+                  ? 'Checking...'
+                  : freshnessMutation.data
+                  ? 'Refresh freshness status'
+                  : 'Check freshness'}
+              </Button>
+            </div>
+
+            {freshnessMutation.isError && (
+              <p className="text-sm font-medium text-red-500">
+                Freshness status unavailable.
+              </p>
+            )}
+
+            {freshnessMutation.data && (
+              <div className="grid gap-3 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline">
+                    {freshnessStateLabel(freshnessMutation.data.state)}
+                  </Badge>
+                  {freshnessMutation.data.index_row_count != null && (
+                    <Badge variant="outline">
+                      {freshnessMutation.data.index_row_count} indexed rows
+                    </Badge>
+                  )}
+                </div>
+
+                {isSoftStale(freshnessMutation.data) && (
+                  <p className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
+                    Repository changed since last index. Re-index to refresh.
+                  </p>
+                )}
+
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div>
+                    <p className="font-medium">Current checkout</p>
+                    <p className="font-mono text-xs text-muted-foreground">
+                      {checkoutSummary(freshnessMutation.data.current)}
+                    </p>
+                    {freshnessMutation.data.current?.dirty_files_count != null && (
+                      <p className="text-xs text-muted-foreground">
+                        Dirty files:{' '}
+                        {freshnessMutation.data.current.dirty_files_count}
+                      </p>
+                    )}
+                  </div>
+                  <div>
+                    <p className="font-medium">Indexed checkout</p>
+                    <p className="font-mono text-xs text-muted-foreground">
+                      {checkoutSummary(freshnessMutation.data.indexed)}
+                    </p>
+                    {freshnessMutation.data.indexed?.dirty_files_count != null && (
+                      <p className="text-xs text-muted-foreground">
+                        Dirty files:{' '}
+                        {freshnessMutation.data.indexed.dirty_files_count}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {freshnessMutation.data.reasons.length > 0 && (
+                  <div>
+                    <p className="font-medium">Reasons</p>
+                    <ul className="mt-1 list-disc pl-5 text-muted-foreground">
+                      {freshnessMutation.data.reasons.map(reason => (
+                        <li key={reason}>{reason}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           {reindexMessage && (
             <p className="text-sm font-medium text-green-600">

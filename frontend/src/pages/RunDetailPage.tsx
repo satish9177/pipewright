@@ -1,12 +1,22 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { runsApi, gatesApi, projectsApi, memoryApi, ApprovalGate } from '@/api/client'
+import {
+  runsApi,
+  gatesApi,
+  projectsApi,
+  memoryApi,
+  ApprovalGate,
+  isNoRunResponse,
+  isStaleIndexResponse,
+  isStartContextDriftedResponse,
+} from '@/api/client'
 import type {
   ChunkPlanResponse,
   Run,
   RunStatus,
   RunMemorySuggestionGenerateResponse,
+  StartContextDriftedResponse,
   TestRunVerdict,
 } from '@/api/client'
 import { Button } from '@/components/ui/button'
@@ -93,6 +103,29 @@ function getErrorMessage(error: unknown, fallback: string) {
   }
 
   return fallback
+}
+
+function getResponseData(error: unknown): unknown {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'response' in error
+  ) {
+    return (error as { response?: { data?: unknown } }).response?.data
+  }
+  return undefined
+}
+
+function noRunHandoffMessage(data: unknown): string {
+  if (!isNoRunResponse(data)) return 'Failed to start implementation.'
+  const backendMessage = data.message ? `${data.message} ` : ''
+  if (isStaleIndexResponse(data)) {
+    return `${backendMessage}Re-index the repository, then submit again.`
+  }
+  if (data.current_branch == null) {
+    return `${backendMessage}Detached HEAD is not a safe start point. Checkout the branch you want Pipewright to start from, then submit again.`
+  }
+  return `${backendMessage}Checkout the branch you want Pipewright to start from, then submit again.`
 }
 
 // Human-readable copy for the backend's stable retry_ineligible reasons (#26E2).
@@ -376,6 +409,8 @@ export default function RunDetailPage() {
   const [chunkExecutionError, setChunkExecutionError] = useState<string | null>(
     null
   )
+  const [startContextDrift, setStartContextDrift] =
+    useState<StartContextDriftedResponse | null>(null)
   const [chunkActionMessage, setChunkActionMessage] = useState<string | null>(
     null
   )
@@ -516,6 +551,7 @@ export default function RunDetailPage() {
       setChunkPlanActionError(null)
       setChunkExecutionMessage(null)
       setChunkExecutionError(null)
+      setStartContextDrift(null)
       setChunkActionMessage(null)
       setChunkActionError(null)
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
@@ -536,6 +572,7 @@ export default function RunDetailPage() {
       setChunkPlanActionError(null)
       setChunkExecutionMessage(null)
       setChunkExecutionError(null)
+      setStartContextDrift(null)
       setChunkActionMessage(null)
       setChunkActionError(null)
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
@@ -556,6 +593,7 @@ export default function RunDetailPage() {
         response.message || 'Chunk execution started.'
       )
       setChunkExecutionError(null)
+      setStartContextDrift(null)
       setChunkActionMessage(null)
       setChunkActionError(null)
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
@@ -564,9 +602,14 @@ export default function RunDetailPage() {
     },
     onError: (error: unknown) => {
       setChunkExecutionMessage(null)
-      setChunkExecutionError(
-        getErrorMessage(error, 'Failed to execute chunks.')
-      )
+      const data = getResponseData(error)
+      if (isStartContextDriftedResponse(data)) {
+        setChunkExecutionError(null)
+        setStartContextDrift(data)
+        return
+      }
+      setStartContextDrift(null)
+      setChunkExecutionError(getErrorMessage(error, 'Failed to execute chunks.'))
     },
   })
 
@@ -575,6 +618,7 @@ export default function RunDetailPage() {
     onSuccess: (response) => {
       setChunkExecutionMessage(response.message || 'Chunked run resumed.')
       setChunkExecutionError(null)
+      setStartContextDrift(null)
       setChunkActionMessage(null)
       setChunkActionError(null)
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
@@ -583,6 +627,7 @@ export default function RunDetailPage() {
     },
     onError: (error: unknown) => {
       setChunkExecutionMessage(null)
+      setStartContextDrift(null)
       setChunkExecutionError(getErrorMessage(error, 'Failed to resume run.'))
     },
   })
@@ -772,10 +817,23 @@ export default function RunDetailPage() {
   const startImplementationMutation = useMutation({
     mutationFn: () => runsApi.startImplementation(runId!),
     onSuccess: (response) => {
+      if (isNoRunResponse(response)) {
+        setStartImplementationError(noRunHandoffMessage(response))
+        return
+      }
+      if (!response.run_id) {
+        setStartImplementationError('Implementation run was not created.')
+        return
+      }
       setStartImplementationError(null)
       navigate(`/runs/${response.run_id}`)
     },
     onError: (error: unknown) => {
+      const data = getResponseData(error)
+      if (isNoRunResponse(data)) {
+        setStartImplementationError(noRunHandoffMessage(data))
+        return
+      }
       setStartImplementationError(
         getErrorMessage(error, 'Failed to start implementation.'),
       )
@@ -919,6 +977,7 @@ export default function RunDetailPage() {
             error={chunkPlanActionError}
             executionMessage={chunkExecutionMessage}
             executionError={chunkExecutionError}
+            startContextDrift={startContextDrift}
             chunkActionMessage={chunkActionMessage}
             chunkActionError={chunkActionError}
             hiddenApprovalChunkNumbers={gateBackedApprovalChunkNumbers}
