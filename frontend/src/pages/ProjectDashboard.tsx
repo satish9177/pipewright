@@ -5,9 +5,13 @@ import {
   projectsApi,
   runsApi,
   isNeedsClarification,
+  isStaleIndexResponse,
+  isUnsafeStartBranchResponse,
   PipelineRun,
   NeedsClarificationResponse,
   ChunkedRunResult,
+  StaleIndexResponse,
+  UnsafeStartBranchResponse,
 } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -33,6 +37,8 @@ export default function ProjectDashboard() {
   const [lastRunId, setLastRunId] = useState<string | null>(null)
   const [clarification, setClarification] =
     useState<NeedsClarificationResponse | null>(null)
+  const [noRunResponse, setNoRunResponse] =
+    useState<StaleIndexResponse | UnsafeStartBranchResponse | null>(null)
   const [selectionReply, setSelectionReply] = useState('')
 
   const { data: project, isLoading: projectLoading } = useQuery({
@@ -67,17 +73,54 @@ export default function ProjectDashboard() {
     return 'Failed to create chunked run'
   }
 
+  function noRunTitle(
+    response: StaleIndexResponse | UnsafeStartBranchResponse,
+  ) {
+    if (isStaleIndexResponse(response)) return 'Repository index is stale'
+    return 'Unsafe start branch'
+  }
+
+  function noRunGuidance(
+    response: StaleIndexResponse | UnsafeStartBranchResponse,
+  ) {
+    if (isStaleIndexResponse(response)) {
+      return 'Re-index the repository, then submit again.'
+    }
+    if (response.current_branch?.startsWith('pipewright/')) {
+      return 'Checkout the branch you want Pipewright to start from, then submit again.'
+    }
+    if (response.current_branch == null) {
+      return 'Detached HEAD is not a safe start point. Checkout the branch you want Pipewright to start from, then submit again.'
+    }
+    return 'Checkout the branch you want Pipewright to start from, then submit again.'
+  }
+
   // Shared outcome handler for both the initial request and a clarification
   // selection: a real plan navigates to the run; a needs_clarification response
   // re-renders the clarification (with a refreshed clarification_id).
   function handleChunkedResult(data: ChunkedRunResult) {
     setSubmitError(null)
+    setNoRunResponse(null)
     if (isNeedsClarification(data)) {
       // No run was created. Ask for details / a file choice instead of
       // navigating to a run that does not exist.
       setClarification(data)
       setSelectionReply('')
       setLastRunId(null)
+      return
+    }
+    if (isStaleIndexResponse(data) || isUnsafeStartBranchResponse(data)) {
+      setClarification(null)
+      setSelectionReply('')
+      setLastRunId(null)
+      setNoRunResponse(data)
+      return
+    }
+    if (!data.run_id) {
+      setClarification(null)
+      setSelectionReply('')
+      setLastRunId(null)
+      setSubmitError('Run was not created. Review the repository state and try again.')
       return
     }
     setClarification(null)
@@ -93,6 +136,7 @@ export default function ProjectDashboard() {
     onSuccess: handleChunkedResult,
     onError: (error: unknown) => {
       setClarification(null)
+      setNoRunResponse(null)
       setSubmitError(getSubmitError(error))
     },
   })
@@ -110,6 +154,27 @@ export default function ProjectDashboard() {
       return runsApi.selectClarification(clarificationId, projectId!, selection)
     },
     onSuccess: handleChunkedResult,
+    onError: (error: unknown) => {
+      setNoRunResponse(null)
+      setSubmitError(getSubmitError(error))
+    },
+  })
+
+  const reindexMutation = useMutation({
+    mutationFn: () => projectsApi.reindex(projectId!),
+    onSuccess: () => {
+      setSubmitError(null)
+      setClarification(null)
+      setSelectionReply('')
+      setNoRunResponse({
+        status: 'stale_index',
+        outcome: 'stale_index',
+        run_created: false,
+        message: 'Re-indexed - submit again.',
+        recommended_action: 'reindex',
+      })
+      queryClient.invalidateQueries({ queryKey: ['project-index', projectId] })
+    },
     onError: (error: unknown) => {
       setSubmitError(getSubmitError(error))
     },
@@ -197,6 +262,46 @@ export default function ProjectDashboard() {
             {submitError && (
               <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
                 {submitError}
+              </div>
+            )}
+            {noRunResponse && (
+              <div className="grid gap-3 rounded border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+                <div>
+                  <p className="font-semibold">{noRunTitle(noRunResponse)}</p>
+                  {noRunResponse.message && (
+                    <p className="mt-1">{noRunResponse.message}</p>
+                  )}
+                  <p className="mt-1">{noRunGuidance(noRunResponse)}</p>
+                </div>
+                {isUnsafeStartBranchResponse(noRunResponse) && (
+                  <div className="grid gap-1 text-xs text-amber-800 sm:grid-cols-2">
+                    <div>
+                      <span className="font-medium">Current branch: </span>
+                      {noRunResponse.current_branch ?? 'detached HEAD'}
+                    </div>
+                    {noRunResponse.current_head_sha_short && (
+                      <div>
+                        <span className="font-medium">HEAD: </span>
+                        {noRunResponse.current_head_sha_short}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {isStaleIndexResponse(noRunResponse) && (
+                  <div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => reindexMutation.mutate()}
+                      disabled={reindexMutation.isPending}
+                    >
+                      {reindexMutation.isPending
+                        ? 'Re-indexing...'
+                        : 'Re-index repository'}
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
             {clarification && (

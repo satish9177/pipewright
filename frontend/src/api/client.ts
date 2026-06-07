@@ -150,6 +150,37 @@ export interface ProjectIndexStatus extends ExtraFields {
   status: ProjectIndexState
 }
 
+export type IndexFreshnessState =
+  | 'current'
+  | 'stale'
+  | 'unknown'
+  | 'missing'
+  | (string & {})
+
+export interface IndexFreshnessSummary extends ExtraFields {
+  branch_name?: string | null
+  detached?: boolean | null
+  detached_head_label?: string | null
+  head_sha_short?: string | null
+  dirty_files_count?: number | null
+  git_available?: boolean | null
+  is_git_repo?: boolean | null
+  index_row_count?: number | null
+  captured_at?: string | null
+  updated_at?: string | null
+  snapshot_state?: string | null
+}
+
+export interface IndexFreshnessResponse extends ExtraFields {
+  state: IndexFreshnessState
+  reasons: string[]
+  current?: IndexFreshnessSummary | null
+  indexed?: IndexFreshnessSummary | null
+  index_row_count?: number | null
+  has_index_rows?: boolean
+  has_snapshot?: boolean
+}
+
 export interface ProjectReindexResponse extends ExtraFields {
   status: string
   project_id: string
@@ -443,17 +474,98 @@ export interface NeedsClarificationResponse extends ExtraFields {
   clarification_id?: string
 }
 
+export interface StaleIndexResponse extends ExtraFields {
+  status: 'stale_index'
+  outcome?: 'stale_index'
+  run_created: false
+  intent?: RunIntent
+  project_id?: string
+  recommended_action?: 'reindex' | (string & {})
+  reindex_endpoint?: string
+  message?: string
+  index_freshness?: IndexFreshnessResponse
+}
+
+export interface UnsafeStartBranchResponse extends ExtraFields {
+  status: 'unsafe_start_branch'
+  outcome?: 'unsafe_start_branch'
+  run_created: false
+  message?: string
+  current_branch?: string | null
+  current_head_sha_short?: string | null
+  recommended_action?: 'checkout_start_branch' | (string & {})
+}
+
+export interface StartContextRef extends ExtraFields {
+  branch?: string | null
+  head_sha_short?: string | null
+}
+
+export interface StartContextDriftedResponse extends ExtraFields {
+  status?: 'start_context_drifted'
+  outcome?: 'start_context_drifted'
+  status_code?: 409 | number
+  message?: string
+  captured_start?: StartContextRef | null
+  current?: StartContextRef | null
+}
+
 export interface ClarificationSelectionRequest {
   project_id: string
   selection: string
 }
 
-export type ChunkedRunResult = ChunkPlanResponse | NeedsClarificationResponse
+export type ChunkedRunResult =
+  | ChunkPlanResponse
+  | NeedsClarificationResponse
+  | StaleIndexResponse
+  | UnsafeStartBranchResponse
+
+function hasStatus(value: unknown, status: string) {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { status?: unknown }).status === status
+  )
+}
+
+export function isNeedsClarificationResponse(
+  value: unknown,
+): value is NeedsClarificationResponse {
+  return hasStatus(value, 'needs_clarification')
+}
 
 export function isNeedsClarification(
   value: ChunkedRunResult,
 ): value is NeedsClarificationResponse {
-  return (value as NeedsClarificationResponse).status === 'needs_clarification'
+  return isNeedsClarificationResponse(value)
+}
+
+export function isStaleIndexResponse(
+  value: unknown,
+): value is StaleIndexResponse {
+  return hasStatus(value, 'stale_index')
+}
+
+export function isUnsafeStartBranchResponse(
+  value: unknown,
+): value is UnsafeStartBranchResponse {
+  return hasStatus(value, 'unsafe_start_branch')
+}
+
+export function isNoRunResponse(
+  value: unknown,
+): value is StaleIndexResponse | UnsafeStartBranchResponse {
+  return isStaleIndexResponse(value) || isUnsafeStartBranchResponse(value)
+}
+
+export function isStartContextDriftedResponse(
+  value: unknown,
+): value is StartContextDriftedResponse {
+  if (typeof value !== 'object' || value === null) return false
+  const status = (value as StartContextDriftedResponse).status
+  const outcome = (value as StartContextDriftedResponse).outcome
+  return status === 'start_context_drifted' || outcome === 'start_context_drifted'
 }
 
 export type ChunkedRunResponse = ChunkPlanResponse
@@ -946,6 +1058,10 @@ export const projectsApi = {
     api
       .get<ProjectIndexStatus>(`/projects/${id}/index`)
       .then(r => r.data),
+  getIndexFreshness: (id: string) =>
+    api
+      .get<IndexFreshnessResponse>(`/projects/${id}/index/freshness`)
+      .then(r => r.data),
   reindex: (id: string) =>
     api
       .post<ProjectReindexResponse>(`/projects/${id}/reindex`)
@@ -1043,7 +1159,7 @@ export const runsApi = {
   getPrStatus: (runId: string) =>
     api.get<PrStatus>(`/runs/${runId}/pr-status`).then(r => r.data),
   startImplementation: (runId: string) =>
-    api.post<ChunkPlanResponse>(
+    api.post<ChunkedRunResult>(
       `/runs/${runId}/start-implementation`,
     ).then(r => r.data),
 }

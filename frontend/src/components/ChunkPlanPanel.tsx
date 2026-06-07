@@ -3,6 +3,7 @@ import type {
   ChunkDefinition,
   ChunkPlanResponse,
   ChunkStatus,
+  StartContextDriftedResponse,
   TestRunValidation,
 } from '@/api/client'
 import { Badge } from '@/components/ui/badge'
@@ -40,6 +41,7 @@ interface ChunkPlanPanelProps {
   error: string | null
   executionMessage: string | null
   executionError: string | null
+  startContextDrift?: StartContextDriftedResponse | null
   chunkActionMessage: string | null
   chunkActionError: string | null
   hiddenApprovalChunkNumbers?: number[]
@@ -137,6 +139,7 @@ export default function ChunkPlanPanel({
   error,
   executionMessage,
   executionError,
+  startContextDrift = null,
   chunkActionMessage,
   chunkActionError,
   hiddenApprovalChunkNumbers = [],
@@ -236,6 +239,41 @@ export default function ChunkPlanPanel({
                 <p className="text-sm font-medium text-red-500">
                   {executionError}
                 </p>
+              )}
+              {startContextDrift && (
+                <div className="grid gap-3 rounded border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+                  <div>
+                    <p className="font-semibold">Start context changed</p>
+                    {startContextDrift.message && (
+                      <p className="mt-1">{startContextDrift.message}</p>
+                    )}
+                    <p className="mt-1">
+                      Checkout the original start branch and execute again, or
+                      create a new run for the current branch.
+                    </p>
+                  </div>
+                  <div className="grid gap-2 text-xs sm:grid-cols-2">
+                    <div>
+                      <p className="font-medium">Planned against</p>
+                      <p className="font-mono">
+                        {startContextDrift.captured_start?.branch ??
+                          'unknown'}
+                        @
+                        {startContextDrift.captured_start?.head_sha_short ??
+                          'unknown'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="font-medium">Current checkout</p>
+                      <p className="font-mono">
+                        {startContextDrift.current?.branch ?? 'detached HEAD'}
+                        @
+                        {startContextDrift.current?.head_sha_short ??
+                          'unknown'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
               )}
 
               <div className="flex flex-wrap gap-3">
