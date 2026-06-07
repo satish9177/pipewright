@@ -35,7 +35,10 @@ from backend.memory.memory_store import (
     validate_lifecycle_reason,
     verify_fact,
 )
-from backend.memory.prompt_builder import ROLE_CATEGORIES, build_project_memory_block
+from backend.memory.prompt_builder import (
+    ROLE_CATEGORIES,
+    build_project_memory_block_detailed,
+)
 from backend.memory.repo_reality import verify_project_db_memory_against_repo
 from backend.memory.run_outcome_suggestions import generate_run_memory_suggestions
 from backend.projects.project_store import get_project
@@ -164,11 +167,25 @@ class MemoryVerifyResponse(BaseModel):
     last_verified_at: str
 
 
+class MemoryPreviewExcludedEntry(BaseModel):
+    fact_id: str | None = None
+    content: str
+    category: str | None = None
+    scope: str | None = None
+    priority: int | None = None
+    status_at_injection: str | None = None
+    exclusion_reason: str | None = None
+
+
 class MemoryPromptPreviewResponse(BaseModel):
     project_id: str
     role: str | None
     memory_block: str
     empty: bool
+    # M3F2a: read-only, computed-live structured exclusions for this preview.
+    # Same single computation that produces memory_block — never a second pass,
+    # never persisted. Surfaces budget_dropped + category_not_allowed_for_role.
+    excluded_entries: list[MemoryPreviewExcludedEntry] = []
 
 
 class RepoRealityEvidence(BaseModel):
@@ -459,7 +476,11 @@ def preview_memory_prompt(
     if role is not None and role not in ROLE_CATEGORIES:
         raise HTTPException(status_code=422, detail="Invalid memory role")
 
-    memory_block = build_project_memory_block(
+    # Use the detailed builder so the structured exclusions come from the SAME
+    # computation that renders the block — there is no second exclusion pass and
+    # nothing is persisted. memory_block is byte-identical to the legacy
+    # build_project_memory_block output (which delegates to this same function).
+    result = build_project_memory_block_detailed(
         project_id=project_id,
         role=role,
         project_name=project.get("name"),
@@ -468,8 +489,22 @@ def preview_memory_prompt(
     return {
         "project_id": project_id,
         "role": role,
-        "memory_block": memory_block,
-        "empty": memory_block == "",
+        "memory_block": result.block,
+        "empty": result.block == "",
+        "excluded_entries": [
+            {
+                # content_hash intentionally omitted for parity with the rest of
+                # the memory API.
+                "fact_id": entry.fact_id,
+                "content": entry.content,
+                "category": entry.category,
+                "scope": entry.scope,
+                "priority": entry.priority,
+                "status_at_injection": entry.status_at_injection,
+                "exclusion_reason": entry.exclusion_reason,
+            }
+            for entry in result.excluded_entries
+        ],
     }
 
 
@@ -727,6 +762,8 @@ class MemoryInjectionEntryResponse(BaseModel):
     scope: str | None = None
     priority: int | None = None
     status_at_injection: str | None = None
+    # M3F2a: None for included entries; a deterministic reason for excluded ones.
+    exclusion_reason: str | None = None
 
 
 class MemoryInjectionEventResponse(BaseModel):
@@ -773,6 +810,7 @@ def _entry_for_response(entry: dict) -> dict:
         "scope": entry.get("scope"),
         "priority": entry.get("priority"),
         "status_at_injection": entry.get("status_at_injection"),
+        "exclusion_reason": entry.get("exclusion_reason"),
     }
 
 

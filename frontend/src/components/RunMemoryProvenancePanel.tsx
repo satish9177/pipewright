@@ -54,6 +54,51 @@ function shortId(value?: string | null): string {
   return value ? value.slice(0, 10) : 'none'
 }
 
+// M3F2a: read-only labels for deterministic exclusion reasons.
+const EXCLUSION_REASON_LABELS: Record<string, string> = {
+  budget_dropped:
+    'In-policy but not injected because the role memory budget was full.',
+  category_not_allowed_for_role:
+    'Not injected because this role does not use this memory category.',
+}
+
+const SAFETY_CATEGORIES = new Set(['security', 'forbidden_paths'])
+
+function exclusionReasonLabel(reason?: string | null): string {
+  if (!reason) return 'Not injected into the prompt for this role.'
+  return EXCLUSION_REASON_LABELS[reason] ?? `Not injected for this role (${reason}).`
+}
+
+function isSafetyBudgetDrop(entry: MemoryInjectionEntry): boolean {
+  return (
+    entry.exclusion_reason === 'budget_dropped' &&
+    !!entry.category &&
+    SAFETY_CATEGORIES.has(entry.category)
+  )
+}
+
+function summarizeExclusions(entries: MemoryInjectionEntry[]): string {
+  const counts = new Map<string, number>()
+  for (const entry of entries) {
+    const reason = entry.exclusion_reason || 'other'
+    counts.set(reason, (counts.get(reason) ?? 0) + 1)
+  }
+  const parts: string[] = []
+  const budget = counts.get('budget_dropped')
+  if (budget) parts.push(`${budget} budget-dropped`)
+  const category = counts.get('category_not_allowed_for_role')
+  if (category) parts.push(`${category} out-of-policy for this role`)
+  for (const [reason, count] of counts) {
+    if (
+      reason !== 'budget_dropped' &&
+      reason !== 'category_not_allowed_for_role'
+    ) {
+      parts.push(`${count} ${reason}`)
+    }
+  }
+  return parts.join(', ')
+}
+
 function TraceRef({ refInfo }: { refInfo: MemoryInjectionAnalysisRef }) {
   const parts = [
     refInfo.role || 'unknown role',
@@ -102,8 +147,13 @@ function EntryRow({
       <p className="text-xs text-muted-foreground">
         {included
           ? 'as injected during this run'
-          : 'not injected into the prompt for this role'}
+          : exclusionReasonLabel(entry.exclusion_reason)}
       </p>
+      {!included && isSafetyBudgetDrop(entry) && (
+        <p className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700">
+          Safety memory was budget-dropped.
+        </p>
+      )}
     </li>
   )
 }
@@ -166,8 +216,16 @@ function EventCard({ event }: { event: MemoryInjectionEvent }) {
       {event.excluded_entries.length > 0 && (
         <details className="rounded-lg bg-muted/30 px-3 py-2">
           <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-            In-policy but not injected because the role memory budget was full
+            Considered but not injected ({event.excluded_entries.length})
           </summary>
+          {event.excluded_entries.some(isSafetyBudgetDrop) && (
+            <p className="mt-2 rounded border border-red-300 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700">
+              Safety memory was budget-dropped.
+            </p>
+          )}
+          <p className="mt-1 text-xs text-muted-foreground">
+            {summarizeExclusions(event.excluded_entries)}
+          </p>
           <p className="mt-1 text-xs text-muted-foreground">
             These entries did not influence this run.
           </p>
