@@ -376,11 +376,12 @@ fingerprint only before the scan can be wrong if `HEAD` or dirty state changes
 while scanning. Safer options are to capture after the scan, or capture before
 and after the scan and mark the index unknown/stale when they differ.
 
-Persistence is an explicit #34B prerequisite. This audit says future code should
-load the last index fingerprint, but #34A does not decide where that identity
-lives. #34B must choose between a new table, additive columns, or another local
-sidecar/store. Unlike the earlier #19 index-refresh work, #34B may need an
-additive schema change.
+#34B persistence decision: store one project-level snapshot in a new
+`project_index_fingerprints` table keyed by `project_id`. This avoids bloating
+every `file_index` row and preserves `file_index` uniqueness as
+`UNIQUE(project_id, path)`. Unlike the earlier #19 index-refresh work, #34B
+uses an additive schema change because the freshness identity is durable
+metadata for the whole current-checkout index.
 
 ## Dirty-State Policy
 
@@ -473,7 +474,7 @@ Suggested future run-creation behavior:
 
 1. #34A docs-only branch/index trust audit.
 2. #34B working-tree/index freshness fingerprint foundation, including the
-   persistence decision for index freshness identity.
+   `project_index_fingerprints` persistence table.
 3. #34C stale index detection and run-creation surfacing.
 4. #34D start-branch/run-branch safety cleanup, explicitly covering
    start-context drift verification before `checkout -b`,
@@ -513,6 +514,5 @@ Suggested future run-creation behavior:
 5. Should #34D update stale Pipewright branch guidance from "checkout the
    configured base branch" to "checkout the branch you want to start from"?
    That better matches the desired model.
-6. Where should the index freshness identity be persisted? #34B must decide
-   whether to use a new table, additive columns, or a local sidecar/store before
-   #34C can load and compare the last index fingerprint.
+6. How should #34C wire `project_index_fingerprints` into reindex/run-creation
+   flows without adding per-read freshness checks in hot grounding paths?

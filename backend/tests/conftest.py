@@ -97,6 +97,10 @@ def cleanup_test_data():
                 # Delete related pipeline runs
                 for pid in test_ids:
                     conn.execute(text("""
+                        DELETE FROM project_index_fingerprints
+                        WHERE project_id = :pid
+                    """), {"pid": pid})
+                    conn.execute(text("""
                         DELETE FROM pipeline_runs
                         WHERE project_id = :pid
                     """), {"pid": pid})

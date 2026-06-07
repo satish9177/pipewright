@@ -502,6 +502,7 @@ def _migrate_db(conn) -> None:
             "ON memory_suggestions(project_id, status)",
             ("project_id", "status"),
         )
+        _ensure_project_index_fingerprints_shape(conn)
         _ensure_file_index_shape(conn)
     except Exception as error:
         raise RuntimeError(f"database.py: Failed to run migrations: {error}")
@@ -570,6 +571,47 @@ def _ensure_file_index_shape(conn) -> None:
     except Exception as error:
         raise RuntimeError(
             f"database.py: Failed to ensure file_index shape: {error}"
+        )
+
+
+def _ensure_project_index_fingerprints_shape(conn) -> None:
+    """
+    Ensure project-level repo-index freshness metadata exists.
+
+    The table stores one checkout identity per project index rebuild. It is
+    project-level metadata, not per-file metadata, so file_index shape and
+    uniqueness stay untouched.
+
+    #34B introduced this table, so this helper creates it when absent. Unlike
+    older shape-repair helpers, it does not migrate or rebuild a pre-existing
+    wrong-shaped table. Future column changes should add explicit migration or
+    shape-handling logic.
+    """
+    try:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS project_index_fingerprints (
+                project_id TEXT PRIMARY KEY,
+                repo_path_resolved TEXT NOT NULL,
+                branch_name TEXT,
+                branch_is_detached INTEGER NOT NULL DEFAULT 0,
+                detached_head_label TEXT,
+                head_sha TEXT NOT NULL,
+                dirty_digest TEXT NOT NULL,
+                dirty_files_count INTEGER DEFAULT 0,
+                index_row_count INTEGER DEFAULT 0,
+                captured_at DATETIME NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (project_id) REFERENCES projects(id)
+            )
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_project_index_fingerprints_updated
+            ON project_index_fingerprints(updated_at)
+        """))
+    except Exception as error:
+        raise RuntimeError(
+            "database.py: Failed to ensure project_index_fingerprints shape: "
+            f"{error}"
         )
 
 
