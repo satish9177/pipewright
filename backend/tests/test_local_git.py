@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from backend.git.local_git import (
+    StartBranchInspection,
     assert_not_on_stale_pipewright_branch,
     branch_exists_remote,
     branch_exists,
@@ -27,6 +28,7 @@ from backend.git.local_git import (
     get_current_hash,
     get_dirty_files,
     get_remote_url,
+    inspect_start_branch,
     is_working_tree_clean,
     normalize_git_path,
     push_branch,
@@ -159,6 +161,88 @@ def test_create_or_checkout_branch_checks_out_existing_branch(git_repo):
     create_or_checkout_branch("feature/existing", str(git_repo))
 
     assert get_current_branch(str(git_repo)) == "feature/existing"
+
+
+def test_inspect_start_branch_returns_branch_and_short_head(git_repo):
+    full_hash = initial_commit(git_repo)
+    create_or_checkout_branch("feature/start", str(git_repo))
+
+    inspection = inspect_start_branch(str(git_repo))
+
+    assert inspection == StartBranchInspection(
+        current_branch="feature/start",
+        head_sha_short=full_hash[:12],
+        is_detached=False,
+        error=None,
+    )
+
+
+def test_inspect_start_branch_handles_detached_head(git_repo):
+    full_hash = initial_commit(git_repo)
+    result = git(git_repo, ["checkout", "--detach", "HEAD"])
+    assert result.returncode == 0, result.stderr
+
+    inspection = inspect_start_branch(str(git_repo))
+
+    assert inspection.current_branch is None
+    assert inspection.head_sha_short == full_hash[:12]
+    assert inspection.is_detached is True
+    assert inspection.error is None
+
+
+def test_inspect_start_branch_does_not_raise_on_git_error(git_repo):
+    completed = subprocess.CompletedProcess(
+        args=["git", "branch"],
+        returncode=1,
+        stdout="",
+        stderr="not a git repo",
+    )
+
+    with patch("backend.git.local_git.run_git", return_value=completed):
+        inspection = inspect_start_branch(str(git_repo))
+
+    assert inspection.current_branch is None
+    assert inspection.head_sha_short is None
+    assert inspection.is_detached is False
+    assert "git branch --show-current failed" in (inspection.error or "")
+
+
+def test_inspect_start_branch_uses_only_read_only_git_commands(git_repo):
+    calls: list[list[str]] = []
+
+    def fake_run_git(args, repo_path):
+        calls.append(args)
+        if args == ["branch", "--show-current"]:
+            return subprocess.CompletedProcess(
+                args=["git", *args],
+                returncode=0,
+                stdout="main\n",
+                stderr="",
+            )
+        if args == ["rev-parse", "--short=12", "HEAD"]:
+            return subprocess.CompletedProcess(
+                args=["git", *args],
+                returncode=0,
+                stdout="abcdef123456\n",
+                stderr="",
+            )
+        raise AssertionError(f"unexpected git command: {args}")
+
+    with patch("backend.git.local_git.run_git", side_effect=fake_run_git):
+        inspection = inspect_start_branch(str(git_repo))
+
+    assert inspection.current_branch == "main"
+    assert inspection.head_sha_short == "abcdef123456"
+    assert calls == [
+        ["branch", "--show-current"],
+        ["rev-parse", "--short=12", "HEAD"],
+    ]
+    assert not any(
+        command in call
+        for call in calls
+        for command in {"checkout", "switch", "branch", "-b", "reset", "clean"}
+        if call != ["branch", "--show-current"]
+    )
 
 
 def test_is_working_tree_clean_true_then_false_after_modification(git_repo):
@@ -339,5 +423,9 @@ def test_stale_pipewright_branch_guard_rejects_old_pipewright_branch(git_repo):
         stderr="",
     )
     with patch("backend.git.local_git.run_git", return_value=completed):
-        with pytest.raises(RuntimeError, match=r"\[GIT\].*stale Pipewright branch"):
+        with pytest.raises(RuntimeError, match=r"\[GIT\].*stale Pipewright branch") as error:
             assert_not_on_stale_pipewright_branch(str(git_repo), "12345678-abcd")
+
+    message = str(error.value)
+    assert "checkout the branch you want pipewright to start from" in message.lower()
+    assert "configured base branch" not in message.lower()

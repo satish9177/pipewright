@@ -18,6 +18,7 @@ from sqlalchemy import text
 
 from backend.core.statuses import ApprovalStatus, ChunkPlanStatus, ChunkStatusValue, RunStatus
 from backend.db.database import engine
+from backend.git.local_git import StartBranchInspection, inspect_start_branch
 from backend.models.handoff import (
     FEATURE_DESCRIPTION_MAX_LENGTH,
     REJECTION_REASON_MAX_LENGTH,
@@ -249,6 +250,70 @@ def _stale_index_response(project_id: str, freshness: dict) -> JSONResponse:
             "index_freshness": freshness,
         },
     )
+
+
+def _unsafe_start_branch_response(
+    inspection: StartBranchInspection,
+) -> JSONResponse:
+    if inspection.is_detached:
+        message = (
+            "You're on a detached HEAD. Checkout the branch you want "
+            "Pipewright to start from, then resubmit."
+        )
+    else:
+        message = (
+            "You're on a Pipewright run branch. Checkout the branch you want "
+            "Pipewright to start from, then resubmit."
+        )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "unsafe_start_branch",
+            "outcome": "unsafe_start_branch",
+            "run_created": False,
+            "message": message,
+            "current_branch": inspection.current_branch,
+            "current_head_sha_short": inspection.head_sha_short,
+            "recommended_action": "checkout_start_branch",
+        },
+    )
+
+
+def _guard_unsafe_start_branch(
+    target_repo_path: str | None,
+) -> JSONResponse | None:
+    if not target_repo_path:
+        logger.warning(
+            "[START-BRANCH] Project has no repo path; skipping start-branch "
+            "guard."
+        )
+        return None
+    inspection = inspect_start_branch(target_repo_path)
+    if inspection.error:
+        logger.warning(
+            "[START-BRANCH] Start-branch inspection failed; proceeding. "
+            "repo_path=%s | error=%s",
+            target_repo_path,
+            inspection.error,
+        )
+        return None
+    if inspection.is_detached:
+        logger.info(
+            "[START-BRANCH] Detached HEAD blocked implementation run creation. "
+            "repo_path=%s | head=%s",
+            target_repo_path,
+            inspection.head_sha_short,
+        )
+        return _unsafe_start_branch_response(inspection)
+    if (inspection.current_branch or "").startswith("pipewright/"):
+        logger.info(
+            "[START-BRANCH] Pipewright run branch blocked implementation run "
+            "creation. repo_path=%s | branch=%s",
+            target_repo_path,
+            inspection.current_branch,
+        )
+        return _unsafe_start_branch_response(inspection)
+    return None
 
 
 # PR #17C: explicit-edit-target grounding. Canonical filename used in
@@ -1001,6 +1066,10 @@ async def start_implementation_from_plan_route(run_id: str):
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error))
 
+    unsafe_start = _guard_unsafe_start_branch(project.get("repo_path"))
+    if unsafe_start is not None:
+        return unsafe_start
+
     try:
         seed_triage = TriageResult.model_validate_json(source_run["chunk_plan"])
     except Exception as error:
@@ -1148,9 +1217,13 @@ async def _create_chunked_run_core(
                 current_chunk_number=0,
                 triage=None,
                 chunks=[],
-            )
+        )
 
         if intent == IMPLEMENTATION:
+            unsafe_start = _guard_unsafe_start_branch(target_repo_path)
+            if unsafe_start is not None:
+                return unsafe_start
+
             index_freshness = _run_creation_index_freshness(
                 project_id,
                 target_repo_path,
