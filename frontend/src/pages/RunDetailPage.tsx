@@ -832,13 +832,19 @@ export default function RunDetailPage() {
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
       <div className="mb-6 flex items-start justify-between gap-4">
-        <div>
-          <h2 className="text-2xl font-bold">Pipeline Run</h2>
-          <p className="text-xs text-muted-foreground font-mono mt-1">
-            {run.id}
+        <div className="min-w-0">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Pipeline Run
+          </p>
+          <h2 className="text-2xl font-bold leading-tight mt-1 line-clamp-2">
+            {run.feature_description || 'Untitled run'}
+          </h2>
+          <p className="text-xs text-muted-foreground font-mono mt-2">
+            run{' '}
+            <span title={run.id}>{run.id.slice(0, 8)}</span>
           </p>
         </div>
-        <RunStatusBadge status={run.status} />
+        <RunStatusBadge status={run.status} friendly />
       </div>
 
       <Card className="mb-6 border-muted-foreground/20">
@@ -948,7 +954,7 @@ export default function RunDetailPage() {
             <CardContent className="py-6">
               <p className="text-sm font-medium">No chunk plan loaded</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                Legacy runs or interrupted runs may not have chunk plan data.
+                This run started before chunked plans. Showing what we have.
               </p>
             </CardContent>
           </Card>
@@ -1134,7 +1140,7 @@ export default function RunDetailPage() {
                   Pipeline completed successfully.
                 </p>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Check GitHub for the Pull Request:{' '}
+                  Your pull request is open on GitHub:{' '}
                   <a
                     href={run.pr_url}
                     target="_blank"
@@ -1143,6 +1149,10 @@ export default function RunDetailPage() {
                   >
                     {run.pr_url}
                   </a>
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Pipewright never merges automatically — review and merge it
+                  yourself when you're ready.
                 </p>
               </>
             ) : (
@@ -1160,11 +1170,17 @@ export default function RunDetailPage() {
       {run.status === 'failed' && (
         <Card className="mb-4 border-red-500">
           <CardContent className="py-4">
-            <p className="text-sm font-medium text-red-500">
-              Pipeline failed at step: {run.current_step}
+            <p className="text-sm font-medium text-red-600">
+              This run stopped before finishing.
+              {run.current_step && (
+                <span className="font-normal text-muted-foreground">
+                  {' '}(during: {run.current_step})
+                </span>
+              )}
             </p>
             <p className="text-xs text-muted-foreground mt-1">
-              Check the terminal for error details.
+              See the Timeline below for the details of what happened. Nothing
+              was pushed to GitHub and no merge was performed.
             </p>
           </CardContent>
         </Card>
@@ -1173,8 +1189,11 @@ export default function RunDetailPage() {
       {(run.status === 'rejected' || run.status === 'final_rejected') && (
         <Card className="mb-4 border-gray-400">
           <CardContent className="py-4">
-            <p className="text-sm font-medium text-gray-500">
-              Pipeline was rejected. Files have been rolled back.
+            <p className="text-sm font-medium text-gray-600">
+              This run was rejected and the changes were rolled back.
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Nothing was pushed to GitHub.
             </p>
           </CardContent>
         </Card>

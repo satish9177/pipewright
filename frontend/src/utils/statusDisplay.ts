@@ -43,6 +43,7 @@ const statusTones: Record<string, StatusTone> = {
   awaiting_chunk_approval: 'approval',
   awaiting_final_approval: 'approval',
   awaiting_memory_conflict_approval: 'approval',
+  awaiting_scope_approval: 'approval',
   chunk_plan_approved: 'success',
   chunk_approved: 'success',
   final_approved: 'success',
@@ -57,6 +58,42 @@ const statusTones: Record<string, StatusTone> = {
 
 export function formatStatusLabel(status: string) {
   return status.replace(/_/g, ' ').toUpperCase()
+}
+
+// #35C: plain, user-facing run-status labels for display. The raw enum stays
+// available via formatStatusLabel (badge tooltip / audit) and API values are
+// unchanged. Keys are run-status enums only; callers that show other vocabularies
+// (e.g. approval-gate statuses) must not opt into friendly labels.
+const friendlyStatusLabels: Record<string, string> = {
+  pending: 'Getting started',
+  none: 'Getting started',
+  started: 'Getting started',
+  running: 'Working',
+  running_chunks: 'Working',
+  pushing: 'Pushing',
+  paused: 'Needs your review',
+  awaiting_approval: 'Needs your review',
+  awaiting_chunk_plan_approval: 'Needs your review',
+  awaiting_chunk_approval: 'Your review',
+  awaiting_final_approval: 'Final sign-off',
+  awaiting_memory_conflict_approval: 'Needs your review',
+  awaiting_scope_approval: 'Needs your review',
+  chunk_plan_approved: 'Ready to run',
+  chunk_approved: 'Chunk approved',
+  final_approved: 'Ready to push',
+  approved: 'Approved',
+  complete: 'Done',
+  completed: 'Done',
+  failed: 'Run failed',
+  push_failed: 'Push failed',
+  rejected: 'Rejected',
+  final_rejected: 'Rejected',
+}
+
+// Returns a friendly run-status label, falling back to the raw uppercase enum
+// for any status not in the map (so unknown/new states never render blank).
+export function getFriendlyStatusLabel(status: string): string {
+  return friendlyStatusLabels[status] ?? formatStatusLabel(status)
 }
 
 export function getStatusTone(status: string): StatusTone {
