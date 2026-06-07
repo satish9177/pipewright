@@ -861,6 +861,21 @@ export interface MemoryInjectionSupersessionCandidate extends ExtraFields {
   advisory_only: boolean
 }
 
+export interface MemoryInjectionRealityWarning extends ExtraFields {
+  warning_type: 'reality_mismatch_candidate' | (string & {})
+  dimension: string
+  status: 'match' | 'mismatch' | 'unknown' | 'unsupported_category' | (string & {})
+  fact_id?: string | null
+  event_id?: string | null
+  role?: string | null
+  chunk_number?: number | null
+  memory_content: string
+  memory_value?: string | null
+  repo_value?: string | null
+  reason: string
+  advisory_only: boolean
+}
+
 export interface MemoryInjectionAnalysisBody extends ExtraFields {
   total_events: number
   total_included_entries: number
@@ -870,6 +885,10 @@ export interface MemoryInjectionAnalysisBody extends ExtraFields {
   duplicate_candidates: MemoryInjectionDuplicateCandidate[]
   supersession_candidates: MemoryInjectionSupersessionCandidate[]
   warnings: string[]
+  // M3F3 advisory repo-reality warnings (optional for older payloads).
+  reality_signal_available?: boolean
+  reality_warning_count?: number
+  reality_warnings?: MemoryInjectionRealityWarning[]
 }
 
 export interface MemoryInjectionAnalysisResponse {

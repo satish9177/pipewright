@@ -518,3 +518,53 @@ present; included entries carry no reason; category-excluded surfaced incl. the 
 budget vs. category reasons distinct; status-excluded facts neither loaded nor surfaced; provenance
 persists the category reason; `entries_hash` ignores excluded entries; no memory mutation;
 reviewer pipeline does not import capture/builder).
+
+---
+
+## 15. M3F3 — Repo-reality warnings (implemented)
+
+M3F3 surfaces **advisory, read-only warnings** when an active *injected* fact appears to disagree with
+the repository's reality signal — **without changing which memory is injected** and **without mutating
+anything** (no auto-stale, unlike `/memory/verify-repo`).
+
+**Where the work lives:**
+
+- `injection_analysis.py` stays **pure** (no DB/repo/git/LLM). `analyze_injection_events` gained an
+  optional `repo_signals: {dimension: canonical_value}` map the **caller** supplies. For each distinct
+  injected fact it calls the pure M3B `check_fact_against_signal(...)` and emits a `RealityWarning`
+  **only** for an unambiguous `mismatch`. `match` / `unknown` / `unsupported` are intentionally silent.
+  New `InjectionAnalysis` fields: `reality_signal_available`, `reality_warning_count`, `reality_warnings`.
+- The **analysis endpoint** (`GET …/memory-injections/analysis`) computes the repo signal on the **read
+  path** via the existing capped, traversal-safe `build_repo_fingerprint` (the same abstraction
+  `/memory/verify-repo` uses) — **never inside `prompt_builder`, never during injection**. Only an
+  **unambiguous, present** `db_engine` signal is passed in; ambiguous/unknown/missing → `{}` → no
+  warning. Extraction is wrapped best-effort so analysis never fails on a repo-scan problem.
+
+**Warning model:** `warning_type="reality_mismatch_candidate"`, `dimension`, `status`, `fact_id`,
+`event_id`, `role`, `chunk_number`, `memory_content`, `memory_value`, `repo_value`, `reason`,
+`advisory_only=True`. Reason wording is non-scary ("may be outdated", "advisory candidate"); no
+"truth" / "resolved" / "latest wins" language.
+
+**Dimensions today:** only `db_engine` (postgresql/mysql/mongodb/sqlite) is a safely-available repo
+signal via `repo_fingerprint`. The model is general so later dimensions (framework/test-runner/…) can be
+wired when a safe signal source exists — no broad semantic engine was added.
+
+**Frontend (`RunMemoryProvenancePanel.tsx`, `client.ts`):** a read-only "Repo reality warnings" section
+("These are read-only warnings. The system did not change memory.") shows each mismatch with memory
+content, memory value vs. repo signal, dimension, role/chunk traceability, and an `advisory_only` label
+("Repo signal suggests this memory may be outdated."). When a signal exists but nothing mismatched it
+says so; when no signal is available it says reality checks were not run. No action buttons.
+
+**Invariants held:** prompt block byte-identical (the builder was not touched); injection unchanged;
+`ROLE_CATEGORIES`/`ROLE_TOKEN_BUDGETS` unchanged; **no repo/git scan in `prompt_builder`** (scan is on
+the analysis read path only); no LLM/embeddings/vector; **no mutation** of facts/suggestions/provenance;
+ambiguous/unknown signals never warn; no auto-stale/archive/supersede/resolve; no latest-wins.
+
+**Deferred:** M3F4 optional, gated injection *tightening* remains deferred — M3F3 only *warns*. Wider
+repo-signal dimensions beyond `db_engine` await safe signal sources.
+
+**Tests:** `backend/tests/test_memory_reality_warnings.py` — pure layer (mismatch→warning;
+match/unknown/unsupported/no-signal→no warning; same fact across roles→one warning; duplicate/supersession
+still work) and endpoint+real-repo integration (unambiguous mismatch surfaced advisory-only and the fact
+is **not** mutated; unknown and ambiguous repo signals never warn). Existing `test_memory_trust.py`,
+`test_memory_repo_reality.py`, and `test_memory_injection_analysis.py` continue to pass.

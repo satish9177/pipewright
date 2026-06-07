@@ -7,6 +7,7 @@ import {
   type MemoryInjectionDuplicateCandidate,
   type MemoryInjectionEntry,
   type MemoryInjectionEvent,
+  type MemoryInjectionRealityWarning,
   type MemoryInjectionSupersessionCandidate,
 } from '@/api/client'
 import { Badge } from '@/components/ui/badge'
@@ -307,6 +308,46 @@ function SupersessionCandidateCard({
   )
 }
 
+function RealityWarningCard({
+  warning,
+}: {
+  warning: MemoryInjectionRealityWarning
+}) {
+  const trace = [
+    warning.role || 'unknown role',
+    formatChunk(warning.chunk_number),
+    warning.fact_id ? `fact ${shortId(warning.fact_id)}` : null,
+  ]
+    .filter(Boolean)
+    .join(' / ')
+
+  return (
+    <li className="grid gap-2 rounded-lg border border-orange-200 bg-orange-50/50 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge
+          variant="outline"
+          className="border-orange-300 bg-orange-100 text-orange-800"
+        >
+          Repo reality warning
+        </Badge>
+        <Badge variant="outline">{warning.dimension}</Badge>
+        <span className="text-xs text-muted-foreground">
+          advisory_only={String(warning.advisory_only)}
+        </span>
+      </div>
+      <p className="text-xs font-medium text-orange-800">
+        Repo signal suggests this memory may be outdated.
+      </p>
+      <p className="text-sm leading-6 text-slate-800">{warning.memory_content}</p>
+      <p className="text-xs text-muted-foreground">
+        Memory value: {warning.memory_value ?? 'unknown'} / repo signal:{' '}
+        {warning.repo_value ?? 'unknown'}
+      </p>
+      {trace && <p className="text-xs text-muted-foreground">{trace}</p>}
+    </li>
+  )
+}
+
 export default function RunMemoryProvenancePanel({
   runId,
 }: RunMemoryProvenancePanelProps) {
@@ -564,6 +605,34 @@ export default function RunMemoryProvenancePanel({
                       )}
                     </div>
                   )}
+
+                  <div className="grid gap-2">
+                    <div>
+                      <p className="text-xs font-medium text-slate-600">
+                        Repo reality warnings
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        These are read-only warnings. The system did not change
+                        memory.
+                      </p>
+                    </div>
+                    {(analysis.reality_warnings ?? []).length > 0 ? (
+                      <ul className="grid gap-2">
+                        {(analysis.reality_warnings ?? []).map((warning, index) => (
+                          <RealityWarningCard
+                            key={`${warning.event_id ?? 'event'}-${warning.fact_id ?? 'fact'}-${warning.dimension}-${index}`}
+                            warning={warning}
+                          />
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">
+                        {analysis.reality_signal_available
+                          ? 'No repo reality mismatches were found for the injected memory.'
+                          : 'Repo reality signals are unavailable for this run; no reality checks were run.'}
+                      </p>
+                    )}
+                  </div>
                 </div>
               )}
             </>
