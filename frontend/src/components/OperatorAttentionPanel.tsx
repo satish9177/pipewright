@@ -12,6 +12,12 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
+import {
+  coEqualActionHandlerKey,
+  primaryActionHandlerKey,
+  type CoEqualHandlerKey,
+  type LegacyPrimaryHandlerKey,
+} from '@/lib/operatorPrimaryAction'
 
 // Display-only operator attention panel. It mirrors the backend operator_state
 // read-model (computed on chunk reads, never persisted) and renders the current
@@ -44,6 +50,104 @@ const DECISION_TYPE: Record<
   progress: { label: 'Progress', className: 'text-muted-foreground' },
   risk_decision: { label: 'Risk decision', className: 'text-amber-700' },
   none: { label: 'No decision', className: 'text-muted-foreground' },
+}
+
+// #37C: display-only "effects ledger" — a small, conservative summary of what a
+// WIRED action can affect before the user clicks. It is keyed off the SAME
+// handler keys that make an action clickable (operatorPrimaryAction.ts), so a
+// ledger can only ever appear under an already-wired primary/co-equal action;
+// unmapped preview actions never get one. It changes no behavior, enables or
+// disables nothing, and never understates an effect — anything mode-dependent or
+// downstream is worded "may …" rather than claimed false. "Merges: Never" states
+// the standing guarantee that Pipewright never merges.
+type EffectTone = 'no' | 'maybe' | 'yes' | 'grant' | 'never'
+
+interface ActionEffect {
+  label: string
+  value: string
+  tone: EffectTone
+}
+
+const EFFECT_TONE_CLASS: Record<EffectTone, string> = {
+  no: 'border-slate-200 bg-slate-50 text-slate-600',
+  never: 'border-slate-200 bg-slate-50 text-slate-600',
+  maybe: 'border-amber-200 bg-amber-50 text-amber-800',
+  yes: 'border-amber-200 bg-amber-50 text-amber-800',
+  grant: 'border-blue-200 bg-blue-50 text-blue-800',
+}
+
+const ACTION_EFFECTS: Record<
+  LegacyPrimaryHandlerKey | CoEqualHandlerKey,
+  ActionEffect[]
+> = {
+  approve_plan: [
+    { label: 'Writes files', value: 'No', tone: 'no' },
+    { label: 'Commits', value: 'No', tone: 'no' },
+    { label: 'Pushes / PR', value: 'No', tone: 'no' },
+    { label: 'Grants', value: 'Plan approval', tone: 'grant' },
+  ],
+  execute_chunks: [
+    { label: 'Writes files', value: 'May write during execution', tone: 'maybe' },
+    { label: 'Commits', value: 'Not without your approval', tone: 'no' },
+    { label: 'Pushes / PR', value: 'No', tone: 'no' },
+    { label: 'Merges', value: 'Never', tone: 'never' },
+  ],
+  approve_final: [
+    { label: 'Grants', value: 'Finalization', tone: 'grant' },
+    {
+      label: 'Commits',
+      value: 'May commit / finish (depends on mode)',
+      tone: 'maybe',
+    },
+    { label: 'Pushes', value: 'Not by itself', tone: 'no' },
+    { label: 'Merges', value: 'Never', tone: 'never' },
+  ],
+  create_pr: [
+    { label: 'Pushes branch', value: 'Yes (supported PR modes)', tone: 'yes' },
+    { label: 'Creates PR', value: 'Yes', tone: 'yes' },
+    { label: 'Merges', value: 'Never', tone: 'never' },
+  ],
+  approve_memory_conflict: [
+    {
+      label: 'Grants',
+      value: 'One-time override · continues run',
+      tone: 'grant',
+    },
+    {
+      label: 'Writes files',
+      value: 'May write (continues execution)',
+      tone: 'maybe',
+    },
+    { label: 'Pushes / PR', value: 'No', tone: 'no' },
+    { label: 'Merges', value: 'Never', tone: 'never' },
+  ],
+  reject_memory_conflict: [
+    { label: 'Outcome', value: 'Rejects · stops the run', tone: 'no' },
+    { label: 'Writes files', value: 'No', tone: 'no' },
+    { label: 'Pushes / PR', value: 'No', tone: 'no' },
+    { label: 'Merges', value: 'Never', tone: 'never' },
+  ],
+}
+
+// Display-only ledger row of small mono pills. Renders only when handed an
+// effects list (i.e. for a wired action); callers never pass effects for preview
+// or unmapped actions.
+function ActionEffectsLedger({ effects }: { effects: ActionEffect[] }) {
+  return (
+    <div
+      className="flex flex-wrap items-center gap-1.5"
+      aria-label="What this action can affect"
+    >
+      {effects.map(effect => (
+        <span
+          key={effect.label}
+          className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[10px] ${EFFECT_TONE_CLASS[effect.tone]}`}
+        >
+          {effect.label}: <span className="font-semibold">{effect.value}</span>
+        </span>
+      ))}
+    </div>
+  )
 }
 
 function WaitingPill({ waitingOn }: { waitingOn: OperatorWaitingOn }) {
@@ -212,6 +316,15 @@ export default function OperatorAttentionPanel({
       ? resolvePrimaryAction?.(primary_action) ?? null
       : null
 
+  // #37C: effects ledger for the primary action, shown only when it is actually
+  // wired. A wired primary always has a mapped handler key, so this is non-null
+  // exactly when a real button renders — never for a display-only preview.
+  const primaryKey =
+    wiredPrimary && primary_action
+      ? primaryActionHandlerKey(primary_action.id)
+      : null
+  const primaryEffects = primaryKey ? ACTION_EFFECTS[primaryKey] : null
+
   // #35G: resolve neutral/secondary (co-equal) actions. Unmapped ones resolve to
   // null and stay display-only previews. These keep equal visual weight whether
   // wired or not, so risk decisions never imply a recommended choice.
@@ -296,21 +409,30 @@ export default function OperatorAttentionPanel({
                   recommended primary. Wired controls run the SAME mutation as
                   their twin below; unmapped ones stay display-only previews. */}
               {primary_action && !isRisk && (
-                <div className="flex flex-wrap gap-2.5">
+                <div className="grid gap-1.5">
                   {wiredPrimary ? (
-                    <Button
-                      type="button"
-                      variant="default"
-                      onClick={wiredPrimary.onClick}
-                      disabled={wiredPrimary.isPending}
-                      title={primary_action.intent}
-                    >
-                      {wiredPrimary.isPending
-                        ? 'Working…'
-                        : primary_action.label}
-                    </Button>
+                    <>
+                      <div className="flex flex-wrap gap-2.5">
+                        <Button
+                          type="button"
+                          variant="default"
+                          onClick={wiredPrimary.onClick}
+                          disabled={wiredPrimary.isPending}
+                          title={primary_action.intent}
+                        >
+                          {wiredPrimary.isPending
+                            ? 'Working…'
+                            : primary_action.label}
+                        </Button>
+                      </div>
+                      {primaryEffects && (
+                        <ActionEffectsLedger effects={primaryEffects} />
+                      )}
+                    </>
                   ) : (
-                    <PreviewAction action={primary_action} />
+                    <div className="flex flex-wrap gap-2.5">
+                      <PreviewAction action={primary_action} />
+                    </div>
                   )}
                 </div>
               )}
@@ -323,28 +445,45 @@ export default function OperatorAttentionPanel({
                       : 'flex flex-wrap gap-2.5'
                   }
                 >
-                  {coEqualResolved.map(({ action, wired }) =>
-                    wired ? (
-                      <Button
+                  {coEqualResolved.map(({ action, wired }) => {
+                    if (!wired) {
+                      return (
+                        <PreviewAction
+                          key={action.id}
+                          action={action}
+                          className={isRisk ? 'w-full justify-center' : undefined}
+                        />
+                      )
+                    }
+                    // Wired co-equal action: render its effects ledger under the
+                    // button. Both choices use identical ledger styling so the
+                    // risk decision stays co-equal — no choice looks recommended.
+                    const coEqualKey = coEqualActionHandlerKey(action.id)
+                    const coEqualEffects = coEqualKey
+                      ? ACTION_EFFECTS[coEqualKey]
+                      : null
+                    return (
+                      <div
                         key={action.id}
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={wired.onClick}
-                        disabled={wired.isPending}
-                        title={action.intent}
-                        className={isRisk ? 'w-full' : undefined}
+                        className={isRisk ? 'grid w-full gap-1.5' : 'grid gap-1.5'}
                       >
-                        {wired.isPending ? 'Working…' : action.label}
-                      </Button>
-                    ) : (
-                      <PreviewAction
-                        key={action.id}
-                        action={action}
-                        className={isRisk ? 'w-full justify-center' : undefined}
-                      />
-                    ),
-                  )}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={wired.onClick}
+                          disabled={wired.isPending}
+                          title={action.intent}
+                          className={isRisk ? 'w-full' : undefined}
+                        >
+                          {wired.isPending ? 'Working…' : action.label}
+                        </Button>
+                        {coEqualEffects && (
+                          <ActionEffectsLedger effects={coEqualEffects} />
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
               )}
 
