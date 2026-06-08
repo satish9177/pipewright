@@ -17,19 +17,25 @@ interface PatchFailureBannerProps {
   // placeholder like the other unwired recovery actions.
   projectId?: string
   // Retry wiring (#26E2). When the chunk is failed, carries a failure_report_id,
-  // and suggests a retry action, an enabled Retry button calls back with the
-  // current failure_report_id. The backend remains the source of truth for
-  // eligibility — a rejected retry is safe and surfaces a clear message.
+  // a plain retry is suggested, retry is authoritatively eligible, and a callback
+  // is wired, an enabled Retry button calls back with the current
+  // failure_report_id. The backend remains the source of truth for eligibility —
+  // a rejected retry is safe and surfaces a clear message.
   chunkNumber?: number
   chunkStatus?: string
   onRetry?: (chunkNumber: number, failureReportId: string) => void
+  // Authoritative human-retry eligibility (#26E2 affordance parity). Derived from
+  // operator_state (evaluate_patch_retry_eligibility) by the page and threaded in
+  // so the enabled "Retry code change" button matches the OperatorAttentionPanel
+  // and the route gate. False/omitted keeps retry as a disabled placeholder even
+  // when a recovery action is suggested. Display-only; wires no new behavior.
+  retryEligible?: boolean
   isRetrying?: boolean
 }
 
 const VIEW_DETAILS = 'view_details'
 const REINDEX = 'reindex'
 const RETRY = 'retry'
-const RETRY_WITH_INSTRUCTION = 'retry_with_instruction'
 
 function formatFiles(values: string[]) {
   return values.join(', ')
@@ -56,6 +62,7 @@ export default function PatchFailureBanner({
   chunkNumber,
   chunkStatus,
   onRetry,
+  retryEligible = false,
   isRetrying = false,
 }: PatchFailureBannerProps) {
   const [showDetails, setShowDetails] = useState(false)
@@ -72,17 +79,20 @@ export default function PatchFailureBanner({
   const reindexEnabled =
     suggestedActions.includes(REINDEX) && Boolean(projectId)
 
-  // Retry eligibility (#26E2, Strategy A): show the button when the chunk is
-  // failed, the report carries a failure_report_id, a retry action is suggested,
-  // and a callback is wired. We deliberately do NOT replicate the backend's
-  // human-retry allowlist here — the backend decides and rejects safely.
-  const retrySuggested =
-    suggestedActions.includes(RETRY) ||
-    suggestedActions.includes(RETRY_WITH_INSTRUCTION)
+  // Retry eligibility (#26E2). The enabled "Retry code change" button mirrors the
+  // authoritative human-retry eligibility (`retryEligible`, derived by the page
+  // from operator_state / evaluate_patch_retry_eligibility) so it agrees with the
+  // OperatorAttentionPanel and the route gate — not merely the presence of a
+  // recovery suggestion. We also require the plain `retry` action:
+  // `retry_with_instruction` is a different recovery mode (replan with a human
+  // instruction) and must NOT trigger the plain retry route, so it falls through
+  // to a disabled placeholder. The backend route remains the enforcing gate — a
+  // rejected retry is still safe and surfaces a clear message.
   const canRetry =
     chunkStatus === 'failed' &&
     Boolean(report.failure_report_id) &&
-    retrySuggested &&
+    suggestedActions.includes(RETRY) &&
+    retryEligible === true &&
     typeof onRetry === 'function' &&
     typeof chunkNumber === 'number'
 
