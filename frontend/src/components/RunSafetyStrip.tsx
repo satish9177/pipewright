@@ -1,7 +1,8 @@
 import type {
   ChunkPlanResponse,
   ChunkStatus,
-  OperatorState,
+  OperatorSafetyCheck,
+  OperatorSafetyCheckStatus,
   Project,
   Run,
 } from '@/api/client'
@@ -243,26 +244,73 @@ function prChip(run: Run, prMode?: string): SafetyChip {
   }
 }
 
-// State: whether Pipewright recognizes the current run state. Fail-closed: an
-// unknown state is surfaced as a warning and never implies safety.
-function stateChip(operatorState: OperatorState | null | undefined): SafetyChip | null {
-  if (!operatorState) return null
-  if (operatorState.unknown_state_warning) {
-    return {
-      key: 'state',
-      label: 'State',
-      value: 'Unknown state',
-      tone: 'warn',
-      hint: operatorState.unknown_state_warning,
-    }
-  }
-  return {
-    key: 'state',
-    label: 'State',
-    value: 'Clear',
-    tone: 'ok',
-    hint: 'Pipewright recognizes the current run state.',
-  }
+// #37B: process-gate badge styling, moved here from OperatorAttentionPanel so a
+// single "Safety overview" surface owns the operator_state.safety_checks list.
+// Same five statuses and the same honest "process gates, not code correctness"
+// framing — only the location changed.
+const SAFETY_STATUS: Record<
+  OperatorSafetyCheckStatus,
+  { label: string; className: string }
+> = {
+  passed: { label: 'PASS', className: 'border-green-200 bg-green-100 text-green-800' },
+  failed: { label: 'FAIL', className: 'border-red-200 bg-red-100 text-red-800' },
+  weak: { label: 'WEAK', className: 'border-amber-200 bg-amber-100 text-amber-900' },
+  not_evaluated: {
+    label: 'N/E',
+    className: 'border-slate-200 bg-slate-100 text-slate-600',
+  },
+  not_applicable: {
+    label: 'N/A',
+    className: 'border-muted bg-muted text-muted-foreground',
+  },
+}
+
+// #37B: the unknown_state_warning banner, moved here from OperatorAttentionPanel.
+// Fail-closed: when the backend is unsure of the next safe step this stays
+// prominently at the top of the Safety overview and never implies safety. It is
+// now higher on the page than before (above the operator panel), so prominence is
+// preserved/improved, not reduced.
+function UnknownStateBanner({ warning }: { warning: string }) {
+  return (
+    <div className="mb-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+      <p className="font-mono text-[11px] font-semibold uppercase tracking-wider">
+        Unknown state
+      </p>
+      <p className="mt-1">{warning}</p>
+    </div>
+  )
+}
+
+// #37B: the operator_state.safety_checks process-gate list, moved verbatim from
+// OperatorAttentionPanel. Same statuses, labels, details, and framing; renders
+// nothing when there are no checks (identical to before). Display-only.
+function ProcessGateChecks({ checks }: { checks: OperatorSafetyCheck[] }) {
+  if (checks.length === 0) return null
+  return (
+    <div className="mt-3">
+      <p className="mb-2 font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+        Process gates (not code correctness)
+      </p>
+      <ul className="grid gap-1.5">
+        {checks.map(check => {
+          const meta = SAFETY_STATUS[check.status] ?? SAFETY_STATUS.not_evaluated
+          return (
+            <li key={check.id} className="flex items-start gap-2 text-[12.5px]">
+              <span
+                className={`mt-0.5 rounded border px-1.5 py-0.5 font-mono text-[10px] tracking-wide ${meta.className}`}
+              >
+                {meta.label}
+              </span>
+              <span className="leading-snug text-muted-foreground">
+                <span className="font-medium text-foreground">{check.label}.</span>{' '}
+                {check.detail}
+              </span>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
 }
 
 function WarnIcon() {
@@ -294,14 +342,21 @@ export default function RunSafetyStrip({
   project?: Project
 }) {
   const chunks = chunkPlan?.chunks ?? []
+  const operatorState = chunkPlan?.operator_state
   const chips: SafetyChip[] = [
     scopeChip(run, chunkPlan, chunks),
     testsChip(chunks),
     reviewChip(chunks),
     prChip(run, project?.pr_mode),
   ]
-  const state = stateChip(chunkPlan?.operator_state)
-  if (state) chips.push(state)
+  // #37B: the unknown-state warning and the operator_state process-gate checks
+  // were previously rendered separately inside OperatorAttentionPanel. They now
+  // live here so there is a single Safety overview surface. Both are read from the
+  // same operator_state the panel still receives — no new data, no new props. The
+  // old "State: Clear" affirmation chip is dropped (the unknown case is surfaced
+  // as a banner instead); no warning is hidden.
+  const unknownWarning = operatorState?.unknown_state_warning
+  const safetyChecks = operatorState?.safety_checks ?? []
 
   return (
     <section className="mb-6" aria-label="Run safety overview">
@@ -313,6 +368,9 @@ export default function RunSafetyStrip({
           read-only summary of existing signals
         </span>
       </div>
+
+      {unknownWarning && <UnknownStateBanner warning={unknownWarning} />}
+
       <div className="flex flex-wrap gap-2">
         {chips.map(chip => {
           const showIcon = chip.tone === 'warn' || chip.tone === 'alert'
@@ -329,6 +387,9 @@ export default function RunSafetyStrip({
           )
         })}
       </div>
+
+      <ProcessGateChecks checks={safetyChecks} />
+
       <p className="mt-2 text-xs text-muted-foreground">
         This summarizes signals shown in full below. The detailed cards remain the
         source of truth — nothing here changes run behavior.
