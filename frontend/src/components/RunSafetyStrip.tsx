@@ -1,4 +1,10 @@
-import type { ChunkPlanResponse, ChunkStatus, OperatorState, Run } from '@/api/client'
+import type {
+  ChunkPlanResponse,
+  ChunkStatus,
+  OperatorState,
+  Project,
+  Run,
+} from '@/api/client'
 
 // #35E: read-only safety/trust strip for Run Detail. It summarizes safety
 // signals that already exist on the run/chunk read model into compact, plain-
@@ -188,7 +194,7 @@ function reviewChip(chunks: ChunkStatus[]): SafetyChip {
 // PR: pull-request lifecycle from the run read model. Live GitHub check results
 // (passed/failed/pending) are intentionally NOT summarized here — they come from
 // the on-demand "Refresh PR checks" action and are not on the read model.
-function prChip(run: Run): SafetyChip {
+function prChip(run: Run, prMode?: string): SafetyChip {
   if (run.push_error || run.status === 'push_failed') {
     return {
       key: 'pr',
@@ -208,6 +214,18 @@ function prChip(run: Run): SafetyChip {
     }
   }
   if (run.status === 'final_approved' || run.status === 'pushing') {
+    // local_only never pushes or opens a PR in-app, so a plain "Ready" here would
+    // wrongly imply an in-app push/PR is queued. Surface it as Local-only and
+    // point at the manual/out-of-app flow instead.
+    if (prMode === 'local_only') {
+      return {
+        key: 'pr',
+        label: 'PR',
+        value: 'Local-only',
+        tone: 'neutral',
+        hint: 'Local-only mode creates no in-app PR. Your changes stay on the local branch — push manually outside Pipewright.',
+      }
+    }
     return {
       key: 'pr',
       label: 'PR',
@@ -269,16 +287,18 @@ function WarnIcon() {
 export default function RunSafetyStrip({
   run,
   chunkPlan,
+  project,
 }: {
   run: Run
   chunkPlan?: ChunkPlanResponse
+  project?: Project
 }) {
   const chunks = chunkPlan?.chunks ?? []
   const chips: SafetyChip[] = [
     scopeChip(run, chunkPlan, chunks),
     testsChip(chunks),
     reviewChip(chunks),
-    prChip(run),
+    prChip(run, project?.pr_mode),
   ]
   const state = stateChip(chunkPlan?.operator_state)
   if (state) chips.push(state)
