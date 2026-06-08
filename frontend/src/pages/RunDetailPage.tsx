@@ -1238,8 +1238,8 @@ export default function RunDetailPage() {
               )}
             </p>
             <p className="text-xs text-muted-foreground mt-1">
-              See the Timeline below for the details of what happened. Nothing
-              was pushed to GitHub and no merge was performed.
+              Open Details &amp; audit below to see the timeline and full
+              sequence. Nothing was pushed to GitHub and no merge was performed.
             </p>
           </CardContent>
         </Card>
@@ -1258,39 +1258,75 @@ export default function RunDetailPage() {
         </Card>
       )}
 
-      <section className="mb-6">
-        <div className="mb-3">
-          <h3 className="text-sm font-semibold">Timeline</h3>
-          <p className="text-xs text-muted-foreground">
-            Live run events and status changes from the backend.
-          </p>
-        </div>
-        <Card>
-          <CardContent className="py-4">
-            <EventLog events={events} status={wsStatus} />
-          </CardContent>
-        </Card>
-      </section>
+      {/* #35D: the noisy diagnostic/audit sections collapse into one
+          default-closed "Details & audit" area. Nothing is removed — the
+          Timeline, memory provenance, and provider diagnostics keep their
+          existing content, lazy-loading, and refresh controls. They are
+          demoted, not deleted, and stay one click away. */}
+      <details className="group mb-6 rounded-xl border bg-card">
+        <summary className="flex cursor-pointer list-none items-start gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+          <svg
+            className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm font-semibold">Details &amp; audit</span>
+              <span className="text-xs text-muted-foreground">
+                Everything technical, one click away
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Timeline ({events.length}{' '}
+              {events.length === 1 ? 'event' : 'events'}) · Memory used · AI
+              setup — collapsed by default, nothing was removed.
+            </p>
+          </div>
+        </summary>
 
-      <section className="mb-6">
-        <div className="mb-3">
-          <h3 className="text-sm font-semibold">Memory Diagnostics</h3>
-          <p className="text-xs text-muted-foreground">
-            Display-only provenance for memory injected during this run.
-          </p>
-        </div>
-        <RunMemoryProvenancePanel runId={run.id} />
-      </section>
+        <div className="space-y-6 border-t px-4 py-4">
+          <section>
+            <div className="mb-3">
+              <h3 className="text-sm font-semibold">Timeline</h3>
+              <p className="text-xs text-muted-foreground">
+                Live run events and status changes from the backend.
+              </p>
+            </div>
+            <Card>
+              <CardContent className="py-4">
+                <EventLog events={events} status={wsStatus} />
+              </CardContent>
+            </Card>
+          </section>
 
-      <section className="mb-6">
-        <div className="mb-3">
-          <h3 className="text-sm font-semibold">Environment</h3>
-          <p className="text-xs text-muted-foreground">
-            Read-only provider/model setup for each AI role.
-          </p>
+          <section>
+            <div className="mb-3">
+              <h3 className="text-sm font-semibold">Memory Diagnostics</h3>
+              <p className="text-xs text-muted-foreground">
+                Display-only provenance for memory injected during this run.
+              </p>
+            </div>
+            <RunMemoryProvenancePanel runId={run.id} />
+          </section>
+
+          <section>
+            <div className="mb-3">
+              <h3 className="text-sm font-semibold">Environment</h3>
+              <p className="text-xs text-muted-foreground">
+                Read-only provider/model setup for each AI role.
+              </p>
+            </div>
+            <ProviderDiagnosticsPanel />
+          </section>
         </div>
-        <ProviderDiagnosticsPanel />
-      </section>
+      </details>
 
       <div className="mt-4">
         <Button
