@@ -1150,6 +1150,120 @@ export default function RunDetailPage() {
         resolveCoEqualAction={resolveCoEqualAction}
       />
 
+      {/* #35H: in final-stage states the Finish & ship flow is the current
+          decision context (weak-test ack, final approval, push/PR, checks), so
+          it renders here — directly after the guided panel and ABOVE Chunk Plan
+          Details. The chunk plan stays rendered and functional below. This is
+          ordering + composition only; every panel keeps its existing component,
+          props, conditions, mutation handlers, and loading/error states. Nothing
+          auto-pushes, auto-merges, or auto-refreshes checks.
+          showPrStatusPanel currently equals showPushPrPanel; it is listed in the
+          gate explicitly so PR status/checks visibility is guaranteed even if
+          that definition ever diverges. */}
+      {(showFinalApprovalPanel || showPushPrPanel || showPrStatusPanel) && (
+        <Card className="mb-6 bg-muted/20">
+          <CardHeader>
+            <CardTitle className="text-base">Finish &amp; ship</CardTitle>
+            <CardDescription>
+              Final approval, push, and PR checks happen in order. Pipewright
+              never merges automatically.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4">
+            <TestCommandQualityWarning project={project} context="review" />
+
+            <div>
+              <FinishStep
+                n={1}
+                title="Final approval"
+                status={finishStep1Status}
+                effect="Final approval authorizes finishing the run."
+              >
+                {showFinalApprovalPanel ? (
+                  <div className="grid gap-4">
+                    {chunkPlan && (
+                      <TestValidationAckPanel
+                        runId={runId!}
+                        plan={chunkPlan}
+                        onAcknowledged={() => {
+                          // Refresh run/chunks/gates so acknowledgement_status
+                          // and the Approve-Final disabled state recompute,
+                          // matching the invalidation used by the other
+                          // mutations here.
+                          queryClient.invalidateQueries({
+                            queryKey: ['run', runId],
+                          })
+                          queryClient.invalidateQueries({
+                            queryKey: ['runChunks', runId],
+                          })
+                          queryClient.invalidateQueries({ queryKey: ['gates'] })
+                        }}
+                      />
+                    )}
+                    <FinalApprovalPanel
+                      run={run}
+                      hasPendingFinalGate={Boolean(pendingFinalGate)}
+                      isCheckingFinalGate={gatesLoading}
+                      isApproving={approveFinalApprovalMutation.isPending}
+                      isRejecting={rejectFinalApprovalMutation.isPending}
+                      message={finalApprovalMessage}
+                      error={finalApprovalError}
+                      acknowledgementBlocking={acknowledgementBlocking}
+                      onApprove={() => approveFinalApprovalMutation.mutate()}
+                      onReject={(reason) =>
+                        rejectFinalApprovalMutation.mutate(reason)
+                      }
+                    />
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    Final approval is complete.
+                  </p>
+                )}
+              </FinishStep>
+
+              <FinishStep
+                n={2}
+                title="Push / create PR"
+                status={finishStep2Status}
+                effect="Push or create the pull request — this never merges."
+              >
+                {showPushPrPanel ? (
+                  <PushPrPanel
+                    run={run}
+                    project={project}
+                    isPushing={pushPrMutation.isPending}
+                    message={pushPrMessage}
+                    error={pushPrError}
+                    onPush={() => pushPrMutation.mutate()}
+                  />
+                ) : (
+                  <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+                    Available after final approval.
+                  </p>
+                )}
+              </FinishStep>
+
+              <FinishStep
+                n={3}
+                title="Pull request & checks"
+                status={finishStep3Status}
+                effect="Checks refresh only when you ask — nothing polls automatically."
+                isLast
+              >
+                {showPrStatusPanel ? (
+                  <PrStatusPanel run={run} project={project} />
+                ) : (
+                  <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+                    Appears once a push or pull request exists.
+                  </p>
+                )}
+              </FinishStep>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {TERMINAL_RUN_STATUSES.includes(run.status) && (
         <RunMemorySuggestions run={run} />
       )}
@@ -1317,117 +1431,8 @@ export default function RunDetailPage() {
         </section>
       )}
 
-      {/* #35H: final approval, push/create PR, and PR status/checks are composed
-          into one guided "Finish & ship" stepper so the order is obvious. This is
-          organization + copy only — every panel keeps its existing component,
-          props, conditions, mutation handlers, and loading/error states. Nothing
-          auto-pushes, auto-merges, or auto-refreshes checks.
-          showPrStatusPanel currently equals showPushPrPanel; it is listed in the
-          gate explicitly so PR status/checks visibility is guaranteed even if
-          that definition ever diverges. */}
-      {(showFinalApprovalPanel || showPushPrPanel || showPrStatusPanel) && (
-        <Card className="mb-6 bg-muted/20">
-          <CardHeader>
-            <CardTitle className="text-base">Finish &amp; ship</CardTitle>
-            <CardDescription>
-              Final approval, push, and PR checks happen in order. Pipewright
-              never merges automatically.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-4">
-            <TestCommandQualityWarning project={project} context="review" />
-
-            <div>
-              <FinishStep
-                n={1}
-                title="Final approval"
-                status={finishStep1Status}
-                effect="Final approval authorizes finishing the run."
-              >
-                {showFinalApprovalPanel ? (
-                  <div className="grid gap-4">
-                    {chunkPlan && (
-                      <TestValidationAckPanel
-                        runId={runId!}
-                        plan={chunkPlan}
-                        onAcknowledged={() => {
-                          // Refresh run/chunks/gates so acknowledgement_status
-                          // and the Approve-Final disabled state recompute,
-                          // matching the invalidation used by the other
-                          // mutations here.
-                          queryClient.invalidateQueries({
-                            queryKey: ['run', runId],
-                          })
-                          queryClient.invalidateQueries({
-                            queryKey: ['runChunks', runId],
-                          })
-                          queryClient.invalidateQueries({ queryKey: ['gates'] })
-                        }}
-                      />
-                    )}
-                    <FinalApprovalPanel
-                      run={run}
-                      hasPendingFinalGate={Boolean(pendingFinalGate)}
-                      isCheckingFinalGate={gatesLoading}
-                      isApproving={approveFinalApprovalMutation.isPending}
-                      isRejecting={rejectFinalApprovalMutation.isPending}
-                      message={finalApprovalMessage}
-                      error={finalApprovalError}
-                      acknowledgementBlocking={acknowledgementBlocking}
-                      onApprove={() => approveFinalApprovalMutation.mutate()}
-                      onReject={(reason) =>
-                        rejectFinalApprovalMutation.mutate(reason)
-                      }
-                    />
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    Final approval is complete.
-                  </p>
-                )}
-              </FinishStep>
-
-              <FinishStep
-                n={2}
-                title="Push / create PR"
-                status={finishStep2Status}
-                effect="Push or create the pull request — this never merges."
-              >
-                {showPushPrPanel ? (
-                  <PushPrPanel
-                    run={run}
-                    project={project}
-                    isPushing={pushPrMutation.isPending}
-                    message={pushPrMessage}
-                    error={pushPrError}
-                    onPush={() => pushPrMutation.mutate()}
-                  />
-                ) : (
-                  <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
-                    Available after final approval.
-                  </p>
-                )}
-              </FinishStep>
-
-              <FinishStep
-                n={3}
-                title="Pull request & checks"
-                status={finishStep3Status}
-                effect="Checks refresh only when you ask — nothing polls automatically."
-                isLast
-              >
-                {showPrStatusPanel ? (
-                  <PrStatusPanel run={run} project={project} />
-                ) : (
-                  <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
-                    Appears once a push or pull request exists.
-                  </p>
-                )}
-              </FinishStep>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {/* #35H: Finish & ship is rendered earlier (above Chunk Plan Details) in
+          final-stage states — see the section after OperatorAttentionPanel. */}
 
       {run.status === 'complete' && (
         <Card className="mb-4 border-green-500">
