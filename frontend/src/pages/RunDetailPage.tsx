@@ -1222,6 +1222,24 @@ export default function RunDetailPage() {
   // the backend route stays the enforcing gate.
   const retryEligible =
     chunkPlan?.operator_state?.primary_action?.id === 'retry_patch'
+  // #39A: hide a lower legacy PRIMARY button only when the SAME action is wired and
+  // clickable in the top OperatorAttentionPanel. We reuse resolvePrimaryAction (the
+  // single source of truth for which primary_action ids are clickable up top) so the
+  // two surfaces can never disagree. Fail-open: a missing operator_state, a
+  // different/blocked action id, a risk_decision, or a null resolver all leave the
+  // legacy button visible. Composition/display only — no mutation or wiring change,
+  // and Reject Plan / Resume Run are never hidden (they have no top twin).
+  const operatorPrimaryAction = chunkPlan?.operator_state?.primary_action ?? null
+  const topPrimaryIsRisk =
+    chunkPlan?.operator_state?.decision_type === 'risk_decision'
+  const topPrimaryWired =
+    operatorPrimaryAction && !topPrimaryIsRisk
+      ? resolvePrimaryAction(operatorPrimaryAction)
+      : null
+  const hideLegacyPlanApprove =
+    operatorPrimaryAction?.id === 'approve_plan' && topPrimaryWired !== null
+  const hideLegacyExecute =
+    operatorPrimaryAction?.id === 'execute_chunks' && topPrimaryWired !== null
   // The chunk plan panel (or the legacy empty-state) is built once here and placed
   // either inline or inside the history disclosure below — identical either way,
   // so no control, banner, prop, or handler changes.
@@ -1249,6 +1267,8 @@ export default function RunDetailPage() {
           : null
       }
       retryEligible={retryEligible}
+      hideLegacyPlanApprove={hideLegacyPlanApprove}
+      hideLegacyExecute={hideLegacyExecute}
       onApprove={() => approveChunkPlanMutation.mutate()}
       onReject={(reason) => rejectChunkPlanMutation.mutate(reason)}
       onExecute={() => executeChunksMutation.mutate()}
