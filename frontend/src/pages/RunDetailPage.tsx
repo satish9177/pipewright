@@ -13,12 +13,14 @@ import {
 } from '@/api/client'
 import type {
   ChunkPlanResponse,
+  OperatorAction,
   Run,
   RunStatus,
   RunMemorySuggestionGenerateResponse,
   StartContextDriftedResponse,
   TestRunVerdict,
 } from '@/api/client'
+import { primaryActionHandlerKey } from '@/lib/operatorPrimaryAction'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -888,6 +890,58 @@ export default function RunDetailPage() {
     }),
   )
 
+  // #35F: map an operator_state primary_action to the SAME legacy mutation its
+  // twin control already calls. Returns null for unmapped IDs, or when the
+  // equivalent legacy control would itself be unavailable/disabled, so the panel
+  // falls back to its existing display-only preview. This adds reachability from
+  // the top panel only — no new routes and no changed semantics.
+  const resolvePrimaryAction = (
+    action: OperatorAction,
+  ): { onClick: () => void; isPending: boolean } | null => {
+    const key = primaryActionHandlerKey(action.id)
+    if (!key) return null
+    switch (key) {
+      case 'approve_plan':
+        return {
+          onClick: () => approveChunkPlanMutation.mutate(),
+          isPending: approveChunkPlanMutation.isPending,
+        }
+      case 'execute_chunks':
+        return {
+          onClick: () => executeChunksMutation.mutate(),
+          isPending: executeChunksMutation.isPending,
+        }
+      case 'approve_final':
+        // Mirror FinalApprovalPanel's enable rule so the top button is never
+        // clickable when the legacy Approve Final would be hidden/disabled.
+        if (!pendingFinalGate || acknowledgementBlocking) return null
+        return {
+          onClick: () => approveFinalApprovalMutation.mutate(),
+          isPending: approveFinalApprovalMutation.isPending,
+        }
+      case 'create_pr': {
+        // Mirror PushPrPanel's in-app push affordance. The legacy button renders
+        // on canPush (run-field based, line ~43 of PushPrPanel). We additionally
+        // require a PR mode that actually pushes / creates a PR inside the app;
+        // in local_only mode the panel only shows manual/out-of-app guidance, so
+        // the top action must stay display-only there.
+        const canPush =
+          (run.status === 'final_approved' || run.status === 'push_failed') &&
+          !run.pr_url
+        const prModeSupportsInAppPush =
+          project?.pr_mode === 'github_cli' ||
+          project?.pr_mode === 'manual_token'
+        if (!canPush || !prModeSupportsInAppPush) return null
+        return {
+          onClick: () => pushPrMutation.mutate(),
+          isPending: pushPrMutation.isPending,
+        }
+      }
+      default:
+        return null
+    }
+  }
+
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
       <div className="mb-6 flex items-start justify-between gap-4">
@@ -953,7 +1007,10 @@ export default function RunDetailPage() {
 
       {/* Display-only operator attention summary. Rendered above the existing
           execution/approval controls; it never replaces or rewires them. */}
-      <OperatorAttentionPanel operatorState={chunkPlan?.operator_state} />
+      <OperatorAttentionPanel
+        operatorState={chunkPlan?.operator_state}
+        resolvePrimaryAction={resolvePrimaryAction}
+      />
 
       {TERMINAL_RUN_STATUSES.includes(run.status) && (
         <RunMemorySuggestions run={run} />
