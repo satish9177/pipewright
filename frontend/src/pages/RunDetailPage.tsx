@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -398,6 +398,93 @@ function isPendingChunkGate(gate: ApprovalGate, runId: string) {
     typeof gate.chunk_number === 'number' &&
     gate.chunk_number > 0 &&
     gate.status === 'pending'
+  )
+}
+
+// #35H: vertical stepper for the Finish & ship flow. Display-only — it adds no
+// controls and changes no behavior. It only frames the existing final-approval →
+// push/PR → checks panels as one guided, ordered flow with done/current/pending
+// states. The step status is derived purely from the same booleans that already
+// gate each panel, so it never diverges from what is actually shown.
+type FinishStepStatus = 'done' | 'current' | 'pending'
+
+function FinishStepBadge({ status }: { status: FinishStepStatus }) {
+  const meta =
+    status === 'done'
+      ? { label: 'Done', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' }
+      : status === 'current'
+        ? { label: 'Current', className: 'border-foreground/30 bg-background text-foreground' }
+        : { label: 'Pending', className: 'border-muted-foreground/30 bg-muted text-muted-foreground' }
+  return (
+    <span
+      className={`rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider ${meta.className}`}
+    >
+      {meta.label}
+    </span>
+  )
+}
+
+function FinishStep({
+  n,
+  title,
+  status,
+  effect,
+  isLast,
+  children,
+}: {
+  n: number
+  title: string
+  status: FinishStepStatus
+  effect: string
+  isLast?: boolean
+  children: ReactNode
+}) {
+  const circle =
+    status === 'done'
+      ? 'border border-emerald-500 bg-emerald-500 text-white'
+      : status === 'current'
+        ? 'border-2 border-foreground bg-background font-semibold text-foreground'
+        : 'border border-dashed border-muted-foreground/40 bg-muted text-muted-foreground'
+  return (
+    <div className="flex gap-3">
+      {/* Left rail: numbered circle + connector that threads the steps together. */}
+      <div className="flex flex-col items-center">
+        <div
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full font-mono text-xs ${circle}`}
+        >
+          {status === 'done' ? (
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          ) : (
+            n
+          )}
+        </div>
+        {!isLast && <div className="mt-1 w-px flex-1 bg-border" />}
+      </div>
+      {/* Right column: step heading + effect copy + the existing panel/placeholder. */}
+      <div className={`min-w-0 flex-1 ${isLast ? '' : 'pb-6'}`}>
+        <div className="flex flex-wrap items-center gap-2">
+          <h4
+            className={`text-sm font-semibold ${status === 'pending' ? 'text-muted-foreground' : ''}`}
+          >
+            {title}
+          </h4>
+          <FinishStepBadge status={status} />
+        </div>
+        <p className="mt-0.5 text-xs text-muted-foreground">{effect}</p>
+        <div className="mt-3">{children}</div>
+      </div>
+    </div>
   )
 }
 
@@ -880,6 +967,21 @@ export default function RunDetailPage() {
   // push section. It never gates the push/approval controls; it only surfaces
   // the typed PR state and, on explicit refresh, GitHub checks.
   const showPrStatusPanel = showPushPrPanel
+  // #35H: derive Finish & ship step states purely from the booleans that already
+  // gate each panel, so the stepper never claims a state different from what is
+  // shown. Display-only; changes no behavior.
+  const hasPr = Boolean(run.pr_url)
+  const finishStep1Status: FinishStepStatus = showFinalApprovalPanel
+    ? 'current'
+    : 'done'
+  const finishStep2Status: FinishStepStatus = !showPushPrPanel
+    ? 'pending'
+    : hasPr
+      ? 'done'
+      : 'current'
+  const finishStep3Status: FinishStepStatus = showPrStatusPanel
+    ? 'current'
+    : 'pending'
   // #28G: pre-disable Approve Final when any chunk's weak/none verdict is not
   // acknowledged against the current diff. The backend #28F gate stays the
   // source of truth; this only avoids sending the user into an avoidable 409.
@@ -1215,64 +1317,116 @@ export default function RunDetailPage() {
         </section>
       )}
 
-      {(showFinalApprovalPanel || showPushPrPanel) && (
-        <section className="mb-6">
-          <div className="mb-3">
-            <h3 className="text-sm font-semibold">Final Approval and PR</h3>
-            <p className="text-xs text-muted-foreground">
-              Complete the human approval loop, then push and create a GitHub PR.
-            </p>
-          </div>
-
-          <div className="mb-3">
+      {/* #35H: final approval, push/create PR, and PR status/checks are composed
+          into one guided "Finish & ship" stepper so the order is obvious. This is
+          organization + copy only — every panel keeps its existing component,
+          props, conditions, mutation handlers, and loading/error states. Nothing
+          auto-pushes, auto-merges, or auto-refreshes checks.
+          showPrStatusPanel currently equals showPushPrPanel; it is listed in the
+          gate explicitly so PR status/checks visibility is guaranteed even if
+          that definition ever diverges. */}
+      {(showFinalApprovalPanel || showPushPrPanel || showPrStatusPanel) && (
+        <Card className="mb-6 bg-muted/20">
+          <CardHeader>
+            <CardTitle className="text-base">Finish &amp; ship</CardTitle>
+            <CardDescription>
+              Final approval, push, and PR checks happen in order. Pipewright
+              never merges automatically.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4">
             <TestCommandQualityWarning project={project} context="review" />
-          </div>
 
-          {showFinalApprovalPanel && (
-            <>
-              {chunkPlan && (
-                <TestValidationAckPanel
-                  runId={runId!}
-                  plan={chunkPlan}
-                  onAcknowledged={() => {
-                    // Refresh run/chunks/gates so acknowledgement_status and the
-                    // Approve-Final disabled state recompute, matching the
-                    // invalidation used by the other mutations on this page.
-                    queryClient.invalidateQueries({ queryKey: ['run', runId] })
-                    queryClient.invalidateQueries({
-                      queryKey: ['runChunks', runId],
-                    })
-                    queryClient.invalidateQueries({ queryKey: ['gates'] })
-                  }}
-                />
-              )}
-              <FinalApprovalPanel
-                run={run}
-                hasPendingFinalGate={Boolean(pendingFinalGate)}
-                isCheckingFinalGate={gatesLoading}
-                isApproving={approveFinalApprovalMutation.isPending}
-                isRejecting={rejectFinalApprovalMutation.isPending}
-                message={finalApprovalMessage}
-                error={finalApprovalError}
-                acknowledgementBlocking={acknowledgementBlocking}
-                onApprove={() => approveFinalApprovalMutation.mutate()}
-                onReject={(reason) => rejectFinalApprovalMutation.mutate(reason)}
-              />
-            </>
-          )}
+            <div>
+              <FinishStep
+                n={1}
+                title="Final approval"
+                status={finishStep1Status}
+                effect="Final approval authorizes finishing the run."
+              >
+                {showFinalApprovalPanel ? (
+                  <div className="grid gap-4">
+                    {chunkPlan && (
+                      <TestValidationAckPanel
+                        runId={runId!}
+                        plan={chunkPlan}
+                        onAcknowledged={() => {
+                          // Refresh run/chunks/gates so acknowledgement_status
+                          // and the Approve-Final disabled state recompute,
+                          // matching the invalidation used by the other
+                          // mutations here.
+                          queryClient.invalidateQueries({
+                            queryKey: ['run', runId],
+                          })
+                          queryClient.invalidateQueries({
+                            queryKey: ['runChunks', runId],
+                          })
+                          queryClient.invalidateQueries({ queryKey: ['gates'] })
+                        }}
+                      />
+                    )}
+                    <FinalApprovalPanel
+                      run={run}
+                      hasPendingFinalGate={Boolean(pendingFinalGate)}
+                      isCheckingFinalGate={gatesLoading}
+                      isApproving={approveFinalApprovalMutation.isPending}
+                      isRejecting={rejectFinalApprovalMutation.isPending}
+                      message={finalApprovalMessage}
+                      error={finalApprovalError}
+                      acknowledgementBlocking={acknowledgementBlocking}
+                      onApprove={() => approveFinalApprovalMutation.mutate()}
+                      onReject={(reason) =>
+                        rejectFinalApprovalMutation.mutate(reason)
+                      }
+                    />
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    Final approval is complete.
+                  </p>
+                )}
+              </FinishStep>
 
-          {showPushPrPanel && (
-            <PushPrPanel
-              run={run}
-              project={project}
-              isPushing={pushPrMutation.isPending}
-              message={pushPrMessage}
-              error={pushPrError}
-              onPush={() => pushPrMutation.mutate()}
-            />
-          )}
-          {showPrStatusPanel && <PrStatusPanel run={run} project={project} />}
-        </section>
+              <FinishStep
+                n={2}
+                title="Push / create PR"
+                status={finishStep2Status}
+                effect="Push or create the pull request — this never merges."
+              >
+                {showPushPrPanel ? (
+                  <PushPrPanel
+                    run={run}
+                    project={project}
+                    isPushing={pushPrMutation.isPending}
+                    message={pushPrMessage}
+                    error={pushPrError}
+                    onPush={() => pushPrMutation.mutate()}
+                  />
+                ) : (
+                  <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+                    Available after final approval.
+                  </p>
+                )}
+              </FinishStep>
+
+              <FinishStep
+                n={3}
+                title="Pull request & checks"
+                status={finishStep3Status}
+                effect="Checks refresh only when you ask — nothing polls automatically."
+                isLast
+              >
+                {showPrStatusPanel ? (
+                  <PrStatusPanel run={run} project={project} />
+                ) : (
+                  <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+                    Appears once a push or pull request exists.
+                  </p>
+                )}
+              </FinishStep>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {run.status === 'complete' && (
