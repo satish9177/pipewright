@@ -20,7 +20,10 @@ import type {
   StartContextDriftedResponse,
   TestRunVerdict,
 } from '@/api/client'
-import { primaryActionHandlerKey } from '@/lib/operatorPrimaryAction'
+import {
+  coEqualActionHandlerKey,
+  primaryActionHandlerKey,
+} from '@/lib/operatorPrimaryAction'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -942,6 +945,38 @@ export default function RunDetailPage() {
     }
   }
 
+  // #35G: map operator_state neutral/secondary (co-equal) actions to the SAME
+  // legacy mutation their twin control already calls. Only the memory-conflict
+  // pair is mapped, and only while the legacy MemoryConflictPanel would show its
+  // buttons (a pending memory-conflict gate exists and gates are loaded). Scope
+  // expansion and weak-test acknowledgement stay display-only (see helper). No
+  // new routes, no changed semantics — only reachability from the top panel.
+  const resolveCoEqualAction = (
+    action: OperatorAction,
+  ): { onClick: () => void; isPending: boolean } | null => {
+    const key = coEqualActionHandlerKey(action.id)
+    if (!key) return null
+    // Mirror MemoryConflictPanel's enable rule (actionPending / hasPendingGate).
+    if (!pendingMemoryConflictGate || gatesLoading) return null
+    switch (key) {
+      case 'approve_memory_conflict':
+        return {
+          onClick: () => approveMemoryConflictMutation.mutate(),
+          isPending: approveMemoryConflictMutation.isPending,
+        }
+      case 'reject_memory_conflict':
+        // Reason is optional in the legacy panel; '' uses the same backend
+        // default the empty-textarea reject already sends. The panel below stays
+        // available for users who want to add a reason.
+        return {
+          onClick: () => rejectMemoryConflictMutation.mutate(''),
+          isPending: rejectMemoryConflictMutation.isPending,
+        }
+      default:
+        return null
+    }
+  }
+
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
       <div className="mb-6 flex items-start justify-between gap-4">
@@ -1010,6 +1045,7 @@ export default function RunDetailPage() {
       <OperatorAttentionPanel
         operatorState={chunkPlan?.operator_state}
         resolvePrimaryAction={resolvePrimaryAction}
+        resolveCoEqualAction={resolveCoEqualAction}
       />
 
       {TERMINAL_RUN_STATUSES.includes(run.status) && (
