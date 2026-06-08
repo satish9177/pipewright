@@ -71,6 +71,85 @@ function getChunkDefinition(
   return definitionsByNumber.get(chunk.chunk_number)
 }
 
+// #36C: chunk statuses that mean a chunk is currently working or needs attention.
+// Used only to pick the "current chunk at a glance" when the backend did not give
+// an explicit current_chunk_number. 'in_progress' is included defensively even
+// though the typed enum uses 'running'.
+const ACTIVE_ATTENTION_STATUSES = new Set<string>([
+  'running',
+  'in_progress',
+  'failed',
+  'awaiting_chunk_approval',
+])
+
+// #36C: conservatively choose the active chunk from EXISTING data only. Prefers
+// the backend's current_chunk_number; otherwise the first chunk (in plan order)
+// whose status indicates work/attention. Returns null when nothing clearly
+// qualifies — the caller then renders no summary card. Invents no backend state.
+function selectActiveChunk(plan: ChunkPlanResponse): ChunkStatus | null {
+  const chunks = plan.chunks ?? []
+  if (chunks.length === 0) return null
+  if (plan.current_chunk_number) {
+    const current = chunks.find(
+      chunk => chunk.chunk_number === plan.current_chunk_number
+    )
+    if (current) return current
+  }
+  return (
+    chunks.find(chunk => ACTIVE_ATTENTION_STATUSES.has(chunk.status)) ?? null
+  )
+}
+
+// #36C: compact, friendly summaries for the ActiveChunkCard chips. These mirror
+// the verdict vocabulary already shown in full by RuntimeTestValidationBanner /
+// AdvisoryReviewPanel below; they never replace those banners.
+const ACTIVE_TEST_SUMMARY: Record<
+  string,
+  { label: string; className: string }
+> = {
+  strong: {
+    label: 'Tests: strong',
+    className: 'border-green-300 bg-green-100 text-green-800',
+  },
+  weak: {
+    label: 'Tests: weak',
+    className: 'border-amber-300 bg-amber-100 text-amber-800',
+  },
+  none: {
+    label: 'Tests: none',
+    className: 'border-amber-300 bg-amber-100 text-amber-800',
+  },
+  unknown: {
+    label: 'Tests: unverified',
+    className: 'border-slate-300 bg-slate-100 text-slate-600',
+  },
+}
+
+const ACTIVE_REVIEW_SUMMARY: Record<
+  string,
+  { label: string; className: string }
+> = {
+  approve_with_notes: {
+    label: 'Review: no blocking concern',
+    className: 'border-slate-300 bg-slate-100 text-slate-700',
+  },
+  needs_human_attention: {
+    label: 'Review: needs attention',
+    className: 'border-amber-300 bg-amber-100 text-amber-800',
+  },
+  risky: {
+    label: 'Review: risky',
+    className: 'border-red-300 bg-red-100 text-red-800',
+  },
+}
+
+// Compact files list for the at-a-glance card; the full list stays in ChunkCard.
+function truncateFiles(files: string[], max = 3): string {
+  if (files.length === 0) return 'None'
+  if (files.length <= max) return files.join(', ')
+  return `${files.slice(0, max).join(', ')} +${files.length - max} more`
+}
+
 // Display-only marker for a recovered patch awaiting review (#26E3). The patch
 // was regenerated and applied, but is NOT committed — the existing
 // awaiting_chunk_approval UI below still owns approve/commit. This adds no
@@ -682,6 +761,139 @@ function PlanApprovalControls({
   )
 }
 
+// #36C: display-only "current chunk at a glance" summary rendered ABOVE the full
+// chunk list. It contains NO action buttons and wires nothing — every real
+// control and full banner stays in the ChunkCard list below, which remains the
+// source of truth. It must not duplicate the long banners (test validation,
+// advisory review, scope expansion, patch failure); it only summarizes them.
+function ActiveChunkCard({
+  chunk,
+  definition,
+}: {
+  chunk: ChunkStatus
+  definition?: ChunkDefinition
+}) {
+  const statusDisplay = getStatusDisplay(chunk.status)
+  const filesExpected =
+    chunk.files_expected.length > 0
+      ? chunk.files_expected
+      : definition?.files_expected ?? []
+  const riskLevel = chunk.risk_level || definition?.risk_level || 'unknown'
+  const requiresHumanReview =
+    chunk.requires_human_review || definition?.requires_human_review || false
+
+  // Same pure parsing used by ChunkCard, here only to produce a one-line status
+  // chip — the actual banners still render in full below.
+  const patchFailure = parsePatchFailureSummary(chunk.completion_summary)
+  const recoveredReview = patchFailure
+    ? null
+    : parseRecoveredPatchReviewSummary(chunk.completion_summary)
+  const pendingScope = chunk.pending_scope_expansion ?? null
+
+  const chips: Array<{ key: string; label: string; className: string }> = []
+
+  const testVerdict = chunk.test_validation?.verdict
+  if (testVerdict) {
+    chips.push({
+      key: 'tests',
+      ...(ACTIVE_TEST_SUMMARY[testVerdict] ?? ACTIVE_TEST_SUMMARY.unknown),
+    })
+  }
+
+  const review = chunk.review
+  if (review && review.review_status === 'completed' && review.verdict) {
+    const meta = ACTIVE_REVIEW_SUMMARY[review.verdict]
+    if (meta) chips.push({ key: 'review', ...meta })
+  }
+
+  if (pendingScope) {
+    chips.push({
+      key: 'scope',
+      label: 'Scope: expansion needs approval',
+      className: 'border-amber-300 bg-amber-100 text-amber-800',
+    })
+  }
+
+  if (patchFailure || chunk.error_message) {
+    chips.push({
+      key: 'failure',
+      label: 'Has a recorded failure',
+      className: 'border-red-300 bg-red-100 text-red-800',
+    })
+  } else if (recoveredReview) {
+    chips.push({
+      key: 'recovered',
+      label: 'Recovered patch awaiting review',
+      className: 'border-green-300 bg-green-100 text-green-800',
+    })
+  } else if (chunk.completion_summary) {
+    chips.push({
+      key: 'completion',
+      label: 'Completion summary available',
+      className: 'border-slate-300 bg-slate-100 text-slate-600',
+    })
+  }
+
+  return (
+    <div className="grid gap-3 rounded-lg border bg-muted/30 p-4">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Current chunk at a glance
+        </h3>
+        <span className="text-xs text-muted-foreground">read-only summary</span>
+      </div>
+
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold">
+            Chunk {chunk.chunk_number}: {chunk.title}
+          </p>
+          <p className="text-sm text-muted-foreground">
+            {definition?.description || 'No description available.'}
+          </p>
+        </div>
+        <Badge variant="outline" className={statusDisplay.className}>
+          {statusDisplay.label}
+        </Badge>
+      </div>
+
+      <div className="grid gap-3 text-sm sm:grid-cols-3">
+        <div>
+          <p className="font-medium">Files Expected</p>
+          <p className="text-muted-foreground break-words">
+            {truncateFiles(filesExpected)}
+          </p>
+        </div>
+        <div>
+          <p className="font-medium">Risk Level</p>
+          <p className="text-muted-foreground">{riskLevel}</p>
+        </div>
+        <div>
+          <p className="font-medium">Human Review</p>
+          <p className="text-muted-foreground">
+            {requiresHumanReview ? 'Required' : 'Not required'}
+          </p>
+        </div>
+      </div>
+
+      {chips.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {chips.map(chip => (
+            <Badge key={chip.key} variant="outline" className={chip.className}>
+              {chip.label}
+            </Badge>
+          ))}
+        </div>
+      )}
+
+      <p className="text-xs text-muted-foreground">
+        Read-only summary. Full chunk details remain below — use the controls in
+        the full chunk details below to act.
+      </p>
+    </div>
+  )
+}
+
 export default function ChunkPlanPanel({
   plan,
   isApproving,
@@ -724,6 +936,8 @@ export default function ChunkPlanPanel({
     approvingChunkNumber !== null ||
     rejectingChunkNumber !== null
   const planStatusDisplay = getStatusDisplay(plan.chunk_plan_status)
+  // #36C: display-only summary of the current/active chunk; null = render nothing.
+  const activeChunk = selectActiveChunk(plan)
 
   return (
     <Card className="mb-4">
@@ -760,6 +974,13 @@ export default function ChunkPlanPanel({
 
             <Separator />
           </>
+        )}
+
+        {activeChunk && (
+          <ActiveChunkCard
+            chunk={activeChunk}
+            definition={getChunkDefinition(activeChunk, definitionsByNumber)}
+          />
         )}
 
         <div className="grid gap-3">
