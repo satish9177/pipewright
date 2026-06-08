@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import type {
   ChunkDefinition,
   ChunkPlanResponse,
@@ -460,6 +460,64 @@ function InlineChunkApprovalControls({
   )
 }
 
+// #36E: display-only framing around the existing ScopeExpansionBanner. It makes
+// the file-permission-vs-code-approval distinction prominent BEFORE the banner.
+// It wires nothing and changes no behavior — the banner keeps its own approve/
+// reject controls and copy.
+function ScopePermissionContext({ children }: { children: ReactNode }) {
+  return (
+    <div className="grid gap-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+          Scope permission request
+        </h4>
+        <span className="text-xs text-muted-foreground">
+          file-permission decision — not code approval
+        </span>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Pipewright blocked a change that touched files outside this chunk&apos;s
+        approved scope and committed nothing. Approving only adds the requested
+        files to the allowed scope and retries — you will still review the
+        resulting code before anything is committed.
+      </p>
+      {children}
+    </div>
+  )
+}
+
+// #36E: display-only framing around the existing PatchFailureBanner. `active`
+// gates the heading so the banner stays a bare secondary diagnostic when a scope
+// permission request owns the primary recovery path above it (#27F). It wires
+// nothing and changes no behavior — retry eligibility stays inside the banner.
+function PatchRecoveryContext({
+  active,
+  children,
+}: {
+  active: boolean
+  children: ReactNode
+}) {
+  if (!active) return <>{children}</>
+  return (
+    <div className="grid gap-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-red-700">
+          Patch recovery
+        </h4>
+        <span className="text-xs text-muted-foreground">
+          nothing was committed
+        </span>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        The code change could not be applied or was blocked, so nothing was
+        committed. Retry is available only when Pipewright allows it; the full
+        details and attempt history are below.
+      </p>
+      {children}
+    </div>
+  )
+}
+
 interface ChunkCardProps {
   chunk: ChunkStatus
   definition?: ChunkDefinition
@@ -654,14 +712,17 @@ function ChunkCard({
           // #27F: primary recovery action for a pending scope
           // expansion. Rendered above the diagnostic patch-failure
           // banner; owns its own approve/reject + error display.
-          <ScopeExpansionBanner
-            runId={runId}
-            chunkNumber={chunk.chunk_number}
-            request={pendingScope}
-            originalFiles={filesExpected}
-            diagnosticSummary={patchFailure?.message ?? null}
-            onActionComplete={onScopeActionComplete}
-          />
+          // #36E: wrapped in display-only scope-permission framing.
+          <ScopePermissionContext>
+            <ScopeExpansionBanner
+              runId={runId}
+              chunkNumber={chunk.chunk_number}
+              request={pendingScope}
+              originalFiles={filesExpected}
+              diagnosticSummary={patchFailure?.message ?? null}
+              onActionComplete={onScopeActionComplete}
+            />
+          </ScopePermissionContext>
         )}
 
         {patchFailure ? (
@@ -670,14 +731,18 @@ function ChunkCard({
           // generic error_message block to avoid duplication. When a
           // scope expansion is pending we pass no onRetry so the normal
           // #26 Retry button is not shown as the primary action (#27F).
-          <PatchFailureBanner
-            report={patchFailure}
-            projectId={projectId}
-            chunkNumber={chunk.chunk_number}
-            chunkStatus={chunk.status}
-            onRetry={pendingScope ? undefined : onRetryChunk}
-            isRetrying={retryingChunkNumber === chunk.chunk_number}
-          />
+          // #36E: wrap in patch-recovery framing, but only when scope is
+          // not the primary path (active={!pendingScope}).
+          <PatchRecoveryContext active={!pendingScope}>
+            <PatchFailureBanner
+              report={patchFailure}
+              projectId={projectId}
+              chunkNumber={chunk.chunk_number}
+              chunkStatus={chunk.status}
+              onRetry={pendingScope ? undefined : onRetryChunk}
+              isRetrying={retryingChunkNumber === chunk.chunk_number}
+            />
+          </PatchRecoveryContext>
         ) : recoveredReview ? (
           // Recovered patch awaiting review (#26E3): show a marker
           // instead of dumping the raw recovered_patch_review JSON.
