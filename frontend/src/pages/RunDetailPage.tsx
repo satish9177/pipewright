@@ -37,6 +37,7 @@ import { Separator } from '@/components/ui/separator'
 import RunStatusBadge from '@/components/RunStatusBadge'
 import EventLog from '@/components/EventLog'
 import ChunkPlanPanel from '@/components/ChunkPlanPanel'
+import { chunkNeedsAttention } from '@/utils/chunkAttention'
 import OperatorAttentionPanel from '@/components/OperatorAttentionPanel'
 import FinalApprovalPanel from '@/components/FinalApprovalPanel'
 import TestValidationAckPanel from '@/components/TestValidationAckPanel'
@@ -437,6 +438,49 @@ function shouldShowPushPrPanel(status: RunStatus, hasPrData: boolean) {
     status === 'pushing' ||
     status === 'push_failed'
   )
+}
+
+// #37D2: run statuses where the chunk plan reads as history — the current decision
+// (if any) has moved above it into Finish & ship, or the run is terminal. This is
+// only a coarse gate; the per-chunk attention check below is the real fail-safe
+// that keeps any still-actionable chunk expanded.
+const CHUNK_HISTORY_ELIGIBLE_STATUSES: RunStatus[] = [
+  'complete',
+  'final_approved',
+  'pushing',
+  'push_failed',
+  'rejected',
+  'final_rejected',
+  'failed',
+]
+
+// #37D2: decide whether the Chunk Plan Details section should default to a
+// collapsed "Chunk history" disclosure. Fail-open by construction: it returns true
+// ONLY when the run is finished/terminal AND nothing in the plan needs attention.
+// Any missing or ambiguous input returns false (stay expanded). It hides nothing —
+// the full panel is one click away — and it never applies to a state with a
+// pending chunk/plan control (those statuses are excluded, and any actionable
+// chunk forces expansion via chunkNeedsAttention).
+function shouldCollapseChunkHistory(
+  run: Run,
+  chunkPlan: ChunkPlanResponse | undefined,
+): boolean {
+  if (!chunkPlan) return false
+  if (!CHUNK_HISTORY_ELIGIBLE_STATUSES.includes(run.status)) return false
+  // Unknown state → fail open.
+  if (chunkPlan.operator_state?.unknown_state_warning) return false
+  // Plan-level approve/reject still pending → keep expanded.
+  if (chunkPlan.chunk_plan_status === 'awaiting_approval') return false
+  // Any chunk that is running / in_progress / failed / awaiting chunk approval, or
+  // carries a pending scope expansion, an error, a patch failure, or a recovered
+  // patch awaiting review → keep expanded. Reuses ChunkPlanPanel's own predicate
+  // (activeChunkNumber = null, so only real attention signals count, not "is the
+  // current chunk").
+  const anyChunkNeedsAttention = chunkPlan.chunks.some(chunk =>
+    chunkNeedsAttention(chunk, null),
+  )
+  if (anyChunkNeedsAttention) return false
+  return true
 }
 
 function isPendingFinalGate(gate: ApprovalGate, runId: string) {
@@ -1165,6 +1209,67 @@ export default function RunDetailPage() {
   }
 
   const chunkSummary = chunkSummaryText(run)
+  // #37D2: in finished/terminal states with no pending chunk action, the chunk
+  // plan reads as history and may collapse into a disclosure (fail-open helper).
+  const collapseChunkHistory = shouldCollapseChunkHistory(run, chunkPlan)
+  // The chunk plan panel (or the legacy empty-state) is built once here and placed
+  // either inline or inside the history disclosure below — identical either way,
+  // so no control, banner, prop, or handler changes.
+  const chunkPlanContent = chunkPlan ? (
+    <ChunkPlanPanel
+      plan={chunkPlan}
+      isApproving={approveChunkPlanMutation.isPending}
+      isRejecting={rejectChunkPlanMutation.isPending}
+      isExecuting={executeChunksMutation.isPending}
+      isResuming={resumeChunksMutation.isPending}
+      approvingChunkNumber={approveChunkMutation.variables ?? null}
+      rejectingChunkNumber={
+        rejectChunkMutation.variables?.chunkNumber ?? null
+      }
+      error={chunkPlanActionError}
+      executionMessage={chunkExecutionMessage}
+      executionError={chunkExecutionError}
+      startContextDrift={startContextDrift}
+      chunkActionMessage={chunkActionMessage}
+      chunkActionError={chunkActionError}
+      hiddenApprovalChunkNumbers={gateBackedApprovalChunkNumbers}
+      retryingChunkNumber={
+        retryChunkMutation.isPending
+          ? retryChunkMutation.variables?.chunkNumber ?? null
+          : null
+      }
+      onApprove={() => approveChunkPlanMutation.mutate()}
+      onReject={(reason) => rejectChunkPlanMutation.mutate(reason)}
+      onExecute={() => executeChunksMutation.mutate()}
+      onResume={() => resumeChunksMutation.mutate()}
+      onApproveChunk={(chunkNumber) =>
+        approveChunkMutation.mutate(chunkNumber)
+      }
+      onRejectChunk={(chunkNumber, reason) =>
+        rejectChunkMutation.mutate({ chunkNumber, reason })
+      }
+      onRetryChunk={(chunkNumber, failureReportId) =>
+        retryChunkMutation.mutate({ chunkNumber, failureReportId })
+      }
+      onScopeActionComplete={() => {
+        // #27F: refresh run/chunks/gates after a scope expansion
+        // approve/reject, matching the invalidation used by the chunk
+        // approve/reject/retry mutations above.
+        queryClient.invalidateQueries({ queryKey: ['run', runId] })
+        queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+        queryClient.invalidateQueries({ queryKey: ['gates'] })
+      }}
+    />
+  ) : (
+    <Card className="mb-4 border-dashed">
+      <CardContent className="py-6">
+        <p className="text-sm font-medium">No chunk plan loaded</p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          This run started before chunked plans. Showing what we have.
+        </p>
+      </CardContent>
+    </Card>
+  )
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
@@ -1352,68 +1457,52 @@ export default function RunDetailPage() {
       )}
 
       <section className="mb-6">
-        <div className="mb-3">
-          <h3 className="text-sm font-semibold">Chunk Plan Details</h3>
-          <p className="text-xs text-muted-foreground">
-            The chunk-by-chunk plan, execution controls, and chunk-level
-            approvals.
-          </p>
-        </div>
-
-        {chunkPlan ? (
-          <ChunkPlanPanel
-            plan={chunkPlan}
-            isApproving={approveChunkPlanMutation.isPending}
-            isRejecting={rejectChunkPlanMutation.isPending}
-            isExecuting={executeChunksMutation.isPending}
-            isResuming={resumeChunksMutation.isPending}
-            approvingChunkNumber={approveChunkMutation.variables ?? null}
-            rejectingChunkNumber={
-              rejectChunkMutation.variables?.chunkNumber ?? null
-            }
-            error={chunkPlanActionError}
-            executionMessage={chunkExecutionMessage}
-            executionError={chunkExecutionError}
-            startContextDrift={startContextDrift}
-            chunkActionMessage={chunkActionMessage}
-            chunkActionError={chunkActionError}
-            hiddenApprovalChunkNumbers={gateBackedApprovalChunkNumbers}
-            retryingChunkNumber={
-              retryChunkMutation.isPending
-                ? retryChunkMutation.variables?.chunkNumber ?? null
-                : null
-            }
-            onApprove={() => approveChunkPlanMutation.mutate()}
-            onReject={(reason) => rejectChunkPlanMutation.mutate(reason)}
-            onExecute={() => executeChunksMutation.mutate()}
-            onResume={() => resumeChunksMutation.mutate()}
-            onApproveChunk={(chunkNumber) =>
-              approveChunkMutation.mutate(chunkNumber)
-            }
-            onRejectChunk={(chunkNumber, reason) =>
-              rejectChunkMutation.mutate({ chunkNumber, reason })
-            }
-            onRetryChunk={(chunkNumber, failureReportId) =>
-              retryChunkMutation.mutate({ chunkNumber, failureReportId })
-            }
-            onScopeActionComplete={() => {
-              // #27F: refresh run/chunks/gates after a scope expansion
-              // approve/reject, matching the invalidation used by the chunk
-              // approve/reject/retry mutations above.
-              queryClient.invalidateQueries({ queryKey: ['run', runId] })
-              queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
-              queryClient.invalidateQueries({ queryKey: ['gates'] })
-            }}
-          />
+        {collapseChunkHistory ? (
+          // #37D2: finished/terminal run with no pending chunk action — the chunk
+          // plan is history, so demote it into a default-collapsed disclosure so it
+          // no longer dominates the page. The panel inside is unchanged: every
+          // control, banner, and chunk detail is one click away. This is separate
+          // from the #35D "Details & audit" disclosure below — the two are not
+          // merged.
+          <details className="group rounded-xl border bg-card">
+            <summary className="flex cursor-pointer list-none items-start gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+              <svg
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm font-semibold">Chunk history</span>
+                  <span className="text-xs text-muted-foreground">
+                    Implementation details from this run
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  The run is finished; full chunk details remain available below.
+                  Collapsed by default — nothing was removed.
+                </p>
+              </div>
+            </summary>
+            <div className="border-t px-4 py-4">{chunkPlanContent}</div>
+          </details>
         ) : (
-          <Card className="mb-4 border-dashed">
-            <CardContent className="py-6">
-              <p className="text-sm font-medium">No chunk plan loaded</p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                This run started before chunked plans. Showing what we have.
+          <>
+            <div className="mb-3">
+              <h3 className="text-sm font-semibold">Chunk Plan Details</h3>
+              <p className="text-xs text-muted-foreground">
+                The chunk-by-chunk plan, execution controls, and chunk-level
+                approvals.
               </p>
-            </CardContent>
-          </Card>
+            </div>
+            {chunkPlanContent}
+          </>
         )}
       </section>
 

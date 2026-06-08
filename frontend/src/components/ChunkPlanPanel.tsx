@@ -30,6 +30,10 @@ import {
   type RecoveredPatchReviewSummary,
 } from '@/utils/patchFailure'
 import { extractScopeWarnings } from '@/utils/scopeWarnings'
+import {
+  ACTIVE_ATTENTION_STATUSES,
+  chunkNeedsAttention,
+} from '@/utils/chunkAttention'
 
 interface ChunkPlanPanelProps {
   plan: ChunkPlanResponse
@@ -72,17 +76,6 @@ function getChunkDefinition(
   return definitionsByNumber.get(chunk.chunk_number)
 }
 
-// #36C: chunk statuses that mean a chunk is currently working or needs attention.
-// Used only to pick the "current chunk at a glance" when the backend did not give
-// an explicit current_chunk_number. 'in_progress' is included defensively even
-// though the typed enum uses 'running'.
-const ACTIVE_ATTENTION_STATUSES = new Set<string>([
-  'running',
-  'in_progress',
-  'failed',
-  'awaiting_chunk_approval',
-])
-
 // #36C: conservatively choose the active chunk from EXISTING data only. Prefers
 // the backend's current_chunk_number; otherwise the first chunk (in plan order)
 // whose status indicates work/attention. Returns null when nothing clearly
@@ -99,26 +92,6 @@ function selectActiveChunk(plan: ChunkPlanResponse): ChunkStatus | null {
   return (
     chunks.find(chunk => ACTIVE_ATTENTION_STATUSES.has(chunk.status)) ?? null
   )
-}
-
-// #36D: whether a chunk must stay expanded by default — i.e. it is the active
-// chunk or carries a pending decision / recovery / control. Pure; reads existing
-// data only. Chunks where this is true render the full ChunkCard and are never
-// collapsible, so a chunk that needs attention can never become invisible.
-function chunkNeedsAttention(
-  chunk: ChunkStatus,
-  activeChunkNumber: number | null
-): boolean {
-  if (activeChunkNumber !== null && chunk.chunk_number === activeChunkNumber) {
-    return true
-  }
-  // running / in_progress / failed / awaiting_chunk_approval
-  if (ACTIVE_ATTENTION_STATUSES.has(chunk.status)) return true
-  if (chunk.pending_scope_expansion) return true
-  if (chunk.error_message) return true
-  if (parsePatchFailureSummary(chunk.completion_summary)) return true
-  if (parseRecoveredPatchReviewSummary(chunk.completion_summary)) return true
-  return false
 }
 
 // #36C: compact, friendly summaries for the ActiveChunkCard chips. These mirror
