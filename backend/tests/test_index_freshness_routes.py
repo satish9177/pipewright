@@ -5,6 +5,7 @@ Route-level coverage for #34C stale repo-index detection.
 
 import subprocess
 import uuid
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -13,12 +14,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from backend.db.database import engine
+from backend.git.local_git import StartBranchInspection
 from backend.main import app
 from backend.models.chunk import ChunkDefinition, TriageResult
 from backend.pipeline.clarification_context import (
     create_clarification_context,
     encode_clarification_context,
 )
+from backend.pipeline.run_locks import ProjectRepoLockError
 from backend.projects.project_store import create_project
 from backend.repo.index_freshness import (
     compute_working_tree_fingerprint,
@@ -177,6 +180,49 @@ def forbid_run_creation(monkeypatch):
     )
 
 
+def install_reindex_spy(
+    monkeypatch,
+    *,
+    reindex_error: Exception | None = None,
+    lock_error: ProjectRepoLockError | None = None,
+):
+    calls = []
+    lock_entries = []
+
+    @contextmanager
+    def fake_lock(project_id: str):
+        if lock_error is not None:
+            raise lock_error
+        lock_entries.append(project_id)
+        yield
+
+    def fake_reindex(project_id: str, repo_path: str):
+        calls.append((project_id, repo_path))
+        if reindex_error is not None:
+            raise reindex_error
+        return object()
+
+    monkeypatch.setattr("backend.routes.chunks.project_repo_lock_sync", fake_lock)
+    monkeypatch.setattr("backend.routes.chunks.reindex_and_record", fake_reindex)
+    return calls, lock_entries
+
+
+def install_freshness_sequence(monkeypatch, models: list[dict]):
+    calls = []
+
+    def fake_freshness(project_id: str, repo_path: str):
+        calls.append((project_id, repo_path))
+        if len(calls) <= len(models):
+            return models[len(calls) - 1]
+        return models[-1]
+
+    monkeypatch.setattr(
+        "backend.routes.chunks.get_project_index_freshness",
+        fake_freshness,
+    )
+    return calls
+
+
 def test_current_index_freshness_proceeds_and_surfaces_model(
     monkeypatch,
     tmp_repo,
@@ -203,6 +249,65 @@ def test_current_index_freshness_proceeds_and_surfaces_model(
     assert data["index_freshness"]["state"] == "current"
 
 
+def test_hard_stale_auto_reindex_once_then_current_creates_run(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["app.py"])
+    stale = freshness_model("stale", ["head_sha_mismatch"])
+    current = freshness_model("current")
+    freshness_calls = install_freshness_sequence(monkeypatch, [stale, current, current])
+    reindex_calls, lock_entries = install_reindex_spy(monkeypatch)
+    install_fake_triage(monkeypatch, ["app.py"])
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "update app.py to print hello",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert data.get("status") != "stale_index"
+    assert data["chunk_plan_status"] == "awaiting_approval"
+    assert data["index_freshness"]["state"] == "current"
+    assert reindex_calls == [(project["id"], str(tmp_repo))]
+    assert lock_entries == [project["id"]]
+    assert len(freshness_calls) == 3
+
+
+def test_hard_stale_auto_reindex_once_then_unknown_creates_run(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    project = make_project(tmp_repo)
+    seed_file_index(project["id"], ["app.py"])
+    stale = freshness_model("stale", ["branch_name_mismatch"])
+    unknown = freshness_model("unknown", ["missing_snapshot"])
+    install_freshness_sequence(monkeypatch, [stale, unknown, unknown])
+    reindex_calls, lock_entries = install_reindex_spy(monkeypatch)
+    install_fake_triage(monkeypatch, ["app.py"])
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "update app.py to print hello",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    tracked_runs.append(data["run_id"])
+    assert data.get("status") != "stale_index"
+    assert data["chunk_plan_status"] == "awaiting_approval"
+    assert data["index_freshness"]["state"] == "unknown"
+    assert reindex_calls == [(project["id"], str(tmp_repo))]
+    assert lock_entries == [project["id"]]
+
+
 def test_dirty_only_stale_freshness_proceeds_with_warning(
     monkeypatch,
     tmp_repo,
@@ -216,6 +321,12 @@ def test_dirty_only_stale_freshness_proceeds_with_warning(
     save_index_fingerprint_snapshot(project["id"], clean_fingerprint, 1)
     (tmp_repo / "app.py").write_text("print('hello')\n", encoding="utf-8")
     install_fake_triage(monkeypatch, ["app.py"])
+    monkeypatch.setattr(
+        "backend.routes.chunks.reindex_and_record",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("dirty-only stale must not auto re-index")
+        ),
+    )
     client = TestClient(app)
 
     response = client.post("/runs/chunked", json={
@@ -251,6 +362,7 @@ def test_hard_stale_index_returns_no_run_and_reindex_action(
         "backend.routes.chunks.get_project_index_freshness",
         lambda *a, **k: stale,
     )
+    reindex_calls, lock_entries = install_reindex_spy(monkeypatch)
     monkeypatch.setattr(
         "backend.routes.chunks.get_indexed_paths_and_dirs",
         lambda *a, **k: (_ for _ in ()).throw(
@@ -273,6 +385,104 @@ def test_hard_stale_index_returns_no_run_and_reindex_action(
     assert data["reindex_endpoint"] == f"/projects/{project['id']}/reindex"
     assert "run_id" not in data
     assert data["index_freshness"] == stale
+    assert reindex_calls == [(project["id"], str(tmp_repo))]
+    assert lock_entries == [project["id"]]
+    assert count_runs(project["id"]) == 0
+
+
+def test_hard_stale_auto_reindex_lock_conflict_returns_stale_no_run(
+    monkeypatch,
+    tmp_repo,
+):
+    project = make_project(tmp_repo)
+    stale = freshness_model("stale", ["head_sha_mismatch"])
+    forbid_run_creation(monkeypatch)
+    install_freshness_sequence(monkeypatch, [stale])
+    reindex_calls, lock_entries = install_reindex_spy(
+        monkeypatch,
+        lock_error=ProjectRepoLockError("repo busy"),
+    )
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "update README.md to add install instructions",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "stale_index"
+    assert data["run_created"] is False
+    assert "run_id" not in data
+    assert reindex_calls == []
+    assert lock_entries == []
+    assert count_runs(project["id"]) == 0
+
+
+def test_hard_stale_auto_reindex_error_returns_stale_no_run(
+    monkeypatch,
+    tmp_repo,
+):
+    project = make_project(tmp_repo)
+    stale = freshness_model("stale", ["branch_name_mismatch"])
+    forbid_run_creation(monkeypatch)
+    install_freshness_sequence(monkeypatch, [stale])
+    reindex_calls, lock_entries = install_reindex_spy(
+        monkeypatch,
+        reindex_error=RuntimeError("scan failed"),
+    )
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "update README.md to add install instructions",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "stale_index"
+    assert data["run_created"] is False
+    assert "run_id" not in data
+    assert reindex_calls == [(project["id"], str(tmp_repo))]
+    assert lock_entries == [project["id"]]
+    assert count_runs(project["id"]) == 0
+
+
+def test_unsafe_start_branch_returns_before_auto_reindex(
+    monkeypatch,
+    tmp_repo,
+):
+    project = make_project(tmp_repo)
+    monkeypatch.setattr(
+        "backend.routes.chunks.inspect_start_branch",
+        lambda _repo_path: StartBranchInspection(
+            current_branch="pipewright/old-run",
+            head_sha_short="abcdef123456",
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.get_project_index_freshness",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("freshness must not run after unsafe start branch")
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.routes.chunks.reindex_and_record",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("unsafe start branch must not auto re-index")
+        ),
+    )
+    client = TestClient(app)
+
+    response = client.post("/runs/chunked", json={
+        "project_id": project["id"],
+        "feature_description": "update app.py to print hello",
+    })
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "unsafe_start_branch"
+    assert data["run_created"] is False
     assert count_runs(project["id"]) == 0
 
 
@@ -456,7 +666,7 @@ def test_clarification_selection_reentry_is_stale_gated(monkeypatch, tmp_repo):
     assert count_runs(project["id"]) == 0
 
 
-def test_reindex_then_resubmit_clears_stale_run_creation(
+def test_hard_stale_auto_reindex_clears_stale_run_creation(
     monkeypatch,
     tmp_repo,
     tracked_runs,
@@ -471,22 +681,6 @@ def test_reindex_then_resubmit_clears_stale_run_creation(
     install_fake_triage(monkeypatch, ["app.py"])
     client = TestClient(app)
 
-    stale_response = client.post("/runs/chunked", json={
-        "project_id": project["id"],
-        "feature_description": "update app.py to print hello",
-    })
-
-    assert stale_response.status_code == 200
-    stale_body = stale_response.json()
-    assert stale_body["status"] == "stale_index"
-    assert current.head_sha not in str(stale_body)
-    assert str(tmp_repo.resolve()) not in str(stale_body)
-    assert count_runs(project["id"]) == 0
-
-    reindex_response = client.post(f"/projects/{project['id']}/reindex")
-    assert reindex_response.status_code == 200
-    assert reindex_response.json()["freshness"]["state"] == "current"
-
     run_response = client.post("/runs/chunked", json={
         "project_id": project["id"],
         "feature_description": "update app.py to print hello",
@@ -495,6 +689,7 @@ def test_reindex_then_resubmit_clears_stale_run_creation(
     assert run_response.status_code == 200
     data = run_response.json()
     tracked_runs.append(data["run_id"])
+    assert data.get("status") != "stale_index"
     assert data["chunk_plan_status"] == "awaiting_approval"
     assert data["index_freshness"]["state"] == "current"
 
