@@ -127,7 +127,11 @@ from backend.pipeline.run_locks import (
 )
 from backend.pipeline.triage import run_triage
 from backend.projects.project_store import get_project
-from backend.repo.index_freshness import get_project_index_freshness, is_hard_stale
+from backend.repo.index_freshness import (
+    get_project_index_freshness,
+    is_hard_stale,
+    reindex_and_record,
+)
 from backend.repo.repo_indexer import build_repo_index, is_supported_file
 from backend.utils.path_safety import is_forbidden_path
 
@@ -250,6 +254,59 @@ def _stale_index_response(project_id: str, freshness: dict) -> JSONResponse:
             "index_freshness": freshness,
         },
     )
+
+
+def _attempt_run_creation_stale_reindex(
+    *,
+    project_id: str,
+    target_repo_path: str | None,
+    stale_freshness: dict,
+) -> dict:
+    """
+    Best-effort one-shot recovery for hard-stale implementation run creation.
+
+    The run-creation path must never loop, checkout, mutate branches, or call
+    the bare indexer. If the lock is busy or re-index fails, keep the original
+    safe stale-index response model so the route can return HTTP 200 no-run.
+    """
+    if not target_repo_path:
+        return stale_freshness
+
+    logger.info(
+        "[INDEX-FRESHNESS] Hard-stale index detected; attempting one "
+        "run-creation re-index. project_id=%s | reasons=%s",
+        project_id,
+        stale_freshness.get("reasons"),
+    )
+    try:
+        with project_repo_lock_sync(project_id):
+            reindex_and_record(project_id, target_repo_path)
+    except ProjectRepoLockError as error:
+        logger.info(
+            "[INDEX-FRESHNESS] Run-creation re-index skipped because the "
+            "project repo lock is busy. project_id=%s | error=%s",
+            project_id,
+            error,
+        )
+        return stale_freshness
+    except Exception as error:
+        logger.warning(
+            "[INDEX-FRESHNESS] Run-creation re-index failed; keeping "
+            "stale-index no-run response. project_id=%s | error=%s",
+            project_id,
+            error,
+        )
+        return stale_freshness
+
+    refreshed = _run_creation_index_freshness(project_id, target_repo_path)
+    logger.info(
+        "[INDEX-FRESHNESS] Run-creation re-index finished. "
+        "project_id=%s | state=%s | reasons=%s",
+        project_id,
+        refreshed.get("state"),
+        refreshed.get("reasons"),
+    )
+    return refreshed
 
 
 def _unsafe_start_branch_response(
@@ -1275,8 +1332,15 @@ async def _create_chunked_run_core(
                 target_repo_path,
             )
             if is_hard_stale(index_freshness):
+                index_freshness = _attempt_run_creation_stale_reindex(
+                    project_id=project_id,
+                    target_repo_path=target_repo_path,
+                    stale_freshness=index_freshness,
+                )
+            if is_hard_stale(index_freshness):
                 logger.info(
-                    "[INDEX-FRESHNESS] Hard-stale index blocked run creation. "
+                    "[INDEX-FRESHNESS] Hard-stale index blocked run creation "
+                    "after one re-index attempt. "
                     "run_id=%s | project_id=%s | reasons=%s",
                     run_id,
                     project_id,
