@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import type {
   ChunkDefinition,
   ChunkPlanResponse,
+  ChunkReview,
   ChunkStatus,
   StartContextDriftedResponse,
   TestRunValidation,
@@ -161,6 +162,88 @@ const ACTIVE_REVIEW_SUMMARY: Record<
     label: 'Review: risky',
     className: 'border-red-300 bg-red-100 text-red-800',
   },
+}
+
+// #36F: compact reviewer-independence chip for the evidence summary. Mirrors the
+// disclosure AdvisoryReviewPanel already shows in full; 'unavailable' (no
+// completed review) yields no chip so an absent review never implies independence.
+const ACTIVE_INDEPENDENCE_SUMMARY: Record<
+  string,
+  { label: string; className: string } | undefined
+> = {
+  self_review: {
+    label: 'Reviewer: not independent',
+    className: 'border-amber-300 bg-amber-100 text-amber-800',
+  },
+  independent: {
+    label: 'Reviewer: independent',
+    className: 'border-emerald-300 bg-emerald-100 text-emerald-800',
+  },
+  unknown: {
+    label: 'Reviewer: independence unverified',
+    className: 'border-slate-300 bg-slate-100 text-slate-600',
+  },
+}
+
+// #36F: highest-severity-first ordering and chip colors for the findings count
+// chip. Mirrors the severity vocabulary AdvisoryReviewPanel renders per finding.
+const FINDING_SEVERITY_ORDER = ['high', 'warning', 'info'] as const
+const FINDING_SEVERITY_CHIP: Record<string, string> = {
+  high: 'border-red-300 bg-red-100 text-red-800',
+  warning: 'border-amber-300 bg-amber-100 text-amber-800',
+  info: 'border-slate-300 bg-slate-100 text-slate-600',
+}
+
+// #36F: build the summary-first evidence chips for a chunk from EXISTING data
+// only. Each chip mirrors a signal the full RuntimeTestValidationBanner /
+// AdvisoryReviewPanel still render below; chips summarize, they never replace the
+// banners and never soften a weak/none/risky verdict (those stay amber/red).
+function buildEvidenceChips(
+  validation?: TestRunValidation | null,
+  review?: ChunkReview | null
+): Array<{ key: string; label: string; className: string }> {
+  const chips: Array<{ key: string; label: string; className: string }> = []
+
+  const testVerdict = validation?.verdict
+  if (testVerdict) {
+    chips.push({
+      key: 'tests',
+      ...(ACTIVE_TEST_SUMMARY[testVerdict] ?? ACTIVE_TEST_SUMMARY.unknown),
+    })
+  }
+
+  if (review && review.review_status === 'completed') {
+    if (review.verdict) {
+      const meta = ACTIVE_REVIEW_SUMMARY[review.verdict]
+      if (meta) chips.push({ key: 'review', ...meta })
+    }
+    const independence = review.reviewer_independence?.status
+    if (independence) {
+      const meta = ACTIVE_INDEPENDENCE_SUMMARY[independence]
+      if (meta) chips.push({ key: 'independence', ...meta })
+    }
+    if (review.staleness === 'stale') {
+      chips.push({
+        key: 'stale',
+        label: 'Review: stale',
+        className: 'border-amber-300 bg-amber-100 text-amber-800',
+      })
+    }
+    const findingsCount = review.findings.length
+    if (findingsCount > 0) {
+      const highest =
+        FINDING_SEVERITY_ORDER.find(severity =>
+          review.findings.some(finding => finding.severity === severity)
+        ) ?? 'info'
+      chips.push({
+        key: 'findings',
+        label: `${findingsCount} finding${findingsCount === 1 ? '' : 's'} · ${highest}`,
+        className: FINDING_SEVERITY_CHIP[highest] ?? FINDING_SEVERITY_CHIP.info,
+      })
+    }
+  }
+
+  return chips
 }
 
 // Compact files list for the at-a-glance card; the full list stays in ChunkCard.
@@ -518,6 +601,50 @@ function PatchRecoveryContext({
   )
 }
 
+// #36F: display-only "Evidence summary" framing around the existing
+// RuntimeTestValidationBanner + AdvisoryReviewPanel. It adds a summary-first chip
+// row (test verdict, review verdict, reviewer independence, staleness, findings
+// count/severity) ABOVE the unchanged full banners, which still render below in
+// full. It wires nothing, gates nothing, hides nothing: when no evidence exists it
+// renders nothing (the banners would render nothing anyway), and weak/none/risky
+// signals keep their amber/red emphasis here and in the full banners.
+function ChunkEvidenceSection({
+  validation,
+  review,
+  children,
+}: {
+  validation?: TestRunValidation | null
+  review?: ChunkReview | null
+  children: ReactNode
+}) {
+  const hasEvidence = Boolean(validation) || Boolean(review)
+  if (!hasEvidence) return null
+  const chips = buildEvidenceChips(validation, review)
+
+  return (
+    <div className="grid gap-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Evidence summary
+        </h4>
+        <span className="text-xs text-muted-foreground">
+          verification signals — full detail below
+        </span>
+      </div>
+      {chips.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {chips.map(chip => (
+            <Badge key={chip.key} variant="outline" className={chip.className}>
+              {chip.label}
+            </Badge>
+          ))}
+        </div>
+      )}
+      {children}
+    </div>
+  )
+}
+
 interface ChunkCardProps {
   chunk: ChunkStatus
   definition?: ChunkDefinition
@@ -695,18 +822,27 @@ function ChunkCard({
           </div>
         )}
 
-        {/* #28E: display-only runtime test verdict for this chunk.
-            Renders nothing until a verdict is recorded (pending/old
-            chunks). Never gates approval, commit, or PR. */}
-        <RuntimeTestValidationBanner
+        {/* #36F: display-only "Evidence summary" framing. Adds a
+            summary-first chip row above the unchanged full banners,
+            which still render below in full. Renders nothing when no
+            evidence exists. */}
+        <ChunkEvidenceSection
           validation={chunk.test_validation}
-        />
+          review={chunk.review}
+        >
+          {/* #28E: display-only runtime test verdict for this chunk.
+              Renders nothing until a verdict is recorded (pending/old
+              chunks). Never gates approval, commit, or PR. */}
+          <RuntimeTestValidationBanner
+            validation={chunk.test_validation}
+          />
 
-        {/* Advisory AI Review (display-only). Renders only when a
-            review exists; never gates approval, exposes no actions,
-            and is shown below the test-validation banner / above the
-            chunk's approval controls. */}
-        <AdvisoryReviewPanel review={chunk.review} />
+          {/* Advisory AI Review (display-only). Renders only when a
+              review exists; never gates approval, exposes no actions,
+              and is shown below the test-validation banner / above the
+              chunk's approval controls. */}
+          <AdvisoryReviewPanel review={chunk.review} />
+        </ChunkEvidenceSection>
 
         {pendingScope && (
           // #27F: primary recovery action for a pending scope
