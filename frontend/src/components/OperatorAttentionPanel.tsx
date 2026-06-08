@@ -187,27 +187,26 @@ function TrustFacts({ facts }: { facts: OperatorState['trust_facts'] }) {
 }
 
 // Render an operator_state action as a non-interactive visual preview. The real
-// controls live in the existing panels below; these never mutate anything.
+// controls live in the existing panels below; these never mutate anything. It is
+// styled as a quiet, dashed chip — deliberately not a button — so it reads as a
+// display-only mirror rather than a disabled/broken control.
 function PreviewAction({
   action,
-  variant,
+  className,
 }: {
   action: OperatorAction
-  variant: 'default' | 'outline' | 'ghost'
+  className?: string
 }) {
   return (
-    <Button
-      type="button"
-      variant={variant}
-      size="sm"
-      aria-disabled
-      tabIndex={-1}
+    <span
       title={action.intent}
-      className="cursor-default"
-      // Intentionally no onClick: display-only preview, not a real control.
+      className={`inline-flex items-center gap-2 rounded-md border border-dashed border-muted-foreground/40 bg-muted/30 px-3 py-1.5 text-sm text-muted-foreground ${className ?? ''}`}
     >
       {action.label}
-    </Button>
+      <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70">
+        preview
+      </span>
+    </span>
   )
 }
 
@@ -278,16 +277,29 @@ export default function OperatorAttentionPanel({
     Boolean(wiredPrimary) ||
     neutralResolved.some(item => item.wired) ||
     secondaryResolved.some(item => item.wired)
+  // Co-equal options share one zone so risk choices read with equal weight.
+  const coEqualResolved = [...neutralResolved, ...secondaryResolved]
+
+  // Calm, intentional left accent that tracks who the run is waiting on, rather
+  // than always signalling "attention". Purely visual.
+  const accentBorder =
+    waiting_on === 'nobody'
+      ? 'border-l-emerald-400'
+      : waiting_on === 'system'
+        ? 'border-l-blue-400'
+        : 'border-l-amber-400'
 
   return (
-    <Card className="mb-6 border-l-4 border-l-amber-400">
+    <Card className={`mb-6 border-l-4 ${accentBorder}`}>
       <CardHeader>
         <div className="flex flex-wrap items-center gap-2.5">
           <WaitingPill waitingOn={waiting_on} />
           <DecisionTag decisionType={decision_type} />
         </div>
-        <CardTitle className="text-base">{title}</CardTitle>
-        <p className="text-sm leading-relaxed text-muted-foreground">
+        <CardTitle className="text-lg leading-snug tracking-tight">
+          {title}
+        </CardTitle>
+        <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
           {explanation}
         </p>
       </CardHeader>
@@ -321,93 +333,86 @@ export default function OperatorAttentionPanel({
         {hasPreviewActions && (
           <>
             <Separator />
-            <div className="grid gap-2">
-              <SectionLabel>{isRisk ? 'Your decision' : 'Recommended next action'}</SectionLabel>
+            <div className="grid gap-3">
+              <SectionLabel>
+                {isRisk ? 'Your decision' : 'Recommended next action'}
+              </SectionLabel>
               {isRisk && (
-                <p className="text-xs text-muted-foreground">
-                  These are co-equal choices. Pipewright does not recommend one
-                  over the other.
+                <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <span className="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-amber-800">
+                    Equal choice
+                  </span>
+                  Co-equal options — Pipewright does not recommend one over the
+                  other.
                 </p>
               )}
-              <div className="flex flex-wrap gap-2.5">
-                {/* Progress states may surface one clear primary action; risk
-                    decisions intentionally use co-equal neutral buttons only.
-                    #35F: when the page maps this primary_action to a legacy
-                    mutation, render it as a real button that runs the SAME
-                    action as its control below; otherwise keep the preview. */}
-                {primary_action && !isRisk && wiredPrimary && (
-                  <Button
-                    type="button"
-                    variant="default"
-                    size="sm"
-                    onClick={wiredPrimary.onClick}
-                    disabled={wiredPrimary.isPending}
-                    title={primary_action.intent}
-                  >
-                    {wiredPrimary.isPending
-                      ? 'Working…'
-                      : primary_action.label}
-                  </Button>
-                )}
-                {primary_action && !isRisk && !wiredPrimary && (
-                  <PreviewAction action={primary_action} variant="default" />
-                )}
-                {/* #35G: neutral actions are co-equal. Every neutral action uses
-                    the SAME outline variant whether wired or a preview, so risk
-                    choices keep equal visual weight and no green/recommended
-                    button appears. Wired ones call the same legacy mutation. */}
-                {neutralResolved.map(({ action, wired }) =>
-                  wired ? (
+
+              {/* Progress states surface one clear, prominent primary CTA; risk
+                  decisions intentionally use co-equal options only and never a
+                  recommended primary. Wired controls run the SAME mutation as
+                  their twin below; unmapped ones stay display-only previews. */}
+              {primary_action && !isRisk && (
+                <div className="flex flex-wrap gap-2.5">
+                  {wiredPrimary ? (
                     <Button
-                      key={action.id}
                       type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={wired.onClick}
-                      disabled={wired.isPending}
-                      title={action.intent}
+                      variant="default"
+                      onClick={wiredPrimary.onClick}
+                      disabled={wiredPrimary.isPending}
+                      title={primary_action.intent}
                     >
-                      {wired.isPending ? 'Working…' : action.label}
+                      {wiredPrimary.isPending
+                        ? 'Working…'
+                        : primary_action.label}
                     </Button>
                   ) : (
-                    <PreviewAction
-                      key={action.id}
-                      action={action}
-                      variant="outline"
-                    />
-                  ),
-                )}
-                {secondaryResolved.map(({ action, wired }) =>
-                  wired ? (
-                    <Button
-                      key={action.id}
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={wired.onClick}
-                      disabled={wired.isPending}
-                      title={action.intent}
-                    >
-                      {wired.isPending ? 'Working…' : action.label}
-                    </Button>
-                  ) : (
-                    <PreviewAction
-                      key={action.id}
-                      action={action}
-                      variant="ghost"
-                    />
-                  ),
-                )}
-              </div>
+                    <PreviewAction action={primary_action} />
+                  )}
+                </div>
+              )}
+
+              {coEqualResolved.length > 0 && (
+                <div
+                  className={
+                    isRisk
+                      ? 'grid gap-2.5 sm:grid-cols-2'
+                      : 'flex flex-wrap gap-2.5'
+                  }
+                >
+                  {coEqualResolved.map(({ action, wired }) =>
+                    wired ? (
+                      <Button
+                        key={action.id}
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={wired.onClick}
+                        disabled={wired.isPending}
+                        title={action.intent}
+                        className={isRisk ? 'w-full' : undefined}
+                      >
+                        {wired.isPending ? 'Working…' : action.label}
+                      </Button>
+                    ) : (
+                      <PreviewAction
+                        key={action.id}
+                        action={action}
+                        className={isRisk ? 'w-full justify-center' : undefined}
+                      />
+                    ),
+                  )}
+                </div>
+              )}
+
               {hasWiredAction ? (
                 <p className="text-xs text-muted-foreground">
-                  Linked actions run the same step as the matching control below
-                  — use either. Anything not linked here is a display-only
-                  preview.
+                  Linked controls run the same step as their match below — use
+                  either. Anything marked “preview” is display-only and lives in
+                  a control further down.
                 </p>
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  Display only — use the existing controls below to act.
+                  Display-only previews — use the matching controls below to act.
                 </p>
               )}
             </div>
