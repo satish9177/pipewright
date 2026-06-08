@@ -1,6 +1,5 @@
 import type {
   OperatorAction,
-  OperatorDecisionType,
   OperatorState,
   OperatorWaitingOn,
 } from '@/api/client'
@@ -43,14 +42,11 @@ const WAITING_ON: Record<
   },
 }
 
-const DECISION_TYPE: Record<
-  OperatorDecisionType,
-  { label: string; className: string }
-> = {
-  progress: { label: 'Progress', className: 'text-muted-foreground' },
-  risk_decision: { label: 'Risk decision', className: 'text-amber-700' },
-  none: { label: 'No decision', className: 'text-muted-foreground' },
-}
+// #38A: the decision_type still drives layout (one primary CTA for `progress`
+// vs co-equal options for `risk_decision`), but the raw `[Progress]` /
+// `[Risk decision]` enum tag was removed from the headline — the Claude Design
+// audit flagged it as backend-vocabulary leak. Risk decisions are now conveyed
+// by the co-equal "Equal choice" framing below, not an enum badge.
 
 // #37C: display-only "effects ledger" — a small, conservative summary of what a
 // WIRED action can affect before the user clicks. It is keyed off the SAME
@@ -157,17 +153,6 @@ function WaitingPill({ waitingOn }: { waitingOn: OperatorWaitingOn }) {
       className={`inline-flex items-center rounded-full border px-2.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wider ${meta.className}`}
     >
       {meta.label}
-    </span>
-  )
-}
-
-function DecisionTag({ decisionType }: { decisionType: OperatorDecisionType }) {
-  const meta = DECISION_TYPE[decisionType] ?? DECISION_TYPE.none
-  return (
-    <span
-      className={`font-mono text-[11px] font-medium uppercase tracking-wider ${meta.className}`}
-    >
-      [{meta.label}]
     </span>
   )
 }
@@ -343,21 +328,30 @@ export default function OperatorAttentionPanel({
   // Co-equal options share one zone so risk choices read with equal weight.
   const coEqualResolved = [...neutralResolved, ...secondaryResolved]
 
-  // Calm, intentional left accent that tracks who the run is waiting on, rather
-  // than always signalling "attention". Purely visual.
-  const accentBorder =
+  // #38A: cockpit "mood bar" — a calm full-width accent strip across the top of
+  // the spine that tracks who the run is waiting on, rather than always
+  // signalling "attention". Replaces the old left-border accent so the panel
+  // reads as one cohesive instrument. Purely visual.
+  const moodBar =
     waiting_on === 'nobody'
-      ? 'border-l-emerald-400'
+      ? 'bg-emerald-400'
       : waiting_on === 'system'
-        ? 'border-l-blue-400'
-        : 'border-l-amber-400'
+        ? 'bg-blue-400'
+        : 'bg-amber-400'
 
   return (
-    <Card className={`mb-6 border-l-4 ${accentBorder}`}>
+    // #38A: elevated (white) surface + top mood bar make the guidance area read
+    // as the page's single cockpit spine, lifted off the warm-paper background.
+    // The bar uses -mt-4 to sit flush against the card's top edge (Card has its
+    // own py-4); Card already clips with overflow-hidden so it follows the radius.
+    <Card className="mb-6 bg-[var(--pw-bg-elev)]">
+      <div
+        className={`-mt-4 h-1.5 w-full ${moodBar}`}
+        aria-hidden="true"
+      />
       <CardHeader>
         <div className="flex flex-wrap items-center gap-2.5">
           <WaitingPill waitingOn={waiting_on} />
-          <DecisionTag decisionType={decision_type} />
         </div>
         <CardTitle className="text-lg leading-snug tracking-tight">
           {title}

@@ -26,6 +26,24 @@ function passedCountText(validation: TestRunValidation): string | null {
   return `${passed} test${passed === 1 ? '' : 's'} passed`
 }
 
+// #38A: a compact, focal "big number" for the validation verdict so a human can
+// read strong/weak/none at a glance. Display-only — it summarizes the SAME
+// persisted counts the banner already showed; it never gates or acknowledges
+// anything. Strong shows passed/total (or the passed count); weak/none/unknown
+// deliberately read as a stark "0" / "—" / "?" so the gap is never minimized.
+function verdictBigNumber(validation: TestRunValidation): string {
+  const { verdict, passed_tests, total_tests, counts_parsed } = validation
+  if (verdict === 'none') return '0'
+  if (verdict === 'unknown') return '?'
+  if (verdict === 'weak' && validation.zero_tests_detected) return '0'
+  if (counts_parsed && typeof passed_tests === 'number') {
+    return typeof total_tests === 'number'
+      ? `${passed_tests}/${total_tests}`
+      : `${passed_tests}`
+  }
+  return verdict === 'strong' ? '✓' : '—'
+}
+
 export default function RuntimeTestValidationBanner({
   validation,
 }: RuntimeTestValidationBannerProps) {
@@ -36,19 +54,27 @@ export default function RuntimeTestValidationBanner({
   if (verdict === 'strong') {
     const counts = passedCountText(validation)
     return (
-      <div className="grid gap-1 rounded border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
-        <div className="flex items-center gap-2">
-          <Badge
-            variant="outline"
-            className="border-green-300 bg-green-100 text-green-800"
+      <div className="rounded border border-green-200 bg-green-50 px-3 py-2.5 text-sm text-green-800">
+        <div className="flex items-center gap-3">
+          <span
+            className="shrink-0 font-mono text-3xl font-semibold leading-none text-green-700"
+            aria-hidden="true"
           >
-            Runtime test validation: strong
-          </Badge>
+            {verdictBigNumber(validation)}
+          </span>
+          <div className="grid gap-1">
+            <Badge
+              variant="outline"
+              className="w-fit border-green-300 bg-green-100 text-green-800"
+            >
+              Runtime test validation: strong
+            </Badge>
+            <p>
+              This change ran real tests that passed
+              {counts ? ` (${counts})` : ''}.
+            </p>
+          </div>
         </div>
-        <p>
-          This change ran real tests that passed
-          {counts ? ` (${counts})` : ''}.
-        </p>
       </div>
     )
   }
@@ -73,28 +99,41 @@ export default function RuntimeTestValidationBanner({
       'Review the output manually.'
   }
 
+  // Keep weak/none/unknown unmistakably warning-like (amber card). The focal
+  // number is red for "none" (no tests at all) and amber otherwise, so the gap
+  // is never visually softened into something reassuring.
+  const bigNumberColor = verdict === 'none' ? 'text-red-700' : 'text-amber-700'
+
   return (
-    <div className="grid gap-1 rounded border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900">
-      <div className="flex items-center gap-2">
-        <Badge
-          variant="outline"
-          className="border-amber-300 bg-amber-100 text-amber-800"
+    <div className="rounded border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+      <div className="flex items-start gap-3">
+        <span
+          className={`shrink-0 font-mono text-3xl font-semibold leading-none ${bigNumberColor}`}
+          aria-hidden="true"
         >
-          {badgeLabel}
-        </Badge>
+          {verdictBigNumber(validation)}
+        </span>
+        <div className="grid gap-1">
+          <Badge
+            variant="outline"
+            className="w-fit border-amber-300 bg-amber-100 text-amber-800"
+          >
+            {badgeLabel}
+          </Badge>
+          <p>{headline}</p>
+          {verdict === 'weak' && zero_tests_detected && (
+            <p className="text-amber-800">
+              The test runner reported zero tests.
+            </p>
+          )}
+          {reason && <p className="text-amber-800">{reason}</p>}
+          {!isUnknown && (
+            <p className="text-xs text-amber-700">
+              This is informational only and does not block approval yet.
+            </p>
+          )}
+        </div>
       </div>
-      <p>{headline}</p>
-      {verdict === 'weak' && zero_tests_detected && (
-        <p className="text-amber-800">
-          The test runner reported zero tests.
-        </p>
-      )}
-      {reason && <p className="text-amber-800">{reason}</p>}
-      {!isUnknown && (
-        <p className="text-xs text-amber-700">
-          This is informational only and does not block approval yet.
-        </p>
-      )}
     </div>
   )
 }
