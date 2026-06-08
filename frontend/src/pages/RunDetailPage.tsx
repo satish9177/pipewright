@@ -971,6 +971,14 @@ export default function RunDetailPage() {
   // gate each panel, so the stepper never claims a state different from what is
   // shown. Display-only; changes no behavior.
   const hasPr = Boolean(run.pr_url)
+  // local_only never pushes or opens a PR from inside Pipewright. When no real PR
+  // exists, Finish & ship must show manual/out-of-app guidance instead of the
+  // GitHub push/PR panels, so the stepper does not imply an in-app push is queued.
+  // A real PR (pr_url) or a push failure still falls through to the normal panels
+  // (defensive — not expected in local_only).
+  const isLocalOnly = project?.pr_mode === 'local_only'
+  const localOnlyManualShip =
+    isLocalOnly && showPushPrPanel && !hasPr && !run.push_error
   const finishStep1Status: FinishStepStatus = showFinalApprovalPanel
     ? 'current'
     : 'done'
@@ -979,9 +987,20 @@ export default function RunDetailPage() {
     : hasPr
       ? 'done'
       : 'current'
-  const finishStep3Status: FinishStepStatus = showPrStatusPanel
-    ? 'current'
-    : 'pending'
+  // local_only has no PR-checks step, so step 3 stays pending (nothing to do)
+  // rather than "current".
+  const finishStep3Status: FinishStepStatus = localOnlyManualShip
+    ? 'pending'
+    : showPrStatusPanel
+      ? 'current'
+      : 'pending'
+  const finishStep2Title = localOnlyManualShip ? 'Finish locally' : 'Push / create PR'
+  const finishStep2Effect = localOnlyManualShip
+    ? 'Local-only: changes stay on your machine — push manually outside Pipewright.'
+    : 'Push or create the pull request — this never merges.'
+  const finishStep3Effect = localOnlyManualShip
+    ? 'Local-only mode creates no pull request, so there is nothing to refresh.'
+    : 'Checks refresh only when you ask — nothing polls automatically.'
   // #28G: pre-disable Approve Final when any chunk's weak/none verdict is not
   // acknowledged against the current diff. The backend #28F gate stays the
   // source of truth; this only avoids sending the user into an avoidable 409.
@@ -1099,7 +1118,7 @@ export default function RunDetailPage() {
 
       {/* #35E: compact read-only safety overview. Summarizes existing signals;
           the detailed banners/cards below remain the source of truth. */}
-      <RunSafetyStrip run={run} chunkPlan={chunkPlan} />
+      <RunSafetyStrip run={run} chunkPlan={chunkPlan} project={project} />
 
       <Card className="mb-6 border-muted-foreground/20">
         <CardHeader>
@@ -1224,11 +1243,28 @@ export default function RunDetailPage() {
 
               <FinishStep
                 n={2}
-                title="Push / create PR"
+                title={finishStep2Title}
                 status={finishStep2Status}
-                effect="Push or create the pull request — this never merges."
+                effect={finishStep2Effect}
               >
-                {showPushPrPanel ? (
+                {localOnlyManualShip ? (
+                  // local_only: no in-app push/PR. Show manual out-of-app
+                  // guidance instead of the GitHub push panel so this never
+                  // looks like Pipewright can open a PR for you.
+                  <div className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+                    <p className="font-medium text-foreground">
+                      Local-only mode — manual push
+                    </p>
+                    <p className="mt-1">
+                      Pipewright does not push or open a pull request for
+                      local-only projects. Your approved changes are committed to
+                      the local branch
+                      {run.branch_name ? ` (${run.branch_name})` : ''}. Push the
+                      branch and open a PR yourself, outside Pipewright, when
+                      you&apos;re ready.
+                    </p>
+                  </div>
+                ) : showPushPrPanel ? (
                   <PushPrPanel
                     run={run}
                     project={project}
@@ -1248,10 +1284,15 @@ export default function RunDetailPage() {
                 n={3}
                 title="Pull request & checks"
                 status={finishStep3Status}
-                effect="Checks refresh only when you ask — nothing polls automatically."
+                effect={finishStep3Effect}
                 isLast
               >
-                {showPrStatusPanel ? (
+                {localOnlyManualShip ? (
+                  <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+                    No GitHub pull request is created in local-only mode, so there
+                    are no PR checks to show here.
+                  </p>
+                ) : showPrStatusPanel ? (
                   <PrStatusPanel run={run} project={project} />
                 ) : (
                   <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
