@@ -40,6 +40,7 @@ import PushPrPanel from '@/components/PushPrPanel'
 import PrStatusPanel from '@/components/PrStatusPanel'
 import ProviderDiagnosticsPanel from '@/components/ProviderDiagnosticsPanel'
 import RunMemoryProvenancePanel from '@/components/RunMemoryProvenancePanel'
+import RunSafetyStrip from '@/components/RunSafetyStrip'
 import TestCommandQualityWarning from '@/components/TestCommandQualityWarning'
 import ReportView from '@/components/ReportView'
 import PlanView from '@/components/PlanView'
@@ -904,6 +905,10 @@ export default function RunDetailPage() {
         </div>
         <RunStatusBadge status={run.status} friendly />
       </div>
+
+      {/* #35E: compact read-only safety overview. Summarizes existing signals;
+          the detailed banners/cards below remain the source of truth. */}
+      <RunSafetyStrip run={run} chunkPlan={chunkPlan} />
 
       <Card className="mb-6 border-muted-foreground/20">
         <CardHeader>
