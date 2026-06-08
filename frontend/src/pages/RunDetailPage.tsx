@@ -99,7 +99,7 @@ function PipelineRail({
 
   return (
     <div
-      className="mb-6 flex items-stretch overflow-hidden rounded-lg border bg-card"
+      className="mb-6 flex items-stretch overflow-hidden rounded-lg border bg-[var(--pw-bg-elev)]"
       aria-label="Pipeline progress"
     >
       {PIPELINE_STAGES.map((stage, index) => {
@@ -141,9 +141,9 @@ function PipelineRail({
             className={`flex min-w-0 flex-1 flex-col gap-1 px-3 py-2.5 ${index > 0 ? 'border-l' : ''} ${cellClass}`}
           >
             <div className="flex items-center gap-2">
-              <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} />
+              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
               <span
-                className={`truncate text-xs font-medium uppercase tracking-wide ${labelClass}`}
+                className={`truncate text-[11px] font-medium uppercase tracking-wide ${labelClass}`}
               >
                 {stage.label}
               </span>

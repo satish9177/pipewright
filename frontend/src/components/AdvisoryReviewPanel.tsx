@@ -95,6 +95,16 @@ const INDEPENDENCE_META: Record<
   },
 }
 
+// #38A: join provider + model into one compact "provider · model" label, or null
+// when neither is known. Display-only formatting of already-present provenance.
+function modelLabel(
+  provider?: string | null,
+  model?: string | null,
+): string | null {
+  const parts = [provider, model].filter(Boolean) as string[]
+  return parts.length > 0 ? parts.join(' · ') : null
+}
+
 function IndependenceNote({
   independence,
 }: {
@@ -106,11 +116,33 @@ function IndependenceNote({
     independence.status === 'self_review'
       ? 'rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800'
       : 'text-xs text-muted-foreground'
+  // #38A: surface who wrote vs who reviewed so "independent" / "not independent"
+  // is concrete, not just a label. Uses coder/reviewer provenance already on the
+  // read model; renders only when at least one side is known. Advisory-only — it
+  // grants no authority and changes no behavior.
+  const coder = modelLabel(independence.coder_provider, independence.coder_model)
+  const reviewer = modelLabel(
+    independence.reviewer_provider,
+    independence.reviewer_model,
+  )
   return (
     <div className="grid gap-1">
       <Badge variant="outline" className={meta.className}>
         {meta.label}
       </Badge>
+      {(coder || reviewer) && (
+        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[11px] text-muted-foreground">
+          <span>
+            coder:{' '}
+            <span className="text-foreground">{coder ?? 'unknown'}</span>
+          </span>
+          <span aria-hidden="true">→</span>
+          <span>
+            reviewer:{' '}
+            <span className="text-foreground">{reviewer ?? 'unknown'}</span>
+          </span>
+        </div>
+      )}
       <p className={noteClass}>{independence.message}</p>
     </div>
   )
