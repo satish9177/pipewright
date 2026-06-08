@@ -1,8 +1,6 @@
 import type {
   OperatorAction,
   OperatorDecisionType,
-  OperatorSafetyCheck,
-  OperatorSafetyCheckStatus,
   OperatorState,
   OperatorWaitingOn,
 } from '@/api/client'
@@ -48,25 +46,6 @@ const DECISION_TYPE: Record<
   none: { label: 'No decision', className: 'text-muted-foreground' },
 }
 
-// All five process-gate statuses get a distinct, honest treatment. None of these
-// describe code correctness — only Pipewright's process gates.
-const SAFETY_STATUS: Record<
-  OperatorSafetyCheckStatus,
-  { label: string; className: string }
-> = {
-  passed: { label: 'PASS', className: 'border-green-200 bg-green-100 text-green-800' },
-  failed: { label: 'FAIL', className: 'border-red-200 bg-red-100 text-red-800' },
-  weak: { label: 'WEAK', className: 'border-amber-200 bg-amber-100 text-amber-900' },
-  not_evaluated: {
-    label: 'N/E',
-    className: 'border-slate-200 bg-slate-100 text-slate-600',
-  },
-  not_applicable: {
-    label: 'N/A',
-    className: 'border-muted bg-muted text-muted-foreground',
-  },
-}
-
 function WaitingPill({ waitingOn }: { waitingOn: OperatorWaitingOn }) {
   const meta = WAITING_ON[waitingOn] ?? WAITING_ON.system
   return (
@@ -94,33 +73,6 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
     <p className="mb-2 font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
       {children}
     </p>
-  )
-}
-
-function SafetyChecks({ checks }: { checks: OperatorSafetyCheck[] }) {
-  if (checks.length === 0) return null
-  return (
-    <div>
-      <SectionLabel>Safety checks (process gates, not code correctness)</SectionLabel>
-      <ul className="grid gap-1.5">
-        {checks.map(check => {
-          const meta = SAFETY_STATUS[check.status] ?? SAFETY_STATUS.not_evaluated
-          return (
-            <li key={check.id} className="flex items-start gap-2 text-[12.5px]">
-              <span
-                className={`mt-0.5 rounded border px-1.5 py-0.5 font-mono text-[10px] tracking-wide ${meta.className}`}
-              >
-                {meta.label}
-              </span>
-              <span className="leading-snug text-muted-foreground">
-                <span className="font-medium text-foreground">{check.label}.</span>{' '}
-                {check.detail}
-              </span>
-            </li>
-          )
-        })}
-      </ul>
-    </div>
   )
 }
 
@@ -242,10 +194,8 @@ export default function OperatorAttentionPanel({
     neutral_actions,
     secondary_actions,
     blocked_actions,
-    safety_checks,
     trust_facts,
     out_of_app_instruction,
-    unknown_state_warning,
   } = operatorState
 
   const isRisk = decision_type === 'risk_decision'
@@ -305,17 +255,11 @@ export default function OperatorAttentionPanel({
       </CardHeader>
 
       <CardContent className="grid gap-4">
-        {unknown_state_warning && (
-          <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-            <p className="font-mono text-[11px] font-semibold uppercase tracking-wider">
-              Unknown state
-            </p>
-            <p className="mt-1">{unknown_state_warning}</p>
-          </div>
-        )}
-
-        <SafetyChecks checks={safety_checks} />
-
+        {/* #37B: the unknown_state_warning banner and the operator_state
+            safety_checks list moved up into the single Safety overview surface
+            (RunSafetyStrip) to remove duplicate safety summaries. Both remain
+            visible there with equal/greater prominence. This panel keeps the
+            decision, blocked actions, trust facts, out-of-app step, and actions. */}
         <BlockedActions actions={blocked_actions} />
 
         <TrustFacts facts={trust_facts} />
