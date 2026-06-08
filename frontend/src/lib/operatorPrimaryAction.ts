@@ -38,3 +38,34 @@ export function primaryActionHandlerKey(
   if (!actionId) return null
   return PRIMARY_ACTION_HANDLER_KEYS[actionId] ?? null
 }
+
+// #35G: co-equal (neutral_actions / secondary_actions) wiring. These appear on
+// risk_decision states and MUST stay co-equal — no recommended primary. We map
+// only the memory-conflict pair, whose approve/reject both have page-level
+// mutations with no required arguments (reject's reason is optional and already
+// defaults). Deliberately NOT mapped, and why:
+//   - approve_scope_expansion / reject_scope_expansion: the legacy approve/reject
+//     lives inside ChunkPlanPanel and needs the pending request id; there is no
+//     page-level handler to reuse.
+//   - acknowledge_test_validation: the legacy TestValidationAckPanel targets a
+//     specific chunk + diff checkpoint; the action carries no such target.
+// Those stay display-only previews.
+export type CoEqualHandlerKey =
+  | 'approve_memory_conflict'
+  | 'reject_memory_conflict'
+
+const CO_EQUAL_ACTION_HANDLER_KEYS: Readonly<
+  Record<string, CoEqualHandlerKey>
+> = {
+  approve_memory_conflict: 'approve_memory_conflict',
+  reject_memory_conflict: 'reject_memory_conflict',
+}
+
+// Returns the legacy handler key for a neutral/secondary action id, or null when
+// the id is unknown/unmapped. Callers must treat null as display-only.
+export function coEqualActionHandlerKey(
+  actionId: string | null | undefined,
+): CoEqualHandlerKey | null {
+  if (!actionId) return null
+  return CO_EQUAL_ACTION_HANDLER_KEYS[actionId] ?? null
+}

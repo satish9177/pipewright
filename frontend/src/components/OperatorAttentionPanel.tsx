@@ -124,28 +124,24 @@ function SafetyChecks({ checks }: { checks: OperatorSafetyCheck[] }) {
   )
 }
 
+// #35G: blocked_actions are always informational, never interactive. They are
+// rendered as plain "Can't do yet: <label> — <reason>" explanations (no buttons,
+// no disabled-primary styling) so the user understands why a step is unavailable.
 function BlockedActions({ actions }: { actions: OperatorAction[] }) {
   if (actions.length === 0) return null
   return (
     <div>
-      <SectionLabel>What is blocked, and why</SectionLabel>
+      <SectionLabel>Not available yet</SectionLabel>
       <ul className="grid gap-2">
         {actions.map(action => (
           <li
             key={action.id}
-            className="flex items-start gap-2.5 rounded border border-dashed border-muted-foreground/40 bg-muted/40 px-2.5 py-2"
+            className="rounded border border-dashed border-muted-foreground/40 bg-muted/40 px-2.5 py-2 text-[12.5px] leading-snug text-muted-foreground"
           >
-            <span className="mt-0.5 whitespace-nowrap rounded border border-muted-foreground/40 px-1.5 py-0.5 font-mono text-[10px] tracking-wide text-muted-foreground">
-              BLOCKED
+            <span className="font-medium text-foreground">
+              Can&apos;t do yet: {action.label}
             </span>
-            <span className="text-[12.5px] leading-snug">
-              <span className="font-medium text-foreground">{action.label}</span>
-              {action.blocked_reason && (
-                <span className="mt-0.5 block text-xs text-muted-foreground">
-                  {action.blocked_reason}
-                </span>
-              )}
-            </span>
+            {action.blocked_reason && <span> — {action.blocked_reason}</span>}
           </li>
         ))}
       </ul>
@@ -218,6 +214,7 @@ function PreviewAction({
 export default function OperatorAttentionPanel({
   operatorState,
   resolvePrimaryAction,
+  resolveCoEqualAction,
 }: {
   operatorState?: OperatorState | null
   // #35F: optional resolver supplied by the page. Given the current
@@ -225,6 +222,12 @@ export default function OperatorAttentionPanel({
   // state), or null when the action is unmapped or its legacy control would be
   // unavailable. When null, the primary_action keeps its display-only preview.
   resolvePrimaryAction?: (
+    action: OperatorAction,
+  ) => { onClick: () => void; isPending: boolean } | null
+  // #35G: optional resolver for neutral_actions / secondary_actions (co-equal on
+  // risk decisions). Same contract as resolvePrimaryAction; null keeps the
+  // action as a display-only preview. Co-equal styling is preserved regardless.
+  resolveCoEqualAction?: (
     action: OperatorAction,
   ) => { onClick: () => void; isPending: boolean } | null
 }) {
@@ -254,11 +257,27 @@ export default function OperatorAttentionPanel({
 
   // #35F: a wired primary action is offered only for non-risk (PROGRESS) states
   // and only when the page resolver maps it to a legacy mutation. Risk decisions
-  // never get a single recommended primary (left for #35G).
+  // never get a single recommended primary.
   const wiredPrimary =
     primary_action && !isRisk
       ? resolvePrimaryAction?.(primary_action) ?? null
       : null
+
+  // #35G: resolve neutral/secondary (co-equal) actions. Unmapped ones resolve to
+  // null and stay display-only previews. These keep equal visual weight whether
+  // wired or not, so risk decisions never imply a recommended choice.
+  const neutralResolved = neutral_actions.map(action => ({
+    action,
+    wired: resolveCoEqualAction?.(action) ?? null,
+  }))
+  const secondaryResolved = secondary_actions.map(action => ({
+    action,
+    wired: resolveCoEqualAction?.(action) ?? null,
+  }))
+  const hasWiredAction =
+    Boolean(wiredPrimary) ||
+    neutralResolved.some(item => item.wired) ||
+    secondaryResolved.some(item => item.wired)
 
   return (
     <Card className="mb-6 border-l-4 border-l-amber-400">
@@ -303,7 +322,7 @@ export default function OperatorAttentionPanel({
           <>
             <Separator />
             <div className="grid gap-2">
-              <SectionLabel>Recommended next action</SectionLabel>
+              <SectionLabel>{isRisk ? 'Your decision' : 'Recommended next action'}</SectionLabel>
               {isRisk && (
                 <p className="text-xs text-muted-foreground">
                   These are co-equal choices. Pipewright does not recommend one
@@ -333,25 +352,58 @@ export default function OperatorAttentionPanel({
                 {primary_action && !isRisk && !wiredPrimary && (
                   <PreviewAction action={primary_action} variant="default" />
                 )}
-                {neutral_actions.map(action => (
-                  <PreviewAction
-                    key={action.id}
-                    action={action}
-                    variant="outline"
-                  />
-                ))}
-                {secondary_actions.map(action => (
-                  <PreviewAction
-                    key={action.id}
-                    action={action}
-                    variant="ghost"
-                  />
-                ))}
+                {/* #35G: neutral actions are co-equal. Every neutral action uses
+                    the SAME outline variant whether wired or a preview, so risk
+                    choices keep equal visual weight and no green/recommended
+                    button appears. Wired ones call the same legacy mutation. */}
+                {neutralResolved.map(({ action, wired }) =>
+                  wired ? (
+                    <Button
+                      key={action.id}
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={wired.onClick}
+                      disabled={wired.isPending}
+                      title={action.intent}
+                    >
+                      {wired.isPending ? 'Working…' : action.label}
+                    </Button>
+                  ) : (
+                    <PreviewAction
+                      key={action.id}
+                      action={action}
+                      variant="outline"
+                    />
+                  ),
+                )}
+                {secondaryResolved.map(({ action, wired }) =>
+                  wired ? (
+                    <Button
+                      key={action.id}
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={wired.onClick}
+                      disabled={wired.isPending}
+                      title={action.intent}
+                    >
+                      {wired.isPending ? 'Working…' : action.label}
+                    </Button>
+                  ) : (
+                    <PreviewAction
+                      key={action.id}
+                      action={action}
+                      variant="ghost"
+                    />
+                  ),
+                )}
               </div>
-              {wiredPrimary ? (
+              {hasWiredAction ? (
                 <p className="text-xs text-muted-foreground">
-                  The recommended action runs the same step as its control below
-                  — use either. Any other actions here are display-only previews.
+                  Linked actions run the same step as the matching control below
+                  — use either. Anything not linked here is a display-only
+                  preview.
                 </p>
               ) : (
                 <p className="text-xs text-muted-foreground">
