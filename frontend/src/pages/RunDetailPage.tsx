@@ -51,42 +51,108 @@ import ReportView from '@/components/ReportView'
 import PlanView from '@/components/PlanView'
 import useRunEvents from '@/hooks/useRunEvents'
 
-const STEPS = ['plan', 'code', 'patch', 'test', 'approval', 'github_pr']
+// #37A: the pipeline stages, in order, with plain display labels. The `key`
+// values match the backend's run.current_step vocabulary (same set the old
+// StepIndicator keyed off); the `label` is the friendly stage name shown to the
+// user (e.g. `approval` -> "Review", `github_pr` -> "Ship").
+const PIPELINE_STAGES: { key: string; label: string }[] = [
+  { key: 'plan', label: 'Plan' },
+  { key: 'code', label: 'Code' },
+  { key: 'patch', label: 'Patch' },
+  { key: 'test', label: 'Test' },
+  { key: 'approval', label: 'Review' },
+  { key: 'github_pr', label: 'Ship' },
+]
 
-function StepIndicator({
+// Statuses where the system is actively working — used only to word the active
+// stage caption ("in progress" vs "current"). Cosmetic; gates nothing.
+const WORKING_STATUSES = new Set(['running', 'running_chunks', 'pushing'])
+
+// #37A: compact "Chunk N of M" summary for the header meta row. Returns null when
+// no chunk plan exists yet, so the header stays clean for non-chunked/early runs.
+function chunkSummaryText(run: Run): string | null {
+  if (run.total_chunks == null) return null
+  if (run.current_chunk_number == null) {
+    return `${run.total_chunks} ${run.total_chunks === 1 ? 'chunk' : 'chunks'}`
+  }
+  return `Chunk ${run.current_chunk_number} of ${run.total_chunks}`
+}
+
+// #37A: calm, display-only pipeline rail. It replaces the old StepIndicator
+// (blue boxes + ">" separators) and mirrors the exact same run.current_step /
+// run.status derivation, so it is a pure presentation change: stages before the
+// current one read as done, the matching step is highlighted, a failed run marks
+// its current stage, and a complete run marks every stage done. No data, wiring,
+// or behavior changes.
+function PipelineRail({
   currentStep,
   status,
 }: {
   currentStep: string | null
   status: string
 }) {
-  const currentIndex = currentStep ? STEPS.indexOf(currentStep) : -1
+  const currentIndex = currentStep
+    ? PIPELINE_STAGES.findIndex(stage => stage.key === currentStep)
+    : -1
+  const isComplete = status === 'complete'
 
   return (
-    <div className="flex items-center gap-1 mb-6 flex-wrap">
-      {STEPS.map((step, i) => {
-        const isDone = status === 'complete' || i < currentIndex
-        const isCurrent = step === currentStep && status !== 'complete'
+    <div
+      className="mb-6 flex items-stretch overflow-hidden rounded-lg border bg-card"
+      aria-label="Pipeline progress"
+    >
+      {PIPELINE_STAGES.map((stage, index) => {
+        const isDone = isComplete || (currentIndex >= 0 && index < currentIndex)
+        const isCurrent = stage.key === currentStep && !isComplete
         const isFailed = status === 'failed' && isCurrent
 
+        const dotClass = isFailed
+          ? 'bg-red-500'
+          : isCurrent
+            ? 'bg-amber-400'
+            : isDone
+              ? 'bg-emerald-500'
+              : 'border border-muted-foreground/40 bg-transparent'
+
+        const labelClass = isFailed
+          ? 'text-red-600'
+          : isCurrent
+            ? 'text-background'
+            : isDone
+              ? 'text-muted-foreground'
+              : 'text-muted-foreground/60'
+
+        const cellClass = isFailed
+          ? 'bg-red-50'
+          : isCurrent
+            ? 'bg-foreground'
+            : ''
+
+        const caption = isFailed
+          ? 'failed'
+          : WORKING_STATUSES.has(status)
+            ? 'in progress'
+            : 'current'
+
         return (
-          <div key={step} className="flex items-center gap-1">
-            <div
-              className={`
-                text-xs px-2 py-1 rounded font-medium
-                ${isFailed
-                  ? 'bg-red-500 text-white'
-                  : isDone
-                  ? 'bg-green-500 text-white'
-                  : isCurrent
-                  ? 'bg-blue-500 text-white'
-                  : 'bg-muted text-muted-foreground'}
-              `}
-            >
-              {step}
+          <div
+            key={stage.key}
+            className={`flex min-w-0 flex-1 flex-col gap-1 px-3 py-2.5 ${index > 0 ? 'border-l' : ''} ${cellClass}`}
+          >
+            <div className="flex items-center gap-2">
+              <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} />
+              <span
+                className={`truncate text-xs font-medium uppercase tracking-wide ${labelClass}`}
+              >
+                {stage.label}
+              </span>
             </div>
-            {i < STEPS.length - 1 && (
-              <span className="text-muted-foreground text-xs">{'>'}</span>
+            {isCurrent && (
+              <span
+                className={`pl-4 font-mono text-[10px] ${isFailed ? 'text-red-600' : 'text-background/70'}`}
+              >
+                {caption}
+              </span>
             )}
           </div>
         )
@@ -1098,6 +1164,8 @@ export default function RunDetailPage() {
     }
   }
 
+  const chunkSummary = chunkSummaryText(run)
+
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
       <div className="mb-6 flex items-start justify-between gap-4">
@@ -1108,58 +1176,32 @@ export default function RunDetailPage() {
           <h2 className="text-2xl font-bold leading-tight mt-1 line-clamp-2">
             {run.feature_description || 'Untitled run'}
           </h2>
-          <p className="text-xs text-muted-foreground font-mono mt-2">
-            run{' '}
-            <span title={run.id}>{run.id.slice(0, 8)}</span>
-          </p>
+          {/* #37A: header meta row. The run id stays; total/current chunk moved
+              here from the removed Run Summary card so the page no longer
+              duplicates that information lower down. */}
+          <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs text-muted-foreground">
+            <span>
+              run <span title={run.id}>{run.id.slice(0, 8)}</span>
+            </span>
+            {chunkSummary && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>{chunkSummary}</span>
+              </>
+            )}
+          </div>
         </div>
         <RunStatusBadge status={run.status} friendly />
       </div>
 
+      {/* #37A: calm pipeline rail replaces the old Run Summary StepIndicator.
+          Display-only — it mirrors run.current_step / run.status and changes no
+          behavior, data, or wiring. */}
+      <PipelineRail currentStep={run.current_step} status={run.status} />
+
       {/* #35E: compact read-only safety overview. Summarizes existing signals;
           the detailed banners/cards below remain the source of truth. */}
       <RunSafetyStrip run={run} chunkPlan={chunkPlan} project={project} />
-
-      <Card className="mb-6 border-muted-foreground/20">
-        <CardHeader>
-          <CardTitle className="text-base">Run Summary</CardTitle>
-          <CardDescription>
-            Current state, requested feature, and pipeline progress.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4">
-          <div className="grid gap-3 text-sm sm:grid-cols-3">
-            <div>
-              <p className="font-medium">Current Step</p>
-              <p className="text-muted-foreground">
-                {run.current_step || 'Not started'}
-              </p>
-            </div>
-            <div>
-              <p className="font-medium">Total Chunks</p>
-              <p className="text-muted-foreground">
-                {run.total_chunks ?? 'Unknown'}
-              </p>
-            </div>
-            <div>
-              <p className="font-medium">Current Chunk</p>
-              <p className="text-muted-foreground">
-                {run.current_chunk_number ?? 'None'}
-              </p>
-            </div>
-          </div>
-          <div>
-            <p className="text-sm font-medium mb-1">Feature</p>
-            <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-              {run.feature_description}
-            </p>
-          </div>
-          <StepIndicator
-            currentStep={run.current_step}
-            status={run.status}
-          />
-        </CardContent>
-      </Card>
 
       {/* Display-only operator attention summary. Rendered above the existing
           execution/approval controls; it never replaces or rewires them. */}
