@@ -52,6 +52,10 @@ interface ChunkPlanPanelProps {
   hiddenApprovalChunkNumbers?: number[]
   // Patch retry wiring (#26E2). Optional so existing callers/tests stay valid.
   retryingChunkNumber?: number | null
+  // Authoritative human-retry eligibility (#26E2 affordance parity). Threaded to
+  // PatchFailureBanner so the enabled "Retry code change" button matches
+  // operator_state / the route gate. Display-only; changes no behavior.
+  retryEligible?: boolean
   // #27F: called after a successful scope expansion approve/reject so the parent
   // refreshes run/chunks/gates query data via the existing invalidation pattern.
   onScopeActionComplete?: () => void
@@ -627,6 +631,7 @@ interface ChunkCardProps {
   approvingChunkNumber: number | null
   rejectingChunkNumber: number | null
   retryingChunkNumber: number | null
+  retryEligible?: boolean
   hiddenApprovalChunkNumbers: number[]
   rejectReason: string
   onRejectReasonChange: (value: string) => void
@@ -649,6 +654,7 @@ function ChunkCard({
   approvingChunkNumber,
   rejectingChunkNumber,
   retryingChunkNumber,
+  retryEligible = false,
   hiddenApprovalChunkNumbers,
   rejectReason,
   onRejectReasonChange,
@@ -849,6 +855,7 @@ function ChunkCard({
               chunkNumber={chunk.chunk_number}
               chunkStatus={chunk.status}
               onRetry={pendingScope ? undefined : onRetryChunk}
+              retryEligible={pendingScope ? false : retryEligible}
               isRetrying={retryingChunkNumber === chunk.chunk_number}
             />
           </PatchRecoveryContext>
@@ -1199,6 +1206,7 @@ export default function ChunkPlanPanel({
   chunkActionError,
   hiddenApprovalChunkNumbers = [],
   retryingChunkNumber = null,
+  retryEligible = false,
   onScopeActionComplete,
   onApprove,
   onReject,
@@ -1283,6 +1291,7 @@ export default function ChunkPlanPanel({
               approvingChunkNumber,
               rejectingChunkNumber,
               retryingChunkNumber,
+              retryEligible,
               hiddenApprovalChunkNumbers,
               rejectReason: chunkRejectReasons[chunk.chunk_number] ?? '',
               onRejectReasonChange: value =>

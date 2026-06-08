@@ -1212,6 +1212,16 @@ export default function RunDetailPage() {
   // #37D2: in finished/terminal states with no pending chunk action, the chunk
   // plan reads as history and may collapse into a disclosure (fail-open helper).
   const collapseChunkHistory = shouldCollapseChunkHistory(run, chunkPlan)
+  // #26E2 retry-affordance parity: the PatchFailureBanner's enabled "Retry code
+  // change" button must reflect the authoritative human-retry eligibility, not
+  // just the recovery-suggestion vocabulary. operator_state offers `retry_patch`
+  // as the PROGRESS primary_action only when evaluate_patch_retry_eligibility()
+  // allows a human retry and no scope/branch/status condition blocks it; when
+  // retry is ineligible (e.g. NO_CHANGES → disallowed_failure_type) it appears in
+  // blocked_actions instead. Mirror that single source of truth here. Display-only:
+  // the backend route stays the enforcing gate.
+  const retryEligible =
+    chunkPlan?.operator_state?.primary_action?.id === 'retry_patch'
   // The chunk plan panel (or the legacy empty-state) is built once here and placed
   // either inline or inside the history disclosure below — identical either way,
   // so no control, banner, prop, or handler changes.
@@ -1238,6 +1248,7 @@ export default function RunDetailPage() {
           ? retryChunkMutation.variables?.chunkNumber ?? null
           : null
       }
+      retryEligible={retryEligible}
       onApprove={() => approveChunkPlanMutation.mutate()}
       onReject={(reason) => rejectChunkPlanMutation.mutate(reason)}
       onExecute={() => executeChunksMutation.mutate()}
