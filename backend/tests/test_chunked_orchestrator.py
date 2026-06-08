@@ -729,6 +729,28 @@ async def test_start_context_no_drift_allows_branch_creation(
 
 
 @pytest.mark.asyncio
+async def test_start_context_allows_current_runs_own_branch(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, project = create_run(tmp_repo, tracked_runs)
+    set_run_start_context(run_id)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_start_inspection(
+        monkeypatch,
+        branch=f"pipewright/{run_id[:8]}",
+        head_sha=OTHER_SHA,
+    )
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert ("branch", f"pipewright/{run_id[:8]}", project["repo_path"]) in calls
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("current_branch", "current_head_sha"),
     [
