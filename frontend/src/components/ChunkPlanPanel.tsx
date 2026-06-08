@@ -100,6 +100,26 @@ function selectActiveChunk(plan: ChunkPlanResponse): ChunkStatus | null {
   )
 }
 
+// #36D: whether a chunk must stay expanded by default — i.e. it is the active
+// chunk or carries a pending decision / recovery / control. Pure; reads existing
+// data only. Chunks where this is true render the full ChunkCard and are never
+// collapsible, so a chunk that needs attention can never become invisible.
+function chunkNeedsAttention(
+  chunk: ChunkStatus,
+  activeChunkNumber: number | null
+): boolean {
+  if (activeChunkNumber !== null && chunk.chunk_number === activeChunkNumber) {
+    return true
+  }
+  // running / in_progress / failed / awaiting_chunk_approval
+  if (ACTIVE_ATTENTION_STATUSES.has(chunk.status)) return true
+  if (chunk.pending_scope_expansion) return true
+  if (chunk.error_message) return true
+  if (parsePatchFailureSummary(chunk.completion_summary)) return true
+  if (parseRecoveredPatchReviewSummary(chunk.completion_summary)) return true
+  return false
+}
+
 // #36C: compact, friendly summaries for the ActiveChunkCard chips. These mirror
 // the verdict vocabulary already shown in full by RuntimeTestValidationBanner /
 // AdvisoryReviewPanel below; they never replace those banners.
@@ -705,6 +725,101 @@ function ChunkCard({
   )
 }
 
+// #36D: collapse non-attention chunks (completed-not-current, future pending)
+// into a compact row by default, with the full details one click away. Used ONLY
+// for chunks with no pending decision/control; attention/decision chunks render
+// the full ChunkCard directly (never collapsible). This is presentation-only: the
+// expanded view is the exact same ChunkCard with the same controls and handlers,
+// so no behavior, wiring, or banner placement changes.
+function CollapsibleChunkCard(props: ChunkCardProps) {
+  const { chunk, definition } = props
+  const [expanded, setExpanded] = useState(false)
+
+  if (expanded) {
+    return (
+      <div className="grid gap-2">
+        <ChunkCard {...props} />
+        <div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setExpanded(false)}
+            aria-expanded={true}
+          >
+            Hide details
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  const statusDisplay = getStatusDisplay(chunk.status)
+  const filesExpected =
+    chunk.files_expected.length > 0
+      ? chunk.files_expected
+      : definition?.files_expected ?? []
+  const riskLevel = chunk.risk_level || definition?.risk_level || 'unknown'
+
+  const testVerdict = chunk.test_validation?.verdict
+  const testMeta = testVerdict
+    ? ACTIVE_TEST_SUMMARY[testVerdict] ?? ACTIVE_TEST_SUMMARY.unknown
+    : null
+  const review = chunk.review
+  const reviewMeta =
+    review && review.review_status === 'completed' && review.verdict
+      ? ACTIVE_REVIEW_SUMMARY[review.verdict] ?? null
+      : null
+
+  return (
+    <div className="rounded border bg-background p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium">
+            Chunk {chunk.chunk_number}: {chunk.title}
+          </p>
+          <p className="text-sm text-muted-foreground">
+            {definition?.description || 'No description available.'}
+          </p>
+        </div>
+        <Badge variant="outline" className={statusDisplay.className}>
+          {statusDisplay.label}
+        </Badge>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <span>
+          <span className="font-medium text-foreground">Risk:</span> {riskLevel}
+        </span>
+        <span className="break-words">
+          <span className="font-medium text-foreground">Files:</span>{' '}
+          {truncateFiles(filesExpected)}
+        </span>
+        {testMeta && (
+          <Badge variant="outline" className={testMeta.className}>
+            {testMeta.label}
+          </Badge>
+        )}
+        {reviewMeta && (
+          <Badge variant="outline" className={reviewMeta.className}>
+            {reviewMeta.label}
+          </Badge>
+        )}
+      </div>
+
+      <div className="mt-3">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setExpanded(true)}
+          aria-expanded={false}
+        >
+          Show details
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 interface PlanApprovalControlsProps {
   rejectReason: string
   onRejectReasonChange: (value: string) => void
@@ -984,31 +1099,40 @@ export default function ChunkPlanPanel({
         )}
 
         <div className="grid gap-3">
-          {plan.chunks.map(chunk => (
-            <ChunkCard
-              key={chunk.chunk_number}
-              chunk={chunk}
-              definition={getChunkDefinition(chunk, definitionsByNumber)}
-              runId={plan.run_id}
-              projectId={plan.project_id}
-              actionPending={actionPending}
-              approvingChunkNumber={approvingChunkNumber}
-              rejectingChunkNumber={rejectingChunkNumber}
-              retryingChunkNumber={retryingChunkNumber}
-              hiddenApprovalChunkNumbers={hiddenApprovalChunkNumbers}
-              rejectReason={chunkRejectReasons[chunk.chunk_number] ?? ''}
-              onRejectReasonChange={value =>
+          {plan.chunks.map(chunk => {
+            const cardProps: ChunkCardProps = {
+              chunk,
+              definition: getChunkDefinition(chunk, definitionsByNumber),
+              runId: plan.run_id,
+              projectId: plan.project_id,
+              actionPending,
+              approvingChunkNumber,
+              rejectingChunkNumber,
+              retryingChunkNumber,
+              hiddenApprovalChunkNumbers,
+              rejectReason: chunkRejectReasons[chunk.chunk_number] ?? '',
+              onRejectReasonChange: value =>
                 setChunkRejectReasons(previous => ({
                   ...previous,
                   [chunk.chunk_number]: value,
-                }))
-              }
-              onApproveChunk={onApproveChunk}
-              onRejectChunk={onRejectChunk}
-              onRetryChunk={onRetryChunk}
-              onScopeActionComplete={onScopeActionComplete}
-            />
-          ))}
+                })),
+              onApproveChunk,
+              onRejectChunk,
+              onRetryChunk,
+              onScopeActionComplete,
+            }
+            // #36D: attention/decision chunks render the full ChunkCard and stay
+            // expanded; others collapse to a compact row with details one click
+            // away. Same props/handlers either way — presentation only.
+            return chunkNeedsAttention(
+              chunk,
+              activeChunk?.chunk_number ?? null
+            ) ? (
+              <ChunkCard key={chunk.chunk_number} {...cardProps} />
+            ) : (
+              <CollapsibleChunkCard key={chunk.chunk_number} {...cardProps} />
+            )
+          })}
         </div>
 
         {(chunkActionMessage || chunkActionError) && (
