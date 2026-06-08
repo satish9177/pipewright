@@ -59,6 +59,12 @@ interface ChunkPlanPanelProps {
   // #27F: called after a successful scope expansion approve/reject so the parent
   // refreshes run/chunks/gates query data via the existing invalidation pattern.
   onScopeActionComplete?: () => void
+  // #39A: hide the duplicate legacy primary buttons when the wired top-cockpit
+  // twin is the single primary control. Default false so any caller that does not
+  // pass these (or any state where the top action is unwired) keeps the legacy
+  // buttons — fail-open. Reject Plan / Resume Run are never hidden.
+  hideLegacyPlanApprove?: boolean
+  hideLegacyExecute?: boolean
   onApprove: () => void
   onReject: (reason: string) => void
   onExecute: () => void
@@ -334,6 +340,10 @@ interface ExecutionControlsProps {
   executionMessage: string | null
   executionError: string | null
   startContextDrift?: StartContextDriftedResponse | null
+  // #39A: when true, the wired top-cockpit "Execute approved chunks" action is the
+  // single primary control, so this panel hides its duplicate "Execute Chunks"
+  // button and points the user upward. Resume Run stays — it has no top twin.
+  hideExecute?: boolean
   onExecute: () => void
   onResume: () => void
 }
@@ -347,6 +357,7 @@ function ExecutionControls({
   executionMessage,
   executionError,
   startContextDrift,
+  hideExecute = false,
   onExecute,
   onResume,
 }: ExecutionControlsProps) {
@@ -406,14 +417,23 @@ function ExecutionControls({
         </div>
       )}
 
+      {hideExecute && (
+        <p className="text-xs text-muted-foreground">
+          Start execution from “Execute approved chunks” at the top of the page.
+          Use Resume Run only if a run was interrupted.
+        </p>
+      )}
+
       <div className="flex flex-wrap gap-3">
-        <Button
-          onClick={onExecute}
-          disabled={actionPending}
-          className="bg-blue-600 hover:bg-blue-700 text-white"
-        >
-          {isExecuting ? 'Executing...' : 'Execute Chunks'}
-        </Button>
+        {!hideExecute && (
+          <Button
+            onClick={onExecute}
+            disabled={actionPending}
+            className="bg-blue-600 hover:bg-blue-700 text-white"
+          >
+            {isExecuting ? 'Executing...' : 'Execute Chunks'}
+          </Button>
+        )}
         <Button
           variant="outline"
           onClick={onResume}
@@ -1008,6 +1028,11 @@ interface PlanApprovalControlsProps {
   isApproving: boolean
   isRejecting: boolean
   actionPending: boolean
+  // #39A: when true, the wired top-cockpit "Approve chunk plan" action is the
+  // single approve control, so this panel hides its duplicate "Approve Plan"
+  // button and points the user upward. The reject textarea + "Reject Plan" stay —
+  // reject has no top twin and must remain reachable here.
+  hideApprove?: boolean
   onApprove: () => void
   onReject: (reason: string) => void
 }
@@ -1021,6 +1046,7 @@ function PlanApprovalControls({
   isApproving,
   isRejecting,
   actionPending,
+  hideApprove = false,
   onApprove,
   onReject,
 }: PlanApprovalControlsProps) {
@@ -1037,14 +1063,23 @@ function PlanApprovalControls({
         <p className="text-sm font-medium text-red-500">{error}</p>
       )}
 
+      {hideApprove && (
+        <p className="text-xs text-muted-foreground">
+          Approve the plan from “Approve chunk plan” at the top of the page. You
+          can still reject here.
+        </p>
+      )}
+
       <div className="flex flex-wrap gap-3">
-        <Button
-          onClick={onApprove}
-          disabled={actionPending}
-          className="bg-green-600 hover:bg-green-700 text-white"
-        >
-          {isApproving ? 'Approving...' : 'Approve Plan'}
-        </Button>
+        {!hideApprove && (
+          <Button
+            onClick={onApprove}
+            disabled={actionPending}
+            className="bg-green-600 hover:bg-green-700 text-white"
+          >
+            {isApproving ? 'Approving...' : 'Approve Plan'}
+          </Button>
+        )}
         <Button
           variant="destructive"
           onClick={() => onReject(rejectReason)}
@@ -1208,6 +1243,8 @@ export default function ChunkPlanPanel({
   retryingChunkNumber = null,
   retryEligible = false,
   onScopeActionComplete,
+  hideLegacyPlanApprove = false,
+  hideLegacyExecute = false,
   onApprove,
   onReject,
   onExecute,
@@ -1265,6 +1302,7 @@ export default function ChunkPlanPanel({
               executionMessage={executionMessage}
               executionError={executionError}
               startContextDrift={startContextDrift}
+              hideExecute={hideLegacyExecute}
               onExecute={onExecute}
               onResume={onResume}
             />
@@ -1344,6 +1382,7 @@ export default function ChunkPlanPanel({
               isApproving={isApproving}
               isRejecting={isRejecting}
               actionPending={actionPending}
+              hideApprove={hideLegacyPlanApprove}
               onApprove={onApprove}
               onReject={onReject}
             />
