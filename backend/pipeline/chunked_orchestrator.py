@@ -1076,6 +1076,13 @@ def _verify_start_context_for_fresh_execution(
         return None
 
     inspection = local_git.inspect_start_branch(repo_path)
+    expected_run_branch = f"pipewright/{run_id[:8]}"
+    # Once Pipewright has created the run branch, standing on this run's own
+    # branch is expected and is not creation-to-execution drift. This exemption
+    # is exact; foreign pipewright/* branches still fall through as drift.
+    if not inspection.error and inspection.current_branch == expected_run_branch:
+        return None
+
     if (
         inspection.error
         or not inspection.current_branch
