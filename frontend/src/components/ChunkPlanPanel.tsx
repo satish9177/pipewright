@@ -128,6 +128,560 @@ function RecoveredReviewMarker({
   )
 }
 
+// Plan-level summary: totals, current chunk, complexity, and the feature
+// description. Display-only; #36B extraction of the original inline summary block
+// (no visual/behavior change).
+function ChunkPlanSummary({ plan }: { plan: ChunkPlanResponse }) {
+  const featureDescription =
+    plan.triage?.feature_description || 'Feature description not available.'
+
+  return (
+    <>
+      <div className="grid gap-3 text-sm sm:grid-cols-3">
+        <div>
+          <p className="font-medium">Total Chunks</p>
+          <p className="text-muted-foreground">{plan.total_chunks}</p>
+        </div>
+        <div>
+          <p className="font-medium">Current Chunk</p>
+          <p className="text-muted-foreground">
+            {plan.current_chunk_number || 'None'}
+          </p>
+        </div>
+        {plan.triage?.complexity && (
+          <div>
+            <p className="font-medium">Complexity</p>
+            <p className="text-muted-foreground">
+              {plan.triage.complexity}
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div>
+        <p className="text-sm font-medium mb-1">Feature Description</p>
+        <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+          {featureDescription}
+        </p>
+      </div>
+    </>
+  )
+}
+
+interface ExecutionControlsProps {
+  isExecuting: boolean
+  isResuming: boolean
+  actionPending: boolean
+  executionMessage: string | null
+  executionError: string | null
+  startContextDrift?: StartContextDriftedResponse | null
+  onExecute: () => void
+  onResume: () => void
+}
+
+// Execute / Resume controls plus the start-context-drift warning. #36B extraction
+// of the original isApproved execution block (no visual/behavior change).
+function ExecutionControls({
+  isExecuting,
+  isResuming,
+  actionPending,
+  executionMessage,
+  executionError,
+  startContextDrift,
+  onExecute,
+  onResume,
+}: ExecutionControlsProps) {
+  return (
+    <div className="grid gap-3 rounded border bg-background p-4">
+      <div>
+        <p className="text-sm font-medium">Execution Controls</p>
+        <p className="text-sm text-muted-foreground">
+          Run the approved chunks, or resume the run if it paused after an
+          interruption or a failed chunk.
+        </p>
+      </div>
+
+      {executionMessage && (
+        <p className="text-sm font-medium text-green-600">
+          {executionMessage}
+        </p>
+      )}
+      {executionError && (
+        <p className="text-sm font-medium text-red-500">
+          {executionError}
+        </p>
+      )}
+      {startContextDrift && (
+        <div className="grid gap-3 rounded border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+          <div>
+            <p className="font-semibold">Start context changed</p>
+            {startContextDrift.message && (
+              <p className="mt-1">{startContextDrift.message}</p>
+            )}
+            <p className="mt-1">
+              Checkout the original start branch and execute again, or
+              create a new run for the current branch.
+            </p>
+          </div>
+          <div className="grid gap-2 text-xs sm:grid-cols-2">
+            <div>
+              <p className="font-medium">Planned against</p>
+              <p className="font-mono">
+                {startContextDrift.captured_start?.branch ??
+                  'unknown'}
+                @
+                {startContextDrift.captured_start?.head_sha_short ??
+                  'unknown'}
+              </p>
+            </div>
+            <div>
+              <p className="font-medium">Current checkout</p>
+              <p className="font-mono">
+                {startContextDrift.current?.branch ?? 'detached HEAD'}
+                @
+                {startContextDrift.current?.head_sha_short ??
+                  'unknown'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-3">
+        <Button
+          onClick={onExecute}
+          disabled={actionPending}
+          className="bg-blue-600 hover:bg-blue-700 text-white"
+        >
+          {isExecuting ? 'Executing...' : 'Execute Chunks'}
+        </Button>
+        <Button
+          variant="outline"
+          onClick={onResume}
+          disabled={actionPending}
+        >
+          {isResuming ? 'Resuming...' : 'Resume Run'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+// #22B scope-warning callout shown above a chunk's metadata. Display-only; #36B
+// extraction (no visual/behavior change).
+function ChunkScopeWarning({ scopeWarnings }: { scopeWarnings: string[] }) {
+  return (
+    <div className="mb-3 grid gap-2 rounded border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+      <div className="flex items-center gap-2">
+        <Badge
+          variant="outline"
+          className="border-amber-300 bg-amber-100 text-amber-800"
+        >
+          Scope warning
+        </Badge>
+      </div>
+      <p>
+        This chunk has a file-scope mismatch or constraint
+        adjustment. Review Files Expected before approving.
+      </p>
+      <ul className="list-disc space-y-1 pl-5">
+        {scopeWarnings.map((warning, index) => (
+          <li key={index} className="break-words">
+            {warning}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+interface InlineChunkApprovalControlsProps {
+  chunkNumber: number
+  rejectReason: string
+  onRejectReasonChange: (value: string) => void
+  actionPending: boolean
+  chunkActionPending: boolean
+  approvingChunkNumber: number | null
+  rejectingChunkNumber: number | null
+  onApproveChunk: (chunkNumber: number) => void
+  onRejectChunk: (chunkNumber: number, reason: string) => void
+}
+
+// Inline high-risk chunk approve/reject controls. #36B extraction (no
+// visual/behavior change). The per-chunk reject reason stays owned by the parent
+// and is passed in/out so state semantics are identical.
+function InlineChunkApprovalControls({
+  chunkNumber,
+  rejectReason,
+  onRejectReasonChange,
+  actionPending,
+  chunkActionPending,
+  approvingChunkNumber,
+  rejectingChunkNumber,
+  onApproveChunk,
+  onRejectChunk,
+}: InlineChunkApprovalControlsProps) {
+  return (
+    <div className="grid gap-3 rounded border border-yellow-400 p-3">
+      <div>
+        <p className="font-medium">High-Risk Chunk Approval</p>
+        <p className="text-muted-foreground">
+          Review this chunk before continuing execution.
+        </p>
+      </div>
+
+      <Textarea
+        value={rejectReason}
+        onChange={event => onRejectReasonChange(event.target.value)}
+        placeholder="Optional rejection reason"
+        disabled={actionPending}
+      />
+
+      <div className="flex flex-wrap gap-3">
+        <Button
+          onClick={() => onApproveChunk(chunkNumber)}
+          disabled={actionPending}
+          className="bg-green-600 hover:bg-green-700 text-white"
+        >
+          {chunkActionPending && approvingChunkNumber
+            ? 'Approving...'
+            : 'Approve Chunk'}
+        </Button>
+        <Button
+          variant="destructive"
+          onClick={() => onRejectChunk(chunkNumber, rejectReason)}
+          disabled={actionPending}
+        >
+          {chunkActionPending && rejectingChunkNumber
+            ? 'Rejecting...'
+            : 'Reject Chunk'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+interface ChunkCardProps {
+  chunk: ChunkStatus
+  definition?: ChunkDefinition
+  runId: string
+  projectId: string
+  actionPending: boolean
+  approvingChunkNumber: number | null
+  rejectingChunkNumber: number | null
+  retryingChunkNumber: number | null
+  hiddenApprovalChunkNumbers: number[]
+  rejectReason: string
+  onRejectReasonChange: (value: string) => void
+  onApproveChunk: (chunkNumber: number) => void
+  onRejectChunk: (chunkNumber: number, reason: string) => void
+  onRetryChunk?: (chunkNumber: number, failureReportId: string) => void
+  onScopeActionComplete?: () => void
+}
+
+// A single chunk's card: metadata, evidence (scope warning, runtime test
+// validation, advisory review), recovery (scope expansion, patch failure,
+// recovered marker, completion/error), and inline approval. #36B extraction of
+// the original per-chunk map body (no visual/behavior change).
+function ChunkCard({
+  chunk,
+  definition,
+  runId,
+  projectId,
+  actionPending,
+  approvingChunkNumber,
+  rejectingChunkNumber,
+  retryingChunkNumber,
+  hiddenApprovalChunkNumbers,
+  rejectReason,
+  onRejectReasonChange,
+  onApproveChunk,
+  onRejectChunk,
+  onRetryChunk,
+  onScopeActionComplete,
+}: ChunkCardProps) {
+  const filesExpected =
+    chunk.files_expected.length > 0
+      ? chunk.files_expected
+      : definition?.files_expected ?? []
+  const dependsOn =
+    chunk.depends_on.length > 0
+      ? chunk.depends_on
+      : definition?.depends_on ?? []
+  const riskLevel =
+    chunk.risk_level || definition?.risk_level || 'unknown'
+  const requiresHumanReview =
+    chunk.requires_human_review ||
+    definition?.requires_human_review ||
+    false
+  const patchFailure = parsePatchFailureSummary(
+    chunk.completion_summary
+  )
+  // #27F: a pending scope expansion request makes the scope banner the
+  // primary action. When present we suppress the normal #26 Retry
+  // button (a SCOPE_VIOLATION otherwise offers retry_with_instruction)
+  // so the user is not nudged into the wrong recovery path.
+  const pendingScope = chunk.pending_scope_expansion ?? null
+  // #26E3: a recovered_patch_review summary is display-only context;
+  // the awaiting_chunk_approval UI below still owns approve/commit.
+  const recoveredReview = patchFailure
+    ? null
+    : parseRecoveredPatchReviewSummary(chunk.completion_summary)
+  // #22B: surface backend [SCOPE] file-scope notes (#22A) so a
+  // reviewer sees scope mismatches/adjustments before approving.
+  // Read-only: this only displays existing data, never changes scope.
+  const scopeWarnings = extractScopeWarnings(
+    definition?.rationale,
+    definition?.description
+  )
+  const hasScopeWarning = scopeWarnings.length > 0
+  const isAwaitingChunkApproval =
+    chunk.status === 'awaiting_chunk_approval'
+  const showInlineChunkApproval =
+    isAwaitingChunkApproval &&
+    !patchFailure &&
+    !hiddenApprovalChunkNumbers.includes(chunk.chunk_number)
+  const chunkActionPending =
+    approvingChunkNumber === chunk.chunk_number ||
+    rejectingChunkNumber === chunk.chunk_number
+  const chunkStatusDisplay = getStatusDisplay(chunk.status)
+
+  return (
+    <div className="rounded border bg-background p-4">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium">
+            Chunk {chunk.chunk_number}: {chunk.title}
+          </p>
+          <p className="text-sm text-muted-foreground">
+            {definition?.description || 'No description available.'}
+          </p>
+        </div>
+        <Badge variant="outline" className={chunkStatusDisplay.className}>
+          {chunkStatusDisplay.label}
+        </Badge>
+      </div>
+
+      {hasScopeWarning && <ChunkScopeWarning scopeWarnings={scopeWarnings} />}
+
+      <div className="grid gap-3 text-sm">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div>
+            <p className="font-medium">Risk Level</p>
+            <p className="text-muted-foreground">{riskLevel}</p>
+          </div>
+          <div>
+            <p className="font-medium">Token Estimate</p>
+            <p className="text-muted-foreground">
+              {definition?.token_estimate ?? 'Unknown'}
+            </p>
+          </div>
+          <div>
+            <p className="font-medium">Human Review</p>
+            <p className="text-muted-foreground">
+              {requiresHumanReview ? 'Required' : 'Not required'}
+            </p>
+          </div>
+        </div>
+
+        <div
+          className={
+            hasScopeWarning
+              ? 'rounded border border-amber-300 bg-amber-50 px-3 py-2'
+              : undefined
+          }
+        >
+          <p className="flex items-center gap-2 font-medium">
+            Files Expected
+            {hasScopeWarning && (
+              <Badge
+                variant="outline"
+                className="border-amber-300 bg-amber-100 text-amber-800"
+              >
+                Review scope
+              </Badge>
+            )}
+          </p>
+          <p
+            className={
+              hasScopeWarning
+                ? 'break-words font-medium text-amber-900'
+                : 'text-muted-foreground break-words'
+            }
+          >
+            {formatList(filesExpected)}
+          </p>
+          {filesExpected.length === 0 && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Pipewright could not confidently map this chunk to
+              indexed repository files, so no target files were
+              approved. It is marked high-risk and requires human
+              review — confirm the real target files before
+              executing.
+            </p>
+          )}
+        </div>
+
+        <div>
+          <p className="font-medium">Depends On</p>
+          <p className="text-muted-foreground">
+            {formatList(dependsOn)}
+          </p>
+        </div>
+
+        {definition?.rationale && (
+          <div>
+            <p className="font-medium">Rationale</p>
+            <p className="text-muted-foreground whitespace-pre-wrap">
+              {definition.rationale}
+            </p>
+          </div>
+        )}
+
+        {/* #28E: display-only runtime test verdict for this chunk.
+            Renders nothing until a verdict is recorded (pending/old
+            chunks). Never gates approval, commit, or PR. */}
+        <RuntimeTestValidationBanner
+          validation={chunk.test_validation}
+        />
+
+        {/* Advisory AI Review (display-only). Renders only when a
+            review exists; never gates approval, exposes no actions,
+            and is shown below the test-validation banner / above the
+            chunk's approval controls. */}
+        <AdvisoryReviewPanel review={chunk.review} />
+
+        {pendingScope && (
+          // #27F: primary recovery action for a pending scope
+          // expansion. Rendered above the diagnostic patch-failure
+          // banner; owns its own approve/reject + error display.
+          <ScopeExpansionBanner
+            runId={runId}
+            chunkNumber={chunk.chunk_number}
+            request={pendingScope}
+            originalFiles={filesExpected}
+            diagnosticSummary={patchFailure?.message ?? null}
+            onActionComplete={onScopeActionComplete}
+          />
+        )}
+
+        {patchFailure ? (
+          // Structured patch failure (#18E): the banner shows the
+          // message, so skip the raw completion_summary dump and the
+          // generic error_message block to avoid duplication. When a
+          // scope expansion is pending we pass no onRetry so the normal
+          // #26 Retry button is not shown as the primary action (#27F).
+          <PatchFailureBanner
+            report={patchFailure}
+            projectId={projectId}
+            chunkNumber={chunk.chunk_number}
+            chunkStatus={chunk.status}
+            onRetry={pendingScope ? undefined : onRetryChunk}
+            isRetrying={retryingChunkNumber === chunk.chunk_number}
+          />
+        ) : recoveredReview ? (
+          // Recovered patch awaiting review (#26E3): show a marker
+          // instead of dumping the raw recovered_patch_review JSON.
+          <RecoveredReviewMarker
+            summary={recoveredReview}
+            validation={chunk.test_validation}
+          />
+        ) : (
+          <>
+            {chunk.completion_summary && (
+              <div>
+                <p className="font-medium">Completion Summary</p>
+                <p className="text-muted-foreground whitespace-pre-wrap">
+                  {chunk.completion_summary}
+                </p>
+              </div>
+            )}
+
+            {chunk.error_message && (
+              <div>
+                <p className="font-medium text-red-500">Error</p>
+                <p className="text-red-500 whitespace-pre-wrap">
+                  {chunk.error_message}
+                </p>
+              </div>
+            )}
+          </>
+        )}
+
+        {showInlineChunkApproval && (
+          <InlineChunkApprovalControls
+            chunkNumber={chunk.chunk_number}
+            rejectReason={rejectReason}
+            onRejectReasonChange={onRejectReasonChange}
+            actionPending={actionPending}
+            chunkActionPending={chunkActionPending}
+            approvingChunkNumber={approvingChunkNumber}
+            rejectingChunkNumber={rejectingChunkNumber}
+            onApproveChunk={onApproveChunk}
+            onRejectChunk={onRejectChunk}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+interface PlanApprovalControlsProps {
+  rejectReason: string
+  onRejectReasonChange: (value: string) => void
+  error: string | null
+  isApproving: boolean
+  isRejecting: boolean
+  actionPending: boolean
+  onApprove: () => void
+  onReject: (reason: string) => void
+}
+
+// Plan-level approve/reject controls (awaiting_approval). #36B extraction (no
+// visual/behavior change). The reject reason stays owned by the parent.
+function PlanApprovalControls({
+  rejectReason,
+  onRejectReasonChange,
+  error,
+  isApproving,
+  isRejecting,
+  actionPending,
+  onApprove,
+  onReject,
+}: PlanApprovalControlsProps) {
+  return (
+    <div className="grid gap-3">
+      <Textarea
+        value={rejectReason}
+        onChange={event => onRejectReasonChange(event.target.value)}
+        placeholder="Optional rejection reason"
+        disabled={actionPending}
+      />
+
+      {error && (
+        <p className="text-sm font-medium text-red-500">{error}</p>
+      )}
+
+      <div className="flex flex-wrap gap-3">
+        <Button
+          onClick={onApprove}
+          disabled={actionPending}
+          className="bg-green-600 hover:bg-green-700 text-white"
+        >
+          {isApproving ? 'Approving...' : 'Approve Plan'}
+        </Button>
+        <Button
+          variant="destructive"
+          onClick={() => onReject(rejectReason)}
+          disabled={actionPending}
+        >
+          {isRejecting ? 'Rejecting...' : 'Reject Plan'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 export default function ChunkPlanPanel({
   plan,
   isApproving,
@@ -169,8 +723,6 @@ export default function ChunkPlanPanel({
     isResuming ||
     approvingChunkNumber !== null ||
     rejectingChunkNumber !== null
-  const featureDescription =
-    plan.triage?.feature_description || 'Feature description not available.'
   const planStatusDisplay = getStatusDisplay(plan.chunk_plan_status)
 
   return (
@@ -189,403 +741,53 @@ export default function ChunkPlanPanel({
         </div>
       </CardHeader>
       <CardContent className="grid gap-4">
-        <div className="grid gap-3 text-sm sm:grid-cols-3">
-          <div>
-            <p className="font-medium">Total Chunks</p>
-            <p className="text-muted-foreground">{plan.total_chunks}</p>
-          </div>
-          <div>
-            <p className="font-medium">Current Chunk</p>
-            <p className="text-muted-foreground">
-              {plan.current_chunk_number || 'None'}
-            </p>
-          </div>
-          {plan.triage?.complexity && (
-            <div>
-              <p className="font-medium">Complexity</p>
-              <p className="text-muted-foreground">
-                {plan.triage.complexity}
-              </p>
-            </div>
-          )}
-        </div>
-
-        <div>
-          <p className="text-sm font-medium mb-1">Feature Description</p>
-          <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-            {featureDescription}
-          </p>
-        </div>
+        <ChunkPlanSummary plan={plan} />
 
         <Separator />
 
         {isApproved && (
           <>
-            <div className="grid gap-3 rounded border bg-background p-4">
-              <div>
-                <p className="text-sm font-medium">Execution Controls</p>
-                <p className="text-sm text-muted-foreground">
-                  Run the approved chunks, or resume the run if it paused after an
-                  interruption or a failed chunk.
-                </p>
-              </div>
-
-              {executionMessage && (
-                <p className="text-sm font-medium text-green-600">
-                  {executionMessage}
-                </p>
-              )}
-              {executionError && (
-                <p className="text-sm font-medium text-red-500">
-                  {executionError}
-                </p>
-              )}
-              {startContextDrift && (
-                <div className="grid gap-3 rounded border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900">
-                  <div>
-                    <p className="font-semibold">Start context changed</p>
-                    {startContextDrift.message && (
-                      <p className="mt-1">{startContextDrift.message}</p>
-                    )}
-                    <p className="mt-1">
-                      Checkout the original start branch and execute again, or
-                      create a new run for the current branch.
-                    </p>
-                  </div>
-                  <div className="grid gap-2 text-xs sm:grid-cols-2">
-                    <div>
-                      <p className="font-medium">Planned against</p>
-                      <p className="font-mono">
-                        {startContextDrift.captured_start?.branch ??
-                          'unknown'}
-                        @
-                        {startContextDrift.captured_start?.head_sha_short ??
-                          'unknown'}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="font-medium">Current checkout</p>
-                      <p className="font-mono">
-                        {startContextDrift.current?.branch ?? 'detached HEAD'}
-                        @
-                        {startContextDrift.current?.head_sha_short ??
-                          'unknown'}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex flex-wrap gap-3">
-                <Button
-                  onClick={onExecute}
-                  disabled={actionPending}
-                  className="bg-blue-600 hover:bg-blue-700 text-white"
-                >
-                  {isExecuting ? 'Executing...' : 'Execute Chunks'}
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={onResume}
-                  disabled={actionPending}
-                >
-                  {isResuming ? 'Resuming...' : 'Resume Run'}
-                </Button>
-              </div>
-            </div>
+            <ExecutionControls
+              isExecuting={isExecuting}
+              isResuming={isResuming}
+              actionPending={actionPending}
+              executionMessage={executionMessage}
+              executionError={executionError}
+              startContextDrift={startContextDrift}
+              onExecute={onExecute}
+              onResume={onResume}
+            />
 
             <Separator />
           </>
         )}
 
         <div className="grid gap-3">
-          {plan.chunks.map(chunk => {
-            const definition = getChunkDefinition(chunk, definitionsByNumber)
-            const filesExpected =
-              chunk.files_expected.length > 0
-                ? chunk.files_expected
-                : definition?.files_expected ?? []
-            const dependsOn =
-              chunk.depends_on.length > 0
-                ? chunk.depends_on
-                : definition?.depends_on ?? []
-            const riskLevel =
-              chunk.risk_level || definition?.risk_level || 'unknown'
-            const requiresHumanReview =
-              chunk.requires_human_review ||
-              definition?.requires_human_review ||
-              false
-            const patchFailure = parsePatchFailureSummary(
-              chunk.completion_summary
-            )
-            // #27F: a pending scope expansion request makes the scope banner the
-            // primary action. When present we suppress the normal #26 Retry
-            // button (a SCOPE_VIOLATION otherwise offers retry_with_instruction)
-            // so the user is not nudged into the wrong recovery path.
-            const pendingScope = chunk.pending_scope_expansion ?? null
-            // #26E3: a recovered_patch_review summary is display-only context;
-            // the awaiting_chunk_approval UI below still owns approve/commit.
-            const recoveredReview = patchFailure
-              ? null
-              : parseRecoveredPatchReviewSummary(chunk.completion_summary)
-            // #22B: surface backend [SCOPE] file-scope notes (#22A) so a
-            // reviewer sees scope mismatches/adjustments before approving.
-            // Read-only: this only displays existing data, never changes scope.
-            const scopeWarnings = extractScopeWarnings(
-              definition?.rationale,
-              definition?.description
-            )
-            const hasScopeWarning = scopeWarnings.length > 0
-            const isAwaitingChunkApproval =
-              chunk.status === 'awaiting_chunk_approval'
-            const showInlineChunkApproval =
-              isAwaitingChunkApproval &&
-              !patchFailure &&
-              !hiddenApprovalChunkNumbers.includes(chunk.chunk_number)
-            const chunkActionPending =
-              approvingChunkNumber === chunk.chunk_number ||
-              rejectingChunkNumber === chunk.chunk_number
-            const chunkStatusDisplay = getStatusDisplay(chunk.status)
-
-            return (
-              <div
-                key={chunk.chunk_number}
-                className="rounded border bg-background p-4"
-              >
-                <div className="mb-3 flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium">
-                      Chunk {chunk.chunk_number}: {chunk.title}
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      {definition?.description || 'No description available.'}
-                    </p>
-                  </div>
-                  <Badge variant="outline" className={chunkStatusDisplay.className}>
-                    {chunkStatusDisplay.label}
-                  </Badge>
-                </div>
-
-                {hasScopeWarning && (
-                  <div className="mb-3 grid gap-2 rounded border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
-                    <div className="flex items-center gap-2">
-                      <Badge
-                        variant="outline"
-                        className="border-amber-300 bg-amber-100 text-amber-800"
-                      >
-                        Scope warning
-                      </Badge>
-                    </div>
-                    <p>
-                      This chunk has a file-scope mismatch or constraint
-                      adjustment. Review Files Expected before approving.
-                    </p>
-                    <ul className="list-disc space-y-1 pl-5">
-                      {scopeWarnings.map((warning, index) => (
-                        <li key={index} className="break-words">
-                          {warning}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                <div className="grid gap-3 text-sm">
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <div>
-                      <p className="font-medium">Risk Level</p>
-                      <p className="text-muted-foreground">{riskLevel}</p>
-                    </div>
-                    <div>
-                      <p className="font-medium">Token Estimate</p>
-                      <p className="text-muted-foreground">
-                        {definition?.token_estimate ?? 'Unknown'}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="font-medium">Human Review</p>
-                      <p className="text-muted-foreground">
-                        {requiresHumanReview ? 'Required' : 'Not required'}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div
-                    className={
-                      hasScopeWarning
-                        ? 'rounded border border-amber-300 bg-amber-50 px-3 py-2'
-                        : undefined
-                    }
-                  >
-                    <p className="flex items-center gap-2 font-medium">
-                      Files Expected
-                      {hasScopeWarning && (
-                        <Badge
-                          variant="outline"
-                          className="border-amber-300 bg-amber-100 text-amber-800"
-                        >
-                          Review scope
-                        </Badge>
-                      )}
-                    </p>
-                    <p
-                      className={
-                        hasScopeWarning
-                          ? 'break-words font-medium text-amber-900'
-                          : 'text-muted-foreground break-words'
-                      }
-                    >
-                      {formatList(filesExpected)}
-                    </p>
-                    {filesExpected.length === 0 && (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Pipewright could not confidently map this chunk to
-                        indexed repository files, so no target files were
-                        approved. It is marked high-risk and requires human
-                        review — confirm the real target files before
-                        executing.
-                      </p>
-                    )}
-                  </div>
-
-                  <div>
-                    <p className="font-medium">Depends On</p>
-                    <p className="text-muted-foreground">
-                      {formatList(dependsOn)}
-                    </p>
-                  </div>
-
-                  {definition?.rationale && (
-                    <div>
-                      <p className="font-medium">Rationale</p>
-                      <p className="text-muted-foreground whitespace-pre-wrap">
-                        {definition.rationale}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* #28E: display-only runtime test verdict for this chunk.
-                      Renders nothing until a verdict is recorded (pending/old
-                      chunks). Never gates approval, commit, or PR. */}
-                  <RuntimeTestValidationBanner
-                    validation={chunk.test_validation}
-                  />
-
-                  {/* Advisory AI Review (display-only). Renders only when a
-                      review exists; never gates approval, exposes no actions,
-                      and is shown below the test-validation banner / above the
-                      chunk's approval controls. */}
-                  <AdvisoryReviewPanel review={chunk.review} />
-
-                  {pendingScope && (
-                    // #27F: primary recovery action for a pending scope
-                    // expansion. Rendered above the diagnostic patch-failure
-                    // banner; owns its own approve/reject + error display.
-                    <ScopeExpansionBanner
-                      runId={plan.run_id}
-                      chunkNumber={chunk.chunk_number}
-                      request={pendingScope}
-                      originalFiles={filesExpected}
-                      diagnosticSummary={patchFailure?.message ?? null}
-                      onActionComplete={onScopeActionComplete}
-                    />
-                  )}
-
-                  {patchFailure ? (
-                    // Structured patch failure (#18E): the banner shows the
-                    // message, so skip the raw completion_summary dump and the
-                    // generic error_message block to avoid duplication. When a
-                    // scope expansion is pending we pass no onRetry so the normal
-                    // #26 Retry button is not shown as the primary action (#27F).
-                    <PatchFailureBanner
-                      report={patchFailure}
-                      projectId={plan.project_id}
-                      chunkNumber={chunk.chunk_number}
-                      chunkStatus={chunk.status}
-                      onRetry={pendingScope ? undefined : onRetryChunk}
-                      isRetrying={retryingChunkNumber === chunk.chunk_number}
-                    />
-                  ) : recoveredReview ? (
-                    // Recovered patch awaiting review (#26E3): show a marker
-                    // instead of dumping the raw recovered_patch_review JSON.
-                    <RecoveredReviewMarker
-                      summary={recoveredReview}
-                      validation={chunk.test_validation}
-                    />
-                  ) : (
-                    <>
-                      {chunk.completion_summary && (
-                        <div>
-                          <p className="font-medium">Completion Summary</p>
-                          <p className="text-muted-foreground whitespace-pre-wrap">
-                            {chunk.completion_summary}
-                          </p>
-                        </div>
-                      )}
-
-                      {chunk.error_message && (
-                        <div>
-                          <p className="font-medium text-red-500">Error</p>
-                          <p className="text-red-500 whitespace-pre-wrap">
-                            {chunk.error_message}
-                          </p>
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                  {showInlineChunkApproval && (
-                    <div className="grid gap-3 rounded border border-yellow-400 p-3">
-                      <div>
-                        <p className="font-medium">High-Risk Chunk Approval</p>
-                        <p className="text-muted-foreground">
-                          Review this chunk before continuing execution.
-                        </p>
-                      </div>
-
-                      <Textarea
-                        value={chunkRejectReasons[chunk.chunk_number] ?? ''}
-                        onChange={event =>
-                          setChunkRejectReasons(previous => ({
-                            ...previous,
-                            [chunk.chunk_number]: event.target.value,
-                          }))
-                        }
-                        placeholder="Optional rejection reason"
-                        disabled={actionPending}
-                      />
-
-                      <div className="flex flex-wrap gap-3">
-                        <Button
-                          onClick={() => onApproveChunk(chunk.chunk_number)}
-                          disabled={actionPending}
-                          className="bg-green-600 hover:bg-green-700 text-white"
-                        >
-                          {chunkActionPending && approvingChunkNumber
-                            ? 'Approving...'
-                            : 'Approve Chunk'}
-                        </Button>
-                        <Button
-                          variant="destructive"
-                          onClick={() =>
-                            onRejectChunk(
-                              chunk.chunk_number,
-                              chunkRejectReasons[chunk.chunk_number] ?? ''
-                            )
-                          }
-                          disabled={actionPending}
-                        >
-                          {chunkActionPending && rejectingChunkNumber
-                            ? 'Rejecting...'
-                            : 'Reject Chunk'}
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )
-          })}
+          {plan.chunks.map(chunk => (
+            <ChunkCard
+              key={chunk.chunk_number}
+              chunk={chunk}
+              definition={getChunkDefinition(chunk, definitionsByNumber)}
+              runId={plan.run_id}
+              projectId={plan.project_id}
+              actionPending={actionPending}
+              approvingChunkNumber={approvingChunkNumber}
+              rejectingChunkNumber={rejectingChunkNumber}
+              retryingChunkNumber={retryingChunkNumber}
+              hiddenApprovalChunkNumbers={hiddenApprovalChunkNumbers}
+              rejectReason={chunkRejectReasons[chunk.chunk_number] ?? ''}
+              onRejectReasonChange={value =>
+                setChunkRejectReasons(previous => ({
+                  ...previous,
+                  [chunk.chunk_number]: value,
+                }))
+              }
+              onApproveChunk={onApproveChunk}
+              onRejectChunk={onRejectChunk}
+              onRetryChunk={onRetryChunk}
+              onScopeActionComplete={onScopeActionComplete}
+            />
+          ))}
         </div>
 
         {(chunkActionMessage || chunkActionError) && (
@@ -607,35 +809,16 @@ export default function ChunkPlanPanel({
           <>
             <Separator />
 
-            <div className="grid gap-3">
-              <Textarea
-                value={rejectReason}
-                onChange={event => setRejectReason(event.target.value)}
-                placeholder="Optional rejection reason"
-                disabled={actionPending}
-              />
-
-              {error && (
-                <p className="text-sm font-medium text-red-500">{error}</p>
-              )}
-
-              <div className="flex flex-wrap gap-3">
-                <Button
-                  onClick={onApprove}
-                  disabled={actionPending}
-                  className="bg-green-600 hover:bg-green-700 text-white"
-                >
-                  {isApproving ? 'Approving...' : 'Approve Plan'}
-                </Button>
-                <Button
-                  variant="destructive"
-                  onClick={() => onReject(rejectReason)}
-                  disabled={actionPending}
-                >
-                  {isRejecting ? 'Rejecting...' : 'Reject Plan'}
-                </Button>
-              </div>
-            </div>
+            <PlanApprovalControls
+              rejectReason={rejectReason}
+              onRejectReasonChange={setRejectReason}
+              error={error}
+              isApproving={isApproving}
+              isRejecting={isRejecting}
+              actionPending={actionPending}
+              onApprove={onApprove}
+              onReject={onReject}
+            />
           </>
         )}
       </CardContent>
