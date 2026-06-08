@@ -217,8 +217,16 @@ function PreviewAction({
 
 export default function OperatorAttentionPanel({
   operatorState,
+  resolvePrimaryAction,
 }: {
   operatorState?: OperatorState | null
+  // #35F: optional resolver supplied by the page. Given the current
+  // primary_action it returns the legacy mutation to run (and its pending
+  // state), or null when the action is unmapped or its legacy control would be
+  // unavailable. When null, the primary_action keeps its display-only preview.
+  resolvePrimaryAction?: (
+    action: OperatorAction,
+  ) => { onClick: () => void; isPending: boolean } | null
 }) {
   // Render nothing when the backend did not attach operator_state.
   if (!operatorState) return null
@@ -243,6 +251,14 @@ export default function OperatorAttentionPanel({
     Boolean(primary_action) ||
     neutral_actions.length > 0 ||
     secondary_actions.length > 0
+
+  // #35F: a wired primary action is offered only for non-risk (PROGRESS) states
+  // and only when the page resolver maps it to a legacy mutation. Risk decisions
+  // never get a single recommended primary (left for #35G).
+  const wiredPrimary =
+    primary_action && !isRisk
+      ? resolvePrimaryAction?.(primary_action) ?? null
+      : null
 
   return (
     <Card className="mb-6 border-l-4 border-l-amber-400">
@@ -296,8 +312,25 @@ export default function OperatorAttentionPanel({
               )}
               <div className="flex flex-wrap gap-2.5">
                 {/* Progress states may surface one clear primary action; risk
-                    decisions intentionally use co-equal neutral buttons only. */}
-                {primary_action && !isRisk && (
+                    decisions intentionally use co-equal neutral buttons only.
+                    #35F: when the page maps this primary_action to a legacy
+                    mutation, render it as a real button that runs the SAME
+                    action as its control below; otherwise keep the preview. */}
+                {primary_action && !isRisk && wiredPrimary && (
+                  <Button
+                    type="button"
+                    variant="default"
+                    size="sm"
+                    onClick={wiredPrimary.onClick}
+                    disabled={wiredPrimary.isPending}
+                    title={primary_action.intent}
+                  >
+                    {wiredPrimary.isPending
+                      ? 'Working…'
+                      : primary_action.label}
+                  </Button>
+                )}
+                {primary_action && !isRisk && !wiredPrimary && (
                   <PreviewAction action={primary_action} variant="default" />
                 )}
                 {neutral_actions.map(action => (
@@ -315,9 +348,16 @@ export default function OperatorAttentionPanel({
                   />
                 ))}
               </div>
-              <p className="text-xs text-muted-foreground">
-                Display only — use the existing controls below to act.
-              </p>
+              {wiredPrimary ? (
+                <p className="text-xs text-muted-foreground">
+                  The recommended action runs the same step as its control below
+                  — use either. Any other actions here are display-only previews.
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Display only — use the existing controls below to act.
+                </p>
+              )}
             </div>
           </>
         )}
