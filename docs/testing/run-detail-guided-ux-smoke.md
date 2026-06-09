@@ -14,13 +14,13 @@ Related docs:
 - PR status / checks smoke: [`docs/testing/pr-status-checks-smoke.md`](./pr-status-checks-smoke.md)
 - Scope expansion smoke: [`docs/testing/scope-expansion-recovery-smoke.md`](./scope-expansion-recovery-smoke.md)
 - Stronger test validation smoke: [`docs/testing/stronger-test-validation-smoke.md`](./stronger-test-validation-smoke.md)
-- Memory provenance smoke: [`docs/testing/memory-provenance-smoke.md`](./memory-provenance-smoke.md)
+- Memory-use smoke: [`docs/testing/memory-trust-ui-smoke.md`](./memory-trust-ui-smoke.md)
 
 ## Completed #35 Work
 
 - #35C Friendly labels, calmer feature-first header, short run id / full-id
   tooltip, gentler terminal outcome copy — merged
-- #35D Timeline / EventLog, Memory Provenance, and Provider Diagnostics collapsed
+- #35D Timeline / EventLog, memory-use details, and Provider Diagnostics collapsed
   into one default-closed **Details & audit** section — merged
 - #35E Read-only **Safety overview** strip near the top — merged
 - #35F `OperatorAttentionPanel` `primary_action` wired for safe PROGRESS actions
@@ -172,7 +172,7 @@ For every state you reach, verify:
 - [ ] **Memory conflict override / reject** works from **both** the guided panel
       (co-equal actions) and the legacy `MemoryConflictPanel`.
 - [ ] **Details & audit** expand / collapse works; default-closed on load.
-- [ ] **Memory provenance** lazy load (explicit "Load provenance") and
+- [ ] **Memory used** lazy load (explicit "Load what the AI was given") and
       **provider diagnostics** manual refresh behavior are preserved.
 
 ## 8. Known limitations / deferred work
@@ -189,8 +189,8 @@ For every state you reach, verify:
 - Branch / index states (`stale_index`, `unsafe_start_branch`,
   `start_context_drifted`) are **not** summarized in the safety strip — they are
   transient start/execute responses, not part of the persisted read model.
-- Memory provenance / repo-reality warnings are **not** summarized in the safety
-  strip unless the provenance panel is explicitly loaded (kept lazy by #35D).
+- Memory-use / repo-reality warnings are **not** summarized in the safety strip
+  unless the memory details panel is explicitly loaded (kept lazy by #35D).
 - `ChunkPlanPanel` is still dense; a future slice (candidate **#36**) may give it
   the same guided treatment.
 - No frontend test runner is configured, so this manual smoke is the coverage for

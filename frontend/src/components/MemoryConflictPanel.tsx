@@ -44,7 +44,8 @@ export default function MemoryConflictPanel({
         <CardDescription>
           This run was paused because project memory disagrees with the
           repository&apos;s database, and the run touches DB/model/migration
-          files. Resolve the stale memory, or override once to continue.
+          files. Resolve the possibly outdated memory, or override once to
+          continue.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">

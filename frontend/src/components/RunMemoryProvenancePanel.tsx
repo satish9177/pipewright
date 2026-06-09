@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { humanizeMemoryReason } from '@/utils/memoryReasonHumanize'
 import { getMemoryStatusDisplay } from '@/utils/memoryStatusDisplay'
 
 interface RunMemoryProvenancePanelProps {
@@ -55,19 +56,10 @@ function shortId(value?: string | null): string {
   return value ? value.slice(0, 10) : 'none'
 }
 
-// M3F2a: read-only labels for deterministic exclusion reasons.
-const EXCLUSION_REASON_LABELS: Record<string, string> = {
-  budget_dropped:
-    'In-policy but not injected because the role memory budget was full.',
-  category_not_allowed_for_role:
-    'Not injected because this role does not use this memory category.',
-}
-
 const SAFETY_CATEGORIES = new Set(['security', 'forbidden_paths'])
 
 function exclusionReasonLabel(reason?: string | null): string {
-  if (!reason) return 'Not injected into the prompt for this role.'
-  return EXCLUSION_REASON_LABELS[reason] ?? `Not injected for this role (${reason}).`
+  return humanizeMemoryReason(reason)
 }
 
 function isSafetyBudgetDrop(entry: MemoryInjectionEntry): boolean {
@@ -86,15 +78,15 @@ function summarizeExclusions(entries: MemoryInjectionEntry[]): string {
   }
   const parts: string[] = []
   const budget = counts.get('budget_dropped')
-  if (budget) parts.push(`${budget} budget-dropped`)
+  if (budget) parts.push(`${budget} not enough room this run`)
   const category = counts.get('category_not_allowed_for_role')
-  if (category) parts.push(`${category} out-of-policy for this role`)
+  if (category) parts.push(`${category} not used by this role`)
   for (const [reason, count] of counts) {
     if (
       reason !== 'budget_dropped' &&
       reason !== 'category_not_allowed_for_role'
     ) {
-      parts.push(`${count} ${reason}`)
+      parts.push(`${count} ${humanizeMemoryReason(reason)}`)
     }
   }
   return parts.join(', ')
@@ -104,7 +96,7 @@ function TraceRef({ refInfo }: { refInfo: MemoryInjectionAnalysisRef }) {
   const parts = [
     refInfo.role || 'unknown role',
     formatChunk(refInfo.chunk_number),
-    refInfo.fact_id ? `fact ${shortId(refInfo.fact_id)}` : null,
+    refInfo.fact_id ? `memory ${shortId(refInfo.fact_id)}` : null,
   ].filter(Boolean)
 
   return (
@@ -147,12 +139,12 @@ function EntryRow({
       <p className="text-sm leading-6 text-slate-800">{entry.content}</p>
       <p className="text-xs text-muted-foreground">
         {included
-          ? 'as injected during this run'
+          ? 'Used in this run.'
           : exclusionReasonLabel(entry.exclusion_reason)}
       </p>
       {!included && isSafetyBudgetDrop(entry) && (
         <p className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700">
-          Safety memory was budget-dropped.
+          Safety memory was left out for space this run.
         </p>
       )}
     </li>
@@ -175,21 +167,21 @@ function EventCard({ event }: { event: MemoryInjectionEvent }) {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Badge variant="outline">{includedCount} injected</Badge>
-          <Badge variant="outline">{excludedCount} not injected</Badge>
+          <Badge variant="outline">{includedCount} given to AI</Badge>
+          <Badge variant="outline">{excludedCount} not shown</Badge>
         </div>
       </div>
 
       <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
-        <p>Token budget: {event.token_budget ?? 'not recorded'}</p>
+        <p>Memory space limit: {event.token_budget ?? 'not recorded'}</p>
         <p>
-          Category policy:{' '}
+          Allowed memory types for this role:{' '}
           {event.category_policy.length > 0
             ? event.category_policy.join(', ')
             : 'not recorded'}
         </p>
         <p className="font-mono sm:col-span-2">
-          entries hash: {event.entries_hash || 'not recorded'}
+          Snapshot fingerprint: {event.entries_hash || 'not recorded'}
         </p>
         {(event.attempt_id || event.repo_head_sha) && (
           <p className="font-mono sm:col-span-2">
@@ -210,25 +202,25 @@ function EventCard({ event }: { event: MemoryInjectionEvent }) {
         </ul>
       ) : (
         <p className="rounded border border-dashed px-3 py-2 text-sm text-muted-foreground">
-          No memory entries were injected for this event.
+          No memory was given to the AI for this event.
         </p>
       )}
 
       {event.excluded_entries.length > 0 && (
         <details className="rounded-lg bg-muted/30 px-3 py-2">
           <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-            Considered but not injected ({event.excluded_entries.length})
+            Not shown - and why ({event.excluded_entries.length})
           </summary>
           {event.excluded_entries.some(isSafetyBudgetDrop) && (
             <p className="mt-2 rounded border border-red-300 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700">
-              Safety memory was budget-dropped.
+              Safety memory was left out for space this run.
             </p>
           )}
           <p className="mt-1 text-xs text-muted-foreground">
             {summarizeExclusions(event.excluded_entries)}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            These entries did not influence this run.
+            These memories were not shown to the AI.
           </p>
           <ul className="mt-2 grid gap-2">
             {event.excluded_entries.map((entry, index) => (
@@ -260,11 +252,13 @@ function DuplicateCandidateCard({
         <span className="text-xs text-muted-foreground">
           similarity {Math.round(candidate.similarity * 100)}%
         </span>
-        <span className="text-xs text-muted-foreground">
-          advisory_only={String(candidate.advisory_only)}
-        </span>
+        {candidate.advisory_only && (
+          <Badge variant="outline">Read-only observation</Badge>
+        )}
       </div>
-      <p className="text-xs text-muted-foreground">{candidate.reason}</p>
+      <p className="text-xs text-muted-foreground">
+        {humanizeMemoryReason(candidate.reason)}
+      </p>
       <div className="grid gap-2 sm:grid-cols-2">
         <TraceRef refInfo={candidate.left} />
         <TraceRef refInfo={candidate.right} />
@@ -286,17 +280,16 @@ function SupersessionCandidateCard({
         </Badge>
         <Badge variant="outline">{candidate.relation}</Badge>
         <Badge variant="outline">{candidate.dimension}</Badge>
-        <span className="text-xs text-muted-foreground">
-          advisory_only={String(candidate.advisory_only)}
-        </span>
-        <span className="text-xs text-muted-foreground">
-          recency_implies_truth={String(candidate.recency_implies_truth)}
-        </span>
+        {candidate.advisory_only && (
+          <Badge variant="outline">Read-only observation</Badge>
+        )}
       </div>
       <p className="text-xs font-medium text-blue-800">
-        Newer does not mean true. Human decides.
+        Newer does not mean true. You decide which memory to use.
       </p>
-      <p className="text-xs text-muted-foreground">{candidate.reason}</p>
+      <p className="text-xs text-muted-foreground">
+        {humanizeMemoryReason(candidate.reason)}
+      </p>
       <p className="text-xs text-muted-foreground">
         Values: {candidate.left_value} / {candidate.right_value}
       </p>
@@ -316,7 +309,7 @@ function RealityWarningCard({
   const trace = [
     warning.role || 'unknown role',
     formatChunk(warning.chunk_number),
-    warning.fact_id ? `fact ${shortId(warning.fact_id)}` : null,
+    warning.fact_id ? `memory ${shortId(warning.fact_id)}` : null,
   ]
     .filter(Boolean)
     .join(' / ')
@@ -328,15 +321,16 @@ function RealityWarningCard({
           variant="outline"
           className="border-orange-300 bg-orange-100 text-orange-800"
         >
-          Repo reality warning
+          Code/memory mismatch warning
         </Badge>
         <Badge variant="outline">{warning.dimension}</Badge>
-        <span className="text-xs text-muted-foreground">
-          advisory_only={String(warning.advisory_only)}
-        </span>
+        {warning.advisory_only && (
+          <Badge variant="outline">Read-only observation</Badge>
+        )}
       </div>
       <p className="text-xs font-medium text-orange-800">
-        Repo signal suggests this memory may be outdated.
+        Repo signal suggests this memory may be outdated. If memory and current
+        code disagree, code wins.
       </p>
       <p className="text-sm leading-6 text-slate-800">{warning.memory_content}</p>
       <p className="text-xs text-muted-foreground">
@@ -403,7 +397,7 @@ export default function RunMemoryProvenancePanel({
     provenanceQuery.error || analysisQuery.error
       ? getErrorMessage(
           provenanceQuery.error || analysisQuery.error,
-          'Failed to load memory provenance.',
+          'Failed to load what the AI was given.',
         )
       : null
 
@@ -417,9 +411,9 @@ export default function RunMemoryProvenancePanel({
       <CardHeader>
         <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
           <div>
-            <CardTitle className="text-base">Memory Provenance</CardTitle>
+            <CardTitle className="text-base">What the AI was given</CardTitle>
             <CardDescription>
-              Read-only view of approved project memory injected during this run.
+              Read-only view of approved memory given to the AI during this run.
               Loading this panel never changes memory or run state.
             </CardDescription>
           </div>
@@ -430,7 +424,7 @@ export default function RunMemoryProvenancePanel({
             aria-expanded={expanded}
             className="w-fit"
           >
-            {expanded ? 'Hide provenance' : 'Load provenance'}
+            {expanded ? 'Hide details' : 'Load what the AI was given'}
           </Button>
         </div>
       </CardHeader>
@@ -482,7 +476,7 @@ export default function RunMemoryProvenancePanel({
 
           {isLoading && (
             <p className="text-sm text-muted-foreground">
-              Loading memory provenance...
+              Loading what the AI was given...
             </p>
           )}
 
@@ -500,7 +494,7 @@ export default function RunMemoryProvenancePanel({
                   <p className="text-lg font-semibold">{events.length}</p>
                 </div>
                 <div className="rounded-lg border p-3">
-                  <p className="text-xs text-muted-foreground">Injected entries</p>
+                  <p className="text-xs text-muted-foreground">Given to AI</p>
                   <p className="text-lg font-semibold">{includedTotal}</p>
                 </div>
                 <div className="rounded-lg border p-3">
@@ -519,16 +513,16 @@ export default function RunMemoryProvenancePanel({
 
               {events.length === 0 ? (
                 <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                  No memory injection provenance recorded for this run. Older
-                  runs or runs without injected memory may show no entries.
+                  No memory-use snapshot recorded for this run. Older runs or
+                  runs without memory may show no entries.
                 </p>
               ) : (
                 <div className="grid gap-3">
                   <div>
-                    <h4 className="text-sm font-semibold">Injection events</h4>
+                    <h4 className="text-sm font-semibold">Memory snapshots</h4>
                     <p className="text-xs text-muted-foreground">
                       Entries below are immutable snapshots of what the role
-                      received as injected memory.
+                      was given.
                     </p>
                   </div>
                   <ul className="grid gap-3">
@@ -546,8 +540,8 @@ export default function RunMemoryProvenancePanel({
                       Advisory observations
                     </h4>
                     <p className="text-xs text-muted-foreground">
-                      These are read-only observations from the stored
-                      provenance. The system did not change memory.
+                      These are read-only observations from the stored memory
+                      snapshot. The system did not change memory.
                     </p>
                   </div>
 
@@ -568,7 +562,7 @@ export default function RunMemoryProvenancePanel({
                   analysis.supersession_candidates.length === 0 ? (
                     <p className="text-sm text-muted-foreground">
                       No advisory duplicate or replacement candidates were found
-                      in this provenance snapshot.
+                      in this memory snapshot.
                     </p>
                   ) : (
                     <div className="grid gap-3">
@@ -628,7 +622,7 @@ export default function RunMemoryProvenancePanel({
                     ) : (
                       <p className="text-sm text-muted-foreground">
                         {analysis.reality_signal_available
-                          ? 'No repo reality mismatches were found for the injected memory.'
+                          ? 'No repo reality mismatches were found for the memory given to the AI.'
                           : 'Repo reality signals are unavailable for this run; no reality checks were run.'}
                       </p>
                     )}
