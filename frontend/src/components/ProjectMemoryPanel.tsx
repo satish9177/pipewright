@@ -31,8 +31,11 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import MemoryAttentionPanel from '@/components/MemoryAttentionPanel'
+import MemoryTrustStrip from '@/components/MemoryTrustStrip'
 import { Textarea } from '@/components/ui/textarea'
 import { getMemoryStatusDisplay } from '@/utils/memoryStatusDisplay'
+import { buildMemoryTrustSummary } from '@/utils/memoryTrustSummary'
 
 const CATEGORIES: MemoryCategory[] = [
   'stack',
@@ -217,6 +220,21 @@ function formatDate(value?: string | null) {
   return date.toLocaleString()
 }
 
+function formatActiveHistoryNote(fact: MemoryFact) {
+  const earlierNote = fact.content.trim()
+  const reason = fact.archived_reason?.trim()
+
+  if (!earlierNote) {
+    return reason
+      ? `History note: Replaced an earlier memory. Reason: ${reason}`
+      : 'History note: Replaced an earlier memory.'
+  }
+
+  return reason
+    ? `History note: Replaced earlier note: "${earlierNote}" Reason: ${reason}`
+    : `History note: Replaced earlier note: "${earlierNote}"`
+}
+
 function statusClass(status: string) {
   if (status === 'active') return 'border-green-200 bg-green-100 text-green-700'
   if (status === 'stale') return 'border-yellow-200 bg-yellow-100 text-yellow-800'
@@ -313,41 +331,14 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
   const [approveSupersedeDialog, setApproveSupersedeDialog] =
     useState<ApproveSupersedeDialogState | null>(null)
 
-  const filters = useMemo(() => {
-    return {
-      ...(statusFilter === 'all' ? {} : { status: statusFilter }),
-      ...(categoryFilter === 'all' ? {} : { category: categoryFilter }),
-      ...(scopeFilter === 'all' ? {} : { scope: scopeFilter }),
-    }
-  }, [categoryFilter, scopeFilter, statusFilter])
-
   const memoryQuery = useQuery({
-    queryKey: [
-      'project-memory',
-      projectId,
-      statusFilter,
-      categoryFilter,
-      scopeFilter,
-    ],
-    queryFn: () => memoryApi.listProjectMemory(projectId, filters),
+    queryKey: ['project-memory', projectId],
+    queryFn: () => memoryApi.listProjectMemory(projectId),
   })
-
-  const activeFactsQuery = useQuery({
-    queryKey: ['project-memory-active', projectId],
-    queryFn: () => memoryApi.listProjectMemory(projectId, { status: 'active' }),
-  })
-
-  const suggestionFilters = useMemo(() => {
-    return {
-      ...(suggestionStatusFilter === 'all'
-        ? {}
-        : { status: suggestionStatusFilter }),
-    }
-  }, [suggestionStatusFilter])
 
   const suggestionsQuery = useQuery({
-    queryKey: ['project-memory-suggestions', projectId, suggestionStatusFilter],
-    queryFn: () => memoryApi.listMemorySuggestions(projectId, suggestionFilters),
+    queryKey: ['project-memory-suggestions', projectId],
+    queryFn: () => memoryApi.listMemorySuggestions(projectId),
   })
 
   const previewQuery = useQuery({
@@ -356,19 +347,30 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
   })
 
   const sortedFacts = useMemo(() => {
-    return [...(memoryQuery.data?.facts ?? [])].sort((a, b) => {
-      const statusDelta =
-        (STATUS_ORDER[a.status] ?? 99) - (STATUS_ORDER[b.status] ?? 99)
-      if (statusDelta !== 0) return statusDelta
-      return (a.priority ?? 100) - (b.priority ?? 100)
-    })
-  }, [memoryQuery.data?.facts])
+    return [...(memoryQuery.data?.facts ?? [])]
+      .filter(fact => {
+        if (statusFilter !== 'all' && fact.status !== statusFilter) return false
+        if (categoryFilter !== 'all' && fact.category !== categoryFilter) {
+          return false
+        }
+        if (scopeFilter !== 'all' && fact.scope !== scopeFilter) return false
+        return true
+      })
+      .sort((a, b) => {
+        const statusDelta =
+          (STATUS_ORDER[a.status] ?? 99) - (STATUS_ORDER[b.status] ?? 99)
+        if (statusDelta !== 0) return statusDelta
+        return (a.priority ?? 100) - (b.priority ?? 100)
+      })
+  }, [categoryFilter, memoryQuery.data?.facts, scopeFilter, statusFilter])
 
   const activeFacts = useMemo(() => {
-    return [...(activeFactsQuery.data?.facts ?? [])].sort((a, b) => {
-      return (a.priority ?? 100) - (b.priority ?? 100)
-    })
-  }, [activeFactsQuery.data?.facts])
+    return [...(memoryQuery.data?.facts ?? [])]
+      .filter(fact => fact.status === 'active')
+      .sort((a, b) => {
+        return (a.priority ?? 100) - (b.priority ?? 100)
+      })
+  }, [memoryQuery.data?.facts])
 
   const factsById = useMemo(() => {
     return new Map(
@@ -389,18 +391,44 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
   }, [memoryQuery.data?.facts])
 
   const sortedSuggestions = useMemo(() => {
-    return [...(suggestionsQuery.data?.suggestions ?? [])].sort((a, b) => {
-      const statusDelta =
-        (SUGGESTION_STATUS_ORDER[a.status] ?? 99) -
-        (SUGGESTION_STATUS_ORDER[b.status] ?? 99)
-      if (statusDelta !== 0) return statusDelta
-      return (a.priority ?? 100) - (b.priority ?? 100)
-    })
-  }, [suggestionsQuery.data?.suggestions])
+    return [...(suggestionsQuery.data?.suggestions ?? [])]
+      .filter(suggestion => {
+        return (
+          suggestionStatusFilter === 'all' ||
+          suggestion.status === suggestionStatusFilter
+        )
+      })
+      .sort((a, b) => {
+        const statusDelta =
+          (SUGGESTION_STATUS_ORDER[a.status] ?? 99) -
+          (SUGGESTION_STATUS_ORDER[b.status] ?? 99)
+        if (statusDelta !== 0) return statusDelta
+        return (a.priority ?? 100) - (b.priority ?? 100)
+      })
+  }, [suggestionStatusFilter, suggestionsQuery.data?.suggestions])
+
+  const memoryTrustSummary = useMemo(
+    () =>
+      buildMemoryTrustSummary({
+        facts: memoryQuery.data?.facts,
+        suggestions: suggestionsQuery.data?.suggestions,
+        factsLoading: memoryQuery.isLoading,
+        suggestionsLoading: suggestionsQuery.isLoading,
+        factsError: memoryQuery.isError,
+        suggestionsError: suggestionsQuery.isError,
+      }),
+    [
+      memoryQuery.data?.facts,
+      memoryQuery.isError,
+      memoryQuery.isLoading,
+      suggestionsQuery.data?.suggestions,
+      suggestionsQuery.isError,
+      suggestionsQuery.isLoading,
+    ],
+  )
 
   function refreshMemory() {
     queryClient.invalidateQueries({ queryKey: ['project-memory', projectId] })
-    queryClient.invalidateQueries({ queryKey: ['project-memory-active', projectId] })
     queryClient.invalidateQueries({
       queryKey: ['project-memory-preview', projectId],
     })
@@ -865,6 +893,8 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
           disagree, the code wins. Your explicit instructions always override
           memory.
         </div>
+        <MemoryTrustStrip summary={memoryTrustSummary} />
+        <MemoryAttentionPanel summary={memoryTrustSummary} />
         <div className="grid gap-3 rounded-lg border bg-muted/30 p-3">
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="grid gap-2">
@@ -1138,7 +1168,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                   <div className="mt-3 grid gap-1 rounded-lg bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
                     {supersededFacts.slice(0, 3).map(historicalFact => (
                       <p key={historicalFact.id}>
-                        Replaced earlier note: {historicalFact.content}
+                        {formatActiveHistoryNote(historicalFact)}
                       </p>
                     ))}
                     {supersededFacts.length > 3 && (
@@ -1153,12 +1183,18 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                 <div className="mt-3 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
                   <p>Created: {formatDate(fact.created_at)}</p>
                   <p>Updated: {formatDate(fact.updated_at)}</p>
-                  <p>Verified: {formatDate(fact.last_verified_at)}</p>
-                  {fact.archived_reason && (
-                    <p className="sm:col-span-2">
-                      Lifecycle reason: {fact.archived_reason}
-                    </p>
-                  )}
+                  <p>
+                    Last checked:{' '}
+                    {fact.last_verified_at
+                      ? formatDate(fact.last_verified_at)
+                      : 'Not checked yet'}
+                  </p>
+                  {fact.archived_reason &&
+                    !(fact.status === 'active' && supersededFacts.length > 0) && (
+                      <p className="sm:col-span-2">
+                        Lifecycle reason: {fact.archived_reason}
+                      </p>
+                    )}
                 </div>
 
                 {!isArchived && (
@@ -1197,10 +1233,10 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
         <div className="grid gap-3 rounded-lg border p-4">
           <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
             <div>
-              <h3 className="text-sm font-semibold">Bootstrap Suggestions</h3>
+              <h3 className="text-sm font-semibold">Suggested memories</h3>
               <p className="text-xs text-muted-foreground">
-                Generate suggested memory notes from repository/config files.
-                Nothing is used until you approve it.
+                Suggested from repository/config files. Nothing is used until
+                you approve it.
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
                 Source code and explicit user instructions still win over
@@ -1265,7 +1301,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                   : 'No suggestions match this filter.'}
               </p>
               <p className="mt-1 text-sm text-muted-foreground">
-                Generate bootstrap suggestions to review repo-derived memory
+                Generate suggested memories to review repo-derived memory
                 proposals.
               </p>
             </div>
@@ -1399,7 +1435,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                   <div className="mt-3 rounded-lg bg-muted/30 p-3 text-xs text-muted-foreground">
                     {suggestion.evidence_path && (
                       <p className="font-mono">
-                        Evidence: {suggestion.evidence_path}
+                        Found in: {suggestion.evidence_path}
                       </p>
                     )}
                     {suggestion.evidence_excerpt && (
@@ -1605,7 +1641,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                   </div>
 
                   <p className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                    Retiring does not delete this memory. It is kept for the
+                    Retiring does not remove this memory. It is kept for the
                     record and can be reviewed later.
                   </p>
 
@@ -1707,12 +1743,12 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                       }
                       className="h-8 w-full rounded-lg border border-input bg-background px-2.5 py-1 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
                       disabled={
-                        activeFactsQuery.isLoading ||
+                        memoryQuery.isLoading ||
                         supersedeReplacementFacts.length === 0
                       }
                     >
                       <option value="">
-                        {activeFactsQuery.isLoading
+                        {memoryQuery.isLoading
                           ? 'Loading memories...'
                           : 'Select replacement memory'}
                       </option>
@@ -1723,7 +1759,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                       ))}
                     </select>
                     {supersedeReplacementFacts.length === 0 &&
-                      !activeFactsQuery.isLoading && (
+                      !memoryQuery.isLoading && (
                         <p className="text-xs text-muted-foreground">
                           No other in-use memories are available as
                           replacements.
@@ -1887,10 +1923,10 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                         )
                       }
                       className="h-8 w-full rounded-lg border border-input bg-background px-2.5 py-1 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-                      disabled={activeFactsQuery.isLoading || activeFacts.length === 0}
+                      disabled={memoryQuery.isLoading || activeFacts.length === 0}
                     >
                       <option value="">
-                        {activeFactsQuery.isLoading
+                        {memoryQuery.isLoading
                           ? 'Loading memories...'
                           : 'Select old memory'}
                       </option>
@@ -1900,7 +1936,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                         </option>
                       ))}
                     </select>
-                    {activeFacts.length === 0 && !activeFactsQuery.isLoading && (
+                    {activeFacts.length === 0 && !memoryQuery.isLoading && (
                       <p className="text-xs text-muted-foreground">
                         No in-use memories are available to replace.
                       </p>
