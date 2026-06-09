@@ -2,6 +2,18 @@ const REASON_LABELS: Record<string, string> = {
   budget_dropped: 'Not enough room this run.',
   category_not_allowed_for_role: 'Not used by this role.',
   advisory_only: 'Read-only observation.',
+  outdated: 'Outdated.',
+  otudated: 'Outdated.',
+}
+
+const VALUE_LABELS: Record<string, string> = {
+  mongodb: 'MongoDB',
+  postgresql: 'PostgreSQL',
+}
+
+function humanizeReasonValue(value: string): string {
+  const normalized = value.trim()
+  return VALUE_LABELS[normalized.toLowerCase()] ?? normalized
 }
 
 function humanizeRealityConflict(reason: string): string | null {
@@ -9,8 +21,8 @@ function humanizeRealityConflict(reason: string): string | null {
   if (!match) return null
   const [, repoValue, memoryValue] = match
   return (
-    `The current repo appears to use ${repoValue}, while this memory says ` +
-    `${memoryValue}.`
+    `The current repo appears to use ${humanizeReasonValue(repoValue)}, while ` +
+    `this memory says ${humanizeReasonValue(memoryValue)}.`
   )
 }
 
