@@ -2,7 +2,11 @@
 Deterministic request intent classification with an LLM fallback.
 
 Layers (in order):
-  1. Read-only safety blockers (absolute; never call LLM)
+  1. Read-only safety blockers (absolute; never call LLM). Scope constraints
+     ("do not modify OTHER files") and anti-report meta ("do not run as a
+     read-only report") are excluded from this layer; a request that both asks
+     to implement AND forbids all changes is surfaced as an uncertain
+     contradiction rather than a silent report/plan.
   2. Deterministic report keywords (when no implementation verb is present)
   3. Strong plan markers (explicit "plan" / "give me a plan" / ...)
   4. Implementation verbs
@@ -276,6 +280,109 @@ _READ_ONLY_SAFETY_PHRASES = [
     "without modifying",
 ]
 
+# Object "head" nouns that mean "anything at all". A negated change verb
+# applied to one of these is a genuine global read-only instruction.
+_GLOBAL_OBJECT_HEADS = {
+    "code",
+    "codebase",
+    "codes",
+    "file",
+    "files",
+    "anything",
+    "everything",
+    "thing",
+    "things",
+    "source",
+    "sources",
+    "it",
+    "them",
+    "line",
+    "lines",
+}
+
+# Leading words that qualify an object without changing its head noun.
+_LEADING_QUALIFIERS = {
+    "the",
+    "a",
+    "an",
+    "any",
+    "all",
+    "my",
+    "your",
+    "our",
+    "its",
+    "this",
+    "these",
+    "those",
+    "single",
+    "existing",
+}
+
+# Anti-report meta: text that *references* read-only / report mode in order to
+# REJECT it ("do not run as a read-only report", "this is not read-only").
+# These are stripped before read-only scanning so a substring like "read-only"
+# inside an anti-report sentence never trips the blocker.
+_ANTI_REPORT_META_REGEXES = [
+    re.compile(
+        r"(?:do not|don't|dont)\s+run\s+(?:this\s+|it\s+)?as\s+(?:a\s+)?"
+        r"read[\s-]?only(?:\s+report)?"
+    ),
+    re.compile(r"not\s+(?:a\s+)?read[\s-]?only(?:\s+report)?"),
+]
+
+# Scope constraints: "do not touch OTHER files" style limits on an
+# implementation. They scope *where* edits may land; they are NOT a global
+# "change nothing" instruction. Stripped before read-only scanning so the
+# negated verb ("do not modify") inside them is not read as global read-only.
+_SCOPE_CONSTRAINT_REGEXES = [
+    re.compile(
+        r"(?:do not|don't|dont)\s+"
+        r"(?:change|modify|edit|alter|touch|create|add|delete|remove|update|write)"
+        r"(?:\s+or\s+"
+        r"(?:change|modify|edit|alter|touch|create|add|delete|remove|update|write))?"
+        r"\s+(?:any\s+)?other\s+"
+        r"(?:files?|code|modules?|things?|places?|parts?|paths?)"
+    ),
+    re.compile(
+        r"only\s+(?:touch|modify|change|edit|update|create)\s+these\s+"
+        r"(?:files?|paths?|modules?)"
+    ),
+]
+
+# "without changing X" is a scope constraint UNLESS X is a global object
+# ("code" / "anything" / ...), in which case it is a genuine read-only
+# instruction. The replacer keeps global forms and strips scoped ones.
+_WITHOUT_SCOPE_RE = re.compile(
+    r"without\s+(?:changing|modifying|editing|altering)\s+"
+    r"([a-z][\w./-]*(?:\s+[a-z][\w./-]*)?)"
+)
+
+# Global read-only: a negated change verb applied to a global object. Catches
+# forms the curated phrase list misses ("do not change any code", "do not
+# modify any files"). "other" objects are excluded (handled as scope above).
+_GLOBAL_READONLY_REGEXES = [
+    re.compile(
+        r"(?:do not|don't|dont)\s+"
+        r"(?:change|modify|edit|alter|touch|rewrite|update|write|add|create|"
+        r"delete|remove|implement|fix|improve|optimize|refactor)"
+        r"(?:\s+or\s+\w+)?\s+"
+        r"(?:any\s+|the\s+|all\s+|any\s+single\s+)?"
+        r"(?:code|codebase|files?|anything|everything|thing|source|lines?|"
+        r"single\s+line)\b"
+    ),
+]
+
+# Source label for the deterministic "implement, but do not change anything"
+# contradiction. The async classifier turns this into an uncertain decision so
+# the route asks for clarification rather than guessing.
+_CONTRADICTION_SOURCE = "deterministic_contradiction"
+
+CONTRADICTION_CLARIFICATION_MESSAGE = (
+    "This request asks for an implementation but also says not to change any "
+    "code. Please clarify whether Pipewright should implement the change or "
+    "only analyze it without modifying code."
+)
+
 _LLM_SYSTEM_PROMPT = (
     "You classify a single software-engineering request into exactly one of "
     "three intents, and judge how specific an implementation request is:\n"
@@ -324,6 +431,46 @@ def _matches_any_regex(
     return bool(matched), matched
 
 
+def _strip_leading_qualifiers(phrase: str) -> str:
+    words = phrase.split()
+    while words and words[0] in _LEADING_QUALIFIERS:
+        words = words[1:]
+    return " ".join(words)
+
+
+def _is_global_object(phrase: str) -> bool:
+    """
+    True when the object of a "without changing X" clause means "anything"
+    (e.g. "code", "the codebase") rather than a scoped target (e.g. "public
+    API"). An empty/qualifier-only object degrades to global (read-only).
+    """
+    stripped = _strip_leading_qualifiers(phrase)
+    if not stripped:
+        return True
+    return stripped.split()[0] in _GLOBAL_OBJECT_HEADS
+
+
+def _strip_scope_and_meta(text: str) -> str:
+    """
+    Remove anti-report meta references and scope-constraint clauses so they are
+    not read as a global read-only instruction.
+
+    Used only for read-only scanning — never for positive intent detection, so
+    stripping a scope clause cannot erase a genuine implementation verb from the
+    request as a whole.
+    """
+    out = text
+    for pattern in _ANTI_REPORT_META_REGEXES:
+        out = pattern.sub(" ", out)
+    for pattern in _SCOPE_CONSTRAINT_REGEXES:
+        out = pattern.sub(" ", out)
+
+    def _replace_without(match: re.Match[str]) -> str:
+        return match.group(0) if _is_global_object(match.group(1)) else " "
+
+    return _WITHOUT_SCOPE_RE.sub(_replace_without, out)
+
+
 def _deterministic_classify(
     text: str,
 ) -> tuple[Intent | None, str, dict[str, list[str]]]:
@@ -337,7 +484,20 @@ def _deterministic_classify(
     if not text:
         return None, "ambiguous", {}
 
-    has_safety, safety_matches = _contains_any(text, _READ_ONLY_SAFETY_PHRASES)
+    # Read-only detection runs on text with scope constraints and anti-report
+    # meta removed, so "do not modify OTHER files" (a scope limit) and "do not
+    # run as a read-only report" (an anti-report instruction) are not misread
+    # as a global "change nothing" request.
+    readonly_text = _strip_scope_and_meta(text)
+    has_curated_safety, curated_safety = _contains_any(
+        readonly_text, _READ_ONLY_SAFETY_PHRASES
+    )
+    has_global_regex, global_safety = _matches_any_regex(
+        readonly_text, _GLOBAL_READONLY_REGEXES
+    )
+    has_safety = has_curated_safety or has_global_regex
+    safety_matches = curated_safety + global_safety
+
     has_discovery, discovery_matches = _contains_any(text, _DISCOVERY_PHRASES)
     has_report, report_matches = _contains_any(text, _REPORT_PHRASES)
     has_strong_plan, strong_plan_matches = _contains_any(text, _STRONG_PLAN_PHRASES)
@@ -366,8 +526,22 @@ def _deterministic_classify(
         matched["implementation"] = impl_matches
 
     if has_safety:
+        # An explicit plan request beats the read-only blocker (existing rule:
+        # "plan how to add X, do not implement yet" is a plan request).
         if has_strong_plan or has_soft_plan:
             return PLAN_ONLY, "deterministic_blocker", matched
+        # Distinguish a genuine implementation imperative (a contradiction the
+        # human must resolve) from an implementation verb that only appears
+        # inside the read-only clause itself ("don't *change* code"). Strip the
+        # matched read-only phrases; an implementation verb that survives is a
+        # real, separate request to write code.
+        residual = readonly_text
+        for phrase in safety_matches:
+            residual = residual.replace(phrase, " ")
+        residual_impl, _ = _contains_any(residual, _IMPLEMENTATION_PHRASES)
+        residual_impl_rx, _ = _matches_any_regex(residual, _IMPLEMENTATION_REGEXES)
+        if residual_impl or residual_impl_rx:
+            return PLAN_ONLY, _CONTRADICTION_SOURCE, matched
         return REPORT_ONLY, "deterministic_blocker", matched
 
     # Discovery / advisory questions are read-only and beat implementation
@@ -614,6 +788,11 @@ async def classify_intent_details_async(feature_description: str) -> IntentDecis
     intent, source, matched = _deterministic_classify(text)
 
     if intent is not None:
+        # A deterministic contradiction ("implement X, but do not change any
+        # code") is not safe to route as plan_only silently — surface it as
+        # uncertain so the route asks for clarification. ``.intent`` keeps the
+        # safe plan_only default for legacy callers of the sync classifier.
+        uncertain = source == _CONTRADICTION_SOURCE
         duration_ms = int((time.monotonic() - start) * 1000)
         _log_intent_decision(
             intent=intent,
@@ -622,7 +801,15 @@ async def classify_intent_details_async(feature_description: str) -> IntentDecis
             description_truncated=False,
             duration_ms=duration_ms,
         )
-        return IntentDecision(intent=intent, source=source, from_llm=False)
+        return IntentDecision(
+            intent=intent,
+            source=source,
+            from_llm=False,
+            uncertain=uncertain,
+            clarification_message=(
+                CONTRADICTION_CLARIFICATION_MESSAGE if uncertain else None
+            ),
+        )
 
     description_truncated = len(feature_description or "") > LLM_MAX_DESCRIPTION_CHARS
     decision = await _llm_fallback_classify(feature_description)

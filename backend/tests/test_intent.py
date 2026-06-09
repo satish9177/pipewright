@@ -9,6 +9,11 @@ from backend.pipeline.intent import (
     LLM_MAX_DESCRIPTION_CHARS,
     classify_intent,
     classify_intent_async,
+    classify_intent_details_async,
+)
+from backend.pipeline.intent import (
+    _is_global_object,
+    _strip_scope_and_meta,
 )
 
 pytestmark = pytest.mark.unit
@@ -108,6 +113,185 @@ def test_make_x_better_is_implementation(text):
     # Non-contiguous "make ... better" stays on the implementation path so the
     # specificity guard can deterministically block it.
     assert classify_intent(text) == "implementation"
+
+
+# --------------------------------------------------------------------------
+# #42B: scope/negation reliability. Implementation requests that carry a scope
+# constraint ("only modify these files", "do not modify OTHER files") or
+# anti-report meta ("do not run as a read-only report") must NOT be read as
+# read-only. Genuine global read-only must still be read-only. A request that
+# both asks to implement AND says "change nothing" is a contradiction that
+# routes to clarification (uncertain), not to a silent plan/implementation.
+# --------------------------------------------------------------------------
+
+_BAD_EXAMPLE_1 = """\
+Create a small helper function for the calculator.
+
+Only modify src/app.py and tests/test_app.py.
+Do not modify or create any other files.
+Add tests for the helper.
+
+The helper should be named validate_number and return True for int or float \
+inputs, and False otherwise.
+Update add(a, b) to use validate_number and raise ValueError for invalid inputs.
+"""
+
+_BAD_EXAMPLE_2 = """\
+Implement this code change.
+
+Create validate_number in src/app.py.
+Create add(a, b) in src/app.py and make it use validate_number.
+Add tests in tests/test_app.py.
+
+Only modify:
+- src/app.py
+- tests/test_app.py
+
+Do not create or modify any other files.
+Do not run as a read-only report.
+This is an implementation request.
+"""
+
+
+def test_42b_a_scope_constrained_request_is_implementation():
+    # A: scope constraint ("do not modify other files") must not block.
+    assert classify_intent(_BAD_EXAMPLE_1) == "implementation"
+
+
+def test_42b_b_explicit_implementation_with_anti_report_meta_is_implementation():
+    # B: "do not run as a read-only report" must not trip the read-only blocker.
+    assert classify_intent(_BAD_EXAMPLE_2) == "implementation"
+
+
+def test_42b_c_explain_with_global_no_change_is_report_only():
+    # C: genuine global read-only stays report_only.
+    assert classify_intent("Explain src/app.py. Do not change code.") == "report_only"
+
+
+def test_42b_d_analyze_do_not_modify_any_files_is_report_only():
+    # D: "any files" (not "other files") is a global read-only instruction.
+    assert (
+        classify_intent("Analyze the project and do not modify any files.")
+        == "report_only"
+    )
+
+
+def test_42b_e_plan_with_do_not_implement_is_plan_only():
+    # E: an explicit plan request beats the read-only blocker.
+    assert (
+        classify_intent("Plan how to add auth. Do not implement yet.") == "plan_only"
+    )
+
+
+def test_42b_h_implementation_with_scope_lines_is_implementation():
+    # H: scope lines naming specific files are scope, not global read-only.
+    assert (
+        classify_intent(
+            "Implement add(a,b). Only modify src/app.py. Do not modify other files."
+        )
+        == "implementation"
+    )
+
+
+def test_42b_i_fix_without_changing_public_api_is_implementation():
+    # I: "without changing <scoped target>" is a scope constraint, not read-only.
+    assert (
+        classify_intent("Fix the bug in src/app.py without changing public API.")
+        == "implementation"
+    )
+
+
+def test_42b_j_anti_report_then_implement_is_implementation():
+    # J: anti-report meta sentence followed by an implementation imperative.
+    assert (
+        classify_intent("Do not run as a read-only report. Implement add(a,b).")
+        == "implementation"
+    )
+
+
+@pytest.mark.parametrize("text", [
+    "Implement add(a,b) but do not change any code.",  # F
+    "Create validate_number but do not modify any files.",  # G
+])
+def test_42b_fg_implement_but_change_nothing_is_not_implementation(text):
+    # The contradiction must never silently become an implementation.
+    assert classify_intent(text) != "implementation"
+
+
+@pytest.mark.parametrize("text", [
+    "Implement add(a,b) but do not change any code.",  # F
+    "Create validate_number but do not modify any files.",  # G
+])
+@pytest.mark.asyncio
+async def test_42b_fg_contradiction_is_uncertain(monkeypatch, text):
+    # Deterministic contradiction => uncertain (route asks for clarification),
+    # without calling the LLM.
+    spy = _install_llm_spy(
+        monkeypatch,
+        json.dumps({"intent": "implementation", "confidence": 0.99, "reason": "x"}),
+    )
+
+    decision = await classify_intent_details_async(text)
+
+    assert decision.uncertain is True
+    assert decision.intent != "implementation"
+    assert decision.clarification_message
+    assert spy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_42b_scope_constrained_request_skips_llm(monkeypatch):
+    spy = _install_llm_spy(
+        monkeypatch,
+        json.dumps({"intent": "report_only", "confidence": 0.99, "reason": "x"}),
+    )
+
+    result = await classify_intent_async(_BAD_EXAMPLE_1)
+
+    assert result == "implementation"
+    assert spy.calls == []
+
+
+# Pure-helper unit tests for the scope/negation primitives.
+
+@pytest.mark.parametrize("phrase,expected", [
+    ("code", True),
+    ("the code", True),
+    ("any code", True),
+    ("the codebase", True),
+    ("anything", True),
+    ("the files", True),
+    ("public api", False),
+    ("the public api", False),
+    ("the existing tests", False),
+    ("database schema", False),
+])
+def test_is_global_object(phrase, expected):
+    assert _is_global_object(phrase) is expected
+
+
+def test_strip_scope_and_meta_removes_other_files_scope():
+    stripped = _strip_scope_and_meta("do not modify or create any other files")
+    assert "do not modify" not in stripped
+
+
+def test_strip_scope_and_meta_removes_anti_report_meta():
+    stripped = _strip_scope_and_meta("do not run as a read-only report")
+    assert "read-only" not in stripped
+    assert "read only" not in stripped
+
+
+def test_strip_scope_and_meta_keeps_global_no_change():
+    # A genuine global read-only clause must survive stripping.
+    assert "do not change code" in _strip_scope_and_meta("do not change code")
+    assert "without changing code" in _strip_scope_and_meta(
+        "summarize without changing code"
+    )
+
+
+def test_strip_scope_and_meta_strips_without_scoped_target():
+    stripped = _strip_scope_and_meta("fix it without changing public api")
+    assert "without changing" not in stripped
 
 
 # --------------------------------------------------------------------------
