@@ -174,13 +174,16 @@ def test_patch_retry_blocked_state():
     assert "cannot retry this automatically" in state.explanation.lower()
     assert state.primary_action is None
     assert "retry_patch" in _blocked_ids(state)
-    # Backend reason is not hidden: it stays as a diagnostic on the blocked
-    # retry action (humanizing it is #40C). The patch safety-check detail now
+    # #40C: the retry-unavailable reason is humanized — the raw identifier never
+    # appears as the blocked-action copy. The patch safety-check detail likewise
     # describes the failure in plain language rather than echoing the raw reason.
     retry_blocked = next(
         action for action in state.blocked_actions if action.id == "retry_patch"
     )
-    assert retry_blocked.blocked_reason == "dirty_worktree"
+    assert retry_blocked.blocked_reason == (
+        "Commit or stash your uncommitted changes before retrying."
+    )
+    assert "dirty_worktree" not in retry_blocked.blocked_reason
     assert _check(state, "patch").detail == (
         "Pipewright could not apply the generated change."
     )
@@ -275,6 +278,88 @@ def test_blocked_for_safety_does_not_offer_plain_retry():
         state = _patch_failure_panel(failure_type)
         assert state.primary_action is None
         assert "retry_patch" in _blocked_ids(state)
+
+
+# Stable retry-ineligible reason identifiers from
+# backend/pipeline/patch_failures.py (#40C). Each must humanize, and the raw
+# token must never appear as primary user-facing copy.
+_RETRY_INELIGIBLE_REASONS = [
+    "missing_or_malformed_report",
+    "missing_failure_report_id",
+    "stale_failure_report_id",
+    "chunk_not_failed",
+    "dependencies_not_met",
+    "dirty_worktree",
+    "disallowed_failure_type",
+    "human_retry_cap_exhausted",
+    "wrong_branch",
+]
+
+
+def _all_visible_copy(state) -> str:
+    """Every string a user can read in the panel (titles, explanation, action
+    labels/intents/reasons, safety-check labels/details) — but NOT internal
+    action ids, which are stable machine handles, not prose."""
+    parts = [state.title, state.explanation]
+    actions = (
+        [state.primary_action]
+        + list(state.neutral_actions)
+        + list(state.secondary_actions)
+        + list(state.blocked_actions)
+    )
+    for action in actions:
+        if action is None:
+            continue
+        parts += [action.label, action.intent, action.blocked_reason or ""]
+    for check in state.safety_checks:
+        parts += [check.label, check.detail]
+    return "\n".join(parts)
+
+
+@pytest.mark.parametrize("reason", _RETRY_INELIGIBLE_REASONS)
+def test_retry_ineligible_reason_is_humanized_not_raw(reason):
+    # TEST_FAILURE_AFTER_APPLY is the canonical disallowed-type case, but the
+    # humanization must hold for every reason regardless of failure family.
+    state = _patch_failure_panel("TEST_FAILURE_AFTER_APPLY", reason=reason)
+
+    visible = _all_visible_copy(state)
+    # The raw identifier must never appear as primary user-facing copy.
+    assert reason not in visible
+    # The blocked retry action carries a plain-language sentence (ends with a
+    # period, contains a space — i.e. prose, not a snake_case token).
+    retry_blocked = next(
+        action for action in state.blocked_actions if action.id == "retry_patch"
+    )
+    assert retry_blocked.blocked_reason is not None
+    assert " " in retry_blocked.blocked_reason
+    assert "_" not in retry_blocked.blocked_reason
+
+
+@pytest.mark.parametrize(
+    "reason, expected",
+    [
+        ("disallowed_failure_type", "This kind of failure cannot be retried automatically."),
+        ("human_retry_cap_exhausted", "The retry limit for this failure has already been reached."),
+        ("missing_or_malformed_report", "There is no usable failure report to retry from."),
+        ("chunk_not_failed", "Retry is only available while the chunk is in a failed state."),
+        ("dirty_worktree", "Commit or stash your uncommitted changes before retrying."),
+    ],
+)
+def test_retry_ineligible_reason_specific_copy(reason, expected):
+    state = _patch_failure_panel("PATCH_DOES_NOT_APPLY", reason=reason)
+    retry_blocked = next(
+        action for action in state.blocked_actions if action.id == "retry_patch"
+    )
+    assert retry_blocked.blocked_reason == expected
+
+
+def test_retry_ineligible_unknown_reason_falls_back_to_safe_copy():
+    state = _patch_failure_panel("PATCH_DOES_NOT_APPLY", reason="some_brand_new_reason")
+    retry_blocked = next(
+        action for action in state.blocked_actions if action.id == "retry_patch"
+    )
+    assert "some_brand_new_reason" not in retry_blocked.blocked_reason
+    assert retry_blocked.blocked_reason == "This change cannot be retried right now."
 
 
 def test_pending_scope_expansion_suppresses_normal_retry():

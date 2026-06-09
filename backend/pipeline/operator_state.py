@@ -15,6 +15,8 @@ from dataclasses import dataclass, field, is_dataclass
 from enum import Enum
 from typing import Any
 
+from backend.pipeline.patch_failures import human_retry_ineligible_reason
+
 SCHEMA_VERSION = 1
 UNKNOWN_STATE_MESSAGE = (
     "Pipewright cannot determine the next safe action. No action is available. "
@@ -762,10 +764,11 @@ def _patch_failure_state(context: OperatorStateContext) -> OperatorState:
         )
 
     # Retry-unavailability is an action property, not what happened: it never
-    # enters the title. The raw backend reason stays visible as a diagnostic on
-    # the blocked retry action (not hidden), and a plain-language sub-line is
-    # appended to the explanation. Humanizing the raw reason itself is #40C.
-    reason = _decision_reason(decision) or "The code change cannot be retried right now."
+    # enters the title. The raw backend reason is mapped to plain language (#40C)
+    # so no stable identifier (e.g. disallowed_failure_type) shows as primary
+    # copy; a plain-language sub-line is also appended to the explanation. The
+    # raw failure_type stays visible as a diagnostic badge/details elsewhere.
+    reason = human_retry_ineligible_reason(_decision_reason(decision))
     return _state(
         title=family.title,
         explanation=(
