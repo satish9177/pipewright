@@ -1089,6 +1089,25 @@ export default function RunDetailPage() {
   const isLocalOnly = project?.pr_mode === 'local_only'
   const localOnlyManualShip =
     isLocalOnly && showPushPrPanel && !hasPr && !run.push_error
+  // #39B: local_only never persists branch_name (the push/PR path that would set it
+  // is never invoked from the UI), but the run branch is created deterministically at
+  // execution start as `pipewright/<run-id prefix>` — the exact name the backend uses
+  // everywhere (chunked_orchestrator). Prefer a persisted name if one ever exists;
+  // otherwise derive the same deterministic name for display only. This creates,
+  // pushes, or renames nothing — it only labels what already exists locally.
+  const localRunBranch = run.branch_name || `pipewright/${run.id.slice(0, 8)}`
+  // The project's configured PR base, if any. Used only to offer an accurate
+  // `gh pr create` command; when unknown it is omitted so we never guess a base.
+  const configuredPrBase = project?.github_base_branch?.trim() || null
+  // Copy-pasteable manual ship commands for local_only. The `gh pr create` line is
+  // included only when the base branch is known; otherwise the user is told in plain
+  // copy to open the PR manually. Display-only — Pipewright runs none of these.
+  const localShipCommands = configuredPrBase
+    ? `git checkout ${localRunBranch}\n` +
+      `git push -u origin ${localRunBranch}\n` +
+      `gh pr create --base ${configuredPrBase} --head ${localRunBranch}`
+    : `git checkout ${localRunBranch}\n` +
+      `git push -u origin ${localRunBranch}`
   const finishStep1Status: FinishStepStatus = showFinalApprovalPanel
     ? 'current'
     : 'done'
@@ -1429,18 +1448,59 @@ export default function RunDetailPage() {
                   // local_only: no in-app push/PR. Show manual out-of-app
                   // guidance instead of the GitHub push panel so this never
                   // looks like Pipewright can open a PR for you.
-                  <div className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
-                    <p className="font-medium text-foreground">
-                      Local-only mode — manual push
-                    </p>
-                    <p className="mt-1">
-                      Pipewright does not push or open a pull request for
-                      local-only projects. Your approved changes are committed to
-                      the local branch
-                      {run.branch_name ? ` (${run.branch_name})` : ''}. Push the
-                      branch and open a PR yourself, outside Pipewright, when
-                      you&apos;re ready.
-                    </p>
+                  <div className="grid gap-3 rounded-lg border border-dashed px-3 py-3 text-sm">
+                    <div>
+                      <p className="font-medium text-foreground">
+                        Completed locally
+                      </p>
+                      <p className="mt-1 text-muted-foreground">
+                        Pipewright created a local commit on the run branch. This
+                        project is in local_only mode, so Pipewright will not push
+                        or create a pull request — and it never merges
+                        automatically.
+                      </p>
+                    </div>
+
+                    <dl className="grid gap-2 sm:grid-cols-3">
+                      <div>
+                        <dt className="font-medium text-foreground">
+                          Local branch
+                        </dt>
+                        <dd className="break-words font-mono text-xs text-muted-foreground">
+                          {localRunBranch}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="font-medium text-foreground">
+                          Remote branch
+                        </dt>
+                        <dd className="text-muted-foreground">Not pushed</dd>
+                      </div>
+                      <div>
+                        <dt className="font-medium text-foreground">
+                          Pull request
+                        </dt>
+                        <dd className="text-muted-foreground">
+                          Not created in local_only mode
+                        </dd>
+                      </div>
+                    </dl>
+
+                    <div className="grid gap-1">
+                      <p className="text-xs text-muted-foreground">
+                        To push and open a pull request yourself, outside
+                        Pipewright:
+                      </p>
+                      <pre className="overflow-x-auto rounded bg-muted px-3 py-2 font-mono text-xs text-foreground">
+                        {localShipCommands}
+                      </pre>
+                      {!configuredPrBase && (
+                        <p className="text-xs text-muted-foreground">
+                          Then open a pull request manually against your team’s
+                          configured base branch.
+                        </p>
+                      )}
+                    </div>
                   </div>
                 ) : showPushPrPanel ? (
                   <PushPrPanel
