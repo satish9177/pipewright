@@ -1863,6 +1863,28 @@ def _has_patch_failure(plan: ChunkPlanResponse) -> bool:
     )
 
 
+def _representative_patch_failure_type(plan: ChunkPlanResponse) -> str | None:
+    """failure_type (string) of the patch failure the operator panel surfaces.
+
+    Mirrors _patch_retry_decision_for_plan's selection (first FAILED chunk with a
+    report) so the run-level title and the retry affordance describe the same
+    failure, with a fallback to any chunk carrying a patch-failure report. Pure
+    read-only; grants no authority and never affects retry eligibility (#40B).
+    """
+    fallback: str | None = None
+    for chunk in plan.chunks:
+        report = patch_failure_report_from_completion_summary(
+            _completion_summary_dict(chunk.completion_summary)
+        )
+        if report is None:
+            continue
+        if chunk.status == ChunkStatusValue.FAILED:
+            return report.failure_type.value
+        if fallback is None:
+            fallback = report.failure_type.value
+    return fallback
+
+
 def _has_pending_scope_expansion(plan: ChunkPlanResponse) -> bool:
     return any(chunk.pending_scope_expansion is not None for chunk in plan.chunks)
 
@@ -2011,6 +2033,7 @@ def _augment_plan_with_operator_state(plan: ChunkPlanResponse) -> ChunkPlanRespo
                 ),
                 patch_failure_present=_has_patch_failure(plan),
                 patch_retry_decision=patch_retry_decision,
+                failure_type=_representative_patch_failure_type(plan),
                 test_verdict=_representative_test_verdict(plan),
                 test_ack_state=_representative_ack_state(plan),
                 final_ack_decision=ack_decision,

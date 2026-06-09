@@ -373,8 +373,32 @@ def test_operator_state_patch_retry_available(tmp_path, tracked_runs):
 
     state = _operator_state(run_id)
 
-    assert state["title"] == "Code change could not be applied"
+    # #40B: the seeded failure is PATCH_DOES_NOT_APPLY, so the run-level title is
+    # the failure-type-aware "could not be applied" family copy (threaded through
+    # the route from the persisted report), not the old generic string.
+    assert state["title"] == "Code change couldn't be applied"
     assert state["primary_action"]["id"] == "retry_patch"
+
+
+def test_operator_state_test_failure_after_apply_is_test_specific(tmp_path, tracked_runs):
+    # #40B regression through the route: a TEST_FAILURE_AFTER_APPLY failure must
+    # surface as a test failure (not an apply failure), never claim tests did not
+    # run, and stay non-retryable. Confirms failure_type is threaded end-to-end.
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+    approve_chunk_plan(run_id)
+    _seed_patch_failure(
+        run_id, failure_type=PatchFailureType.TEST_FAILURE_AFTER_APPLY
+    )
+
+    state = _operator_state(run_id)
+
+    assert state["title"] == "Tests failed after the change was applied"
+    assert state["primary_action"] is None
+    explanation = state["explanation"].lower()
+    assert "rolled back" in explanation
+    assert "tests did not run" not in explanation
+    tests = next(c for c in state["safety_checks"] if c["id"] == "tests")
+    assert tests["status"] == "failed"
 
 
 def test_operator_state_pending_scope_expansion_is_risk_decision(
