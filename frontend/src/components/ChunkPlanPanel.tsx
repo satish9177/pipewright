@@ -906,6 +906,7 @@ function ChunkCard({
               projectId={projectId}
               chunkNumber={chunk.chunk_number}
               chunkStatus={chunk.status}
+              validation={chunk.test_validation}
               onRetry={pendingScope ? undefined : onRetryChunk}
               retryEligible={pendingScope ? false : retryEligible}
               isRetrying={retryingChunkNumber === chunk.chunk_number}

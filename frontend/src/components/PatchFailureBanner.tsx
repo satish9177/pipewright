@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { projectsApi } from '@/api/client'
+import { projectsApi, type TestRunValidation } from '@/api/client'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import AttemptHistory from '@/components/AttemptHistory'
 import {
   patchFailurePlainCopy,
   suggestedActionLabel,
+  testFailureCountSummary,
   type PatchFailureReport,
 } from '@/utils/patchFailure'
 
@@ -23,6 +24,11 @@ interface PatchFailureBannerProps {
   // a rejected retry is safe and surfaces a clear message.
   chunkNumber?: number
   chunkStatus?: string
+  // Display-only test-validation evidence for this chunk (#40D). For a
+  // TEST_FAILURE_AFTER_APPLY it supplies the already-parsed failed/total counts
+  // so the banner can show a compact "N of M tests failed" line. Optional; when
+  // absent or unparsed, the banner falls back to the plain honest sentence.
+  validation?: TestRunValidation | null
   onRetry?: (chunkNumber: number, failureReportId: string) => void
   // Authoritative human-retry eligibility (#26E2 affordance parity). Derived from
   // operator_state (evaluate_patch_retry_eligibility) by the page and threaded in
@@ -61,6 +67,7 @@ export default function PatchFailureBanner({
   projectId,
   chunkNumber,
   chunkStatus,
+  validation,
   onRetry,
   retryEligible = false,
   isRetrying = false,
@@ -118,6 +125,14 @@ export default function PatchFailureBanner({
   // failure_type/message stay available below as secondary diagnostics.
   const plain = patchFailurePlainCopy(report.failure_type)
 
+  // #40D: a compact, honest test-failure count for TEST_FAILURE_AFTER_APPLY,
+  // sourced from already-parsed test_validation counts. Null when no reliable
+  // count exists, so the plain "Tests ran and failed" sentence stands alone.
+  const testFailureCounts = testFailureCountSummary(
+    report.failure_type,
+    validation,
+  )
+
   const rollbackLabel = report.rollback_performed
     ? 'Rolled back'
     : 'Rollback not performed'
@@ -145,6 +160,9 @@ export default function PatchFailureBanner({
         <p className="text-muted-foreground">{plain.committedNote}</p>
         {plain.testsNote && (
           <p className="text-muted-foreground">{plain.testsNote}</p>
+        )}
+        {testFailureCounts && (
+          <p className="font-medium text-foreground">{testFailureCounts}</p>
         )}
       </div>
 
