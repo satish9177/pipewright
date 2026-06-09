@@ -32,10 +32,14 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import MemoryAttentionPanel from '@/components/MemoryAttentionPanel'
+import MemoryRealityWarning from '@/components/MemoryRealityWarning'
 import MemoryTrustStrip from '@/components/MemoryTrustStrip'
 import PendingMemorySuggestionCard from '@/components/PendingMemorySuggestionCard'
 import { Textarea } from '@/components/ui/textarea'
-import { humanizeMemoryReason } from '@/utils/memoryReasonHumanize'
+import {
+  humanizeMemoryReason,
+  parseMemoryRealityConflict,
+} from '@/utils/memoryReasonHumanize'
 import { getMemoryStatusDisplay } from '@/utils/memoryStatusDisplay'
 import { buildMemoryTrustSummary } from '@/utils/memoryTrustSummary'
 
@@ -1118,6 +1122,9 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                 const supersededFacts = fact.status === 'active'
                   ? historicalFactsByReplacementId.get(fact.id) ?? []
                   : []
+                const realityConflict = parseMemoryRealityConflict(
+                  fact.archived_reason,
+                )
 
                 return (
                   <div key={fact.id} className="rounded-lg border p-4">
@@ -1228,12 +1235,21 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                           : 'Not checked yet'}
                       </p>
                       {fact.archived_reason &&
+                        !realityConflict &&
                         !(fact.status === 'active' && supersededFacts.length > 0) && (
                           <p className="sm:col-span-2">
                             Reason: {humanizeMemoryReason(fact.archived_reason)}
                           </p>
                         )}
                     </div>
+
+                    {realityConflict && (
+                      <MemoryRealityWarning
+                        memoryContent={fact.content}
+                        reason={fact.archived_reason}
+                        status={fact.status}
+                      />
+                    )}
 
                     <details className="mt-3 rounded-lg bg-muted/30 p-3">
                       <summary className="cursor-pointer text-xs font-semibold">
