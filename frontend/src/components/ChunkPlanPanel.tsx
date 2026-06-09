@@ -27,6 +27,7 @@ import AttemptHistory from '@/components/AttemptHistory'
 import {
   parsePatchFailureSummary,
   parseRecoveredPatchReviewSummary,
+  patchRecoveryFrameCopy,
   type RecoveredPatchReviewSummary,
 } from '@/utils/patchFailure'
 import { extractScopeWarnings } from '@/utils/scopeWarnings'
@@ -604,9 +605,16 @@ function ScopePermissionContext({ children }: { children: ReactNode }) {
 // nothing and changes no behavior — retry eligibility stays inside the banner.
 function PatchRecoveryContext({
   active,
+  failureType,
+  rollbackPerformed,
   children,
 }: {
   active: boolean
+  // #41B: failure-type + rollback flag drive truthful framing copy. For
+  // TEST_FAILURE_AFTER_APPLY the change DID apply (tests failed after), so the
+  // old "could not be applied or was blocked" line was misleading.
+  failureType?: string | null
+  rollbackPerformed?: boolean | null
   children: ReactNode
 }) {
   if (!active) return <>{children}</>
@@ -621,9 +629,9 @@ function PatchRecoveryContext({
         </span>
       </div>
       <p className="text-xs text-muted-foreground">
-        The code change could not be applied or was blocked, so nothing was
-        committed. Retry is available only when Pipewright allows it; the full
-        details and attempt history are below.
+        {patchRecoveryFrameCopy(failureType, rollbackPerformed)} Retry is
+        available only when Pipewright allows it; the full details and attempt
+        history are below.
       </p>
       {children}
     </div>
@@ -900,7 +908,11 @@ function ChunkCard({
           // #26 Retry button is not shown as the primary action (#27F).
           // #36E: wrap in patch-recovery framing, but only when scope is
           // not the primary path (active={!pendingScope}).
-          <PatchRecoveryContext active={!pendingScope}>
+          <PatchRecoveryContext
+            active={!pendingScope}
+            failureType={patchFailure.failure_type}
+            rollbackPerformed={patchFailure.rollback_performed}
+          >
             <PatchFailureBanner
               report={patchFailure}
               projectId={projectId}

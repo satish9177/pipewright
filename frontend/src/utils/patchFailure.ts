@@ -285,6 +285,39 @@ export function patchFailurePlainCopy(
 }
 
 /**
+ * Plain-language framing sentence for the "Patch recovery" section (#41B) that
+ * wraps the PatchFailureBanner. The old copy ("The code change could not be
+ * applied or was blocked...") is false for TEST_FAILURE_AFTER_APPLY, where the
+ * change DID apply and tests failed afterward. This returns failure-specific,
+ * truthful copy:
+ *
+ *   - TEST_FAILURE_AFTER_APPLY: states the change applied and tests failed.
+ *     Rollback wording is guarded by `rollbackPerformed` — we only claim a
+ *     rollback happened when the backend recorded one.
+ *   - Every other failure type: generic copy that never overclaims what went
+ *     wrong (apply vs. block vs. no-change) and never implies tests ran.
+ *
+ * Safety: never implies tests passed, never implies a commit, and never claims a
+ * rollback that did not happen. Raw diagnostics/attempt history still render
+ * below this sentence unchanged.
+ */
+export function patchRecoveryFrameCopy(
+  failureType: string | null | undefined,
+  rollbackPerformed: boolean | null | undefined,
+): string {
+  if (failureType === 'TEST_FAILURE_AFTER_APPLY') {
+    return rollbackPerformed === true
+      ? 'The change was applied, tests failed, and Pipewright rolled it back. ' +
+          'Nothing was committed.'
+      : 'The change was applied, but tests failed. Nothing was committed.'
+  }
+  return (
+    'Pipewright stopped before committing. Nothing was committed. Review the ' +
+    'failure details and recovery attempts below.'
+  )
+}
+
+/**
  * Compact, honest "tests failed" count summary for a TEST_FAILURE_AFTER_APPLY
  * (#40D), derived purely from the already-parsed test_validation counts persisted
  * for the chunk. It never parses raw output and never invents numbers:
