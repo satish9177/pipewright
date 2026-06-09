@@ -774,7 +774,11 @@ async def _llm_fallback_classify(
     )
 
 
-async def classify_intent_details_async(feature_description: str) -> IntentDecision:
+async def classify_intent_details_async(
+    feature_description: str,
+    *,
+    allow_llm_fallback: bool = True,
+) -> IntentDecision:
     """
     Hybrid classifier returning the full decision (intent + specificity).
 
@@ -782,6 +786,13 @@ async def classify_intent_details_async(feature_description: str) -> IntentDecis
     deterministic matches, and that single call now also returns the
     implementation specificity verdict. Read-only safety blockers are absolute
     and scan the full untruncated description.
+
+    ``allow_llm_fallback`` defaults to True (run-creation behavior is
+    unchanged). When False, an ambiguous request that no deterministic layer
+    matched returns an *uncertain* decision instead of issuing the LLM call.
+    This makes the classifier deterministic and cheap — safe to call on every
+    keystroke for the advisory intent-suggestion endpoint (#43A) without adding
+    any new LLM round-trips.
     """
     start = time.monotonic()
     text = _normalize(feature_description or "")
@@ -811,6 +822,26 @@ async def classify_intent_details_async(feature_description: str) -> IntentDecis
             ),
         )
 
+    if not allow_llm_fallback:
+        # Deterministic-only caller (e.g. the advisory suggestion endpoint).
+        # Nothing matched and we will not pay for the LLM fallback, so report
+        # the request as uncertain rather than fabricating the plan_only
+        # default. No LLM call is issued.
+        duration_ms = int((time.monotonic() - start) * 1000)
+        _log_intent_decision(
+            intent=PLAN_ONLY,
+            source="deterministic_only_ambiguous",
+            matched=matched,
+            description_truncated=False,
+            duration_ms=duration_ms,
+        )
+        return IntentDecision(
+            intent=PLAN_ONLY,
+            source="deterministic_only_ambiguous",
+            from_llm=False,
+            uncertain=True,
+        )
+
     description_truncated = len(feature_description or "") > LLM_MAX_DESCRIPTION_CHARS
     decision = await _llm_fallback_classify(feature_description)
     duration_ms = int((time.monotonic() - start) * 1000)
@@ -834,3 +865,108 @@ async def classify_intent_async(feature_description: str) -> Intent:
     """
     decision = await classify_intent_details_async(feature_description)
     return decision.intent
+
+
+# --- #43A: advisory intent-mode suggestion ---------------------------------
+# A read-only hint for the run-creation UI. It mirrors the classifier's reading
+# of the text so the UI can pre-highlight a mode, but it is never authoritative:
+# the user's visible selection remains the source of truth and a suggestion must
+# never silently override a manual choice.
+
+SuggestionConfidence = Literal["high", "medium", "low", "uncertain"]
+
+# The detected-intent label exposed to the UI. "needs_clarification" covers the
+# uncertain case (contradiction / ambiguous), where no concrete mode is offered.
+DetectedIntent = Literal[
+    "report_only", "plan_only", "implementation", "needs_clarification"
+]
+
+# LLM confidence-float thresholds for the (non-default) case where a caller asks
+# for a suggestion with the LLM fallback enabled. Deterministic matches are
+# always reported as "high"; uncertain decisions as "uncertain".
+_SUGGESTION_HIGH_CONFIDENCE = 0.8
+_SUGGESTION_MEDIUM_CONFIDENCE = 0.5
+
+# User-safe, plain-English reasons. Derived from the decided mode only — never
+# from ``IntentDecision.reason`` (which can carry internal codes such as
+# "llm_error" / "invalid_json" that must not be surfaced).
+_SUGGESTION_REASONS: dict[str, str] = {
+    REPORT_ONLY: "This reads as a read-only request to analyze or explain code.",
+    PLAN_ONLY: "This reads as a request for a plan or approach, without changing code.",
+    IMPLEMENTATION: "This reads as a request to add or change code.",
+    "needs_clarification": (
+        "This request is ambiguous about whether to change code, so no mode is "
+        "suggested."
+    ),
+}
+
+
+@dataclass
+class IntentModeSuggestion:
+    """
+    Advisory suggestion for the run-creation UI (#43A).
+
+    ``suggested_mode`` is None when the classifier is uncertain; the UI then
+    shows no badge. ``detected_intent`` mirrors the classifier reading
+    ("needs_clarification" for the uncertain case). ``reason`` is always
+    user-safe plain English.
+    """
+
+    suggested_mode: Intent | None
+    confidence: SuggestionConfidence
+    reason: str
+    detected_intent: DetectedIntent
+
+
+def _suggestion_confidence(decision: IntentDecision) -> SuggestionConfidence:
+    if not decision.from_llm:
+        # A deterministic match (already filtered to non-uncertain by caller).
+        return "high"
+    confidence = decision.confidence
+    if confidence is None:
+        return "low"
+    if confidence >= _SUGGESTION_HIGH_CONFIDENCE:
+        return "high"
+    if confidence >= _SUGGESTION_MEDIUM_CONFIDENCE:
+        return "medium"
+    return "low"
+
+
+def build_intent_mode_suggestion(decision: IntentDecision) -> IntentModeSuggestion:
+    """
+    Map a classifier decision into a UI-safe advisory suggestion (pure).
+
+    An uncertain decision yields no suggested mode and a "needs_clarification"
+    detected intent. Otherwise the decided intent is echoed as the suggested
+    mode. The reason is always derived from the mode (never from internal
+    decision text), so no raw prompt/debug detail can leak.
+    """
+    if decision.uncertain:
+        return IntentModeSuggestion(
+            suggested_mode=None,
+            confidence="uncertain",
+            reason=_SUGGESTION_REASONS["needs_clarification"],
+            detected_intent="needs_clarification",
+        )
+    mode: Intent = decision.intent
+    return IntentModeSuggestion(
+        suggested_mode=mode,
+        confidence=_suggestion_confidence(decision),
+        reason=_SUGGESTION_REASONS[mode],
+        detected_intent=mode,
+    )
+
+
+async def suggest_intent_mode(feature_description: str) -> IntentModeSuggestion:
+    """
+    Advisory, deterministic intent-mode suggestion for the UI (#43A).
+
+    Runs the existing classifier with the LLM fallback disabled, so it is cheap
+    and side-effect-free (no run creation, no DB writes, no new LLM calls) and
+    safe to call while the user types. An ambiguous request that no
+    deterministic layer matched is reported as uncertain (no suggested mode).
+    """
+    decision = await classify_intent_details_async(
+        feature_description, allow_llm_fallback=False
+    )
+    return build_intent_mode_suggestion(decision)

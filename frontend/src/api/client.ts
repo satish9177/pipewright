@@ -49,6 +49,23 @@ export type RunRequestedMode =
   | 'implementation'
   | 'auto'
 
+// #43A: advisory intent-mode suggestion for the run-creation UI. Read-only and
+// non-authoritative — it never creates a run and never overrides the user's
+// visible selection. ``suggested_mode`` is null when the classifier is
+// uncertain (the UI then shows no badge).
+export type IntentSuggestionConfidence = 'high' | 'medium' | 'low' | 'uncertain'
+
+export interface IntentSuggestionResponse {
+  suggested_mode: Exclude<RunRequestedMode, 'auto'> | null
+  confidence: IntentSuggestionConfidence
+  reason: string
+  detected_intent:
+    | 'report_only'
+    | 'plan_only'
+    | 'implementation'
+    | 'needs_clarification'
+}
+
 export type ChunkStatusValue =
   | 'pending'
   | 'running'
@@ -1122,6 +1139,12 @@ export const runsApi = {
       feature_description: featureDescription,
       requested_mode: requestedMode,
       confirm_conflict: confirmConflict,
+    }).then(r => r.data),
+  // #43A: advisory only. No run is created and nothing is persisted; safe to
+  // call while the user types. Callers should debounce and ignore failures.
+  intentSuggestion: (featureDescription: string) =>
+    api.post<IntentSuggestionResponse>('/runs/intent-suggestion', {
+      feature_description: featureDescription,
     }).then(r => r.data),
   selectClarification: (
     clarificationId: string,
