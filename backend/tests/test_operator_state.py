@@ -455,6 +455,20 @@ def test_strong_tests_do_not_require_ack_for_final_approval():
     assert _check(state, "test_acknowledgement").status == "not_applicable"
 
 
+def test_strong_tests_fallback_never_recommends_approve_chunk():
+    # #41A: the strong-tests fallback is reached only when no chunk is awaiting
+    # approval (that branch outranks this one). So it must NOT recommend
+    # approve_chunk — that would be stale/impossible after a chunk completed.
+    state = _state(test_verdict="strong")
+
+    assert state.title == "Tests passed with strong validation"
+    assert state.primary_action is None
+    assert state.decision_type == OperatorDecisionType.NONE.value
+    # No stale "approve" action of any kind is offered as the next step.
+    assert "approve_chunk" not in {a.id for a in state.blocked_actions}
+    assert _check(state, "tests").status == "passed"
+
+
 def test_chunk_awaiting_approval_state():
     state = _state(chunk_awaiting_approval=True, test_verdict="strong")
 

@@ -483,6 +483,26 @@ def test_operator_state_strong_tests_do_not_require_ack(tmp_path, tracked_runs):
     assert state["primary_action"]["id"] == "approve_final"
 
 
+def test_operator_state_completed_chunk_strong_tests_not_approve_chunk(
+    tmp_path, tracked_runs
+):
+    # #41A regression: a completed chunk with strong tests (e.g. after a recovered
+    # patch was approved) reached the strong-tests fallback and wrongly recommended
+    # approve_chunk — impossible, since the chunk is already completed. The fallback
+    # must now offer no stale approve_chunk action.
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+    approve_chunk_plan(run_id)
+    update_chunk_status(run_id, 1, "completed")
+    _seed_verdict(run_id, 1, "strong")
+    _set_run_status(run_id, "awaiting_final_approval")
+
+    state = _operator_state(run_id)
+
+    assert state["title"] == "Tests passed with strong validation"
+    assert state["primary_action"] is None
+    assert "approve_chunk" not in {a["id"] for a in state["blocked_actions"]}
+
+
 def test_operator_state_chunk_awaiting_approval(tmp_path, tracked_runs):
     run_id, _ = _make_run(tmp_path, tracked_runs)
     update_chunk_status(run_id, 1, "awaiting_chunk_approval")

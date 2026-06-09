@@ -1141,15 +1141,24 @@ def _terminal_state(context: OperatorStateContext) -> OperatorState:
 
 
 def _strong_tests_state(context: OperatorStateContext) -> OperatorState:
+    # Fallback only: tests are strong but no earlier state matched. Crucially, the
+    # chunk-awaiting-approval branch outranks this one and owns `approve_chunk`, so
+    # by the time we reach here NO chunk is awaiting approval — recommending
+    # `approve_chunk` would be stale/impossible (e.g. after a chunk is already
+    # completed). No final-approval gate is pending either (that branch also
+    # outranks this). So surface the strong-tests fact without an inapplicable
+    # action; Pipewright will surface the next gate (final approval / finish) once
+    # it is pending. Display-only — this grants no authority and gates nothing.
     return _state(
         title="Tests passed with strong validation",
         explanation=(
             "Meaningful tests ran and passed according to Pipewright's process "
-            "rules. This does not prove code correctness."
+            "rules. This does not prove code correctness. No chunk is waiting for "
+            "your approval right now; Pipewright will surface the next step when "
+            "it is ready."
         ),
-        waiting_on=OperatorWaitingOn.HUMAN,
-        decision_type=OperatorDecisionType.PROGRESS,
-        primary_action=_action("approve_chunk", "Approve chunk", "Review and approve the tested chunk when it is otherwise eligible."),
+        waiting_on=OperatorWaitingOn.SYSTEM,
+        decision_type=OperatorDecisionType.NONE,
         safety_checks=[_tests_check(context), _ack_check(None)],
     )
 
