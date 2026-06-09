@@ -13,7 +13,7 @@ const memoryStatusDisplays: Record<string, MemoryStatusDisplay> = {
   stale: {
     label: 'Possibly outdated',
     tooltip:
-      'Flagged as possibly outdated. Not shown to the AI. Kept for review; nothing was deleted.',
+      'Flagged as possibly outdated. Not shown to the AI. Kept for review; nothing was removed.',
     className: 'border-yellow-200 bg-yellow-100 text-yellow-800',
   },
   archived: {
