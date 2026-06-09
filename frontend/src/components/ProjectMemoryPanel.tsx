@@ -35,6 +35,7 @@ import MemoryAttentionPanel from '@/components/MemoryAttentionPanel'
 import MemoryTrustStrip from '@/components/MemoryTrustStrip'
 import PendingMemorySuggestionCard from '@/components/PendingMemorySuggestionCard'
 import { Textarea } from '@/components/ui/textarea'
+import { humanizeMemoryReason } from '@/utils/memoryReasonHumanize'
 import { getMemoryStatusDisplay } from '@/utils/memoryStatusDisplay'
 import { buildMemoryTrustSummary } from '@/utils/memoryTrustSummary'
 
@@ -223,7 +224,9 @@ function formatDate(value?: string | null) {
 
 function formatActiveHistoryNote(fact: MemoryFact) {
   const earlierNote = fact.content.trim()
-  const reason = fact.archived_reason?.trim()
+  const reason = fact.archived_reason
+    ? humanizeMemoryReason(fact.archived_reason)
+    : null
 
   if (!earlierNote) {
     return reason
@@ -234,6 +237,22 @@ function formatActiveHistoryNote(fact: MemoryFact) {
   return reason
     ? `History note: Replaced earlier note: "${earlierNote}" Reason: ${reason}`
     : `History note: Replaced earlier note: "${earlierNote}"`
+}
+
+function memoryStatusHelper(status: string) {
+  if (status === 'active') {
+    return 'May be shown to the AI as background context.'
+  }
+  if (status === 'stale') {
+    return 'Not shown to the AI while marked possibly outdated.'
+  }
+  if (status === 'archived') {
+    return 'Kept in history. Not shown to the AI.'
+  }
+  if (status === 'historical') {
+    return 'Replaced by another approved memory. Kept in history.'
+  }
+  return 'Review this memory before relying on it.'
 }
 
 function statusClass(status: string) {
@@ -390,6 +409,44 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
 
     return lineage
   }, [memoryQuery.data?.facts])
+
+  const memoryGroups = useMemo(() => {
+    return [
+      {
+        key: 'active',
+        title: 'In use',
+        description:
+          'Human-approved notes Pipewright may show to the AI as background context.',
+        facts: sortedFacts.filter(fact => fact.status === 'active'),
+      },
+      {
+        key: 'stale',
+        title: 'Possibly outdated',
+        description: 'Not shown to the AI while marked possibly outdated.',
+        facts: sortedFacts.filter(fact => fact.status === 'stale'),
+      },
+      {
+        key: 'history',
+        title: 'History: Retired / Replaced',
+        description: 'Kept in history. Not shown to the AI.',
+        facts: sortedFacts.filter(
+          fact => fact.status === 'archived' || fact.status === 'historical',
+        ),
+      },
+      {
+        key: 'other',
+        title: 'Needs review',
+        description: 'Memory with an unfamiliar status.',
+        facts: sortedFacts.filter(
+          fact =>
+            fact.status !== 'active' &&
+            fact.status !== 'stale' &&
+            fact.status !== 'archived' &&
+            fact.status !== 'historical',
+        ),
+      },
+    ].filter(group => group.facts.length > 0)
+  }, [sortedFacts])
 
   const sortedSuggestions = useMemo(() => {
     return [...(suggestionsQuery.data?.suggestions ?? [])]
@@ -1014,8 +1071,9 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
             <div>
               <h3 className="text-sm font-semibold">Memory Notes</h3>
               <p className="text-xs text-muted-foreground">
-                In-use memories appear first when the status filter is all.
-                Retire similar notes or mark outdated notes manually.
+                These are human-approved notes Pipewright may show to the AI.
+                Memory is context, not a command. Source code and your explicit
+                instructions always win.
               </p>
             </div>
             <Button
@@ -1039,196 +1097,225 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
               </p>
             </div>
           )}
-          {sortedFacts.map(fact => {
-            const isEditing = editingId === fact.id
-            const isActive = fact.status === 'active'
-            const isArchived = fact.status === 'archived'
-            const statusDisplay = getMemoryStatusDisplay(fact.status)
-            const replacementFact = fact.superseded_by_fact_id
-              ? factsById.get(fact.superseded_by_fact_id)
-              : undefined
-            const supersededFacts = fact.status === 'active'
-              ? historicalFactsByReplacementId.get(fact.id) ?? []
-              : []
-
-            return (
-              <div key={fact.id} className="rounded-lg border p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge
-                      variant="outline"
-                      className={statusDisplay.className}
-                      title={statusDisplay.tooltip}
-                    >
-                      {statusDisplay.label}
-                    </Badge>
-                    <Badge variant="outline">{fact.category}</Badge>
-                    <Badge variant="outline">{fact.scope}</Badge>
-                    <span className="text-xs text-muted-foreground">
-                      priority {fact.priority}
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => verifyMutation.mutate(fact.id)}
-                      disabled={verifyMutation.isPending}
-                    >
-                      Verify
-                    </Button>
-                    {isActive && (
-                      <>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => startMarkStale(fact)}
-                        >
-                          Mark as possibly outdated
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => startSupersede(fact)}
-                        >
-                          Replace this memory
-                        </Button>
-                      </>
-                    )}
-                    {!isArchived && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => startEditing(fact)}
-                      >
-                        Edit
-                      </Button>
-                    )}
-                  </div>
-                </div>
-
-                {isEditing ? (
-                  <div className="mt-3 grid gap-3">
-                    <Textarea
-                      value={editForm.content}
-                      maxLength={400}
-                      onChange={updateEditForm('content')}
-                      rows={3}
-                    />
-                    <div className="grid gap-3 sm:grid-cols-3">
-                      <SelectField
-                        id={`edit-category-${fact.id}`}
-                        value={editForm.category}
-                        options={CATEGORIES}
-                        onChange={updateEditForm('category')}
-                      />
-                      <SelectField
-                        id={`edit-scope-${fact.id}`}
-                        value={editForm.scope}
-                        options={SCOPES}
-                        onChange={updateEditForm('scope')}
-                      />
-                      <Input
-                        type="number"
-                        min={0}
-                        max={1000}
-                        value={editForm.priority}
-                        onChange={updateEditForm('priority')}
-                      />
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        size="sm"
-                        onClick={() => handleUpdate(fact.id)}
-                        disabled={updateMutation.isPending}
-                      >
-                        {updateMutation.isPending ? 'Saving...' : 'Save'}
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setEditingId(null)}
-                      >
-                        Cancel
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="mt-3 text-sm leading-6">{fact.content}</p>
-                )}
-
-                {fact.status === 'historical' && fact.superseded_by_fact_id && (
-                  <p className="mt-3 rounded-lg bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                    {replacementFact
-                      ? `Replaced by your approval -> ${replacementFact.content}`
-                      : 'Replaced by another approved memory.'}
-                  </p>
-                )}
-
-                {fact.status === 'active' && supersededFacts.length > 0 && (
-                  <div className="mt-3 grid gap-1 rounded-lg bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                    {supersededFacts.slice(0, 3).map(historicalFact => (
-                      <p key={historicalFact.id}>
-                        {formatActiveHistoryNote(historicalFact)}
-                      </p>
-                    ))}
-                    {supersededFacts.length > 3 && (
-                      <p>
-                        Replaced {supersededFacts.length - 3} more old
-                        memories.
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                <div className="mt-3 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
-                  <p>Created: {formatDate(fact.created_at)}</p>
-                  <p>Updated: {formatDate(fact.updated_at)}</p>
-                  <p>
-                    Last checked:{' '}
-                    {fact.last_verified_at
-                      ? formatDate(fact.last_verified_at)
-                      : 'Not checked yet'}
-                  </p>
-                  {fact.archived_reason &&
-                    !(fact.status === 'active' && supersededFacts.length > 0) && (
-                      <p className="sm:col-span-2">
-                        Lifecycle reason: {fact.archived_reason}
-                      </p>
-                    )}
-                </div>
-
-                {!isArchived && (
-                  <div className="mt-3 grid gap-2 rounded-lg bg-muted/30 p-3">
-                    <Label htmlFor={`archive-reason-${fact.id}`}>
-                      Retire Reason
-                    </Label>
-                    <div className="flex flex-col gap-2 sm:flex-row">
-                      <Input
-                        id={`archive-reason-${fact.id}`}
-                        value={archiveReasons[fact.id] ?? ''}
-                        onChange={event =>
-                          setArchiveReasons(previous => ({
-                            ...previous,
-                            [fact.id]: event.target.value,
-                          }))
-                        }
-                        placeholder="Outdated after backend migration."
-                      />
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onClick={() => startRetire(fact)}
-                        disabled={archiveMutation.isPending}
-                      >
-                        Retire memory
-                      </Button>
-                    </div>
-                  </div>
-                )}
+          {memoryGroups.map(group => (
+            <section key={group.key} className="grid gap-2">
+              <div>
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {group.title}
+                </h4>
+                <p className="text-xs text-muted-foreground">
+                  {group.description}
+                </p>
               </div>
-            )
-          })}
+              {group.facts.map(fact => {
+                const isEditing = editingId === fact.id
+                const isActive = fact.status === 'active'
+                const isArchived = fact.status === 'archived'
+                const statusDisplay = getMemoryStatusDisplay(fact.status)
+                const replacementFact = fact.superseded_by_fact_id
+                  ? factsById.get(fact.superseded_by_fact_id)
+                  : undefined
+                const supersededFacts = fact.status === 'active'
+                  ? historicalFactsByReplacementId.get(fact.id) ?? []
+                  : []
+
+                return (
+                  <div key={fact.id} className="rounded-lg border p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="grid gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge
+                            variant="outline"
+                            className={statusDisplay.className}
+                            title={statusDisplay.tooltip}
+                          >
+                            {statusDisplay.label}
+                          </Badge>
+                          <Badge variant="outline">{fact.category}</Badge>
+                          <Badge variant="outline">{fact.scope}</Badge>
+                          <span className="text-xs text-muted-foreground">
+                            priority {fact.priority}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {memoryStatusHelper(fact.status)}
+                        </p>
+                      </div>
+                    </div>
+
+                    {isEditing ? (
+                      <div className="mt-3 grid gap-3">
+                        <Textarea
+                          value={editForm.content}
+                          maxLength={400}
+                          onChange={updateEditForm('content')}
+                          rows={3}
+                        />
+                        <div className="grid gap-3 sm:grid-cols-3">
+                          <SelectField
+                            id={`edit-category-${fact.id}`}
+                            value={editForm.category}
+                            options={CATEGORIES}
+                            onChange={updateEditForm('category')}
+                          />
+                          <SelectField
+                            id={`edit-scope-${fact.id}`}
+                            value={editForm.scope}
+                            options={SCOPES}
+                            onChange={updateEditForm('scope')}
+                          />
+                          <Input
+                            type="number"
+                            min={0}
+                            max={1000}
+                            value={editForm.priority}
+                            onChange={updateEditForm('priority')}
+                          />
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            size="sm"
+                            onClick={() => handleUpdate(fact.id)}
+                            disabled={updateMutation.isPending}
+                          >
+                            {updateMutation.isPending ? 'Saving...' : 'Save'}
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setEditingId(null)}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="mt-3 text-sm leading-6">{fact.content}</p>
+                    )}
+
+                    {fact.status === 'historical' &&
+                      fact.superseded_by_fact_id && (
+                        <p className="mt-3 rounded-lg bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                          {replacementFact
+                            ? `Replaced by your approval -> ${replacementFact.content}`
+                            : 'Replaced by another approved memory.'}
+                        </p>
+                      )}
+
+                    {fact.status === 'active' && supersededFacts.length > 0 && (
+                      <div className="mt-3 grid gap-1 rounded-lg bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                        {supersededFacts.slice(0, 3).map(historicalFact => (
+                          <p key={historicalFact.id}>
+                            {formatActiveHistoryNote(historicalFact)}
+                          </p>
+                        ))}
+                        {supersededFacts.length > 3 && (
+                          <p>
+                            Replaced {supersededFacts.length - 3} more old
+                            memories.
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="mt-3 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
+                      <p>Created: {formatDate(fact.created_at)}</p>
+                      <p>Updated: {formatDate(fact.updated_at)}</p>
+                      <p>
+                        Last checked:{' '}
+                        {fact.last_verified_at
+                          ? formatDate(fact.last_verified_at)
+                          : 'Not checked yet'}
+                      </p>
+                      {fact.archived_reason &&
+                        !(fact.status === 'active' && supersededFacts.length > 0) && (
+                          <p className="sm:col-span-2">
+                            Reason: {humanizeMemoryReason(fact.archived_reason)}
+                          </p>
+                        )}
+                    </div>
+
+                    <details className="mt-3 rounded-lg bg-muted/30 p-3">
+                      <summary className="cursor-pointer text-xs font-semibold">
+                        Manage
+                      </summary>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        Use these only when this memory is wrong, outdated, or
+                        should be replaced. Nothing is removed. Replacing does
+                        not remove the old memory - it is kept in history. Newer
+                        does not mean true.
+                      </p>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => verifyMutation.mutate(fact.id)}
+                          disabled={verifyMutation.isPending}
+                        >
+                          Confirm still accurate
+                        </Button>
+                        {isActive && (
+                          <>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => startMarkStale(fact)}
+                            >
+                              Mark as possibly outdated
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => startSupersede(fact)}
+                            >
+                              Replace this memory
+                            </Button>
+                          </>
+                        )}
+                        {!isArchived && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => startEditing(fact)}
+                          >
+                            Edit memory note
+                          </Button>
+                        )}
+                      </div>
+                      {!isArchived && (
+                        <div className="mt-3 grid gap-2">
+                          <Label htmlFor={`archive-reason-${fact.id}`}>
+                            Retire reason
+                          </Label>
+                          <div className="flex flex-col gap-2 sm:flex-row">
+                            <Input
+                              id={`archive-reason-${fact.id}`}
+                              value={archiveReasons[fact.id] ?? ''}
+                              onChange={event =>
+                                setArchiveReasons(previous => ({
+                                  ...previous,
+                                  [fact.id]: event.target.value,
+                                }))
+                              }
+                              placeholder="Outdated after backend migration."
+                            />
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={() => startRetire(fact)}
+                              disabled={archiveMutation.isPending}
+                            >
+                              Retire memory
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </details>
+                  </div>
+                )
+              })}
+            </section>
+          ))}
         </div>
 
         <div className="grid gap-3 rounded-lg border p-4">
