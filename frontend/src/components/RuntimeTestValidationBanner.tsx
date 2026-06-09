@@ -70,8 +70,8 @@ export default function RuntimeTestValidationBanner({
               Runtime test validation: strong
             </Badge>
             <p>
-              This change ran real tests that passed
-              {counts ? ` (${counts})` : ''}.
+              Tests ran and passed{counts ? ` (${counts})` : ''} — meaningful
+              evidence for this change, though not proof it is correct.
             </p>
           </div>
         </div>
@@ -80,7 +80,6 @@ export default function RuntimeTestValidationBanner({
   }
 
   // weak / none / unknown all use the amber card; copy differs per verdict.
-  const isUnknown = verdict === 'unknown'
   const badgeLabel =
     verdict === 'weak'
       ? 'Weak test validation'
@@ -88,16 +87,33 @@ export default function RuntimeTestValidationBanner({
         ? 'No tests ran'
         : 'Unverified test run'
 
+  // Headline = what happened; guidance = what the user can do about it. Copy is
+  // action-oriented and honest: it never claims tests passed or that Pipewright
+  // verified the change.
   let headline: string
+  let guidance: string
   if (verdict === 'weak') {
-    headline = 'Tests did not meaningfully validate this change.'
+    headline = 'Tests ran, but they may not prove this change works.'
+    guidance =
+      'Review the command and output before final approval — you may need a ' +
+      'stronger, project-specific test command.'
   } else if (verdict === 'none') {
-    headline = 'No test command ran for this chunk.'
+    headline = 'No meaningful tests ran for this change.'
+    guidance =
+      'Pipewright cannot verify this change from tests. Continue only if you ' +
+      'intentionally accept that limitation; adding tests or a real test ' +
+      'command would give stronger evidence.'
   } else {
-    headline =
-      'Pipewright could not confirm whether this command ran real tests. ' +
-      'Review the output manually.'
+    headline = 'Test evidence could not be classified.'
+    guidance =
+      'Tests may have run, but Pipewright could not determine how much ' +
+      'confidence they provide. Review the output manually.'
   }
+
+  // Honest tie to the EXISTING acknowledgement gate (#28F/#28G): weak/none block
+  // final approval until acknowledged. Display-only copy that enforces nothing —
+  // TestValidationAckPanel remains the actual gate UI at final approval.
+  const requiresAck = validation.requires_acknowledgement === true
 
   // Keep weak/none/unknown unmistakably warning-like (amber card). The focal
   // number is red for "none" (no tests at all) and amber otherwise, so the gap
@@ -121,15 +137,16 @@ export default function RuntimeTestValidationBanner({
             {badgeLabel}
           </Badge>
           <p>{headline}</p>
+          <p className="text-amber-800">{guidance}</p>
           {verdict === 'weak' && zero_tests_detected && (
             <p className="text-amber-800">
               The test runner reported zero tests.
             </p>
           )}
           {reason && <p className="text-amber-800">{reason}</p>}
-          {!isUnknown && (
+          {requiresAck && (
             <p className="text-xs text-amber-700">
-              This is informational only and does not block approval yet.
+              Final approval requires acknowledging this limitation first.
             </p>
           )}
         </div>
