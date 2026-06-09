@@ -28,6 +28,7 @@ from backend.pipeline.patch_failures import (
     RETRY_INELIGIBLE_MISSING_FAILURE_REPORT_ID,
     RETRY_INELIGIBLE_MISSING_REPORT,
     RETRY_INELIGIBLE_STALE_FAILURE_REPORT_ID,
+    RETRY_INELIGIBLE_WRONG_BRANCH,
     PatchFailureReport,
     PatchFailureType,
     PatchRecoveryAttempt,
@@ -37,6 +38,7 @@ from backend.pipeline.patch_failures import (
     count_human_retry_attempts,
     default_message_for_failure_type,
     evaluate_patch_retry_eligibility,
+    human_retry_ineligible_reason,
     patch_failure_report_from_completion_summary,
     patch_failure_report_to_completion_summary,
     record_initial_attempt,
@@ -985,3 +987,51 @@ def test_recovered_patch_review_defaults():
     assert summary.kind == "recovered_patch_review"
     assert summary.attempts == []
     assert summary.weak_test_warning is None
+
+
+# ==========================================================================
+# human_retry_ineligible_reason (#40C)
+# ==========================================================================
+
+
+ALL_RETRY_INELIGIBLE_REASONS = [
+    RETRY_INELIGIBLE_MISSING_REPORT,
+    RETRY_INELIGIBLE_MISSING_FAILURE_REPORT_ID,
+    RETRY_INELIGIBLE_STALE_FAILURE_REPORT_ID,
+    RETRY_INELIGIBLE_CHUNK_NOT_FAILED,
+    RETRY_INELIGIBLE_DEPENDENCIES_NOT_MET,
+    RETRY_INELIGIBLE_DIRTY_WORKTREE,
+    RETRY_INELIGIBLE_DISALLOWED_FAILURE_TYPE,
+    RETRY_INELIGIBLE_CAP_EXHAUSTED,
+    RETRY_INELIGIBLE_WRONG_BRANCH,
+]
+
+
+@pytest.mark.parametrize("reason", ALL_RETRY_INELIGIBLE_REASONS)
+def test_human_retry_ineligible_reason_is_prose_for_every_identifier(reason):
+    message = human_retry_ineligible_reason(reason)
+    # Plain prose: the raw snake_case identifier never appears, and the result
+    # reads like a sentence (has spaces, no underscores, ends with a period).
+    assert reason not in message
+    assert "_" not in message
+    assert " " in message
+    assert message.endswith(".")
+
+
+def test_human_retry_ineligible_reason_specific_copy():
+    assert human_retry_ineligible_reason(RETRY_INELIGIBLE_DISALLOWED_FAILURE_TYPE) == (
+        "This kind of failure cannot be retried automatically."
+    )
+    assert human_retry_ineligible_reason(RETRY_INELIGIBLE_CAP_EXHAUSTED) == (
+        "The retry limit for this failure has already been reached."
+    )
+    assert human_retry_ineligible_reason(RETRY_INELIGIBLE_CHUNK_NOT_FAILED) == (
+        "Retry is only available while the chunk is in a failed state."
+    )
+
+
+def test_human_retry_ineligible_reason_none_and_unknown_fall_back_safely():
+    fallback = "This change cannot be retried right now."
+    assert human_retry_ineligible_reason(None) == fallback
+    assert human_retry_ineligible_reason("") == fallback
+    assert human_retry_ineligible_reason("some_unknown_reason") == fallback

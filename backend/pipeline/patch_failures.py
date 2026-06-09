@@ -65,6 +65,59 @@ RETRY_INELIGIBLE_CAP_EXHAUSTED = "human_retry_cap_exhausted"
 # branch (verify-only; retry never checks out or switches branches).
 RETRY_INELIGIBLE_WRONG_BRANCH = "wrong_branch"
 
+# Plain-language copy for each stable retry-ineligible reason (#40C). The raw
+# identifiers above stay machine-stable for branching/audit, but they must never
+# be the primary user-facing explanation (docs/design/failure-state-ux-cleanup.md
+# §5). This is the single backend mapping; UI/read-model copy resolves through it.
+_RETRY_INELIGIBLE_HUMAN_MESSAGES: dict[str, str] = {
+    RETRY_INELIGIBLE_MISSING_REPORT: (
+        "There is no usable failure report to retry from."
+    ),
+    RETRY_INELIGIBLE_MISSING_FAILURE_REPORT_ID: (
+        "The failure report is missing the information needed to retry."
+    ),
+    RETRY_INELIGIBLE_STALE_FAILURE_REPORT_ID: (
+        "This failure report is out of date. Refresh the run and try again."
+    ),
+    RETRY_INELIGIBLE_CHUNK_NOT_FAILED: (
+        "Retry is only available while the chunk is in a failed state."
+    ),
+    RETRY_INELIGIBLE_DEPENDENCIES_NOT_MET: (
+        "Earlier chunks must be resolved before this one can be retried."
+    ),
+    RETRY_INELIGIBLE_DIRTY_WORKTREE: (
+        "Commit or stash your uncommitted changes before retrying."
+    ),
+    RETRY_INELIGIBLE_DISALLOWED_FAILURE_TYPE: (
+        "This kind of failure cannot be retried automatically."
+    ),
+    RETRY_INELIGIBLE_CAP_EXHAUSTED: (
+        "The retry limit for this failure has already been reached."
+    ),
+    RETRY_INELIGIBLE_WRONG_BRANCH: (
+        "Switch to the run's branch before retrying."
+    ),
+}
+
+# Safe fallback so an unknown/new identifier never leaks as primary copy.
+_RETRY_INELIGIBLE_DEFAULT_MESSAGE = "This change cannot be retried right now."
+
+
+def human_retry_ineligible_reason(reason: str | None) -> str:
+    """Map a stable retry-ineligible reason identifier to plain-language copy.
+
+    Pure and total: returns the safe default for None or any unrecognised
+    identifier, so a raw token (e.g. ``disallowed_failure_type``) is never shown
+    as the primary user-facing explanation. The raw identifier remains available
+    to callers for diagnostics/audit.
+    """
+    if not reason:
+        return _RETRY_INELIGIBLE_DEFAULT_MESSAGE
+    return _RETRY_INELIGIBLE_HUMAN_MESSAGES.get(
+        reason, _RETRY_INELIGIBLE_DEFAULT_MESSAGE
+    )
+
+
 # Stable action identifiers surfaced to the frontend recovery UI (#18A section 5).
 ACTION_RETRY = "retry"
 ACTION_RETRY_WITH_INSTRUCTION = "retry_with_instruction"

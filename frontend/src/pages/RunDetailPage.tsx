@@ -215,6 +215,7 @@ const RETRY_INELIGIBLE_MESSAGES: Record<string, string> = {
     'The patch failure report is missing or malformed.',
   dependencies_not_met: "This chunk's dependencies are not completed.",
   human_retry_cap_exhausted: 'The retry limit has been reached.',
+  chunk_not_failed: 'Retry is only available while the chunk is in a failed state.',
 }
 
 // The default chunk-approval gate summary (backend) ends with this sentence. It
