@@ -33,6 +33,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import MemoryAttentionPanel from '@/components/MemoryAttentionPanel'
 import MemoryTrustStrip from '@/components/MemoryTrustStrip'
+import PendingMemorySuggestionCard from '@/components/PendingMemorySuggestionCard'
 import { Textarea } from '@/components/ui/textarea'
 import { getMemoryStatusDisplay } from '@/utils/memoryStatusDisplay'
 import { buildMemoryTrustSummary } from '@/utils/memoryTrustSummary'
@@ -572,7 +573,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
       setSuggestionMessage(
         data.suggestions.length > 0
           ? `${data.suggestions.length} bootstrap suggestion${data.suggestions.length === 1 ? '' : 's'} generated.`
-          : 'No new bootstrap suggestions were generated.',
+          : null,
       )
       setSuggestionError(null)
       refreshSuggestions()
@@ -1235,8 +1236,8 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
             <div>
               <h3 className="text-sm font-semibold">Suggested memories</h3>
               <p className="text-xs text-muted-foreground">
-                Suggested from repository/config files. Nothing is used until
-                you approve it.
+                Review draft memory notes from your repo or completed runs.
+                Nothing is used until you approve it.
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
                 Source code and explicit user instructions still win over
@@ -1246,6 +1247,9 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                 Approving inaccurate memory can mislead future runs. Approve
                 only what is true today. Rejected suggestions are harmless -
                 they are never used and can be ignored.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Newer does not mean true.
               </p>
             </div>
             <Button
@@ -1293,22 +1297,70 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
               Loading suggestions...
             </p>
           )}
-          {!suggestionsQuery.isLoading && sortedSuggestions.length === 0 && (
+          {!suggestionsQuery.isLoading &&
+            !suggestionsQuery.isError &&
+            sortedSuggestions.length === 0 && (
             <div className="rounded-lg border border-dashed p-4">
               <p className="text-sm font-medium">
                 {suggestionStatusFilter === 'pending'
-                  ? 'No pending suggestions.'
+                  ? 'No suggested memories waiting.'
                   : 'No suggestions match this filter.'}
               </p>
               <p className="mt-1 text-sm text-muted-foreground">
-                Generate suggested memories to review repo-derived memory
-                proposals.
+                {suggestionStatusFilter === 'pending'
+                  ? 'No suggested memories waiting. New suggestions appear after a run or repository scan.'
+                  : 'No suggestions match this filter.'}
               </p>
             </div>
           )}
 
+          {suggestionsQuery.isError && (
+            <p className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Suggested memories need review, but could not be loaded.
+            </p>
+          )}
+
           {sortedSuggestions.map(suggestion => {
             const isPending = suggestion.status === 'pending'
+            if (isPending) {
+              return (
+                <PendingMemorySuggestionCard
+                  key={suggestion.id}
+                  suggestion={suggestion}
+                  isEditing={editingSuggestionId === suggestion.id}
+                  editedContent={editedContents[suggestion.id] ?? ''}
+                  rejectionReason={rejectionReasons[suggestion.id] ?? ''}
+                  isApprovePending={approveSuggestionMutation.isPending}
+                  isRejectPending={rejectSuggestionMutation.isPending}
+                  onApprove={pendingSuggestion =>
+                    approveSuggestionMutation.mutate({
+                      suggestionId: pendingSuggestion.id,
+                    })
+                  }
+                  onToggleEdit={pendingSuggestion =>
+                    editingSuggestionId === pendingSuggestion.id
+                      ? setEditingSuggestionId(null)
+                      : startEditingSuggestion(pendingSuggestion)
+                  }
+                  onApproveEdited={approveEditedSuggestion}
+                  onEditedContentChange={(suggestionId, value) =>
+                    setEditedContents(previous => ({
+                      ...previous,
+                      [suggestionId]: value,
+                    }))
+                  }
+                  onApproveAndReplace={startApproveAndSupersede}
+                  onReject={rejectSuggestion}
+                  onRejectionReasonChange={(suggestionId, value) =>
+                    setRejectionReasons(previous => ({
+                      ...previous,
+                      [suggestionId]: value,
+                    }))
+                  }
+                />
+              )
+            }
+
             return (
               <div key={suggestion.id} className="rounded-lg border p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1335,41 +1387,6 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                       </span>
                     )}
                   </div>
-                  {isPending && (
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        size="sm"
-                        onClick={() =>
-                          approveSuggestionMutation.mutate({
-                            suggestionId: suggestion.id,
-                          })
-                        }
-                        disabled={approveSuggestionMutation.isPending}
-                      >
-                        Approve
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() =>
-                          editingSuggestionId === suggestion.id
-                            ? setEditingSuggestionId(null)
-                            : startEditingSuggestion(suggestion)
-                        }
-                      >
-                        {editingSuggestionId === suggestion.id
-                          ? 'Cancel edit'
-                          : 'Edit & approve'}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => startApproveAndSupersede(suggestion)}
-                      >
-                        Approve & replace an old memory...
-                      </Button>
-                    </div>
-                  )}
                 </div>
 
                 <p className="mt-3 text-sm leading-6">{suggestion.content}</p>
@@ -1402,35 +1419,6 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                   </div>
                 )}
 
-                {isPending && editingSuggestionId === suggestion.id && (
-                  <div className="mt-3 grid gap-2 rounded-lg bg-muted/30 p-3">
-                    <Label htmlFor={`edit-suggestion-${suggestion.id}`}>
-                      Edited Memory Content
-                    </Label>
-                    <Textarea
-                      id={`edit-suggestion-${suggestion.id}`}
-                      value={editedContents[suggestion.id] ?? ''}
-                      maxLength={400}
-                      rows={3}
-                      onChange={event =>
-                        setEditedContents(previous => ({
-                          ...previous,
-                          [suggestion.id]: event.target.value,
-                        }))
-                      }
-                    />
-                    <div className="flex justify-end">
-                      <Button
-                        size="sm"
-                        onClick={() => approveEditedSuggestion(suggestion)}
-                        disabled={approveSuggestionMutation.isPending}
-                      >
-                        Approve edited
-                      </Button>
-                    </div>
-                  </div>
-                )}
-
                 {(suggestion.evidence_path || suggestion.evidence_excerpt) && (
                   <div className="mt-3 rounded-lg bg-muted/30 p-3 text-xs text-muted-foreground">
                     {suggestion.evidence_path && (
@@ -1441,35 +1429,6 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                     {suggestion.evidence_excerpt && (
                       <p className="mt-1">{suggestion.evidence_excerpt}</p>
                     )}
-                  </div>
-                )}
-
-                {isPending && (
-                  <div className="mt-3 grid gap-2 rounded-lg bg-muted/30 p-3">
-                    <Label htmlFor={`reject-suggestion-${suggestion.id}`}>
-                      Rejection Reason
-                    </Label>
-                    <div className="flex flex-col gap-2 sm:flex-row">
-                      <Input
-                        id={`reject-suggestion-${suggestion.id}`}
-                        value={rejectionReasons[suggestion.id] ?? ''}
-                        onChange={event =>
-                          setRejectionReasons(previous => ({
-                            ...previous,
-                            [suggestion.id]: event.target.value,
-                          }))
-                        }
-                        placeholder="Not accurate for this project."
-                      />
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onClick={() => rejectSuggestion(suggestion)}
-                        disabled={rejectSuggestionMutation.isPending}
-                      >
-                        Reject
-                      </Button>
-                    </div>
                   </div>
                 )}
               </div>
