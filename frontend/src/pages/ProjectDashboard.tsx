@@ -12,6 +12,7 @@ import {
   NeedsClarificationResponse,
   ChunkedRunResult,
   ModeConflictResponse,
+  ModeConflictOption,
   RunRequestedMode,
   StaleIndexResponse,
   UnsafeStartBranchResponse,
@@ -137,8 +138,8 @@ export default function ProjectDashboard() {
     setNoRunResponse(null)
     setModeConflict(null)
     if (isModeConflictResponse(data)) {
-      // #42D: no run was created. Surface an honest placeholder; the confirm/
-      // re-submit flow is #42E. Never auto-confirm and never re-request here.
+      // No run was created. Show the conflict warning + the backend's options;
+      // the user explicitly confirms or switches (never auto-confirmed here).
       setClarification(null)
       setSelectionReply('')
       setLastRunId(null)
@@ -176,8 +177,20 @@ export default function ProjectDashboard() {
   }
 
   const runMutation = useMutation({
-    mutationFn: () =>
-      runsApi.createChunkedRun(projectId!, feature, requestedMode),
+    // #42E: a conflict option re-submits with an explicit mode + confirm flag.
+    // The plain Start button omits variables and uses the visible selected mode
+    // with confirm_conflict=false. Variables are passed explicitly (not read
+    // from state) so a just-switched mode is never stale.
+    mutationFn: (vars?: {
+      mode?: RunRequestedMode
+      confirmConflict?: boolean
+    }) =>
+      runsApi.createChunkedRun(
+        projectId!,
+        feature,
+        vars?.mode ?? requestedMode,
+        vars?.confirmConflict ?? false,
+      ),
     onSuccess: handleChunkedResult,
     onError: (error: unknown) => {
       setClarification(null)
@@ -186,6 +199,18 @@ export default function ProjectDashboard() {
       setSubmitError(getSubmitError(error))
     },
   })
+
+  // #42E: act on a backend-offered conflict option. The selected mode is moved
+  // to the chosen option first (visible state — no silent change), the warning
+  // is cleared, then the run is re-submitted with that option's confirm flag.
+  // "implementation" carries confirm_conflict=true (continue); a safer option
+  // such as "report_only" carries confirm_conflict=false (switch + honor).
+  function chooseConflictOption(option: ModeConflictOption) {
+    const mode = option.mode as RunRequestedMode
+    setRequestedMode(mode)
+    setModeConflict(null)
+    runMutation.mutate({ mode, confirmConflict: option.confirm_conflict })
+  }
 
   // Forward the user's raw reply (a candidate path, or typed "1"/"yes 1"/
   // "use README.md") to the backend selection endpoint. The frontend never
@@ -302,7 +327,11 @@ export default function ProjectDashboard() {
               id="feature"
               placeholder="Add a GET /ping endpoint that returns status ok and current timestamp..."
               value={feature}
-              onChange={e => setFeature(e.target.value)}
+              onChange={e => {
+                setFeature(e.target.value)
+                // Editing the request invalidates a prior conflict verdict.
+                setModeConflict(null)
+              }}
               rows={5}
               className="resize-none"
             />
@@ -321,7 +350,11 @@ export default function ProjectDashboard() {
                       key={option.value}
                       role="radio"
                       aria-checked={selected}
-                      onClick={() => setRequestedMode(option.value)}
+                      onClick={() => {
+                        setRequestedMode(option.value)
+                        // Changing the selected mode clears a stale conflict.
+                        setModeConflict(null)
+                      }}
                       className={`flex items-start gap-3 rounded border px-3 py-2 text-left transition-colors ${
                         selected
                           ? 'border-primary bg-primary/5 ring-1 ring-primary'
@@ -352,12 +385,39 @@ export default function ProjectDashboard() {
               </div>
             </div>
             {modeConflict && (
-              <div className="rounded border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
-                <p className="font-semibold">Confirmation needed</p>
-                <p className="mt-1">
-                  Pipewright needs confirmation before starting this mode.
-                  Conflict confirmation UI is coming next.
+              <div className="rounded border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+                <p className="font-semibold">Confirm run mode</p>
+                <p className="mt-1">{modeConflict.message}</p>
+                <p className="mt-2 text-xs text-amber-800">
+                  Confirming does not run code immediately. Pipewright will
+                  create a chunk plan first, and code runs only after you approve
+                  it.
                 </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {modeConflict.options.map((option) => (
+                    <Button
+                      key={`${option.mode}-${String(option.confirm_conflict)}`}
+                      type="button"
+                      size="sm"
+                      variant={option.confirm_conflict ? 'default' : 'outline'}
+                      disabled={runMutation.isPending}
+                      onClick={() => chooseConflictOption(option)}
+                    >
+                      {option.confirm_conflict
+                        ? `Continue with ${option.label}`
+                        : `Switch to ${option.label}`}
+                    </Button>
+                  ))}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={runMutation.isPending}
+                    onClick={() => setModeConflict(null)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
               </div>
             )}
             {submitError && (
@@ -502,7 +562,11 @@ export default function ProjectDashboard() {
               </p>
             )}
             <Button
-              onClick={() => runMutation.mutate()}
+              onClick={() => {
+                // A fresh submission supersedes any prior conflict verdict.
+                setModeConflict(null)
+                runMutation.mutate({})
+              }}
               disabled={!feature.trim() || runMutation.isPending}
               className="w-fit"
             >
