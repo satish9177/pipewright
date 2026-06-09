@@ -342,14 +342,27 @@ interface ExecutionControlsProps {
   startContextDrift?: StartContextDriftedResponse | null
   // #39A: when true, the wired top-cockpit "Execute approved chunks" action is the
   // single primary control, so this panel hides its duplicate "Execute Chunks"
-  // button and points the user upward. Resume Run stays — it has no top twin.
+  // button and points the user upward. Only meaningful before execution starts.
   hideExecute?: boolean
+  // #39A follow-up: true once chunk execution has begun (any chunk left `pending`,
+  // or operator_state moved off the approved-not-executed state). The chunk plan
+  // stays `approved` through running/completion/final, so this is what stops the
+  // legacy "Execute Chunks" button from reappearing after it started.
+  executionStarted?: boolean
+  // #39A follow-up: a chunk is actively running — drives an optional read-only
+  // status line only (no controls exist while a chunk runs).
+  isRunning?: boolean
+  // #39A follow-up: the run is paused on a failed chunk and is genuinely resumable.
+  // This — not `executionStarted` — is what gates "Resume Run", so Resume never
+  // shows in running/completed/awaiting/final/terminal states.
+  isResumable?: boolean
   onExecute: () => void
   onResume: () => void
 }
 
 // Execute / Resume controls plus the start-context-drift warning. #36B extraction
-// of the original isApproved execution block (no visual/behavior change).
+// of the original isApproved execution block; #39A follow-up gates each control on
+// the execution lifecycle so neither reappears in the wrong state.
 function ExecutionControls({
   isExecuting,
   isResuming,
@@ -358,16 +371,32 @@ function ExecutionControls({
   executionError,
   startContextDrift,
   hideExecute = false,
+  executionStarted = false,
+  isRunning = false,
+  isResumable = false,
   onExecute,
   onResume,
 }: ExecutionControlsProps) {
+  // "Execute Chunks" belongs only to the pristine approved-but-not-executed state.
+  // Once execution starts it must never come back; before then it is hidden only
+  // when its wired top-cockpit twin owns the action (#39A dedup).
+  const showExecute = !executionStarted && !hideExecute
+  // The #39A "use the top action" hint applies only in that same pre-execution dedup
+  // case — not after execution has begun (when the top twin no longer exists).
+  const showTopTwinHint = !executionStarted && hideExecute
+  // "Resume Run" shows ONLY on a genuinely resumable run (failed chunk, non-terminal).
+  const showResume = isResumable
+  // Optional read-only running line, only while a chunk runs and there is nothing to
+  // resume. The card is otherwise hidden once execution starts (see parent gate).
+  const showRunningText = isRunning && !isResumable
   return (
     <div className="grid gap-3 rounded border bg-background p-4">
       <div>
         <p className="text-sm font-medium">Execution Controls</p>
         <p className="text-sm text-muted-foreground">
-          Run the approved chunks, or resume the run if it paused after an
-          interruption or a failed chunk.
+          {showRunningText
+            ? 'Pipewright is running this chunk. Controls return here if the run pauses on a failed chunk.'
+            : 'Run the approved chunks, or resume the run if it paused after a failed chunk.'}
         </p>
       </div>
 
@@ -417,31 +446,34 @@ function ExecutionControls({
         </div>
       )}
 
-      {hideExecute && (
+      {showTopTwinHint && (
         <p className="text-xs text-muted-foreground">
           Start execution from “Execute approved chunks” at the top of the page.
-          Use Resume Run only if a run was interrupted.
         </p>
       )}
 
-      <div className="flex flex-wrap gap-3">
-        {!hideExecute && (
-          <Button
-            onClick={onExecute}
-            disabled={actionPending}
-            className="bg-blue-600 hover:bg-blue-700 text-white"
-          >
-            {isExecuting ? 'Executing...' : 'Execute Chunks'}
-          </Button>
-        )}
-        <Button
-          variant="outline"
-          onClick={onResume}
-          disabled={actionPending}
-        >
-          {isResuming ? 'Resuming...' : 'Resume Run'}
-        </Button>
-      </div>
+      {(showExecute || showResume) && (
+        <div className="flex flex-wrap gap-3">
+          {showExecute && (
+            <Button
+              onClick={onExecute}
+              disabled={actionPending}
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              {isExecuting ? 'Executing...' : 'Execute Chunks'}
+            </Button>
+          )}
+          {showResume && (
+            <Button
+              variant="outline"
+              onClick={onResume}
+              disabled={actionPending}
+            >
+              {isResuming ? 'Resuming...' : 'Resume Run'}
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -1262,6 +1294,38 @@ export default function ChunkPlanPanel({
   )
   const isAwaitingApproval = plan.chunk_plan_status === 'awaiting_approval'
   const isApproved = plan.chunk_plan_status === 'approved'
+  // #39A follow-up: chunk_plan_status stays `approved` through running, completion,
+  // and final approval, so it cannot tell whether execution already started. Derive
+  // that here so the legacy "Execute Chunks" button cannot reappear once a run is
+  // under way. A chunk leaving `pending` is the durable, fail-open signal (works for
+  // old responses without operator_state); operator_state.primary_action moving off
+  // `execute_chunks` covers the brief window before the first chunk flips while the
+  // backend already reports the run as running/awaiting/terminal.
+  const executionStarted =
+    plan.chunks.some(chunk => chunk.status !== 'pending') ||
+    (Boolean(plan.operator_state) &&
+      plan.operator_state?.primary_action?.id !== 'execute_chunks')
+  // #39A follow-up: never offer execution controls on a terminal run. is_terminal is
+  // the backend's authoritative terminal signal (operator_state); absent (old
+  // responses) it is treated as non-terminal so nothing below changes for them.
+  const isTerminal = plan.operator_state?.is_terminal === true
+  // A chunk Pipewright is actively running. Used only for an optional read-only
+  // status line — there are no controls to show while a chunk runs.
+  const isRunning =
+    !isTerminal && plan.chunks.some(chunk => chunk.status === 'running')
+  // The only reliable in-props "resumable" signal: a non-terminal run with a failed
+  // chunk (paused after a failed chunk — exactly what Resume Run targets). Running,
+  // completed, awaiting-approval, and terminal states are NOT resumable, so Resume
+  // is not shown just because execution started. No backend behavior is invented;
+  // the resume route and its meaning are unchanged.
+  const isResumable =
+    !isTerminal && plan.chunks.some(chunk => chunk.status === 'failed')
+  // Render the lower Execution Controls card only when it has something to offer:
+  // the pristine pre-execution controls, an optional running indicator, or Resume on
+  // a resumable run. In running-through-terminal states with nothing to resume it is
+  // hidden entirely, so no stale Execute/Resume buttons survive.
+  const showExecutionControls =
+    isApproved && (!executionStarted || isRunning || isResumable)
   const actionPending =
     isApproving ||
     isRejecting ||
@@ -1293,7 +1357,7 @@ export default function ChunkPlanPanel({
 
         <Separator />
 
-        {isApproved && (
+        {showExecutionControls && (
           <>
             <ExecutionControls
               isExecuting={isExecuting}
@@ -1303,6 +1367,9 @@ export default function ChunkPlanPanel({
               executionError={executionError}
               startContextDrift={startContextDrift}
               hideExecute={hideLegacyExecute}
+              executionStarted={executionStarted}
+              isRunning={isRunning}
+              isResumable={isResumable}
               onExecute={onExecute}
               onResume={onResume}
             />
