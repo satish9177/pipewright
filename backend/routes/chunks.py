@@ -90,6 +90,7 @@ from backend.pipeline.intent import (
     SPECIFIC,
     IntentDecision,
     classify_intent_details_async,
+    suggest_intent_mode,
 )
 from backend.pipeline.file_alias_grounding import (
     EditTargetOutcome,
@@ -911,6 +912,25 @@ class ChunkedRunRequest(BaseModel):
         return value
 
 
+class IntentSuggestionRequest(BaseModel):
+    # #43A: advisory suggestion only. No project_id is required because nothing
+    # is created, read from, or written to the database — the classifier reads
+    # the text alone. Blank input is rejected (422) so the endpoint never runs
+    # on empty text; the frontend additionally avoids calling it for very short
+    # input.
+    feature_description: str = Field(
+        min_length=1,
+        max_length=FEATURE_DESCRIPTION_MAX_LENGTH,
+    )
+
+    @field_validator("feature_description")
+    @classmethod
+    def feature_description_must_not_be_blank(cls, value: str) -> str:
+        if _is_blank(value):
+            raise ValueError("Field must not be blank")
+        return value
+
+
 class ClarificationSelectionRequest(BaseModel):
     project_id: str
     selection: str = Field(min_length=1, max_length=FEATURE_DESCRIPTION_MAX_LENGTH)
@@ -1275,6 +1295,26 @@ async def start_implementation_from_plan_route(run_id: str):
         )
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error))
+
+
+@router.post("/runs/intent-suggestion")
+async def intent_suggestion_route(request: IntentSuggestionRequest):
+    """
+    #43A: advisory intent-mode suggestion for the run-creation UI.
+
+    Read-only and side-effect-free: no run row is created, nothing is written to
+    or read from the database, and no new LLM call is issued (the classifier
+    runs deterministic-only). The visible user-selected mode remains the source
+    of truth; this only hints which mode Pipewright would pick. Safe to call
+    while the user types.
+    """
+    suggestion = await suggest_intent_mode(request.feature_description)
+    return {
+        "suggested_mode": suggestion.suggested_mode,
+        "confidence": suggestion.confidence,
+        "reason": suggestion.reason,
+        "detected_intent": suggestion.detected_intent,
+    }
 
 
 @router.post("/runs/chunked", response_model=ChunkPlanResponse)

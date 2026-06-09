@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -11,6 +11,7 @@ import {
   PipelineRun,
   NeedsClarificationResponse,
   ChunkedRunResult,
+  IntentSuggestionResponse,
   ModeConflictResponse,
   ModeConflictOption,
   RunRequestedMode,
@@ -57,6 +58,12 @@ const MODE_OPTIONS: {
   },
 ]
 
+// #43A: avoid noisy suggestion calls. Don't query for very short text, and wait
+// for a typing pause before asking. The endpoint is read-only/advisory, so a
+// missed or stale suggestion only means "no badge" — never a blocked run.
+const SUGGESTION_MIN_CHARS = 12
+const SUGGESTION_DEBOUNCE_MS = 400
+
 export default function ProjectDashboard() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
@@ -75,6 +82,54 @@ export default function ProjectDashboard() {
   const [modeConflict, setModeConflict] =
     useState<ModeConflictResponse | null>(null)
   const [selectionReply, setSelectionReply] = useState('')
+  // #43A: advisory mode suggestion. The visible selected mode stays the source
+  // of truth; the suggestion only pre-highlights a mode and shows a badge.
+  const [suggestion, setSuggestion] =
+    useState<IntentSuggestionResponse | null>(null)
+  // Once the user manually changes the mode for the current request, suggestion
+  // arrivals must not move the selection again (no silent override). Reset only
+  // when the request text is cleared (a fresh request). A ref so the debounced
+  // callback reads the live value without re-subscribing the effect.
+  const userChangedModeRef = useRef(false)
+  // Monotonic request id: a slow/older suggestion response must never overwrite
+  // the result for newer text the user has since typed.
+  const suggestionSeqRef = useRef(0)
+
+  // Debounced, deterministic suggestion fetch. Failures are swallowed (advisory
+  // only); a stale response is dropped via the sequence guard.
+  useEffect(() => {
+    const text = feature.trim()
+    if (text.length === 0) {
+      // Cleared input is a brand-new request: allow auto-select again.
+      userChangedModeRef.current = false
+    }
+    // All state changes happen inside the debounced callback (never
+    // synchronously in the effect body) to avoid cascading renders.
+    const seq = ++suggestionSeqRef.current
+    const handle = setTimeout(() => {
+      if (seq !== suggestionSeqRef.current) return
+      if (text.length < SUGGESTION_MIN_CHARS) {
+        setSuggestion(null)
+        return
+      }
+      runsApi
+        .intentSuggestion(text)
+        .then(result => {
+          if (seq !== suggestionSeqRef.current) return
+          setSuggestion(result)
+          // Auto-select the suggested concrete mode only if the user has not
+          // taken manual control of the selection for this request.
+          if (!userChangedModeRef.current && result.suggested_mode) {
+            setRequestedMode(result.suggested_mode)
+          }
+        })
+        .catch(() => {
+          // Never block run creation; just show no badge on failure.
+          if (seq === suggestionSeqRef.current) setSuggestion(null)
+        })
+    }, SUGGESTION_DEBOUNCE_MS)
+    return () => clearTimeout(handle)
+  }, [feature])
 
   const { data: project, isLoading: projectLoading } = useQuery({
     queryKey: ['project', projectId],
@@ -344,6 +399,8 @@ export default function ProjectDashboard() {
               >
                 {MODE_OPTIONS.map(option => {
                   const selected = requestedMode === option.value
+                  const isSuggested =
+                    suggestion?.suggested_mode === option.value
                   return (
                     <button
                       type="button"
@@ -352,6 +409,9 @@ export default function ProjectDashboard() {
                       aria-checked={selected}
                       onClick={() => {
                         setRequestedMode(option.value)
+                        // The user is now in control of the selection for this
+                        // request: stop auto-selecting from suggestions.
+                        userChangedModeRef.current = true
                         // Changing the selected mode clears a stale conflict.
                         setModeConflict(null)
                       }}
@@ -371,9 +431,16 @@ export default function ProjectDashboard() {
                           <span className="h-2 w-2 rounded-full bg-primary" />
                         )}
                       </span>
-                      <span>
-                        <span className="block text-sm font-medium">
-                          {option.title}
+                      <span className="min-w-0">
+                        <span className="flex items-center gap-2">
+                          <span className="text-sm font-medium">
+                            {option.title}
+                          </span>
+                          {isSuggested && (
+                            <Badge variant="secondary" className="shrink-0">
+                              Suggested
+                            </Badge>
+                          )}
                         </span>
                         <span className="block text-xs text-muted-foreground">
                           {option.copy}
@@ -383,6 +450,12 @@ export default function ProjectDashboard() {
                   )
                 })}
               </div>
+              {suggestion?.suggested_mode && suggestion.reason && (
+                <p className="text-xs text-muted-foreground">
+                  Suggested by Pipewright: {suggestion.reason} You can pick any
+                  mode — your selection is what runs.
+                </p>
+              )}
             </div>
             {modeConflict && (
               <div className="rounded border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900">
