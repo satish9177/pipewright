@@ -921,12 +921,19 @@ function ChunkCard({
         ) : (
           <>
             {chunk.completion_summary && (
-              <div>
-                <p className="font-medium">Completion Summary</p>
-                <p className="text-muted-foreground whitespace-pre-wrap">
+              // #39C: demote the raw completion-summary dump behind a disclosure so
+              // it no longer dominates a completed chunk by default. Content is
+              // unchanged and one click away. Only the normal completed branch is
+              // affected — patch-failure / recovered-review summaries above keep
+              // their own banners and are not touched.
+              <details className="group">
+                <summary className="cursor-pointer text-sm font-medium text-muted-foreground hover:text-foreground">
+                  Show raw completion summary
+                </summary>
+                <p className="mt-1 text-muted-foreground whitespace-pre-wrap">
                   {chunk.completion_summary}
                 </p>
-              </div>
+              </details>
             )}
 
             {chunk.error_message && (
@@ -1409,13 +1416,27 @@ export default function ChunkPlanPanel({
               onRetryChunk,
               onScopeActionComplete,
             }
-            // #36D: attention/decision chunks render the full ChunkCard and stay
-            // expanded; others collapse to a compact row with details one click
-            // away. Same props/handlers either way — presentation only.
-            return chunkNeedsAttention(
-              chunk,
-              activeChunk?.chunk_number ?? null
-            ) ? (
+            // #36D/#39C: attention/decision chunks render the full ChunkCard and
+            // stay expanded; others collapse to a compact row with details one
+            // click away. Same props/handlers either way — presentation only.
+            //
+            // #39C: do NOT force the full card open merely because a chunk is the
+            // current/active chunk once execution has started — that made a
+            // completed chunk in awaiting_final_approval render its full details
+            // right next to "Current chunk at a glance". We now expand only on a
+            // REAL attention signal (chunkNeedsAttention(chunk, null)), plus two
+            // fail-open carve-outs: (1) before execution starts, keep the active
+            // chunk expanded so plan-review/pre-exec is unchanged; (2) a `risky`
+            // advisory verdict keeps the chunk expanded so risky findings are never
+            // collapsed by default. Everything else (controls, banners, weak-test
+            // ack in Finish & ship, final approval) is unaffected — collapsing only
+            // moves a completed chunk's full evidence one click away.
+            const forceFull =
+              chunkNeedsAttention(chunk, null) ||
+              (!executionStarted &&
+                chunk.chunk_number === activeChunk?.chunk_number) ||
+              chunk.review?.verdict === 'risky'
+            return forceFull ? (
               <ChunkCard key={chunk.chunk_number} {...cardProps} />
             ) : (
               <CollapsibleChunkCard key={chunk.chunk_number} {...cardProps} />
