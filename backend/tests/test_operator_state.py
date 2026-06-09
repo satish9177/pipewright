@@ -125,16 +125,21 @@ def test_running_state_has_no_action():
 
 
 def test_patch_retry_available_state():
+    # An eligible retry only ever happens for the "could not be applied" family
+    # (the human-retryable types), so the copy describes an apply failure.
     decision = SimpleNamespace(eligible=True)
-    state = _state(patch_failure_present=True, patch_retry_decision=decision)
+    state = _state(
+        patch_failure_present=True,
+        patch_retry_decision=decision,
+        failure_type="PATCH_DOES_NOT_APPLY",
+    )
 
     # Plain-English, user-facing copy (no "patch"/"retryable"/"read state" jargon).
-    assert state.title == "Code change could not be applied"
+    assert state.title == "Code change couldn't be applied"
     explanation = state.explanation.lower()
-    assert "code change" in explanation
-    assert "could not apply" in explanation
+    assert "didn't match the current files" in explanation
     assert "nothing was committed" in explanation
-    assert "tests did not run" in explanation
+    assert "try applying the change again" in explanation
 
     assert state.primary_action.id == "retry_patch"
     assert state.primary_action.label == "Retry code change"
@@ -149,17 +154,127 @@ def test_patch_retry_available_state():
 
     assert _check(state, "patch").status == "failed"
     assert _check(state, "patch").label == "Code change"
+    # Tests honestly did not run because the change never applied.
+    assert _check(state, "tests").status == "not_evaluated"
+    assert "didn't run" in _check(state, "tests").detail.lower()
 
 
 def test_patch_retry_blocked_state():
     decision = SimpleNamespace(eligible=False, reason="dirty_worktree")
-    state = _state(patch_failure_present=True, patch_retry_decision=decision)
+    state = _state(
+        patch_failure_present=True,
+        patch_retry_decision=decision,
+        failure_type="PATCH_DOES_NOT_APPLY",
+    )
 
-    assert state.title == "Code change could not be applied — retry unavailable"
+    # Retry-unavailability is never the headline — the title describes what
+    # happened, not what the user cannot do.
+    assert state.title == "Code change couldn't be applied"
+    assert "retry unavailable" not in state.title.lower()
+    assert "cannot retry this automatically" in state.explanation.lower()
     assert state.primary_action is None
     assert "retry_patch" in _blocked_ids(state)
-    # Backend reason stays as a secondary/diagnostic detail.
-    assert _check(state, "patch").detail == "dirty_worktree"
+    # Backend reason is not hidden: it stays as a diagnostic on the blocked
+    # retry action (humanizing it is #40C). The patch safety-check detail now
+    # describes the failure in plain language rather than echoing the raw reason.
+    retry_blocked = next(
+        action for action in state.blocked_actions if action.id == "retry_patch"
+    )
+    assert retry_blocked.blocked_reason == "dirty_worktree"
+    assert _check(state, "patch").detail == (
+        "Pipewright could not apply the generated change."
+    )
+
+
+def _patch_failure_panel(failure_type, *, eligible=False, reason="disallowed_failure_type"):
+    decision = SimpleNamespace(eligible=eligible, reason=reason)
+    return _state(
+        patch_failure_present=True,
+        patch_retry_decision=decision,
+        failure_type=failure_type,
+    )
+
+
+def test_patch_failure_test_failure_after_apply_is_test_specific():
+    # Regression for the smoke bug: TEST_FAILURE_AFTER_APPLY must not read as an
+    # apply failure or claim tests did not run, and must not be retryable.
+    state = _patch_failure_panel("TEST_FAILURE_AFTER_APPLY")
+
+    assert state.title == "Tests failed after the change was applied"
+    assert "could not be applied" not in state.title.lower()
+    assert "couldn't be applied" not in state.title.lower()
+
+    explanation = state.explanation.lower()
+    assert "applied the change and ran your tests" in explanation
+    assert "rolled back" in explanation
+    assert "nothing was committed" in explanation
+    # Must never claim tests did not run.
+    assert "tests did not run" not in explanation
+    assert "didn't run" not in explanation
+
+    tests = _check(state, "tests")
+    assert tests.status == "failed"
+    assert "ran and failed" in tests.detail.lower()
+
+    # Retry must remain unavailable — this type is not human-retryable.
+    assert state.primary_action is None
+    assert "retry_patch" in _blocked_ids(state)
+
+
+@pytest.mark.parametrize(
+    "failure_type, expected_title",
+    [
+        ("PATCH_DOES_NOT_APPLY", "Code change couldn't be applied"),
+        ("PATCH_MALFORMED", "Code change couldn't be applied"),
+        ("PATCH_PARTIAL_APPLY_BLOCKED", "Code change couldn't be applied"),
+        ("TARGET_MISSING", "Code change couldn't be applied"),
+        ("STALE_INDEX_OR_FILE_CHANGED", "Code change couldn't be applied"),
+        ("SCOPE_VIOLATION", "Change was blocked — outside approved scope"),
+        ("FORBIDDEN_FILE", "Change was blocked — protected file"),
+        ("NO_CHANGES", "No change was produced"),
+        ("DIRTY_WORKTREE", "Repo wasn't ready for this change"),
+        ("UNKNOWN_PATCH_FAILURE", "Something went wrong applying this change"),
+    ],
+)
+def test_patch_failure_family_titles(failure_type, expected_title):
+    state = _patch_failure_panel(failure_type)
+
+    assert state.title == expected_title
+    # Headlines never expose the raw enum or retry-availability.
+    assert failure_type not in state.title
+    assert "retry unavailable" not in state.title.lower()
+    # Every family states nothing was committed and never claims tests passed.
+    assert "nothing was committed" in state.explanation.lower()
+    assert _check(state, "tests").status != "passed"
+    assert _check(state, "patch").status == "failed"
+
+
+def test_patch_failure_unknown_type_falls_back_to_unexpected():
+    # An unrecognised/new backend type must render the safe generic copy, never
+    # a raw enum and never a test-passed claim.
+    state = _patch_failure_panel("SOME_NEW_FAILURE_TYPE")
+
+    assert state.title == "Something went wrong applying this change"
+    assert "SOME_NEW_FAILURE_TYPE" not in state.title
+    assert _check(state, "tests").status != "passed"
+
+
+def test_patch_failure_missing_type_falls_back_to_unexpected():
+    state = _state(
+        patch_failure_present=True,
+        patch_retry_decision=SimpleNamespace(eligible=False, reason="x"),
+        failure_type=None,
+    )
+
+    assert state.title == "Something went wrong applying this change"
+
+
+def test_blocked_for_safety_does_not_offer_plain_retry():
+    # Scope/forbidden are safety refusals — they must never offer a plain retry.
+    for failure_type in ("SCOPE_VIOLATION", "FORBIDDEN_FILE"):
+        state = _patch_failure_panel(failure_type)
+        assert state.primary_action is None
+        assert "retry_patch" in _blocked_ids(state)
 
 
 def test_pending_scope_expansion_suppresses_normal_retry():

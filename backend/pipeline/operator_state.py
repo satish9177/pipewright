@@ -148,6 +148,13 @@ class OperatorStateContext:
 
     patch_failure_present: bool = False
     patch_retry_decision: Any | None = None
+    # The PatchFailureType (string value) of the patch failure being surfaced,
+    # threaded from the persisted PatchFailureReport so the run-level copy is
+    # failure-type-aware (#40B). None when the type is unknown/unavailable; the
+    # family mapping then falls back to the safe "unexpected failure" copy. This
+    # only selects user-facing copy — it grants no authority and never changes
+    # retry eligibility (which stays governed by evaluate_patch_retry_eligibility).
+    failure_type: str | None = None
 
     test_verdict: str | None = None
     test_ack_state: str | None = None
@@ -587,16 +594,153 @@ def _memory_conflict_state(context: OperatorStateContext) -> OperatorState:
     )
 
 
+@dataclass(frozen=True)
+class _PatchFailureFamily:
+    """User-facing copy for a group of PatchFailureType values (#40B).
+
+    Pure presentation only. The title is the headline and always describes *what
+    happened* — never retry-availability (that is a separate sub-line). Every
+    explanation ends with the always-true assurance that nothing was committed.
+    The tests safety-check is family-specific so the panel never claims tests did
+    not run when they ran and failed (TEST_FAILURE_AFTER_APPLY), and never claims
+    tests passed.
+    """
+
+    title: str
+    explanation: str
+    patch_detail: str
+    tests_status: OperatorSafetyCheckStatus
+    tests_detail: str
+    approve_final_reason: str
+
+
+# Families mirror docs/design/failure-state-ux-cleanup.md §3, keyed by the
+# PatchFailureType *string value* so this stays decoupled from the enum and any
+# unrecognised/None value fails safe to the "unexpected failure" copy.
+_FAMILY_COULD_NOT_APPLY = _PatchFailureFamily(
+    title="Code change couldn't be applied",
+    explanation=(
+        "Pipewright generated a change, but it didn't match the current files in "
+        "your repo, so nothing was applied. Nothing was committed."
+    ),
+    patch_detail="Pipewright could not apply the generated change.",
+    tests_status=OperatorSafetyCheckStatus.NOT_EVALUATED,
+    tests_detail="Tests didn't run because the change was never applied.",
+    approve_final_reason="The requested code change has not been applied yet.",
+)
+_FAMILY_TEST_FAILURE = _PatchFailureFamily(
+    title="Tests failed after the change was applied",
+    explanation=(
+        "Pipewright applied the change and ran your tests, but the tests failed, "
+        "so the change was rolled back. Nothing was committed."
+    ),
+    patch_detail="The change applied, but tests failed afterward, so it was rolled back.",
+    tests_status=OperatorSafetyCheckStatus.FAILED,
+    tests_detail="Tests ran and failed, so the change wasn't kept.",
+    approve_final_reason=(
+        "The change was rolled back after tests failed, so there is nothing to approve."
+    ),
+)
+_FAMILY_BLOCKED_SCOPE = _PatchFailureFamily(
+    title="Change was blocked — outside approved scope",
+    explanation=(
+        "The change tried to edit files outside this chunk's approved scope, so "
+        "Pipewright refused it. This is a safety stop. Nothing was committed."
+    ),
+    patch_detail="The change was blocked for trying to edit files outside the approved scope.",
+    tests_status=OperatorSafetyCheckStatus.NOT_EVALUATED,
+    tests_detail="Tests didn't run because the change was blocked before applying.",
+    approve_final_reason="The requested code change has not been applied yet.",
+)
+_FAMILY_BLOCKED_FORBIDDEN = _PatchFailureFamily(
+    title="Change was blocked — protected file",
+    explanation=(
+        "The change tried to modify a protected file, so Pipewright refused it. "
+        "Nothing was committed."
+    ),
+    patch_detail="The change was blocked for trying to modify a protected file.",
+    tests_status=OperatorSafetyCheckStatus.NOT_EVALUATED,
+    tests_detail="Tests didn't run because the change was blocked before applying.",
+    approve_final_reason="The requested code change has not been applied yet.",
+)
+_FAMILY_NO_CHANGE = _PatchFailureFamily(
+    title="No change was produced",
+    explanation=(
+        "Pipewright's change produced no edits — it may already be present in the "
+        "repo. Nothing was committed."
+    ),
+    patch_detail="The change produced no edits to apply.",
+    tests_status=OperatorSafetyCheckStatus.NOT_APPLICABLE,
+    tests_detail="Tests didn't run because there was no change to test.",
+    approve_final_reason="The requested code change has not been applied yet.",
+)
+_FAMILY_REPO_NOT_READY = _PatchFailureFamily(
+    title="Repo wasn't ready for this change",
+    explanation=(
+        "Your working tree had uncommitted changes, so Pipewright didn't apply "
+        "anything — it needs a clean tree to roll back safely. Commit or stash "
+        "your changes, then retry. Nothing was committed."
+    ),
+    patch_detail="The working tree was not clean, so Pipewright did not apply the change.",
+    tests_status=OperatorSafetyCheckStatus.NOT_EVALUATED,
+    tests_detail="Tests didn't run because the change was never applied.",
+    approve_final_reason="The requested code change has not been applied yet.",
+)
+_FAMILY_UNEXPECTED = _PatchFailureFamily(
+    title="Something went wrong applying this change",
+    explanation=(
+        "An unexpected error stopped this change. It was rolled back and nothing "
+        "was committed. See the diagnostic details below."
+    ),
+    patch_detail="An unexpected error stopped this change.",
+    tests_status=OperatorSafetyCheckStatus.NOT_EVALUATED,
+    tests_detail="Tests did not run, or Pipewright could not confirm whether they ran.",
+    approve_final_reason="The requested code change has not been applied yet.",
+)
+
+_PATCH_FAILURE_FAMILY_BY_TYPE: dict[str, _PatchFailureFamily] = {
+    "PATCH_DOES_NOT_APPLY": _FAMILY_COULD_NOT_APPLY,
+    "PATCH_MALFORMED": _FAMILY_COULD_NOT_APPLY,
+    "PATCH_PARTIAL_APPLY_BLOCKED": _FAMILY_COULD_NOT_APPLY,
+    "TARGET_MISSING": _FAMILY_COULD_NOT_APPLY,
+    "STALE_INDEX_OR_FILE_CHANGED": _FAMILY_COULD_NOT_APPLY,
+    "TEST_FAILURE_AFTER_APPLY": _FAMILY_TEST_FAILURE,
+    "SCOPE_VIOLATION": _FAMILY_BLOCKED_SCOPE,
+    "FORBIDDEN_FILE": _FAMILY_BLOCKED_FORBIDDEN,
+    "NO_CHANGES": _FAMILY_NO_CHANGE,
+    "DIRTY_WORKTREE": _FAMILY_REPO_NOT_READY,
+    "UNKNOWN_PATCH_FAILURE": _FAMILY_UNEXPECTED,
+}
+
+
+def _patch_failure_family(failure_type: str | None) -> _PatchFailureFamily:
+    """Map a PatchFailureType string to its user-facing family copy.
+
+    Fails safe: unknown or missing types resolve to the generic "unexpected
+    failure" copy, which never claims tests ran or passed.
+    """
+    if not failure_type:
+        return _FAMILY_UNEXPECTED
+    return _PATCH_FAILURE_FAMILY_BY_TYPE.get(failure_type, _FAMILY_UNEXPECTED)
+
+
 def _patch_failure_state(context: OperatorStateContext) -> OperatorState:
     decision = context.patch_retry_decision
+    family = _patch_failure_family(context.failure_type)
+    patch_check = safety_check(
+        "patch",
+        "Code change",
+        OperatorSafetyCheckStatus.FAILED,
+        family.patch_detail,
+    )
+    tests_check = safety_check(
+        "tests", "Tests", family.tests_status, family.tests_detail
+    )
+
     if _decision_eligible(decision):
         return _state(
-            title="Code change could not be applied",
-            explanation=(
-                "Pipewright generated a code change, but it could not apply that "
-                "change to the current files in your repo. Nothing was committed, "
-                "and tests did not run. You can try applying the change again."
-            ),
+            title=family.title,
+            explanation=family.explanation + " You can try applying the change again.",
             waiting_on=OperatorWaitingOn.HUMAN,
             decision_type=OperatorDecisionType.PROGRESS,
             primary_action=_action(
@@ -611,27 +755,23 @@ def _patch_failure_state(context: OperatorStateContext) -> OperatorState:
                 _blocked_action(
                     "approve_final",
                     "Approve final",
-                    "The requested code change has not been applied yet.",
+                    family.approve_final_reason,
                 ),
             ],
-            safety_checks=[
-                safety_check(
-                    "patch",
-                    "Code change",
-                    OperatorSafetyCheckStatus.FAILED,
-                    "Pipewright could not apply the generated change.",
-                ),
-                _tests_check(context),
-            ],
+            safety_checks=[patch_check, tests_check],
         )
 
+    # Retry-unavailability is an action property, not what happened: it never
+    # enters the title. The raw backend reason stays visible as a diagnostic on
+    # the blocked retry action (not hidden), and a plain-language sub-line is
+    # appended to the explanation. Humanizing the raw reason itself is #40C.
     reason = _decision_reason(decision) or "The code change cannot be retried right now."
     return _state(
-        title="Code change could not be applied — retry unavailable",
+        title=family.title,
         explanation=(
-            "Pipewright generated a code change but could not apply it, and it "
-            "cannot retry from the current state. Nothing was committed, and tests "
-            "did not run."
+            family.explanation
+            + " Pipewright cannot retry this automatically from the current state"
+            " — review the details below to decide the next step."
         ),
         waiting_on=OperatorWaitingOn.HUMAN,
         decision_type=OperatorDecisionType.NONE,
@@ -641,13 +781,10 @@ def _patch_failure_state(context: OperatorStateContext) -> OperatorState:
             _blocked_action(
                 "approve_final",
                 "Approve final",
-                "The requested code change has not been applied yet.",
+                family.approve_final_reason,
             ),
         ],
-        safety_checks=[
-            safety_check("patch", "Code change", OperatorSafetyCheckStatus.FAILED, reason),
-            _tests_check(context),
-        ],
+        safety_checks=[patch_check, tests_check],
     )
 
 
