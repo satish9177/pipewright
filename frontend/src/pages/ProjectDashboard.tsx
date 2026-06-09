@@ -7,9 +7,12 @@ import {
   isNeedsClarification,
   isStaleIndexResponse,
   isUnsafeStartBranchResponse,
+  isModeConflictResponse,
   PipelineRun,
   NeedsClarificationResponse,
   ChunkedRunResult,
+  ModeConflictResponse,
+  RunRequestedMode,
   StaleIndexResponse,
   UnsafeStartBranchResponse,
 } from '@/api/client'
@@ -28,17 +31,48 @@ import {
 import RunStatusBadge from '@/components/RunStatusBadge'
 import ProjectSettingsPanel from '@/components/ProjectSettingsPanel'
 
+// #42D: the three concrete start modes shown at run creation. "auto" exists in
+// the API for old/legacy clients but is intentionally not offered here — the
+// visible selected mode is the source of truth.
+const MODE_OPTIONS: {
+  value: Exclude<RunRequestedMode, 'auto'>
+  title: string
+  copy: string
+}[] = [
+  {
+    value: 'report_only',
+    title: 'Read-only report',
+    copy: 'Analyze and explain only. No code changes, tests, commits, or PR.',
+  },
+  {
+    value: 'plan_only',
+    title: 'Plan only',
+    copy: 'Create an implementation plan. No code changes.',
+  },
+  {
+    value: 'implementation',
+    title: 'Implement with approval',
+    copy: 'Create a chunk plan first. Code runs only after you approve the plan.',
+  },
+]
+
 export default function ProjectDashboard() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [feature, setFeature] = useState('')
+  // Default to "implementation"; it still requires chunk-plan approval before
+  // any code runs (no auto-execution). A classifier-suggested default is #42+.
+  const [requestedMode, setRequestedMode] =
+    useState<RunRequestedMode>('implementation')
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [lastRunId, setLastRunId] = useState<string | null>(null)
   const [clarification, setClarification] =
     useState<NeedsClarificationResponse | null>(null)
   const [noRunResponse, setNoRunResponse] =
     useState<StaleIndexResponse | UnsafeStartBranchResponse | null>(null)
+  const [modeConflict, setModeConflict] =
+    useState<ModeConflictResponse | null>(null)
   const [selectionReply, setSelectionReply] = useState('')
 
   const { data: project, isLoading: projectLoading } = useQuery({
@@ -101,6 +135,16 @@ export default function ProjectDashboard() {
   function handleChunkedResult(data: ChunkedRunResult) {
     setSubmitError(null)
     setNoRunResponse(null)
+    setModeConflict(null)
+    if (isModeConflictResponse(data)) {
+      // #42D: no run was created. Surface an honest placeholder; the confirm/
+      // re-submit flow is #42E. Never auto-confirm and never re-request here.
+      setClarification(null)
+      setSelectionReply('')
+      setLastRunId(null)
+      setModeConflict(data)
+      return
+    }
     if (isNeedsClarification(data)) {
       // No run was created. Ask for details / a file choice instead of
       // navigating to a run that does not exist.
@@ -132,11 +176,13 @@ export default function ProjectDashboard() {
   }
 
   const runMutation = useMutation({
-    mutationFn: () => runsApi.createChunkedRun(projectId!, feature),
+    mutationFn: () =>
+      runsApi.createChunkedRun(projectId!, feature, requestedMode),
     onSuccess: handleChunkedResult,
     onError: (error: unknown) => {
       setClarification(null)
       setNoRunResponse(null)
+      setModeConflict(null)
       setSubmitError(getSubmitError(error))
     },
   })
@@ -166,6 +212,7 @@ export default function ProjectDashboard() {
       setSubmitError(null)
       setClarification(null)
       setSelectionReply('')
+      setModeConflict(null)
       setNoRunResponse({
         status: 'stale_index',
         outcome: 'stale_index',
@@ -259,6 +306,60 @@ export default function ProjectDashboard() {
               rows={5}
               className="resize-none"
             />
+            <div className="grid gap-2">
+              <Label>Mode</Label>
+              <div
+                role="radiogroup"
+                aria-label="Run mode"
+                className="grid gap-2"
+              >
+                {MODE_OPTIONS.map(option => {
+                  const selected = requestedMode === option.value
+                  return (
+                    <button
+                      type="button"
+                      key={option.value}
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={() => setRequestedMode(option.value)}
+                      className={`flex items-start gap-3 rounded border px-3 py-2 text-left transition-colors ${
+                        selected
+                          ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                          : 'border-input hover:border-primary/50'
+                      }`}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
+                          selected ? 'border-primary' : 'border-muted-foreground'
+                        }`}
+                      >
+                        {selected && (
+                          <span className="h-2 w-2 rounded-full bg-primary" />
+                        )}
+                      </span>
+                      <span>
+                        <span className="block text-sm font-medium">
+                          {option.title}
+                        </span>
+                        <span className="block text-xs text-muted-foreground">
+                          {option.copy}
+                        </span>
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            {modeConflict && (
+              <div className="rounded border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+                <p className="font-semibold">Confirmation needed</p>
+                <p className="mt-1">
+                  Pipewright needs confirmation before starting this mode.
+                  Conflict confirmation UI is coming next.
+                </p>
+              </div>
+            )}
             {submitError && (
               <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
                 {submitError}

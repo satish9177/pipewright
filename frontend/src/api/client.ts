@@ -41,6 +41,14 @@ export type RunIntent =
   | 'implementation'
   | (string & {})
 
+// #42D: explicit run-mode the user selects at creation. "auto" defers routing
+// to the classifier (the backward-compatible default when omitted).
+export type RunRequestedMode =
+  | 'report_only'
+  | 'plan_only'
+  | 'implementation'
+  | 'auto'
+
 export type ChunkStatusValue =
   | 'pending'
   | 'running'
@@ -455,6 +463,11 @@ export interface ChunkPlanResponse extends ExtraFields {
 export interface ChunkedRunRequest {
   project_id: string
   feature_description: string
+  // #42D: optional explicit mode. Omitted by old clients → backend treats as
+  // "auto" (classifier routes). confirm_conflict acknowledges a mode_conflict
+  // warning; the full confirm flow lands in #42E.
+  requested_mode?: RunRequestedMode
+  confirm_conflict?: boolean
 }
 
 export type RecommendationStrength = 'strong' | 'weak' | 'none'
@@ -515,11 +528,31 @@ export interface ClarificationSelectionRequest {
   selection: string
 }
 
+// #42C/#42D: returned when the user selected "implementation" but the request
+// reads as read-only / a no-code contradiction. No run is created. The confirm/
+// re-submit UX is built in #42E; #42D only surfaces an honest placeholder.
+export interface ModeConflictOption extends ExtraFields {
+  mode: RunRequestedMode | (string & {})
+  label: string
+  confirm_conflict: boolean
+}
+
+export interface ModeConflictResponse extends ExtraFields {
+  status: 'mode_conflict'
+  type?: 'mode_conflict'
+  run_created: false
+  requested_mode: RunRequestedMode | (string & {})
+  detected_intent: RunIntent
+  message: string
+  options: ModeConflictOption[]
+}
+
 export type ChunkedRunResult =
   | ChunkPlanResponse
   | NeedsClarificationResponse
   | StaleIndexResponse
   | UnsafeStartBranchResponse
+  | ModeConflictResponse
 
 function hasStatus(value: unknown, status: string) {
   return (
@@ -551,6 +584,12 @@ export function isUnsafeStartBranchResponse(
   value: unknown,
 ): value is UnsafeStartBranchResponse {
   return hasStatus(value, 'unsafe_start_branch')
+}
+
+export function isModeConflictResponse(
+  value: unknown,
+): value is ModeConflictResponse {
+  return hasStatus(value, 'mode_conflict')
 }
 
 export function isNoRunResponse(
@@ -1072,10 +1111,17 @@ export const runsApi = {
   list: () => api.get<Run[]>('/runs').then(r => r.data),
   get: (id: string) =>
     api.get<Run>(`/runs/${id}`).then(r => r.data),
-  createChunkedRun: (projectId: string, featureDescription: string) =>
+  createChunkedRun: (
+    projectId: string,
+    featureDescription: string,
+    requestedMode: RunRequestedMode = 'auto',
+    confirmConflict = false,
+  ) =>
     api.post<ChunkedRunResult>('/runs/chunked', {
       project_id: projectId,
       feature_description: featureDescription,
+      requested_mode: requestedMode,
+      confirm_conflict: confirmConflict,
     }).then(r => r.data),
   selectClarification: (
     clarificationId: string,
