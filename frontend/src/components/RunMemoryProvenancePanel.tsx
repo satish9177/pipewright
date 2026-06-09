@@ -117,36 +117,43 @@ function EntryRow({
   const statusDisplay = getMemoryStatusDisplay(entry.status_at_injection)
 
   return (
-    <li className="grid gap-2 rounded border border-slate-200 bg-white px-3 py-2">
-      <div className="flex flex-wrap items-center gap-2">
-        {entry.status_at_injection && (
-          <Badge
-            variant="outline"
-            className={statusDisplay.className}
-            title={statusDisplay.tooltip}
-          >
-            {statusDisplay.label}
-          </Badge>
-        )}
-        {entry.category && <Badge variant="outline">{entry.category}</Badge>}
-        {entry.scope && <Badge variant="outline">{entry.scope}</Badge>}
-        {typeof entry.priority === 'number' && (
-          <span className="text-xs text-muted-foreground">
-            priority {entry.priority}
-          </span>
-        )}
-      </div>
-      <p className="text-sm leading-6 text-slate-800">{entry.content}</p>
-      <p className="text-xs text-muted-foreground">
-        {included
-          ? 'Used in this run.'
-          : exclusionReasonLabel(entry.exclusion_reason)}
+    <li className="grid gap-1">
+      <p
+        className={`text-sm leading-6 ${
+          included ? 'text-slate-900' : 'text-muted-foreground line-through'
+        }`}
+      >
+        <span className={included ? 'text-emerald-700' : 'text-amber-700'}>
+          {included ? '+ ' : '- '}
+        </span>
+        {entry.content}
       </p>
-      {!included && isSafetyBudgetDrop(entry) && (
-        <p className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700">
-          Safety memory was left out for space this run.
+      {!included && (
+        <p className="pl-4 text-xs text-muted-foreground">
+          {exclusionReasonLabel(entry.exclusion_reason)}
         </p>
       )}
+      <details className="pl-4">
+        <summary className="cursor-pointer text-[11px] text-muted-foreground">
+          Technical details
+        </summary>
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          {entry.status_at_injection && (
+            <Badge
+              variant="outline"
+              className={statusDisplay.className}
+              title={statusDisplay.tooltip}
+            >
+              {statusDisplay.label}
+            </Badge>
+          )}
+          {entry.category && <Badge variant="outline">{entry.category}</Badge>}
+          {entry.scope && <Badge variant="outline">{entry.scope}</Badge>}
+          {typeof entry.priority === 'number' && (
+            <span>priority {entry.priority}</span>
+          )}
+        </div>
+      </details>
     </li>
   )
 }
@@ -154,44 +161,40 @@ function EntryRow({
 function EventCard({ event }: { event: MemoryInjectionEvent }) {
   const includedCount = event.included_count ?? event.included_entries.length
   const excludedCount = event.excluded_count ?? event.excluded_entries.length
+  const roleLabel = event.role
+    ? event.role.charAt(0).toUpperCase() + event.role.slice(1)
+    : 'Unknown role'
+  const safetyBudgetDrops = event.excluded_entries.filter(isSafetyBudgetDrop)
+  const budgetDropped = event.excluded_entries.filter(
+    entry => entry.exclusion_reason === 'budget_dropped',
+  )
 
   return (
-    <li className="grid gap-3 rounded-lg border p-3">
+    <li className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-semibold">
-            {event.role} / {formatChunk(event.chunk_number)}
+          <p className="text-sm font-semibold text-slate-950">
+            {roleLabel}{' '}
+            <span className="font-normal text-muted-foreground">
+              received {includedCount}{' '}
+              {includedCount === 1 ? 'memory' : 'memories'}
+            </span>
           </p>
           <p className="text-xs text-muted-foreground">
-            attempt {event.attempt_number ?? 1} / {formatDate(event.created_at)}
+            {formatChunk(event.chunk_number)} / attempt{' '}
+            {event.attempt_number ?? 1} / {formatDate(event.created_at)}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Badge variant="outline">{includedCount} given to AI</Badge>
-          <Badge variant="outline">{excludedCount} not shown</Badge>
+          <Badge variant="outline">{includedCount} used</Badge>
+          {excludedCount > 0 && (
+            <Badge variant="outline">{excludedCount} left out</Badge>
+          )}
         </div>
       </div>
 
-      <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
-        <p>Memory space limit: {event.token_budget ?? 'not recorded'}</p>
-        <p>
-          Allowed memory types for this role:{' '}
-          {event.category_policy.length > 0
-            ? event.category_policy.join(', ')
-            : 'not recorded'}
-        </p>
-        <p className="font-mono sm:col-span-2">
-          Snapshot fingerprint: {event.entries_hash || 'not recorded'}
-        </p>
-        {(event.attempt_id || event.repo_head_sha) && (
-          <p className="font-mono sm:col-span-2">
-            attempt {shortId(event.attempt_id)} / repo {shortId(event.repo_head_sha)}
-          </p>
-        )}
-      </div>
-
       {event.included_entries.length > 0 ? (
-        <ul className="grid gap-2">
+        <ul className="grid gap-2 border-l border-slate-200 pl-4">
           {event.included_entries.map((entry, index) => (
             <EntryRow
               key={`${event.id}-included-${entry.fact_id ?? index}`}
@@ -207,22 +210,14 @@ function EventCard({ event }: { event: MemoryInjectionEvent }) {
       )}
 
       {event.excluded_entries.length > 0 && (
-        <details className="rounded-lg bg-muted/30 px-3 py-2">
-          <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-            Not shown - and why ({event.excluded_entries.length})
-          </summary>
-          {event.excluded_entries.some(isSafetyBudgetDrop) && (
-            <p className="mt-2 rounded border border-red-300 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700">
-              Safety memory was left out for space this run.
-            </p>
-          )}
-          <p className="mt-1 text-xs text-muted-foreground">
+        <div className="grid gap-2">
+          <p className="text-xs font-medium text-muted-foreground">
+            Left out in this run
+          </p>
+          <p className="text-xs text-muted-foreground">
             {summarizeExclusions(event.excluded_entries)}
           </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            These memories were not shown to the AI.
-          </p>
-          <ul className="mt-2 grid gap-2">
+          <ul className="grid gap-2 border-l border-slate-200 pl-4">
             {event.excluded_entries.map((entry, index) => (
               <EntryRow
                 key={`${event.id}-excluded-${entry.fact_id ?? index}`}
@@ -231,8 +226,51 @@ function EventCard({ event }: { event: MemoryInjectionEvent }) {
               />
             ))}
           </ul>
-        </details>
+        </div>
       )}
+
+      {budgetDropped.length > 0 && (
+        <p className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <span className="font-semibold">
+            {budgetDropped.length}{' '}
+            {budgetDropped.length === 1 ? 'memory was' : 'memories were'} left
+            out to fit the prompt budget.
+          </span>{' '}
+          The AI did not see {budgetDropped.length === 1 ? 'it' : 'them'} in
+          this role, so it could not act on{' '}
+          {budgetDropped.length === 1 ? 'it' : 'them'}.
+        </p>
+      )}
+
+      {safetyBudgetDrops.length > 0 && (
+        <p className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
+          Safety memory was left out for space this run.
+        </p>
+      )}
+
+      <details className="rounded-lg bg-muted/30 px-3 py-2">
+        <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+          Raw technical details
+        </summary>
+        <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
+          <p>Memory space limit: {event.token_budget ?? 'not recorded'}</p>
+          <p>
+            Allowed memory types for this role:{' '}
+            {event.category_policy.length > 0
+              ? event.category_policy.join(', ')
+              : 'not recorded'}
+          </p>
+          <p className="font-mono sm:col-span-2">
+            Snapshot fingerprint: {event.entries_hash || 'not recorded'}
+          </p>
+          {(event.attempt_id || event.repo_head_sha) && (
+            <p className="font-mono sm:col-span-2">
+              attempt {shortId(event.attempt_id)} / repo{' '}
+              {shortId(event.repo_head_sha)}
+            </p>
+          )}
+        </div>
+      </details>
     </li>
   )
 }
@@ -411,10 +449,15 @@ export default function RunMemoryProvenancePanel({
       <CardHeader>
         <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
           <div>
-            <CardTitle className="text-base">What the AI was given</CardTitle>
+            <p className="font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Recent AI behavior
+            </p>
+            <CardTitle className="mt-1 text-base">
+              What Pipewright told the AI
+            </CardTitle>
             <CardDescription>
-              Read-only view of approved memory given to the AI during this run.
-              Loading this panel never changes memory or run state.
+              Read-only view of the memories Pipewright shared with each role.
+              Viewing it never changes memory or the run.
             </CardDescription>
           </div>
           <Button
@@ -519,10 +562,12 @@ export default function RunMemoryProvenancePanel({
               ) : (
                 <div className="grid gap-3">
                   <div>
-                    <h4 className="text-sm font-semibold">Memory snapshots</h4>
+                    <h4 className="text-sm font-semibold">
+                      Role-by-role memory
+                    </h4>
                     <p className="text-xs text-muted-foreground">
-                      Entries below are immutable snapshots of what the role
-                      was given.
+                      Included and left-out memories from the stored run
+                      snapshot.
                     </p>
                   </div>
                   <ul className="grid gap-3">
