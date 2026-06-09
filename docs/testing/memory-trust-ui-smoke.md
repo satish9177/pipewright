@@ -1,8 +1,8 @@
-# Memory Trust UI Smoke Checklist (M3E)
+# Memory UX Guided Smoke Checklist (#37A-#37G)
 
-Manual smoke guide for the M3E frontend memory trust UI. This is a closeout
-checklist for UI behavior only: it documents what to verify after the M3D
-backend lifecycle work is surfaced in the frontend.
+Manual closeout checklist for the local-first/demo Memory UI guided UX phase.
+This document covers frontend UX only. It does not describe backend behavior,
+schema changes, prompt injection changes, or new memory lifecycle semantics.
 
 Related docs:
 
@@ -11,261 +11,183 @@ Related docs:
 - [Memory lifecycle smoke checklist](./memory-lifecycle-smoke.md)
 - [README quick local setup](../../README.md#quick-local-setup)
 
-## 1. Purpose
+## Completed Slices
 
-M3E closes the manual UI loop over the memory trust lifecycle:
+- **#37A - Terminology and modal solidity**
+  Humanized Memory UI terms, humanized visible reason strings, and fixed memory
+  confirmation dialogs so they render on a solid readable background.
+- **#37B - Guided top section**
+  Added `MemoryTrustStrip` and `MemoryAttentionPanel` so `/memory` explains
+  what Pipewright remembers, what needs review, and what not to do blindly.
+- **#37C - Suggested memories review**
+  Redesigned pending suggested memory cards so each suggestion leads with the
+  suggested note, clear source/rationale/evidence, safety copy, and existing
+  review actions.
+- **#37D - Memory Notes grouping and Manage actions**
+  Grouped saved notes into `In use`, `Possibly outdated`,
+  `History: Retired / Replaced`, and `Needs review` when applicable. Moved
+  lifecycle controls into per-card `Manage` disclosures.
+- **#37E - Stale/conflict/repo-reality compare UI**
+  Replaced raw repo-reality lifecycle strings with a clear compare block that
+  says what memory claims, what the repo appears to show, and why review matters.
+- **#37F - Run Detail memory provenance polish**
+  Reframed Run Detail memory-use details as `Recent AI behavior` /
+  `What Pipewright told the AI`, with role-first cards, included and left-out
+  memories, warning blocks, and raw technical details behind disclosures.
+- **#37G - Smoke closeout**
+  This checklist documents the final manual validation for the Memory UI guided
+  UX phase.
 
-- M3E1 adds Project Memory history visibility and plain-English status labels
-  for in-use, possibly outdated, retired, and replaced memory.
-- M3E2 adds the Run Detail "What the AI was given" viewer so operators can
-  inspect exactly what approved memory was used during a run.
-- M3E3 adds confirmation-modal UI for human lifecycle actions: mark memory as
-  possibly outdated, replace one in-use memory with another, and approve a
-  pending suggestion while replacing an old in-use memory.
+## Safety Invariants
 
-This checklist verifies the UI surfaces and copy that make those actions
-human-controlled, auditable, and explicit.
+Confirm these remain true throughout smoke testing:
 
-## 2. Safety Guarantees
+- Memory is advisory context only.
+- Source code and explicit user instructions win over memory.
+- Nothing is used until approved where suggestions are concerned.
+- Memory UI does not auto-retire, auto-replace, auto-stale, or auto-resolve
+  conflicts.
+- No backend, API, schema, route, package, runtime, or prompt-injection behavior
+  changed in #37A-#37G.
+- No new memory mutation routes were added.
+- No auto-resolution, confidence scoring, vector search, semantic retrieval, or
+  automatic approval was introduced.
+- Normal UI does not use `supersede`, `delete`, or `latest wins` wording.
 
-Confirm these guarantees remain true throughout the smoke:
+## Manual Setup
 
-- The backend remains the source of truth for project ownership, active-only
-  preconditions, duplicate safety, edited-content validation, and lifecycle
-  reason validation.
-- Server-side revalidation still happens after every UI confirmation. Frontend
-  affordances are convenience, not authority.
-- No route or UI automatically saves, approves, marks memory as outdated,
-  retires, replaces, resolves, or applies latest-wins behavior.
-- No LLM, vector, embedding, semantic memory, or truth-decision behavior is
-  introduced by these UI surfaces.
-- No prompt format, memory injection rule, pipeline, run, Git, or GitHub runtime
-  behavior changes.
-- Memory-use snapshots remain read-only. Loading or refreshing Run Detail
-  memory details never changes memory or run state.
-- The Run Detail memory details panel has no action buttons for marking
-  outdated, retiring, replacing, approving, or rejecting memory.
-- Replaced, possibly outdated, and retired memory is not given to the AI because
-  prompt memory still uses only active, non-stale facts.
+1. Start the backend and frontend using the normal local setup.
+2. Open `/memory` and select a project with Memory data.
+3. For fuller coverage, use a project with:
+   - at least one active memory note,
+   - at least one pending suggested memory,
+   - at least one possibly outdated memory,
+   - at least one retired or replaced memory,
+   - at least one repo-reality conflict reason if available.
+4. For Run Detail provenance checks, open a run that recorded memory-use
+   snapshots.
 
-## 3. UI Surfaces Covered
+## 1. `/memory` Guided Overview
 
-Project Memory, implemented by `ProjectMemoryPanel`, covers:
+- [ ] `/memory` loads successfully.
+- [ ] The Project knowledge / memory trust summary appears near the top.
+- [ ] `MemoryTrustStrip` counts are visible for in-use memory, suggested
+      memories, possibly outdated memory, retired/replaced history, and review
+      needed.
+- [ ] Changing Status / Category / Scope filters does not make the top summary
+      misleading; counts still summarize the loaded project memory state.
+- [ ] Loading, error, missing, or unfamiliar states fail closed and never imply
+      "all clear."
+- [ ] `MemoryAttentionPanel` explains the safest next thing to inspect without
+      adding mutation buttons.
 
-- In-use, possibly outdated, retired, and replaced memory notes.
-- Status labels and tooltips:
-  - `active`: `In use`, available as background context for future AI runs.
-  - `stale`: `Possibly outdated`, not shown to the AI and kept for review.
-  - `archived`: `Retired`, manually retired and kept for the record.
-  - `historical`: `Replaced`, not shown to the AI and preserved for history.
-- Change history:
-  - Replaced memory can show `Replaced by your approval -> ...` when the
-    replacement memory is loaded.
-  - Active replacement memory can show `Replaced earlier note: ...` for older
-    memories that point to it.
-- Lifecycle actions for active memory: `Mark as possibly outdated`,
-  `Replace this memory`, and `Retire memory`.
-- Pending suggestion actions: `Approve`, `Edit & approve`, and
-  `Approve & replace an old memory...`.
-- Existing create, edit, verify, retire, approve, reject, preview, and refresh
-  flows.
+## 2. Suggested Memories Review Queue
 
-Run Detail, implemented by `RunMemoryProvenancePanel`, covers:
+- [ ] The Suggested memories section remains in the same place on `/memory`.
+- [ ] Each pending card leads with the suggested memory sentence.
+- [ ] Metadata is quiet and scannable: pending state, category, scope, priority,
+      source, `Found in`, and `Why suggested` when available.
+- [ ] Safety framing is clear: nothing is used until approved, and approving
+      inaccurate memory can mislead future runs.
+- [ ] Existing actions remain present and map only to existing behavior:
+      - `Approve & start using`
+      - `Edit, then approve`
+      - `Approve & replace an old memory`
+      - `Reject suggestion`
+- [ ] Reject still uses the existing rejection reason flow.
+- [ ] There is no bulk approve.
+- [ ] No normal UI wording uses `supersede`, `delete`, or `latest wins`.
 
-- A `Memory Used` section with a collapsed `What the AI was given` panel.
-- Lazy, read-only memory-use fetch after selecting `Load what the AI was given`.
-- Included entries labeled `Used in this run.`
-- Excluded entries under `Not shown - and why`, with plain-English reasons such
-  as `Not enough room this run.` and `Not used by this role.`
-- Advisory duplicate and possible replacement analysis from the stored memory
-  snapshot.
-- Explicit copy that observations are read-only and the system did not change
-  memory.
-- Explicit replacement caution: `Newer does not mean true. You decide which
-  memory to use.`
-- No mutation actions.
+## 3. Memory Notes
 
-## 4. Manual Smoke Setup
+- [ ] Memory Notes are grouped into:
+      - `In use`
+      - `Possibly outdated`
+      - `History: Retired / Replaced`
+      - `Needs review` when applicable
+- [ ] In-use notes are easy to identify and appear visually first.
+- [ ] Each card shows the memory sentence, status chip, category/scope/priority,
+      created/updated/last-checked metadata, and history note when present.
+- [ ] Possibly outdated notes clearly say they are not shown to the AI while
+      marked possibly outdated.
+- [ ] Retired/Replaced notes clearly say they are kept in history and not shown
+      to the AI.
+- [ ] Manage actions are behind the per-card `Manage` disclosure.
+- [ ] Existing handlers are preserved:
+      - `Confirm still accurate`
+      - `Mark as possibly outdated`
+      - `Replace this memory`
+      - `Edit memory note`
+      - `Retire memory`
+- [ ] Retire and mark-outdated reason validation still uses the existing flows.
+- [ ] Retired, replaced, and outdated notes remain visible and understandable.
 
-1. Follow [README quick local setup](../../README.md#quick-local-setup) and
-   start the backend and frontend. On Windows, use `npm.cmd` if PowerShell
-   blocks `npm.ps1`.
-2. Open the frontend and select a project that has Project Memory enabled.
-3. Ensure the project has at least two active memory notes. Use a deliberately
-   old/new pair so lineage is easy to recognize, for example `Backend uses
-   Flask.` and `Backend uses FastAPI.`.
-4. Ensure the project has at least one pending memory suggestion.
-5. Optional, for provenance checks: run a tiny task that reaches at least the
-   planner and coder stages, then note the `run_id`.
-6. Open browser devtools Network before testing Run Detail memory details. The
-   memory-use endpoints should not be called until the panel is opened.
+## 4. Stale / Conflict / Repo-Reality Warnings
 
-## 5. Checklist - Status Labels And Lineage
+- [ ] Raw reason strings such as
+      `repo reality conflict: repo=postgresql, memory=mongodb` do not appear in
+      normal UI.
+- [ ] Repo-reality conflict reasons are humanized, for example:
+      `The current repo appears to use PostgreSQL, while this memory says MongoDB.`
+- [ ] A compare block appears for clear repo-reality conflicts with:
+      - `Memory says`
+      - `Current repo appears to show`
+      - `Why this matters`
+      - code/source repo wins and review-before-using copy
+- [ ] Normal stale/outdated reasons still render as simple humanized text.
+- [ ] No one-click fix, automatic replacement, auto-resolution, or automatic
+      memory mutation appears.
 
-- [ ] On Project Memory, set the status filter to `all`.
-- [ ] Confirm active memory shows the `In use` badge and tooltip that it is
-      available as background context.
-- [ ] Confirm possibly outdated memory shows `Possibly outdated` and the tooltip says it is
-      not shown to the AI and nothing was deleted.
-- [ ] Confirm retired memory shows `Retired` and the tooltip says it is no
-      longer shown to the AI and kept for the record.
-- [ ] Confirm replaced memory shows `Replaced` and the tooltip says it is not
-      shown to the AI and preserved to show what changed.
-- [ ] Confirm the list ordering keeps active facts first when the status filter
-      is `all`.
-- [ ] For a replaced memory with `superseded_by_fact_id`, confirm the UI shows
-      either `Replaced by your approval -> ...` or `Replaced by another approved
-      memory.`
-- [ ] For an active replacement memory, confirm the UI can show
-      `Replaced earlier note: ...` for replaced memories pointing to it.
-- [ ] Confirm these lineage displays are read-only labels, not action shortcuts.
+## 5. Run Detail Memory Provenance
 
-## 6. Checklist - Mark As Possibly Outdated UI
+- [ ] In Run Detail, open `Details & audit` and find `Memory Used`.
+- [ ] The panel shows the `Recent AI behavior` eyebrow.
+- [ ] The panel title is `What Pipewright told the AI`.
+- [ ] The panel is read-only and lazy-loaded; opening it does not change memory
+      or run state.
+- [ ] Role-first cards appear for Planner, Coder, Reviewer, Triage, or any role
+      present in the stored snapshot.
+- [ ] Included memories are marked with `+`.
+- [ ] Left-out memories are marked with `-`.
+- [ ] Memory left out because of budget shows a clear warning block.
+- [ ] Safety memory left out for space remains prominent when present.
+- [ ] Raw technical details are behind disclosures, not leading the card.
 
-- [ ] Choose an active memory and select `Mark as possibly outdated`.
-- [ ] Confirm the modal title is `Mark as possibly outdated`.
-- [ ] Confirm the modal shows the exact memory content.
-- [ ] Confirm the status row shows current `In use` and resulting
-      `Possibly outdated`.
-- [ ] Confirm the modal states that future runs will not be shown this memory
-      and that code wins when memory and code disagree.
-- [ ] Confirm the `Reason` input requires at least 4 characters before the
-      `Mark as possibly outdated` confirmation can run.
-- [ ] Submit a valid human reason and confirm the memory returns as
-      `Possibly outdated`.
-- [ ] Confirm the memory is absent from `Preview what the AI sees` and visible
-      when the `Possibly outdated` status filter is selected.
-- [ ] Repeat with an invalid reason and confirm the UI surfaces the backend
-      validation error without changing the memory.
-- [ ] Confirm non-active memory does not expose `Mark as possibly outdated`.
+## 6. Validation Commands
 
-## 7. Checklist - Replace UI
+For this docs-only closeout, frontend and backend tests are not required.
 
-- [ ] Choose an active old memory and select `Replace this memory`.
-- [ ] Confirm the modal title is `Replace an older memory`.
-- [ ] Confirm the modal labels the selected memory as `Older memory`.
-- [ ] Confirm the replacement selector lists other active memories only.
-- [ ] Select a replacement and confirm the modal labels it as
-      `Replacement memory`.
-- [ ] Confirm the modal says the older memory moves from `In use` to
-      `Replaced` and the replacement memory remains `In use`.
-- [ ] Confirm the modal says the old memory stops being used and that replacing
-      does not remove it.
-- [ ] Confirm the `Reason` input requires at least 4 characters before
-      `Replace old memory` can run.
-- [ ] Submit a valid reason and confirm the old memory becomes `Replaced` while
-      the new memory remains `In use`.
-- [ ] Confirm the direction is explicit by choosing an older/newer pair where
-      `created_at` would not imply the desired winner. Only the selected old
-      memory should become replaced.
-- [ ] Confirm self-replacement is impossible through the selector.
-- [ ] Confirm backend errors for inactive, missing, duplicate, or invalid
-      choices appear in the modal without partially changing memory.
-
-## 8. Checklist - Approve-And-Replace UI
-
-- [ ] Choose a pending suggestion and select
-      `Approve & replace an old memory...`.
-- [ ] Confirm the modal title is `Approve a suggestion that needs review`.
-- [ ] Confirm the suggestion content is editable and shows a 400-character
-      counter.
-- [ ] Confirm the old-memory selector lists active memory.
-- [ ] Select an old active memory and confirm its exact content is shown under
-      `Selected old memory`.
-- [ ] Confirm the modal says the suggestion will become a new active memory
-      and the selected old memory will become `Replaced` and stop being used.
-- [ ] Confirm the modal says nothing is deleted and backend validation remains
-      the source of truth.
-- [ ] Confirm `Reason` requires at least 4 characters and the edited content
-      must be valid before `Approve & replace an old memory` can run.
-- [ ] Submit without editing and confirm the suggestion becomes approved, a new
-      active memory appears, and the old memory becomes `Replaced`.
-- [ ] Repeat with edited content and confirm the new active memory uses the edited
-      text.
-- [ ] Try unsafe or duplicate edited content and confirm the UI surfaces the
-      backend error while the suggestion remains pending and the old memory
-      remains active.
-- [ ] Confirm the ordinary `Approve` and `Edit & approve` flows still work and
-      do not replace any old memory.
-
-## 9. Checklist - Run Detail Memory-Use Viewer
-
-- [ ] Open a run detail page and find the `Memory Used` section.
-- [ ] Confirm the `What the AI was given` panel is collapsed by default.
-- [ ] In devtools Network, confirm the memory endpoints are not called until
-      `Load what the AI was given` is selected.
-- [ ] Select `Load what the AI was given` and confirm the button changes to
-      `Hide details`.
-- [ ] Confirm role and chunk filters are available, plus a `Refresh` button.
-- [ ] Confirm included entries are labeled `Used in this run.`
-- [ ] If excluded entries exist, expand the details section and confirm the copy
-      says they were not shown to the AI.
-- [ ] Confirm event metadata includes role, chunk, attempt, memory space limit,
-      allowed memory types, and `Snapshot fingerprint` when recorded.
-- [ ] Confirm status badges reflect `status_at_injection`, not the memory's later
-      current status.
-- [ ] Confirm `Advisory observations` states that observations are read-only and
-      the system did not change memory.
-- [ ] Confirm duplicate candidates are labeled `Possible duplicate`.
-- [ ] Confirm replacement candidates are labeled
-      `Possible replacement candidate` and include
-      `Newer does not mean true. You decide which memory to use.`
-- [ ] Confirm the panel contains no mark-outdated, retire, replace, approve, or
-      reject controls.
-- [ ] After changing memory on the Project Memory page, refresh the Run Detail
-      memory details panel and confirm past used content and fingerprints remain
-      historical snapshots.
-
-## 10. Regression Commands
-
-Run frontend build and lint from `frontend`:
+Run from the repository root:
 
 ```powershell
-cd frontend
-npm.cmd run build
-npm.cmd run lint
-```
-
-Run touched-file ESLint for the M3E UI files:
-
-```powershell
-npx.cmd eslint src\components\ProjectMemoryPanel.tsx src\components\RunMemoryProvenancePanel.tsx src\components\ui\dialog.tsx src\components\MemoryConflictPanel.tsx src\pages\MemoryPage.tsx src\pages\RunDetailPage.tsx src\utils\memoryReasonHumanize.ts src\utils\memoryStatusDisplay.ts
-```
-
-Return to the repo root and run the whitespace check:
-
-```powershell
-cd ..
 git diff --check
+git status --short
 ```
 
-Note: repo-wide lint may currently fail on pre-existing unrelated files. The
-touched-file ESLint command above should be clean for the M3E UI files.
+If any frontend file is touched accidentally, also run from `frontend`:
 
-## 11. Known Limitations And Deferred Work
+```powershell
+npm.cmd run build
+npx.cmd eslint <touched frontend files>
+```
 
-- No component test framework is in place yet for these UI flows.
-- Repo-wide lint may have pre-existing unrelated failures outside the M3E files.
-- No candidate-to-action shortcuts from the Run Detail memory details panel.
-- No project-level memory-use aggregation.
-- No automatic stale sweep UI.
-- No restore or un-supersede UI.
-- No append-only `memory_fact_lineage` table.
-- No semantic or vector memory.
-- Retire confirmation now uses the shared solid dialog pattern.
+If any backend file is touched accidentally, stop and re-scope before merging;
+#37G is intended to remain docs-only.
 
-## 12. Closeout Criteria
+## 7. Known Limitations / Deferred Work
 
-M3E frontend memory trust UI can be considered closed when:
+- Bad active memory can still be injected until the user marks it possibly
+  outdated, retires it, or replaces it.
+- Repo reality checks may be unavailable for some runs.
+- There is no vector or semantic memory retrieval yet.
+- There is no gated injection tightening yet.
+- There is no automatic stale-memory suppression yet.
+- There is no run selector on `/memory` for `What Pipewright told the AI`; that
+  view remains run-specific in Run Detail.
+- Project-level memory-use aggregation remains deferred.
 
-- [ ] `npm.cmd run build` passes.
-- [ ] Touched-file ESLint passes for the frontend files listed in section 10.
-- [ ] Project Memory status label and lineage smoke passes.
-- [ ] Project Memory mark-outdated, replace, retire, and approve-and-replace
-      smoke passes.
-- [ ] Run Detail memory-use smoke passes.
-- [ ] No backend, schema, route, prompt, memory-selection, pipeline, or frontend runtime
-      behavior changed as part of this docs closeout.
-- [ ] No auto-resolution, latest-wins, LLM truth, vector, or embedding behavior
-      was introduced.
-- [ ] Known limitations are documented before the next memory trust slice begins.
+## Closeout Statement
+
+Memory UI guided UX is complete for the local-first/demo phase after this
+checklist is added and reviewed. Further memory behavior changes should be
+separately scoped.
