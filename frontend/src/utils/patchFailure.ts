@@ -1,3 +1,5 @@
+import type { TestRunValidation } from '@/api/client'
+
 // Parser + types for structured patch failure reports (#18E).
 //
 // The backend (#18B/#18D) stores a patch failure as a JSON string in
@@ -280,4 +282,36 @@ export function patchFailurePlainCopy(
     committedNote: 'Nothing was committed.',
     testsNote,
   }
+}
+
+/**
+ * Compact, honest "tests failed" count summary for a TEST_FAILURE_AFTER_APPLY
+ * (#40D), derived purely from the already-parsed test_validation counts persisted
+ * for the chunk. It never parses raw output and never invents numbers:
+ *
+ *   - Returns null for any failure type other than TEST_FAILURE_AFTER_APPLY.
+ *   - Returns null when counts were not reliably parsed (counts_parsed !== true)
+ *     or when no failures were counted, so the caller degrades gracefully to the
+ *     plain "Tests ran and failed" sentence — never a fabricated "0 tests failed".
+ *   - When a total is available, shows "N of M tests failed."; otherwise the
+ *     bare "N test(s) failed.".
+ *
+ * Safety: only ever reported for a confirmed test failure, never implies tests
+ * passed, and shows nothing unless the backend already parsed a failed count.
+ */
+export function testFailureCountSummary(
+  failureType: string | null | undefined,
+  validation: TestRunValidation | null | undefined,
+): string | null {
+  if (failureType !== 'TEST_FAILURE_AFTER_APPLY') return null
+  if (!validation || validation.counts_parsed !== true) return null
+
+  const failed = validation.failed_tests
+  if (typeof failed !== 'number' || failed < 1) return null
+
+  const total = validation.total_tests
+  if (typeof total === 'number' && total >= failed) {
+    return `${failed} of ${total} tests failed.`
+  }
+  return `${failed} test${failed === 1 ? '' : 's'} failed.`
 }
