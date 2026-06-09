@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
@@ -87,6 +88,7 @@ from backend.pipeline.intent import (
     PLAN_ONLY,
     REPORT_ONLY,
     SPECIFIC,
+    IntentDecision,
     classify_intent_details_async,
 )
 from backend.pipeline.file_alias_grounding import (
@@ -189,6 +191,77 @@ def _non_actionable_response() -> JSONResponse:
             "message": NON_ACTIONABLE_MESSAGE,
             "missing_details": NON_ACTIONABLE_MISSING_DETAILS,
             "examples": NON_ACTIONABLE_EXAMPLES,
+        },
+    )
+
+
+# #42C: explicit run-mode selection. A request may carry ``requested_mode`` to
+# choose the start mode directly; ``auto`` (the default and the value old
+# clients omit) keeps the classifier as the router. A concrete mode routes the
+# run; the classifier is then consulted only to warn on a read-only/no-code
+# conflict when the user selected implementation.
+RequestedMode = Literal["report_only", "plan_only", "implementation", "auto"]
+REQUESTED_MODE_AUTO: RequestedMode = "auto"
+
+MODE_CONFLICT_MESSAGE = (
+    'You selected "Implement with approval", but this request reads as a '
+    "read-only / no-code instruction. Implementing will create a chunk plan "
+    "that you must approve before any change is applied — nothing is committed "
+    'automatically. Resubmit with confirmation to continue, or switch to '
+    '"Read-only report".'
+)
+
+
+def _detect_implementation_mode_conflict(decision: IntentDecision) -> str | None:
+    """
+    When the user explicitly selected ``implementation`` but the classifier read
+    the text as read-only / a no-code contradiction, return the detected signal
+    label for the conflict warning; otherwise ``None``.
+
+    Only a read-only-direction signal conflicts. A plan_only or implementation
+    reading is not a "do not change code" contradiction, so selecting
+    implementation over it is honored silently (the user is the source of truth).
+    A report_only or uncertain (contradiction) reading is the more-powerful-than-
+    text case that warrants a one-time confirmation.
+    """
+    if decision.uncertain:
+        return NEEDS_CLARIFICATION
+    if decision.intent == REPORT_ONLY:
+        return REPORT_ONLY
+    return None
+
+
+def _mode_conflict_response(
+    requested_mode: str,
+    detected_intent: str,
+) -> JSONResponse:
+    """
+    Read-only no-run envelope (HTTP 200) for an implementation-vs-read-only
+    conflict. No run row is created and no triage/coder/patch/git/PR path is
+    touched. The frontend (#42E) resubmits with ``confirm_conflict=true`` to
+    proceed, or switches the selected mode.
+    """
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "mode_conflict",
+            "type": "mode_conflict",
+            "run_created": False,
+            "requested_mode": requested_mode,
+            "detected_intent": detected_intent,
+            "message": MODE_CONFLICT_MESSAGE,
+            "options": [
+                {
+                    "mode": IMPLEMENTATION,
+                    "label": "Implement with approval",
+                    "confirm_conflict": True,
+                },
+                {
+                    "mode": REPORT_ONLY,
+                    "label": "Read-only report",
+                    "confirm_conflict": False,
+                },
+            ],
         },
     )
 
@@ -822,6 +895,13 @@ class ChunkedRunRequest(BaseModel):
         min_length=1,
         max_length=FEATURE_DESCRIPTION_MAX_LENGTH,
     )
+    # #42C: explicit start-mode selection. Omitted by old clients → "auto",
+    # which preserves the classifier-as-router behavior exactly. A concrete mode
+    # is the source of truth for routing. ``confirm_conflict`` acknowledges a
+    # read-only/no-code warning when the user insists on implementation; it is
+    # ephemeral (never stored) and never bypasses any approval/scope gate.
+    requested_mode: RequestedMode = REQUESTED_MODE_AUTO
+    confirm_conflict: bool = False
 
     @field_validator("feature_description")
     @classmethod
@@ -1202,6 +1282,8 @@ async def create_chunked_run_route(request: ChunkedRunRequest):
     return await _create_chunked_run_core(
         request.project_id,
         request.feature_description,
+        requested_mode=request.requested_mode,
+        confirm_conflict=request.confirm_conflict,
     )
 
 
@@ -1210,6 +1292,8 @@ async def _create_chunked_run_core(
     feature_description: str,
     *,
     selected_path: str | None = None,
+    requested_mode: RequestedMode = REQUESTED_MODE_AUTO,
+    confirm_conflict: bool = False,
 ):
     """
     Shared chunked-run creation core (PR #17M refactor).
@@ -1247,20 +1331,52 @@ async def _create_chunked_run_core(
 
     run_id = str(uuid.uuid4())
     decision = await classify_intent_details_async(feature_description)
-    intent = decision.intent
 
-    # Uncertain classification must not fall into the plan_only bucket and
-    # fabricate a plan. If the request is not clearly report / plan /
-    # implementation, ask for clarification instead of inventing scope.
-    if decision.uncertain:
+    # #42C: resolve the effective routing intent.
+    #   - auto / omitted: the classifier is the router (unchanged behavior).
+    #   - concrete requested_mode: the user's selection is the source of truth;
+    #     the classifier is consulted only to warn on a read-only/no-code
+    #     conflict when the user selected implementation.
+    if requested_mode == REQUESTED_MODE_AUTO:
+        # Uncertain classification must not fall into the plan_only bucket and
+        # fabricate a plan. If the request is not clearly report / plan /
+        # implementation, ask for clarification instead of inventing scope.
+        if decision.uncertain:
+            logger.info(
+                "[GUARD] Uncertain classification; needs clarification instead "
+                "of a plan_only fallback. project_id=%s | source=%s | reason=%s",
+                project_id,
+                decision.source,
+                decision.reason,
+            )
+            return _non_actionable_response()
+        intent = decision.intent
+    else:
+        intent = requested_mode
+        if intent == IMPLEMENTATION:
+            # More-powerful-than-text: selecting implementation over a read-only /
+            # no-code reading needs a one-time confirmation. A safer selection
+            # (report_only / plan_only) is always honored without a block.
+            conflict = _detect_implementation_mode_conflict(decision)
+            if conflict is not None and not confirm_conflict:
+                logger.info(
+                    "[MODE] Implementation selected over a read-only/no-code "
+                    "signal; returning mode_conflict (no run). project_id=%s | "
+                    "detected=%s",
+                    project_id,
+                    conflict,
+                )
+                return _mode_conflict_response(requested_mode, conflict)
         logger.info(
-            "[GUARD] Uncertain classification; needs clarification instead of "
-            "a plan_only fallback. project_id=%s | source=%s | reason=%s",
+            "[MODE] Explicit requested_mode=%s routing the run (classifier "
+            "advisory only). project_id=%s | classifier_intent=%s | "
+            "classifier_uncertain=%s | confirm_conflict=%s",
+            requested_mode,
             project_id,
-            decision.source,
-            decision.reason,
+            decision.intent,
+            decision.uncertain,
+            confirm_conflict,
         )
-        return _non_actionable_response()
 
     # PR #17C: when a simple explicit file edit grounds to a single indexed
     # file, pin files_expected to it after triage. Set only in the
