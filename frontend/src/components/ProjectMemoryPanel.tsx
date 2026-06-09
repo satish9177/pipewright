@@ -96,6 +96,12 @@ interface MarkStaleDialogState {
   error: string | null
 }
 
+interface RetireDialogState {
+  fact: MemoryFact
+  reason: string
+  error: string | null
+}
+
 interface SupersedeDialogState {
   oldFact: MemoryFact
   newFactId: string
@@ -118,6 +124,17 @@ const emptyForm: MemoryFormState = {
   priority: '100',
 }
 
+function memoryStatusLabel(status: string): string {
+  if (status === 'all') return 'All'
+  return getMemoryStatusDisplay(status).label
+}
+
+function suggestionStatusLabel(status: string): string {
+  if (status === 'all') return 'All'
+  if (status === 'archived') return 'Retired'
+  return status.replace(/_/g, ' ')
+}
+
 function getErrorMessage(error: unknown) {
   if (
     typeof error === 'object' &&
@@ -128,10 +145,10 @@ function getErrorMessage(error: unknown) {
       response?: { status?: number; data?: { detail?: unknown } }
     }).response
     if (response?.status === 409) {
-      return 'An active duplicate memory fact already exists for this project.'
+      return 'An active duplicate memory already exists for this project.'
     }
     if (response?.status === 404) {
-      return 'Memory fact not found for this project.'
+      return 'Memory not found for this project.'
     }
     if (typeof response?.data?.detail === 'string') {
       return response.data.detail
@@ -154,7 +171,7 @@ function getSuggestionErrorMessage(error: unknown) {
       response?: { status?: number; data?: { detail?: unknown } }
     }).response
     if (response?.status === 409) {
-      return 'An active memory fact already exists for this suggestion.'
+      return 'An active memory already exists for this suggestion.'
     }
     if (response?.status === 422) {
       return 'Please provide a rejection reason.'
@@ -180,13 +197,13 @@ function getLifecycleErrorMessage(error: unknown, fallback: string) {
       return response.data.detail
     }
     if (Array.isArray(response?.data?.detail)) {
-      return 'Memory lifecycle validation failed. Check the selected facts and reason.'
+      return 'Memory lifecycle validation failed. Check the selected memories and reason.'
     }
     if (response?.status === 404) {
-      return 'Memory fact or suggestion not found for this project.'
+      return 'Memory or suggestion not found for this project.'
     }
     if (response?.status === 409) {
-      return 'The backend rejected this lifecycle change. Refresh and check that the selected facts are still active.'
+      return 'The backend rejected this lifecycle change. Refresh and check that the selected memories are still in use.'
     }
   }
 
@@ -245,11 +262,13 @@ function SelectField({
   value,
   options,
   onChange,
+  getLabel,
 }: {
   id: string
   value: string
   options: string[]
   onChange: (event: ChangeEvent<HTMLSelectElement>) => void
+  getLabel?: (option: string) => string
 }) {
   return (
     <select
@@ -260,7 +279,7 @@ function SelectField({
     >
       {options.map(option => (
         <option key={option} value={option}>
-          {option}
+          {getLabel ? getLabel(option) : option}
         </option>
       ))}
     </select>
@@ -288,6 +307,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
   const [suggestionError, setSuggestionError] = useState<string | null>(null)
   const [markStaleDialog, setMarkStaleDialog] =
     useState<MarkStaleDialogState | null>(null)
+  const [retireDialog, setRetireDialog] = useState<RetireDialogState | null>(null)
   const [supersedeDialog, setSupersedeDialog] =
     useState<SupersedeDialogState | null>(null)
   const [approveSupersedeDialog, setApproveSupersedeDialog] =
@@ -397,13 +417,22 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
       memoryApi.createProjectMemory(projectId, data),
     onSuccess: () => {
       setForm(emptyForm)
-      setMessage('Memory fact added.')
+      setMessage('Memory added.')
       setError(null)
       refreshMemory()
     },
     onError: (mutationError: unknown) => {
-      setMessage(null)
-      setError(getErrorMessage(mutationError))
+      setRetireDialog(previous =>
+        previous
+          ? {
+              ...previous,
+              error: getLifecycleErrorMessage(
+                mutationError,
+                'Failed to retire memory.',
+              ),
+            }
+          : previous,
+      )
     },
   })
 
@@ -412,7 +441,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
       memoryApi.updateProjectMemory(projectId, memoryId, data),
     onSuccess: () => {
       setEditingId(null)
-      setMessage('Memory fact saved.')
+      setMessage('Memory saved.')
       setError(null)
       refreshMemory()
     },
@@ -427,7 +456,8 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
       memoryApi.archiveProjectMemory(projectId, memoryId, reason),
     onSuccess: (_data, variables) => {
       setArchiveReasons(previous => ({ ...previous, [variables.memoryId]: '' }))
-      setMessage('Memory fact archived.')
+      setRetireDialog(null)
+      setMessage('Memory retired.')
       setError(null)
       refreshMemory()
     },
@@ -442,7 +472,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
       memoryApi.markMemoryFactStale(projectId, factId, reason),
     onSuccess: () => {
       setMarkStaleDialog(null)
-      setMessage('Memory fact marked stale.')
+      setMessage('Memory marked as possibly outdated.')
       setError(null)
       refreshMemory()
     },
@@ -453,7 +483,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
               ...previous,
               error: getLifecycleErrorMessage(
                 mutationError,
-                'Failed to mark memory fact stale.',
+                'Failed to mark memory as possibly outdated.',
               ),
             }
           : previous,
@@ -474,7 +504,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
       memoryApi.supersedeMemoryFact(projectId, oldFactId, newFactId, reason),
     onSuccess: () => {
       setSupersedeDialog(null)
-      setMessage('Memory fact superseded.')
+      setMessage('Old memory replaced.')
       setError(null)
       refreshMemory()
     },
@@ -485,7 +515,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
               ...previous,
               error: getLifecycleErrorMessage(
                 mutationError,
-                'Failed to supersede memory fact.',
+                'Failed to replace old memory.',
               ),
             }
           : previous,
@@ -497,7 +527,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
     mutationFn: (memoryId: string) =>
       memoryApi.verifyProjectMemory(projectId, memoryId),
     onSuccess: () => {
-      setMessage('Memory fact verified.')
+      setMessage('Memory verified.')
       setError(null)
       refreshMemory()
     },
@@ -572,7 +602,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
       ),
     onSuccess: () => {
       setApproveSupersedeDialog(null)
-      setSuggestionMessage('Suggestion approved and old memory fact replaced.')
+      setSuggestionMessage('Suggestion approved and old memory replaced.')
       setSuggestionError(null)
       refreshSuggestions()
       refreshMemory()
@@ -584,7 +614,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
               ...previous,
               error: getLifecycleErrorMessage(
                 mutationError,
-                'Failed to approve suggestion and supersede old fact.',
+                'Failed to approve suggestion and replace old memory.',
               ),
             }
           : previous,
@@ -700,14 +730,23 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
     })
   }
 
-  function archiveFact(fact: MemoryFact) {
+  function startRetire(fact: MemoryFact) {
     const reason = (archiveReasons[fact.id] ?? '').trim()
     if (reason.length < 4) {
       setMessage(null)
-      setError('Archive reason must be at least 4 characters.')
+      setError('Retire reason must be at least 4 characters.')
       return
     }
-    archiveMutation.mutate({ memoryId: fact.id, reason })
+    setRetireDialog({ fact, reason, error: null })
+    setMessage(null)
+    setError(null)
+  }
+
+  function confirmRetire() {
+    if (!retireDialog) return
+    const reason = retireDialog.reason.trim()
+    if (reason.length < 4) return
+    archiveMutation.mutate({ memoryId: retireDialog.fact.id, reason })
   }
 
   function rejectSuggestion(suggestion: MemorySuggestion) {
@@ -784,6 +823,9 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
   const markStaleCanConfirm = Boolean(
     markStaleDialog && markStaleDialog.reason.trim().length >= 4,
   )
+  const retireCanConfirm = Boolean(
+    retireDialog && retireDialog.reason.trim().length >= 4,
+  )
   const supersedeReplacementFacts = supersedeDialog
     ? activeFacts.filter(fact => fact.id !== supersedeDialog.oldFact.id)
     : []
@@ -813,11 +855,16 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
       <CardHeader>
         <CardTitle className="text-base">Project Memory</CardTitle>
         <CardDescription>
-          Memory facts are advisory context injected into AI prompts. Source
-          code and explicit user instructions always win on conflict.
+          Memory is background context for the AI - not a command. Source code
+          and your instructions always win.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-6">
+        <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+          Nothing is used until you approve it. If memory and the current code
+          disagree, the code wins. Your explicit instructions always override
+          memory.
+        </div>
         <div className="grid gap-3 rounded-lg border bg-muted/30 p-3">
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="grid gap-2">
@@ -826,6 +873,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                 id="memory-status-filter"
                 value={statusFilter}
                 options={['all', ...STATUSES]}
+                getLabel={memoryStatusLabel}
                 onChange={event =>
                   setStatusFilter(event.target.value as 'all' | MemoryStatus)
                 }
@@ -858,9 +906,9 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
 
         <form onSubmit={handleCreate} className="grid gap-3 rounded-lg border p-4">
           <div>
-            <h3 className="text-sm font-semibold">Add Memory Fact</h3>
+            <h3 className="text-sm font-semibold">Add Memory Note</h3>
             <p className="text-xs text-muted-foreground">
-              Add only human-approved project facts. No secrets, credentials,
+              Add only human-approved project memory. No secrets, credentials,
               emails, phone numbers, or prompt instructions.
             </p>
           </div>
@@ -914,7 +962,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
             disabled={createMutation.isPending}
             className="w-fit"
           >
-            {createMutation.isPending ? 'Adding...' : 'Add Memory Fact'}
+            {createMutation.isPending ? 'Adding...' : 'Add Memory Note'}
           </Button>
         </form>
 
@@ -933,10 +981,10 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
         <div className="grid gap-3">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h3 className="text-sm font-semibold">Memory Facts</h3>
+              <h3 className="text-sm font-semibold">Memory Notes</h3>
               <p className="text-xs text-muted-foreground">
-                Active facts appear first when the status filter is all.
-                Archive similar or outdated facts manually.
+                In-use memories appear first when the status filter is all.
+                Retire similar notes or mark outdated notes manually.
               </p>
             </div>
             <Button
@@ -953,7 +1001,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
           )}
           {!memoryQuery.isLoading && sortedFacts.length === 0 && (
             <div className="rounded-lg border border-dashed p-4">
-              <p className="text-sm font-medium">No memory facts yet</p>
+              <p className="text-sm font-medium">No memory notes yet</p>
               <p className="mt-1 text-sm text-muted-foreground">
                 No approved memory yet. Generate bootstrap suggestions or add
                 memory manually.
@@ -1005,14 +1053,14 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                           size="sm"
                           onClick={() => startMarkStale(fact)}
                         >
-                          Mark stale
+                          Mark as possibly outdated
                         </Button>
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={() => startSupersede(fact)}
                         >
-                          Supersede
+                          Replace this memory
                         </Button>
                       </>
                     )}
@@ -1082,7 +1130,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                   <p className="mt-3 rounded-lg bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
                     {replacementFact
                       ? `Replaced by your approval -> ${replacementFact.content}`
-                      : 'Replaced by another approved fact.'}
+                      : 'Replaced by another approved memory.'}
                   </p>
                 )}
 
@@ -1090,13 +1138,13 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                   <div className="mt-3 grid gap-1 rounded-lg bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
                     {supersededFacts.slice(0, 3).map(historicalFact => (
                       <p key={historicalFact.id}>
-                        Supersedes &lt;- {historicalFact.content}
+                        Replaced earlier note: {historicalFact.content}
                       </p>
                     ))}
                     {supersededFacts.length > 3 && (
                       <p>
-                        Supersedes {supersededFacts.length - 3} more historical
-                        facts.
+                        Replaced {supersededFacts.length - 3} more old
+                        memories.
                       </p>
                     )}
                   </div>
@@ -1108,7 +1156,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                   <p>Verified: {formatDate(fact.last_verified_at)}</p>
                   {fact.archived_reason && (
                     <p className="sm:col-span-2">
-                      Archived reason: {fact.archived_reason}
+                      Lifecycle reason: {fact.archived_reason}
                     </p>
                   )}
                 </div>
@@ -1116,7 +1164,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                 {!isArchived && (
                   <div className="mt-3 grid gap-2 rounded-lg bg-muted/30 p-3">
                     <Label htmlFor={`archive-reason-${fact.id}`}>
-                      Archive Reason
+                      Retire Reason
                     </Label>
                     <div className="flex flex-col gap-2 sm:flex-row">
                       <Input
@@ -1133,10 +1181,10 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                       <Button
                         variant="destructive"
                         size="sm"
-                        onClick={() => archiveFact(fact)}
+                        onClick={() => startRetire(fact)}
                         disabled={archiveMutation.isPending}
                       >
-                        Archive
+                        Retire memory
                       </Button>
                     </div>
                   </div>
@@ -1151,12 +1199,17 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
             <div>
               <h3 className="text-sm font-semibold">Bootstrap Suggestions</h3>
               <p className="text-xs text-muted-foreground">
-                Generate suggested memory facts from repository/config files.
-                Suggestions are not injected until you approve them.
+                Generate suggested memory notes from repository/config files.
+                Nothing is used until you approve it.
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
                 Source code and explicit user instructions still win over
                 approved memory.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Approving inaccurate memory can mislead future runs. Approve
+                only what is true today. Rejected suggestions are harmless -
+                they are never used and can be ignored.
               </p>
             </div>
             <Button
@@ -1178,6 +1231,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
               id="memory-suggestion-status-filter"
               value={suggestionStatusFilter}
               options={['all', ...SUGGESTION_STATUSES]}
+              getLabel={suggestionStatusLabel}
               onChange={event =>
                 setSuggestionStatusFilter(
                   event.target.value as 'all' | MemorySuggestionStatus,
@@ -1227,7 +1281,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                       variant="outline"
                       className={statusClass(suggestion.status)}
                     >
-                      {suggestion.status}
+                      {suggestionStatusLabel(suggestion.status)}
                     </Badge>
                     <Badge variant="outline">{suggestion.category}</Badge>
                     <Badge variant="outline">{suggestion.scope}</Badge>
@@ -1276,7 +1330,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                         variant="outline"
                         onClick={() => startApproveAndSupersede(suggestion)}
                       >
-                        Approve & supersede...
+                        Approve & replace an old memory...
                       </Button>
                     </div>
                   )}
@@ -1390,9 +1444,11 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
         <div className="grid gap-3 rounded-lg border p-4">
           <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
             <div>
-              <h3 className="text-sm font-semibold">Prompt Preview</h3>
+              <h3 className="text-sm font-semibold">
+                Preview what the AI sees
+              </h3>
               <p className="text-xs text-muted-foreground">
-                Shows the exact advisory memory block returned by the backend.
+                Shows the advisory memory block returned by the backend.
               </p>
             </div>
             <div className="w-full sm:w-44">
@@ -1409,7 +1465,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
           )}
           {!previewQuery.isLoading && previewQuery.data?.empty && (
             <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-              No active memory would be injected for this role.
+              No approved memory would be shown to the AI for this role.
             </p>
           )}
           {!previewQuery.isLoading && previewQuery.data && !previewQuery.data.empty && (
@@ -1429,17 +1485,18 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
             {markStaleDialog && (
               <>
                 <DialogHeader>
-                  <DialogTitle>Mark memory fact stale</DialogTitle>
+                  <DialogTitle>Mark as possibly outdated</DialogTitle>
                   <DialogDescription>
-                    Confirm this human lifecycle change before the backend
-                    applies it.
+                    This memory stops being shown to the AI. It is kept for
+                    review, and Pipewright does not check the code
+                    automatically.
                   </DialogDescription>
                 </DialogHeader>
 
                 <div className="grid gap-3">
                   <div className="grid gap-1">
                     <p className="text-xs font-medium text-muted-foreground">
-                      Fact content
+                      Memory
                     </p>
                     <p className="whitespace-pre-wrap rounded border bg-muted/30 p-3 text-sm leading-6">
                       {markStaleDialog.fact.content}
@@ -1459,13 +1516,13 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                       variant="outline"
                       className={staleStatusDisplay.className}
                     >
-                      {staleStatusDisplay.label} / stale
+                      {staleStatusDisplay.label}
                     </Badge>
                   </div>
 
                   <p className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                    This fact will stop being injected into future AI prompts.
-                    Nothing is deleted.
+                    Future runs will not be shown this memory. If memory and
+                    the current code disagree, the code wins.
                   </p>
 
                   <div className="grid gap-2">
@@ -1510,7 +1567,92 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                     onClick={confirmMarkStale}
                     disabled={!markStaleCanConfirm || markStaleMutation.isPending}
                   >
-                    {markStaleMutation.isPending ? 'Marking...' : 'Mark stale'}
+                    {markStaleMutation.isPending
+                      ? 'Marking...'
+                      : 'Mark as possibly outdated'}
+                  </Button>
+                </DialogFooter>
+              </>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={Boolean(retireDialog)}
+          onOpenChange={open => {
+            if (!open && !archiveMutation.isPending) setRetireDialog(null)
+          }}
+        >
+          <DialogContent className="sm:max-w-xl">
+            {retireDialog && (
+              <>
+                <DialogHeader>
+                  <DialogTitle>Retire this memory</DialogTitle>
+                  <DialogDescription>
+                    This memory stops being shown to the AI and is kept for the
+                    record. Future runs will not be shown it.
+                  </DialogDescription>
+                </DialogHeader>
+
+                <div className="grid gap-3">
+                  <div className="grid gap-1">
+                    <p className="text-xs font-medium text-muted-foreground">
+                      Memory
+                    </p>
+                    <p className="whitespace-pre-wrap rounded border bg-muted/30 p-3 text-sm leading-6">
+                      {retireDialog.fact.content}
+                    </p>
+                  </div>
+
+                  <p className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                    Retiring does not delete this memory. It is kept for the
+                    record and can be reviewed later.
+                  </p>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="retire-reason">Reason</Label>
+                    <Input
+                      id="retire-reason"
+                      value={retireDialog.reason}
+                      onChange={event =>
+                        setRetireDialog(previous =>
+                          previous
+                            ? {
+                                ...previous,
+                                reason: event.target.value,
+                                error: null,
+                              }
+                            : previous,
+                        )
+                      }
+                      placeholder="No longer true after migration."
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      At least 4 characters. Stored as the lifecycle reason.
+                    </p>
+                  </div>
+
+                  {retireDialog.error && (
+                    <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+                      {retireDialog.error}
+                    </p>
+                  )}
+                </div>
+
+                <DialogFooter>
+                  <Button
+                    variant="outline"
+                    onClick={() => setRetireDialog(null)}
+                    disabled={archiveMutation.isPending}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    onClick={confirmRetire}
+                    disabled={!retireCanConfirm || archiveMutation.isPending}
+                  >
+                    {archiveMutation.isPending ? 'Retiring...' : 'Retire memory'}
                   </Button>
                 </DialogFooter>
               </>
@@ -1528,17 +1670,17 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
             {supersedeDialog && (
               <>
                 <DialogHeader>
-                  <DialogTitle>Supersede memory fact</DialogTitle>
+                  <DialogTitle>Replace an older memory</DialogTitle>
                   <DialogDescription>
-                    Choose the approved active fact that replaces the old fact.
-                    The backend revalidates both facts before changing anything.
+                    Choose the approved memory that replaces this older memory.
+                    Newer does not mean true. You decide which memory to use.
                   </DialogDescription>
                 </DialogHeader>
 
                 <div className="grid gap-3">
                   <div className="grid gap-1">
                     <p className="text-xs font-medium text-muted-foreground">
-                      OLD FACT
+                      Older memory
                     </p>
                     <p className="whitespace-pre-wrap rounded border bg-muted/30 p-3 text-sm leading-6">
                       {supersedeDialog.oldFact.content}
@@ -1547,7 +1689,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
 
                   <div className="grid gap-2">
                     <Label htmlFor="supersede-replacement">
-                      Replacement active fact
+                      Replacement memory
                     </Label>
                     <select
                       id="supersede-replacement"
@@ -1571,8 +1713,8 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                     >
                       <option value="">
                         {activeFactsQuery.isLoading
-                          ? 'Loading active facts...'
-                          : 'Select replacement fact'}
+                          ? 'Loading memories...'
+                          : 'Select replacement memory'}
                       </option>
                       {supersedeReplacementFacts.map(fact => (
                         <option key={fact.id} value={fact.id}>
@@ -1583,7 +1725,8 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                     {supersedeReplacementFacts.length === 0 &&
                       !activeFactsQuery.isLoading && (
                         <p className="text-xs text-muted-foreground">
-                          No other active facts are available as replacements.
+                          No other in-use memories are available as
+                          replacements.
                         </p>
                       )}
                   </div>
@@ -1591,7 +1734,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                   {selectedReplacementFact && (
                     <div className="grid gap-1">
                       <p className="text-xs font-medium text-muted-foreground">
-                        NEW FACT
+                        Replacement memory
                       </p>
                       <p className="whitespace-pre-wrap rounded border bg-muted/30 p-3 text-sm leading-6">
                         {selectedReplacementFact.content}
@@ -1601,12 +1744,12 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
 
                   <div className="grid gap-2 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
                     <p>
-                      This will move OLD FACT from In use to Replaced. NEW FACT
-                      will remain In use.
+                      The older memory moves to Replaced and stops being used.
+                      Future runs use the replacement memory, not the old one.
                     </p>
                     <p>
-                      The old fact will no longer be injected into future prompts.
-                      Nothing is deleted.
+                      Replacing does not remove the old memory - it is kept in
+                      history.
                     </p>
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge
@@ -1668,8 +1811,8 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                     disabled={!supersedeCanConfirm || supersedeMutation.isPending}
                   >
                     {supersedeMutation.isPending
-                      ? 'Superseding...'
-                      : 'Supersede old fact'}
+                      ? 'Replacing...'
+                      : 'Replace old memory'}
                   </Button>
                 </DialogFooter>
               </>
@@ -1689,10 +1832,11 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
             {approveSupersedeDialog && (
               <>
                 <DialogHeader>
-                  <DialogTitle>Approve suggestion and supersede</DialogTitle>
+                  <DialogTitle>Approve a suggestion that needs review</DialogTitle>
                   <DialogDescription>
-                    Approve this pending suggestion as a new active fact while
-                    replacing one old active fact in the same confirmed action.
+                    This becomes active memory the AI may be shown. Nothing is
+                    removed automatically, and inaccurate memory can mislead
+                    future runs.
                   </DialogDescription>
                 </DialogHeader>
 
@@ -1726,7 +1870,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
 
                   <div className="grid gap-2">
                     <Label htmlFor="approve-supersede-old-fact">
-                      Old active fact to replace
+                      Old memory to replace
                     </Label>
                     <select
                       id="approve-supersede-old-fact"
@@ -1747,8 +1891,8 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                     >
                       <option value="">
                         {activeFactsQuery.isLoading
-                          ? 'Loading active facts...'
-                          : 'Select old active fact'}
+                          ? 'Loading memories...'
+                          : 'Select old memory'}
                       </option>
                       {activeFacts.map(fact => (
                         <option key={fact.id} value={fact.id}>
@@ -1758,7 +1902,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                     </select>
                     {activeFacts.length === 0 && !activeFactsQuery.isLoading && (
                       <p className="text-xs text-muted-foreground">
-                        No active facts are available to replace.
+                        No in-use memories are available to replace.
                       </p>
                     )}
                   </div>
@@ -1766,7 +1910,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                   {selectedApproveOldFact && (
                     <div className="grid gap-1">
                       <p className="text-xs font-medium text-muted-foreground">
-                        Selected old fact
+                        Selected old memory
                       </p>
                       <p className="whitespace-pre-wrap rounded border bg-muted/30 p-3 text-sm leading-6">
                         {selectedApproveOldFact.content}
@@ -1776,11 +1920,14 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
 
                   <div className="grid gap-2 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
                     <p>
-                      This suggestion will become a new active memory fact. The
-                      selected old fact will become Replaced and stop being
-                      injected.
+                      This suggestion will become active memory the AI may be
+                      shown. The selected old memory will become Replaced and
+                      stop being used.
                     </p>
-                    <p>Nothing is deleted. Backend validation remains the source of truth.</p>
+                    <p>
+                      Replacing does not remove the old memory - it is kept in
+                      history. Code and explicit instructions still win.
+                    </p>
                   </div>
 
                   <div className="grid gap-2">
@@ -1802,7 +1949,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                       placeholder="Suggestion replaces outdated approved memory."
                     />
                     <p className="text-xs text-muted-foreground">
-                      At least 4 characters. The selected old fact becomes
+                      At least 4 characters. The selected old memory becomes
                       Replaced only after backend approval succeeds.
                     </p>
                   </div>
@@ -1831,7 +1978,7 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                   >
                     {approveAndSupersedeMutation.isPending
                       ? 'Approving...'
-                      : 'Approve and supersede'}
+                      : 'Approve & replace an old memory'}
                   </Button>
                 </DialogFooter>
               </>

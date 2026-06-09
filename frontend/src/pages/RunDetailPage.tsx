@@ -1780,7 +1780,7 @@ export default function RunDetailPage() {
 
       {/* #35D: the noisy diagnostic/audit sections collapse into one
           default-closed "Details & audit" area. Nothing is removed — the
-          Timeline, memory provenance, and provider diagnostics keep their
+          Timeline, memory-use details, and provider diagnostics keep their
           existing content, lazy-loading, and refresh controls. They are
           demoted, not deleted, and stay one click away. */}
       <details className="group mb-6 rounded-xl border bg-card">
@@ -1828,9 +1828,9 @@ export default function RunDetailPage() {
 
           <section>
             <div className="mb-3">
-              <h3 className="text-sm font-semibold">Memory Diagnostics</h3>
+              <h3 className="text-sm font-semibold">Memory Used</h3>
               <p className="text-xs text-muted-foreground">
-                Display-only provenance for memory injected during this run.
+                Display-only view of memory given to the AI during this run.
               </p>
             </div>
             <RunMemoryProvenancePanel runId={run.id} />

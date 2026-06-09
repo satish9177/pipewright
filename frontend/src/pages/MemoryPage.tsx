@@ -37,7 +37,7 @@ export default function MemoryPage() {
         <div>
           <h2 className="text-2xl font-bold">Project Memory</h2>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Manage project-scoped advisory facts and bootstrap suggestions.
+            Manage project-scoped advisory memory and bootstrap suggestions.
             Memory is never global; source code and explicit user instructions
             always win on conflict.
           </p>
@@ -68,7 +68,7 @@ export default function MemoryPage() {
             <div className="rounded-lg border border-dashed p-4">
               <p className="text-sm font-medium">No projects yet</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                Create a project before adding memory facts.
+                Create a project before adding memory notes.
               </p>
             </div>
           )}
