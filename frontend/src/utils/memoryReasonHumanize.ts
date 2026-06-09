@@ -7,8 +7,12 @@ const REASON_LABELS: Record<string, string> = {
 }
 
 const VALUE_LABELS: Record<string, string> = {
+  mongo: 'MongoDB',
   mongodb: 'MongoDB',
+  postgres: 'PostgreSQL',
   postgresql: 'PostgreSQL',
+  mysql: 'MySQL',
+  sqlite: 'SQLite',
 }
 
 function humanizeReasonValue(value: string): string {
@@ -16,13 +20,36 @@ function humanizeReasonValue(value: string): string {
   return VALUE_LABELS[normalized.toLowerCase()] ?? normalized
 }
 
-function humanizeRealityConflict(reason: string): string | null {
-  const match = reason.match(/^was-reality-conflict:\s*repo=([^,]+),\s*memory=(.+)$/)
+export interface MemoryRealityConflict {
+  repoValue: string
+  memoryValue: string
+  repoLabel: string
+  memoryLabel: string
+}
+
+export function parseMemoryRealityConflict(
+  reason?: string | null,
+): MemoryRealityConflict | null {
+  if (!reason) return null
+  const match = reason.match(
+    /^(?:(?:was-)?repo reality conflict:|was-reality-conflict:)?\s*repo=([^,]+),\s*memory=(.+)$/i,
+  )
   if (!match) return null
   const [, repoValue, memoryValue] = match
+  return {
+    repoValue: repoValue.trim(),
+    memoryValue: memoryValue.trim(),
+    repoLabel: humanizeReasonValue(repoValue),
+    memoryLabel: humanizeReasonValue(memoryValue),
+  }
+}
+
+function humanizeRealityConflict(reason: string): string | null {
+  const conflict = parseMemoryRealityConflict(reason)
+  if (!conflict) return null
   return (
-    `The current repo appears to use ${humanizeReasonValue(repoValue)}, while ` +
-    `this memory says ${humanizeReasonValue(memoryValue)}.`
+    `The current repo appears to use ${conflict.repoLabel}, while ` +
+    `this memory says ${conflict.memoryLabel}.`
   )
 }
 
