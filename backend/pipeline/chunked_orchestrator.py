@@ -772,6 +772,19 @@ def _build_final_approval_summary(
     return "\n".join(lines)
 
 
+def _all_chunks_completed(plan_status: ChunkPlanResponse) -> bool:
+    """Side-effect-free predicate for the final-approval precondition.
+
+    True only when the plan is approved AND every chunk is completed — the exact
+    condition _require_all_chunks_completed enforces, but returned as a bool so a
+    caller can decide whether to advance to final approval without risking a raise
+    on a not-yet-ready plan.
+    """
+    if plan_status.chunk_plan_status != "approved":
+        return False
+    return all(chunk.status == "completed" for chunk in plan_status.chunks)
+
+
 def _require_all_chunks_completed(plan_status: ChunkPlanResponse) -> None:
     if plan_status.chunk_plan_status != "approved":
         raise RuntimeError(
@@ -1765,6 +1778,27 @@ def _approve_chunk_and_commit_locked(
         plan_status.project_id,
     )
     _update_run_status(run_id, "chunk_approved", "chunk_approved", chunk_number)
+
+    # If approving this chunk completed the final outstanding chunk, advance
+    # straight to the final-approval gate instead of parking the run at
+    # chunk_approved with no way forward. The only other path to final approval is
+    # a resume, which has no remaining work to do — and no UI affordance — once
+    # every chunk is completed, so the run would otherwise stall here forever
+    # (#44A). This SURFACES final approval for a human decision ONLY; it never
+    # auto-approves: the gate is created pending, approve_final stays a separate
+    # human action, and the test-validation acknowledgement gate still blocks it.
+    # It mirrors the tail of resume_chunked_pipeline that a no-work resume runs.
+    refreshed = get_chunk_plan_status(run_id)
+    if _all_chunks_completed(refreshed):
+        final_result = _mark_awaiting_final_approval(
+            run_id,
+            refreshed,
+            f"pipewright/{run_id[:8]}",
+            target_repo_path,
+        )
+        final_result["chunk_number"] = chunk_number
+        return final_result
+
     return {
         "status": "chunk_approved",
         "run_id": run_id,

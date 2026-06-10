@@ -315,8 +315,10 @@ async def test_no_refresh_before_approval_then_one_after(
     add_code_checkpoint(run_id, 1)
     approve = chunked_orchestrator.approve_chunk_and_commit(run_id, 1)
 
-    assert approve["status"] == "chunk_approved"
-    # The human-approved commit went through _commit_and_complete_chunk once.
+    # The only chunk is now complete, so approval advances to final approval (#44A).
+    assert approve["status"] == "awaiting_final_approval"
+    # The human-approved commit went through _commit_and_complete_chunk once; the
+    # final-approval transition does not reindex.
     assert len(reindex_calls) == 1
 
 

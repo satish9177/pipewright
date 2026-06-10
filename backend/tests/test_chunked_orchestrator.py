@@ -1164,7 +1164,9 @@ async def test_chunk_approve_works_after_persisted_flag_pause(
 
     approve_result = chunked_orchestrator.approve_chunk_and_commit(run_id, 2)
 
-    assert approve_result["status"] == "chunk_approved"
+    # Chunk 2 was the last outstanding chunk, so approving it completes the plan
+    # and advances the run straight to final approval (#44A).
+    assert approve_result["status"] == "awaiting_final_approval"
     assert approve_result["chunk_number"] == 2
     commit_calls = [call for call in calls if call[0] == "commit"]
     assert len(commit_calls) == 2
@@ -1650,7 +1652,9 @@ def test_approve_chunk_commits_from_code_checkpoint_without_rerunning(
 
     result = chunked_orchestrator.approve_chunk_and_commit(run_id, 1)
 
-    assert result["status"] == "chunk_approved"
+    # This was the only chunk, so approving it completes the plan and advances the
+    # run straight to final approval (#44A) without rerunning the planner.
+    assert result["status"] == "awaiting_final_approval"
     assert result["chunk_number"] == 1
     assert any(call[0] == "commit" for call in calls)
     commit_call = next(call for call in calls if call[0] == "commit")
@@ -1666,7 +1670,7 @@ def test_approve_chunk_commits_from_code_checkpoint_without_rerunning(
               AND ag.approval_type = 'chunk'
         """), {"run_id": run_id}).fetchone()
     assert row[0] == "approved"
-    assert row[1] == "chunk_approved"
+    assert row[1] == "awaiting_final_approval"
 
 
 @pytest.mark.asyncio
@@ -1704,12 +1708,20 @@ async def test_resume_after_chunk_approval_continues_next_pending_chunk(
     assert status.chunks[1].status == "completed"
 
 
-@pytest.mark.asyncio
-async def test_resume_after_last_chunk_approval_creates_final_gate(
+def test_last_chunk_approval_advances_to_final_approval(
     monkeypatch,
     tmp_repo,
     tracked_runs,
 ):
+    """#44A regression: approving the final outstanding chunk must surface final
+    approval on its own — the run must NOT stall at chunk_approved waiting for a
+    resume that has no remaining work and no UI affordance.
+
+    Exact case from the smoke: one chunk, chunk completed + committed, chunk
+    approved, all chunks complete. Approval must move the run to
+    awaiting_final_approval and create exactly one PENDING final gate, without
+    rerunning the planner and without auto-approving (the gate stays pending).
+    """
     run_id, _project = create_run(tmp_repo, tracked_runs, review_chunks={1})
     add_code_checkpoint(run_id, 1)
     update_chunk_status(run_id, 1, "awaiting_chunk_approval")
@@ -1718,21 +1730,32 @@ async def test_resume_after_last_chunk_approval_creates_final_gate(
     calls = []
     patch_git_preflight(monkeypatch, calls)
     mark_worktree_applied()  # the paused chunk's patch is already on disk
-    chunked_orchestrator.approve_chunk_and_commit(run_id, 1)
-    patch_resume_git(monkeypatch, calls)
-    patch_success_pipeline(monkeypatch, run_id, calls)
 
-    result = await chunked_orchestrator.resume_chunked_pipeline(run_id)
+    async def fail_planner(*args, **kwargs):
+        raise AssertionError("planner must not run on chunk approval")
+
+    monkeypatch.setattr(chunked_orchestrator, "run_planner", fail_planner)
+
+    result = chunked_orchestrator.approve_chunk_and_commit(run_id, 1)
 
     assert result["status"] == "awaiting_final_approval"
+    assert result["chunk_number"] == 1
     assert not any(call[0] == "planner" for call in calls)
+    status = get_chunk_plan_status(run_id)
+    assert status.chunks[0].status == "completed"
     with engine.connect() as conn:
+        run_status = conn.execute(text("""
+            SELECT status FROM pipeline_runs WHERE id = :run_id
+        """), {"run_id": run_id}).fetchone()[0]
         final_count = conn.execute(text("""
             SELECT COUNT(*) FROM approval_gates
             WHERE run_id = :run_id
               AND approval_type = 'final'
               AND status = 'pending'
         """), {"run_id": run_id}).fetchone()[0]
+    assert run_status == "awaiting_final_approval"
+    # Exactly one PENDING final gate — surfaced for a human decision, never
+    # auto-approved.
     assert final_count == 1
 
 
@@ -3135,7 +3158,8 @@ async def test_retry_success_then_approval_commits_newest_code_checkpoint(
     assert pause["status"] == "awaiting_chunk_approval"
 
     approve = chunked_orchestrator.approve_chunk_and_commit(run_id, 1)
-    assert approve["status"] == "chunk_approved"
+    # The only chunk is now completed, so approval advances to final approval (#44A).
+    assert approve["status"] == "awaiting_final_approval"
 
     commit_calls = [c for c in calls if c[0] == "commit"]
     assert len(commit_calls) == 1
