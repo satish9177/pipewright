@@ -27,6 +27,9 @@ MAX_OUTPUT_CHARS = 10000
 # patch has been rolled back. TIMEOUT is classified as a harness error but is
 # explicitly not auto-retried by the orchestrator.
 AUTO_RETRY_INFRA_BUDGET = 1
+# Phase 1 item 9b policy knob only. Scoped verification remains disabled by
+# default and is not wired into execution in this slice.
+SCOPED_VERIFICATION_ENABLED = False
 
 # --- Coder file-context caps (coder.py, patch_dry_run.py) -------------------
 # Files over this many lines may not be rewritten wholesale; they must be
