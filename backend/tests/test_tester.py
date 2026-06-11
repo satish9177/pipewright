@@ -245,9 +245,19 @@ def test_head_truncation_would_have_lost_summary():
     assert "12 passed" in _truncate_for_display(full)
 
 
-def test_failing_command_rolls_back_chunk(monkeypatch, tmp_path):
-    from backend.config import keys
+def test_run_tests_has_no_rollback_side_effect():
+    """
+    T2 (Phase 2 item 11): the tester returns verdicts only. The rollback moved
+    to chunk_driver.run_tests_with_rollback — reintroducing a tester-side
+    rollback collaborator would double-roll-back every failed run.
+    """
     import backend.pipeline.tester as tester
+
+    assert not hasattr(tester, "rollback_patch")
+
+
+def test_failing_command_returns_failed_verdict_only(monkeypatch, tmp_path):
+    from backend.config import keys
 
     monkeypatch.setattr(
         keys.settings,
@@ -260,23 +270,15 @@ def test_failing_command_rolls_back_chunk(monkeypatch, tmp_path):
         str(tmp_path)
     )
 
-    calls = []
-
-    def fake_rollback(run_id: str, chunk_number: int = 0) -> bool:
-        calls.append((run_id, chunk_number))
-        return True
-
-    monkeypatch.setattr(tester, "rollback_patch", fake_rollback)
-
     run_id = str(uuid.uuid4())
     patch = make_patch_result(run_id)
     result = run_tests(patch, run_id, chunk_number=2)
 
+    # Verdict only — remediation (rollback) is the chunk driver's decision.
     assert result.passed is False
-    assert calls == [(run_id, 2)]
 
 
-def test_baseline_only_failures_pass_without_rollback(monkeypatch, tmp_path):
+def test_baseline_only_failures_pass(monkeypatch, tmp_path):
     from backend.config import keys
     import backend.pipeline.tester as tester
 
@@ -293,13 +295,6 @@ def test_baseline_only_failures_pass_without_rollback(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(tester.subprocess, "run", fake_run)
-    monkeypatch.setattr(
-        tester,
-        "rollback_patch",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("baseline-only failures should not roll back")
-        ),
-    )
     monkeypatch.setattr(keys.settings, "target_repo_path", str(tmp_path))
 
     run_id = str(uuid.uuid4())
@@ -316,7 +311,7 @@ def test_baseline_only_failures_pass_without_rollback(monkeypatch, tmp_path):
     assert result.exit_code == 1
 
 
-def test_new_failure_vs_baseline_fails_and_rolls_back(monkeypatch, tmp_path):
+def test_new_failure_vs_baseline_fails(monkeypatch, tmp_path):
     import backend.pipeline.tester as tester
 
     _set_command(monkeypatch, tmp_path, "pytest")
@@ -336,13 +331,7 @@ def test_new_failure_vs_baseline_fails_and_rolls_back(monkeypatch, tmp_path):
             stderr="",
         )
 
-    calls = []
     monkeypatch.setattr(tester.subprocess, "run", fake_run)
-    monkeypatch.setattr(
-        tester,
-        "rollback_patch",
-        lambda run_id, chunk_number=0: calls.append((run_id, chunk_number)) or True,
-    )
 
     run_id = str(uuid.uuid4())
     result = run_tests(
@@ -355,10 +344,9 @@ def test_new_failure_vs_baseline_fails_and_rolls_back(monkeypatch, tmp_path):
     assert result.passed is False
     assert result.pre_existing_failing_test_ids == [old_id]
     assert result.newly_failing_test_ids == [new_id]
-    assert calls == [(run_id, 3)]
 
 
-def test_unparseable_failing_ids_fail_safe_and_roll_back(monkeypatch, tmp_path):
+def test_unparseable_failing_ids_fail_safe(monkeypatch, tmp_path):
     import backend.pipeline.tester as tester
 
     _set_command(monkeypatch, tmp_path, "pytest")
@@ -371,13 +359,7 @@ def test_unparseable_failing_ids_fail_safe_and_roll_back(monkeypatch, tmp_path):
             stderr="",
         )
 
-    calls = []
     monkeypatch.setattr(tester.subprocess, "run", fake_run)
-    monkeypatch.setattr(
-        tester,
-        "rollback_patch",
-        lambda run_id, chunk_number=0: calls.append((run_id, chunk_number)) or True,
-    )
 
     run_id = str(uuid.uuid4())
     result = run_tests(
@@ -389,7 +371,6 @@ def test_unparseable_failing_ids_fail_safe_and_roll_back(monkeypatch, tmp_path):
     assert result.passed is False
     assert result.failing_test_ids_parseable is False
     assert "no node IDs" in result.failing_test_ids_parse_error
-    assert calls == [(run_id, 0)]
 
 
 def test_timeout_is_not_accepted_by_baseline(monkeypatch, tmp_path):
@@ -407,13 +388,7 @@ def test_timeout_is_not_accepted_by_baseline(monkeypatch, tmp_path):
         error.stdout = "FAILED tests/test_app.py::test_old - AssertionError\n1 failed"
         raise error
 
-    calls = []
     monkeypatch.setattr(tester.subprocess, "run", fake_run)
-    monkeypatch.setattr(
-        tester,
-        "rollback_patch",
-        lambda run_id, chunk_number=0: calls.append((run_id, chunk_number)) or True,
-    )
 
     run_id = str(uuid.uuid4())
     result = run_tests(
@@ -425,7 +400,6 @@ def test_timeout_is_not_accepted_by_baseline(monkeypatch, tmp_path):
     assert result.passed is False
     assert result.timed_out is True
     assert result.failing_test_ids_parseable is False
-    assert calls == [(run_id, 0)]
 
 
 # --------------------------------------------------------------------------
@@ -648,9 +622,9 @@ def test_child_stdin_is_null_device_even_when_parent_stdin_is_a_pipe(
 def test_devnull_does_not_mask_real_test_failures(monkeypatch, tmp_path):
     """
     Regression guard: a genuinely failing test command is still classified
-    failed after E2 — DEVNULL must not make the world look green. (Rollback
-    wiring on this path is already pinned by
-    test_failing_command_rolls_back_chunk.)
+    failed after E2 — DEVNULL must not make the world look green. (Rollback on
+    a failed run is driver-owned since item 11 and is pinned in
+    test_chunk_driver.py.)
     """
     _write_probe(
         tmp_path,

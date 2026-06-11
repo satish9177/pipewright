@@ -25,8 +25,10 @@ from sqlalchemy import text
 from backend.db.database import engine
 from backend.models.handoff import CoderHandoff, FileChange
 from backend.pipeline import chunked_orchestrator
+from backend.pipeline.patch_applier import PatchApplyOutcome
 from backend.pipeline.patch_failures import (
     PatchFailureType,
+    build_patch_failure_report,
     default_message_for_failure_type,
 )
 from backend.pipeline.scope_expansion_store import (
@@ -520,6 +522,93 @@ async def test_golden_scope_violation(monkeypatch, tmp_repo, tracked_runs):
                 outcome="failed",
                 working_tree_clean=True,
                 rollback_performed=False,
+            ),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_golden_apply_phase_unknown_failure_never_auto_retries(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    """
+    Impl brief §11.2a landmine #1: UNKNOWN_PATCH_FAILURE maps to the
+    INFRA_ERROR outcome class, but an apply-phase occurrence is NEVER
+    auto-retried today — auto-retry fires only in the verify/test branch,
+    gated on HARNESS_ERROR + non-TIMEOUT integrity. The driver must keep the
+    today-equivalent gate, not trigger off the class. Captured pre-refactor.
+    """
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    unknown = build_patch_failure_report(
+        PatchFailureType.UNKNOWN_PATCH_FAILURE,
+        technical_details="patch_applier.py: unexpected apply error",
+        changed_files_attempted=FILES,
+        allowed_files=FILES,
+        rollback_performed=True,
+        working_tree_clean=True,
+        chunk_number=1,
+        failed_step="patch",
+    )
+
+    def fake_unknown_apply(
+        code, run_id_arg, chunk_number=0, *, files_expected, repo_path=None
+    ):
+        calls.append(("patch", chunk_number))
+        return PatchApplyOutcome.from_failure(unknown)
+
+    monkeypatch.setattr(
+        chunked_orchestrator, "apply_patch_guarded", fake_unknown_apply
+    )
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    expected_message = default_message_for_failure_type(
+        PatchFailureType.UNKNOWN_PATCH_FAILURE
+    )
+    assert result == {
+        "status": "failed",
+        "run_id": run_id,
+        "failed_chunk": 1,
+        "error": expected_message,
+    }
+    assert _run_row(run_id) == ("failed", "chunk_1_failed")
+    assert _chunk_row(run_id) == ("failed", expected_message)
+    assert _gate_counts(run_id) == {}
+    # Zero auto-retries: one coder pass, one apply, no test run, no commit.
+    assert _stage_counts(calls) == {
+        "baseline": 1, "planner": 1, "coder": 1, "dry_run": 1, "patch": 1,
+        "test": 0, "review": 0, "commit": 0,
+    }
+    assert _normalized_summary(run_id) == _failure_summary(
+        PatchFailureType.UNKNOWN_PATCH_FAILURE,
+        technical_details="patch_applier.py: unexpected apply error",
+        changed_files_attempted=FILES,
+        suggested_actions=[
+            "retry_with_instruction", "reject_chunk",
+            "mark_manual_intervention", "view_details",
+        ],
+        rollback_performed=True,
+        working_tree_clean=True,
+        retry={"attempts": 0, "max_attempts": 0, "retryable": False},
+        failed_step="patch",
+        manual_intervention_needed=False,
+        attempts=[
+            _attempt(
+                attempt_number=1,
+                recovery_mode="initial",
+                failure_type="UNKNOWN_PATCH_FAILURE",
+                failed_step="patch",
+                changed_files_attempted=FILES,
+                changed_files_actual=[],
+                scope_ok=True,
+                test_outcome="not_run",
+                outcome="failed",
+                working_tree_clean=True,
+                rollback_performed=True,
             ),
         ],
     )

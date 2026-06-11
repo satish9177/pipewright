@@ -2603,16 +2603,17 @@ async def test_test_failure_after_apply_reports_and_does_not_double_rollback(
         "run_tests",
         lambda patch, run_id, chunk_number=0: make_test_result(run_id, False),
     )
-    # tester.py owns rollback on test failure; the orchestrator must not also
-    # roll back.
+    # T2 (item 11): the driver owns the rollback on a failed run — exactly one
+    # invocation, never a second (the historical tester+orchestrator double).
+    rollbacks = []
     monkeypatch.setattr(
         chunked_orchestrator,
         "rollback_patch",
-        lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("orchestrator must not roll back; tester already did")
-        ),
+        lambda run_id_arg, chunk_number=0: rollbacks.append(
+            (run_id_arg, chunk_number)
+        ) or True,
     )
-    # Simulate the tester having rolled back to a clean tree.
+    # The driver's rollback restores a clean tree.
     monkeypatch.setattr(
         chunked_orchestrator.local_git, "is_working_tree_clean", lambda repo: True
     )
@@ -2621,6 +2622,7 @@ async def test_test_failure_after_apply_reports_and_does_not_double_rollback(
 
     assert result["status"] == "failed"
     assert result["failed_chunk"] == 1
+    assert rollbacks == [(run_id, 1)]
     assert not any(c[0] == "commit" for c in calls)
     summary = _read_completion_summary(run_id, 1)
     assert summary["failure_type"] == PatchFailureType.TEST_REGRESSION.value

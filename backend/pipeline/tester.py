@@ -1,7 +1,11 @@
 """
 tester.py
 Runs the configured test command against the target repo.
-Triggers rollback through patch_applier if tests fail.
+
+Returns a verdict only (T2, Phase 2 item 11): tester no longer rolls back a
+failed run. The chunk driver (chunk_driver.run_tests_with_rollback) owns the
+rollback — same trigger (a failed or crashed run), same result, the call site
+just lives with the one component that decides remediation in every mode.
 """
 
 import re
@@ -11,7 +15,6 @@ import subprocess
 from collections.abc import Iterable
 from backend.models.handoff import PatchResult, PipelineTestResult
 from backend.checkpoint.checkpoint_store import save_checkpoint
-from backend.pipeline.patch_applier import rollback_patch
 from backend.pipeline.policy import MAX_OUTPUT_CHARS, TESTER_TIMEOUT_SECONDS
 from backend.pipeline.test_failure_ids import (
     FailingTestIdParseResult,
@@ -238,8 +241,8 @@ def run_tests(
 ) -> PipelineTestResult:
     """
     Synchronous. No AI calls. Pure subprocess.
-    Runs test command, captures output,
-    triggers rollback on failure.
+    Runs the test command, captures output, and returns the verdict.
+    Performs NO rollback (T2): remediation is the chunk driver's decision.
     """
     print(f"[TESTER] Starting | run_id={run_id}")
 
@@ -346,13 +349,6 @@ def run_tests(
             return test_result
 
         print(f"[TESTER] Result: FAILED | {failed_tests} failed")
-        print("[TESTER] Tests failed. Triggering rollback.")
-        rollback_result = rollback_patch(run_id, chunk_number)
-        if rollback_result:
-            print("[TESTER] Rollback complete.")
-        else:
-            print("[TESTER] Rollback not available.")
-
         print(f"[TESTER] Complete | run_id={run_id}")
         return _make_test_result(
             run_id=run_id,
@@ -379,13 +375,6 @@ def run_tests(
         baseline_ids = _normalize_id_set(baseline_failing_test_ids)
         print(f"[TESTER] Duration: {duration:.2f} seconds")
         print("[TESTER] Result: FAILED | command timed out")
-        print("[TESTER] Tests failed. Triggering rollback.")
-        rollback_result = rollback_patch(run_id, chunk_number)
-        if rollback_result:
-            print("[TESTER] Rollback complete.")
-        else:
-            print("[TESTER] Rollback not available.")
-
         return _make_test_result(
             run_id=run_id,
             passed=False,
@@ -403,20 +392,6 @@ def run_tests(
         duration = time.perf_counter() - start
         print(f"[TESTER] Duration: {duration:.2f} seconds")
         print("[TESTER] Result: FAILED | unexpected error")
-        print("[TESTER] Tests failed. Triggering rollback.")
-        try:
-            rollback_result = rollback_patch(run_id, chunk_number)
-            if rollback_result:
-                print("[TESTER] Rollback complete.")
-            else:
-                print("[TESTER] Rollback not available.")
-        except Exception as rollback_error:
-            raise RuntimeError(
-                f"tester.py: test execution failed and rollback failed. "
-                f"run_id={run_id} | error={error} | "
-                f"rollback_error={rollback_error}"
-            )
-
         raise RuntimeError(
             f"tester.py: test execution failed. run_id={run_id} | error={error}"
         )

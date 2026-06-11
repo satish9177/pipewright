@@ -1,10 +1,9 @@
 """
 stage_contract.py
-Phase 2 item 10 — uniform stage contract for chunk execution (proposal §4.1/§4.2).
+Phase 2 item 10/11 — uniform stage contract for chunk execution (proposal
+§4.1/§4.2).
 
-Defines the substrate the item-11 driver will iterate, WITHOUT changing any
-caller: `_execute_single_chunk` still runs the same inline sequence and none of
-its control flow routes through this module yet.
+Defines the substrate the item-11 driver (chunk_driver.py) iterates:
 
   - OutcomeClass: the closed five-class outcome taxonomy (proposal §3 B-3).
   - outcome_class_for_failure: the single source of truth mapping the closed
@@ -18,16 +17,20 @@ its control flow routes through this module yet.
     (run_planner / run_coder / assert_files_in_scope + dry_run_changes /
     apply_patch_guarded / run_tests / run_chunk_review). The wrapped functions
     keep their signatures, behavior, and tests; adapters only classify.
+    Each adapter takes an optional ``*_fn`` callable so the driver can inject
+    the orchestrator-resolved stage function (one namespace for fakes and for
+    the strangler migration); the default is this module's import, so the
+    item-10 contract and tests are unchanged.
 
-In this slice the outcome class is *carried*, not acted on: retryability and
-suggested actions still derive from the frozensets in patch_failures.py.
-Wiring policy decisions to the class is item 11 (the driver) — do not
-half-wire it earlier.
+The outcome class is a coarse narrative signal. It is NEVER the authority for
+retryability or human-retry eligibility (impl brief §11.2a): auto-retry keys on
+failure type + ExecutionIntegrity (item 8's rule), and human-retry eligibility
+keeps deriving from the failure-type-level frozensets in patch_failures.py.
 
 Also the canonical home of the post-apply test-failure classification helpers
-(classify_test_failure / build_test_failure_report), moved verbatim from
-chunked_orchestrator so the orchestrator, the verify adapter, and the future
-driver share one implementation instead of drifting copies.
+(classify_test_failure / build_test_failure_report / verify_outcome_from_result)
+so the orchestrator, the verify adapter, and the driver share one
+implementation instead of drifting copies.
 """
 
 from __future__ import annotations
@@ -242,8 +245,10 @@ def build_test_failure_report(
 # Thin wrappers over the existing stage functions. Each takes the inputs the
 # orchestrator passes today and returns a StageOutcome carrying the underlying
 # return / failure report verbatim. Unexpected exceptions propagate exactly as
-# they do from the wrapped functions (the orchestrator's chunk-level handler
-# keeps owning them).
+# they do from the wrapped functions (the driver's chunk-level handler keeps
+# owning them). The optional ``*_fn`` parameters exist for the driver, which
+# injects the orchestrator-module-resolved callables; None means this module's
+# own import (item-10 behavior).
 
 
 async def plan_stage(
@@ -252,8 +257,9 @@ async def plan_stage(
     *,
     chunk_number: int,
     project_id: str | None,
+    run_planner_fn=None,
 ) -> StageOutcome:
-    plan = await run_planner(
+    plan = await (run_planner_fn or run_planner)(
         enriched_description,
         run_id,
         chunk_number=chunk_number,
@@ -273,8 +279,9 @@ async def code_stage(
     chunk_number: int,
     project_id: str | None,
     files_expected: list[str],
+    run_coder_fn=None,
 ) -> StageOutcome:
-    code = await run_coder(
+    code = await (run_coder_fn or run_coder)(
         plan,
         run_id,
         chunk_number=chunk_number,
@@ -306,6 +313,7 @@ def preflight_stage(
     files_expected: list[str],
     target_repo_path: str,
     chunk_number: int,
+    dry_run_fn=None,
 ) -> StageOutcome:
     """Scope pre-check then zero-mutation dry-run, before any write."""
     try:
@@ -326,7 +334,7 @@ def preflight_stage(
             failure=report,
         )
 
-    dry = dry_run_changes(code, target_repo_path)
+    dry = (dry_run_fn or dry_run_changes)(code, target_repo_path)
     if not dry.ok:
         failure_type = classify_patch_failure(
             RuntimeError(dry.error_message or ""), phase="apply"
@@ -359,8 +367,9 @@ def apply_stage(
     *,
     chunk_number: int,
     files_expected: list[str],
+    apply_fn=None,
 ) -> StageOutcome:
-    outcome = apply_patch_guarded(
+    outcome = (apply_fn or apply_patch_guarded)(
         code,
         run_id,
         chunk_number=chunk_number,
@@ -380,23 +389,24 @@ def apply_stage(
     )
 
 
-def verify_stage(
-    patch_result: PatchResult,
-    run_id: str,
+def verify_outcome_from_result(
+    test_result,
     code: CoderHandoff,
     chunk: ChunkDefinition,
     *,
     target_repo_path: str,
-    baseline_kwargs: dict[str, Any] | None = None,
     attempts: int = 0,
     max_attempts: int | None = None,
 ) -> StageOutcome:
-    test_result = run_tests(
-        patch_result,
-        run_id,
-        chunk_number=chunk.chunk_number,
-        **(baseline_kwargs or {}),
-    )
+    """
+    Classify an already-run test result into the verify StageOutcome.
+
+    Split out of verify_stage for the item-11 driver: remediation (the T2
+    rollback) is driver-owned and must happen BETWEEN the failed run and this
+    classification, so the report's working_tree_clean reads the post-rollback
+    tree exactly as it did when the tester rolled back itself. Pure aside from
+    the cleanliness read; builds the identical report verify_stage built.
+    """
     if test_result.passed:
         return StageOutcome(
             stage=STAGE_VERIFY,
@@ -424,6 +434,34 @@ def verify_stage(
     )
 
 
+def verify_stage(
+    patch_result: PatchResult,
+    run_id: str,
+    code: CoderHandoff,
+    chunk: ChunkDefinition,
+    *,
+    target_repo_path: str,
+    baseline_kwargs: dict[str, Any] | None = None,
+    attempts: int = 0,
+    max_attempts: int | None = None,
+    run_tests_fn=None,
+) -> StageOutcome:
+    test_result = (run_tests_fn or run_tests)(
+        patch_result,
+        run_id,
+        chunk_number=chunk.chunk_number,
+        **(baseline_kwargs or {}),
+    )
+    return verify_outcome_from_result(
+        test_result,
+        code,
+        chunk,
+        target_repo_path=target_repo_path,
+        attempts=attempts,
+        max_attempts=max_attempts,
+    )
+
+
 async def review_stage(
     run_id: str,
     project_id: str | None,
@@ -431,6 +469,8 @@ async def review_stage(
     code: CoderHandoff,
     patch: PatchResult,
     test_result: PipelineTestResult,
+    *,
+    run_review_fn=None,
 ) -> StageOutcome:
     """
     Advisory reviewer (display-only evidence). Always SUCCESS: it never changes
@@ -439,7 +479,7 @@ async def review_stage(
     """
     record = None
     try:
-        record = await run_chunk_review(
+        record = await (run_review_fn or run_chunk_review)(
             run_id=run_id,
             project_id=project_id,
             chunk=chunk,
