@@ -9,7 +9,7 @@
 
 - **What:** executing the Pipewright pipeline + memory redesign described in `PIPEWRIGHT_REDESIGN_PROPOSAL.md` (the authoritative, code-verified design).
 - **How (the meta-decision):** *not* hand-written PR-by-PR. **Fable 5 owns the full implementation** — it reads the proposal, reasons about edge cases, writes the tests, and implements. A human reviews each completed PR before the next batch starts. Harness for this lives in `FABLE5_IMPL_SPEC_BRIEF.md`.
-- **Where we are (2026-06-11):** **E2 (`stdin=DEVNULL`) is done** (`backend/pipeline/tester.py` + `backend/tests/test_tester.py`; spec in `specs/E2-stdin-devnull.md`). Next batch: **5 remaining Phase 0 items in parallel** (see batching below).
+- **Where we are (2026-06-11):** **Phase 0 is complete and code-verified** (all items present + 105 targeted tests pass; P7 deferred to Phase 2 by design). **§5.1 and §5.2 are now DECIDED** (baseline gate + scoped option default-off; auto-retry budget 1), which unblocks Phase 1. **Phase 1 has started with item 7 — Signal C execution-integrity classifier** (pure, decision-free; `backend/pipeline/test_run_validation.py`). Items 8 and 9 follow as separate PRs.
 - **CRITICAL BOUNDARY:** the parallel batch is endorsed **only for the independent Phase 0 items.** **Stop and reassess at the Phase 1/2 line** — the four §5 decisions *and* the strangler refactor of `_execute_single_chunk`. There, human judgment + a strong-model review gate become load-bearing again. Do not let momentum carry the loop across that line unreviewed.
 
 ---
@@ -76,12 +76,12 @@ All of Phase 0 is now complete except P7, which is deliberately deferred to Phas
 
 ---
 
-## The four §5 decisions — PENDING (the user's call; they gate Phase 1+)
+## The four §5 decisions (the user's call; they gate Phase 1+)
 
-1. **§5.1 Verification semantics:** accept "no new failures vs. baseline" (+ disclose pre-existing) replacing "whole suite green"? Accept scoped-verification as a policy option?
-2. **§5.2 Auto-retry of `INFRA_ERROR`:** confirm scope + default budget (proposal: 1–2).
-3. **§5.3 Steer-without-replan** inside unchanged scope: confirm; choose the conservative variant (any new-file mention forces re-confirm) or not.
-4. **§5.4 Reviewer ack gate:** approve the ack-required severity set (proposal: `high` × {`requirement_mismatch`, `security`}).
+1. **§5.1 Verification semantics:** ✅ **DECIDED (2026-06-11): accept the regression-vs-baseline gate AND add scoped-verification as a policy option, default OFF.** Chunk gate fails only on *newly failing* tests vs. a recorded baseline; pre-existing failures are disclosed, never charged to the chunk; full suite still gates final approval. Gates Phase 1 item 9.
+2. **§5.2 Auto-retry of `INFRA_ERROR`:** ✅ **DECIDED (2026-06-11): auto-retry budget = 1, then pause for a human** (conservative end of the proposal's 1–2 range). `INFRA_ERROR` class only — never code/scope failures. Gates Phase 1 item 8.
+3. **§5.3 Steer-without-replan** inside unchanged scope: **PENDING** — gates Phase 3 (item 13), not Phase 1. Confirm; choose the conservative variant (any new-file mention forces re-confirm) or not.
+4. **§5.4 Reviewer ack gate:** **PENDING** — gates Phase 4 (item 15), not Phase 1. Approve the ack-required severity set (proposal: `high` × {`requirement_mismatch`, `security`}).
 
 Plus §7 open questions (attempt-budget defaults; whether post-success refinement ships in the first continuation slice; confirm test-command detection can ship immediately).
 
@@ -96,7 +96,8 @@ Plus §7 open questions (attempt-budget defaults; whether post-success refinemen
 5. ~~ARCH-M1 (one-time startup migration) — done.~~
 6. ~~Wire `detect_test_command` into the setup route + New Project form — done.~~
 7. **P7 deferred to Phase 2** — fold the resume HEAD-drift check into the attempt-ledger work (it records per-chunk HEADs, making the check exact and false-positive-free).
-7. **Before Phase 1:** the user rules on the four §5 decisions. Do **not** let the loop cross into Phase 1/2 unreviewed (see CRITICAL BOUNDARY).
+8. ~~**Before Phase 1:** the user rules on the four §5 decisions.~~ **§5.1 + §5.2 decided 2026-06-11** (the two that gate Phase 1); §5.3/§5.4 still pending but gate Phases 3/4. Do **not** let the loop cross into Phase 2 (the strangler refactor) unreviewed (see CRITICAL BOUNDARY).
+9. **Phase 1 sequence (separate PRs, in order):** ~~item 7 Signal C classifier~~ ✅ **done** (`classify_execution_integrity` in `test_run_validation.py`; 51 tests) → item 8 split `TEST_FAILURE_AFTER_APPLY` → regression/harness + auto-retry budget 1 (uses §5.2) → item 9 baseline-aware verification + scoped option default-off (uses §5.1). **Implementation handoff brief for items 8 + 9: `PHASE1_ITEMS_8_9_BRIEF.md`.**
 
 ---
 

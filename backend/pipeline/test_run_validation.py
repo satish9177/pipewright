@@ -30,6 +30,18 @@ Verdict (``TestRunVerdict``):
                   gives no parseable evidence. Pipewright cannot confirm tests
                   ran, and must NOT accuse it of being weak (v1).
 
+  - Signal C — execution integrity (redesign Phase 1, item 7): a SEPARATE pure
+    classifier, ``classify_execution_integrity``, that answers a different
+    question from the STRONG/WEAK verdict — "did the test harness actually run,
+    or did the world break?" It detects interpreter crashes (the Windows
+    ``Fatal Python error: init_sys_streams`` that motivated E2), command-not-found,
+    signal kills, pytest collection errors, no-tests-collected, and timeout. It is
+    deliberately orthogonal to ``classify_test_run``: the verdict says how strong
+    the validation was; integrity says whether the run is even interpretable as a
+    code pass/fail. Joining the two into the failure taxonomy (``INFRA_ERROR`` vs.
+    ``CODE_REJECTED``) and auto-retry policy is the NEXT slice (Phase 1 item 8) —
+    Signal C lands pure and caller-free here, exactly as Signals A/B did.
+
 This module is pure and deterministic: it reads ONLY the passed-in strings and
 exit code. No LLM, no filesystem, no subprocess, no repo inspection, no DB, no
 persistence. It only classifies. It never fails a run, never rolls back, never
@@ -66,6 +78,26 @@ class TestRunVerdict(str, Enum):
     UNKNOWN = "unknown"
 
 
+class ExecutionIntegrity(str, Enum):
+    """
+    Signal C — whether the test harness actually executed, independent of the
+    STRONG/WEAK verdict. ``OK`` means the run is interpretable as a real code
+    pass/fail (route via the normal verdict + exit code); every other value means
+    the world broke before/instead of running the change's tests.
+
+    Ordered loosely most- to least-severe; ``classify_execution_integrity`` applies
+    a fixed precedence (see its docstring), so at most one value is returned.
+    """
+
+    OK = "ok"
+    TIMEOUT = "timeout"
+    HARNESS_CRASH = "harness_crash"
+    COMMAND_NOT_FOUND = "command_not_found"
+    SIGNAL_KILL = "signal_kill"
+    COLLECTION_ERROR = "collection_error"
+    NO_TESTS_RAN = "no_tests_ran"
+
+
 @dataclass(frozen=True)
 class TestRunValidationResult:
     # Not a pytest test class despite the leading "Test".
@@ -99,6 +131,42 @@ _ZERO_TEST_MARKER_RES = (
     re.compile(r"\b0\s+selected\b"),               # pytest -k unmatched: 0 selected
     re.compile(r"no\s+tests\s+ran"),               # pytest: no tests ran
     re.compile(r"no\s+test\s+specified"),          # npm default stub
+)
+
+
+# --- Signal C: execution-integrity markers (Phase 1, item 7) ----------------
+# All matched against ANSI-stripped, lower-cased output, like the parsing above.
+# Patterns are intentionally narrow so a normal failing test (which prints
+# tracebacks and "FAILED" lines) is NEVER misread as a broken harness.
+
+# Interpreter/runtime died. NOT a generic "Traceback" — a failing or erroring
+# test prints those routinely; only hard-crash markers belong here.
+_HARNESS_CRASH_RES = (
+    re.compile(r"fatal python error"),   # CPython hard crash incl. init_sys_streams (E2)
+    re.compile(r"segmentation fault"),
+    re.compile(r"core dumped"),          # "Aborted (core dumped)" / "(core dumped)"
+)
+
+# The command itself never ran (shell could not find the executable).
+_COMMAND_NOT_FOUND_RES = (
+    re.compile(r"is not recognized as an internal or external command"),  # Windows cmd
+    re.compile(r"command not found"),                                     # POSIX shell
+)
+# 127 = POSIX "command not found"; 9009 = Windows cmd "not recognized".
+_COMMAND_NOT_FOUND_EXIT_CODES = frozenset({127, 9009})
+
+# Process killed by a signal. POSIX subprocess sets returncode = -signum;
+# 128+signum is the shell convention (134 SIGABRT, 137 SIGKILL/OOM, 139 SIGSEGV,
+# 143 SIGTERM). Kept to these well-known values so an ordinary tool exit code is
+# never mistaken for a kill.
+_SIGNAL_KILL_EXIT_CODES = frozenset({134, 137, 139, 143})
+
+# pytest could not even collect the tests (import error in a test module, bad
+# conftest, etc.). Phrasing is pytest-specific so it can't match an assertion.
+_COLLECTION_ERROR_RES = (
+    re.compile(r"errors?\s+during\s+collection"),       # "errors during collection"
+    re.compile(r"error\s+collecting"),                  # "ERROR collecting tests/..."
+    re.compile(r"importerror\s+while\s+importing\s+test\s+module"),
 )
 
 
@@ -285,3 +353,77 @@ def classify_test_run(
         command_quality,
         evidence,
     )
+
+
+def _is_signal_kill(exit_code: int | None) -> bool:
+    """True when ``exit_code`` indicates the process was killed by a signal."""
+    if exit_code is None:
+        return False
+    # POSIX subprocess.run reports returncode = -signum for signal deaths.
+    if exit_code < 0:
+        return True
+    return exit_code in _SIGNAL_KILL_EXIT_CODES
+
+
+def classify_execution_integrity(
+    exit_code: int | None,
+    output: str | None,
+    *,
+    timed_out: bool = False,
+) -> ExecutionIntegrity:
+    """
+    Signal C: classify whether the test harness actually executed (E2, T2).
+
+    Pure and deterministic; reads only the passed-in exit code, output, and
+    timeout flag. No subprocess, filesystem, DB, or LLM. It answers a DIFFERENT
+    question from :func:`classify_test_run`: not "how strong was the validation"
+    but "is this run even interpretable as a code pass/fail, or did the world
+    break first?" ``OK`` means route via the normal verdict + exit code; any other
+    value is an infrastructure problem the change did not cause.
+
+    Precedence is fixed and exactly one value is returned. Higher entries win when
+    evidence co-occurs, ordered most- to least-fundamental:
+
+      1. ``TIMEOUT``           — the caller's timeout flag. Authoritative: a killed
+         run's partial output is not trustworthy, so it short-circuits parsing.
+      2. ``HARNESS_CRASH``     — interpreter/runtime hard-crash markers.
+      3. ``COMMAND_NOT_FOUND`` — exit 127/9009 or a shell "not found" message.
+      4. ``SIGNAL_KILL``       — a signal-death exit code (negative, or 128+signum).
+      5. ``COLLECTION_ERROR``  — pytest could not collect the tests.
+      6. ``NO_TESTS_RAN``      — positive "zero tests collected/selected/ran"
+         markers (the same evidence :func:`_parse_evidence` uses, minus the
+         char/4 count heuristics — only explicit markers count here, so
+         "0 passed, 2 failed" stays a real run, not a no-run).
+      7. ``OK``                — none of the above; treat as a real test run.
+
+    Why orthogonal to the verdict (deliberate, not redundant): a non-zero exit
+    today collapses to "tests failed". Signal C separates *the code is wrong*
+    (``OK`` + non-zero) from *the harness broke* (everything else), which is the
+    precondition for item 8's ``INFRA_ERROR`` vs. ``CODE_REJECTED`` split and the
+    auto-retry budget. Reconciling ``NO_TESTS_RAN`` with the Signal-A WEAK verdict
+    (e.g. the npm "no test specified" stub is both) is that join's job, not this
+    pure detector's.
+    """
+    if timed_out:
+        return ExecutionIntegrity.TIMEOUT
+
+    text = _ANSI_ESCAPE_RE.sub("", output or "").lower()
+
+    if any(pattern.search(text) for pattern in _HARNESS_CRASH_RES):
+        return ExecutionIntegrity.HARNESS_CRASH
+
+    if exit_code in _COMMAND_NOT_FOUND_EXIT_CODES or any(
+        pattern.search(text) for pattern in _COMMAND_NOT_FOUND_RES
+    ):
+        return ExecutionIntegrity.COMMAND_NOT_FOUND
+
+    if _is_signal_kill(exit_code):
+        return ExecutionIntegrity.SIGNAL_KILL
+
+    if any(pattern.search(text) for pattern in _COLLECTION_ERROR_RES):
+        return ExecutionIntegrity.COLLECTION_ERROR
+
+    if any(pattern.search(text) for pattern in _ZERO_TEST_MARKER_RES):
+        return ExecutionIntegrity.NO_TESTS_RAN
+
+    return ExecutionIntegrity.OK

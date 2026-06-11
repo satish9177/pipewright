@@ -9,7 +9,9 @@ case below is a deterministic function call over (command, exit_code, output).
 import pytest
 
 from backend.pipeline.test_run_validation import (
+    ExecutionIntegrity,
     TestRunVerdict,
+    classify_execution_integrity,
     classify_test_run,
 )
 
@@ -266,3 +268,177 @@ def test_result_exposes_command_quality_signal():
     assert classify_test_run("pytest", 0, "5 passed").command_quality == "likely_test"
     assert classify_test_run("python --version", 0, "").command_quality == "weak"
     assert classify_test_run("./x.sh", 0, "").command_quality == "unknown"
+
+
+# ==========================================================================
+# Signal C — execution integrity (Phase 1, item 7). A SEPARATE pure classifier
+# from the verdict above; tests over the observed crash outputs.
+# ==========================================================================
+
+
+# --- OK: a real run (pass OR fail) is interpretable, never an infra error ---
+
+@pytest.mark.parametrize(
+    "exit_code,output",
+    [
+        (0, "===== 5 passed in 0.10s ====="),          # healthy pass
+        (1, "1 failed, 4 passed in 1.0s"),              # healthy failure
+        (0, "12 passed, 3 skipped in 0.42s"),
+        (None, "5 passed"),                             # exit code not provided
+        (0, ""),                                        # empty output, green
+    ],
+)
+def test_real_runs_are_ok(exit_code, output):
+    assert classify_execution_integrity(exit_code, output) is ExecutionIntegrity.OK
+
+
+def test_failing_test_with_traceback_stays_ok_not_an_infra_error():
+    # The crux of Signal C: a failing/erroring test prints tracebacks and the
+    # words "Error"/"error". That MUST NOT be read as a harness crash or a
+    # collection error — the harness ran fine; the code is wrong.
+    output = (
+        "tests/test_app.py::test_add FAILED\n"
+        "    def test_add():\n"
+        ">       assert add(1, 2) == 4\n"
+        "E       AssertionError: assert 3 == 4\n"
+        "Traceback (most recent call last):\n"
+        "1 failed in 0.05s\n"
+    )
+    assert classify_execution_integrity(1, output) is ExecutionIntegrity.OK
+
+
+# --- TIMEOUT: the flag is authoritative and short-circuits everything -------
+
+def test_timeout_flag_wins_over_everything():
+    # Even output that looks like a clean pass: a killed run is not trustworthy.
+    assert (
+        classify_execution_integrity(0, "5 passed", timed_out=True)
+        is ExecutionIntegrity.TIMEOUT
+    )
+    assert (
+        classify_execution_integrity(None, "Fatal Python error: boom", timed_out=True)
+        is ExecutionIntegrity.TIMEOUT
+    )
+
+
+# --- HARNESS_CRASH: interpreter/runtime died --------------------------------
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        # The exact E2 Windows crash that motivated stdin=DEVNULL.
+        "Fatal Python error: init_sys_streams: can't initialize sys standard streams",
+        "Fatal Python error: Segmentation fault",
+        "./run: line 3:  1234 Segmentation fault      pytest",
+        "Aborted (core dumped)",
+    ],
+)
+def test_harness_crash_markers(output):
+    assert classify_execution_integrity(1, output) is ExecutionIntegrity.HARNESS_CRASH
+
+
+def test_harness_crash_detected_under_ansi_color():
+    colored = "\x1b[31mFatal Python error: init_sys_streams\x1b[0m"
+    assert classify_execution_integrity(1, colored) is ExecutionIntegrity.HARNESS_CRASH
+
+
+# --- COMMAND_NOT_FOUND: the command never ran -------------------------------
+
+@pytest.mark.parametrize(
+    "exit_code,output",
+    [
+        (127, "pytest: command not found"),                 # POSIX exit + text
+        (127, ""),                                           # POSIX exit alone
+        (9009, "'pytest' is not recognized as an internal or external command"),
+        (9009, ""),                                          # Windows exit alone
+        (1, "bash: pytest: command not found"),              # text alone
+    ],
+)
+def test_command_not_found(exit_code, output):
+    assert (
+        classify_execution_integrity(exit_code, output)
+        is ExecutionIntegrity.COMMAND_NOT_FOUND
+    )
+
+
+# --- SIGNAL_KILL: killed by a signal ----------------------------------------
+
+@pytest.mark.parametrize("exit_code", [-9, -11, 134, 137, 139, 143])
+def test_signal_kill_exit_codes(exit_code):
+    assert (
+        classify_execution_integrity(exit_code, "partial output")
+        is ExecutionIntegrity.SIGNAL_KILL
+    )
+
+
+def test_ordinary_nonzero_exit_is_not_a_signal_kill():
+    # pytest's "tests failed" exit 1 and "collection error" exit 2 are NOT kills.
+    assert classify_execution_integrity(1, "1 failed") is ExecutionIntegrity.OK
+
+
+# --- COLLECTION_ERROR: pytest could not collect the tests -------------------
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "!!!!!!!! Interrupted: 1 error during collection !!!!!!!!",
+        "ERROR collecting tests/test_app.py",
+        "ImportError while importing test module 'tests/test_app.py'",
+        "2 errors during collection",
+    ],
+)
+def test_collection_error_markers(output):
+    assert (
+        classify_execution_integrity(2, output) is ExecutionIntegrity.COLLECTION_ERROR
+    )
+
+
+# --- NO_TESTS_RAN: the harness collected/ran zero tests ---------------------
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "collected 0 items",
+        "no tests ran in 0.01s",
+        "collected 5 items / 5 deselected / 0 selected",
+        "0 tests collected",
+    ],
+)
+def test_no_tests_ran_markers(output):
+    # pytest exits 5 when it collects nothing.
+    assert classify_execution_integrity(5, output) is ExecutionIntegrity.NO_TESTS_RAN
+
+
+def test_zero_passed_with_failures_is_ok_not_no_tests_ran():
+    # "0 passed, 2 failed" means tests DID run and failed — only explicit
+    # zero-collection markers count as NO_TESTS_RAN, never the count heuristic.
+    assert classify_execution_integrity(1, "0 passed, 2 failed") is ExecutionIntegrity.OK
+
+
+# --- Precedence: most-fundamental signal wins when evidence co-occurs -------
+
+def test_harness_crash_beats_command_not_found_text():
+    # A crash marker plus a stray "command not found" -> crash is more fundamental.
+    output = "Fatal Python error: init_sys_streams\ncommand not found"
+    assert classify_execution_integrity(127, output) is ExecutionIntegrity.HARNESS_CRASH
+
+
+def test_command_not_found_beats_collection_error_text():
+    output = "is not recognized as an internal or external command\nerror collecting"
+    assert (
+        classify_execution_integrity(9009, output)
+        is ExecutionIntegrity.COMMAND_NOT_FOUND
+    )
+
+
+# --- Purity / None safety ---------------------------------------------------
+
+def test_integrity_none_inputs_do_not_raise():
+    assert classify_execution_integrity(None, None) is ExecutionIntegrity.OK
+
+
+def test_integrity_is_deterministic():
+    args = (1, "Fatal Python error: init_sys_streams")
+    first = classify_execution_integrity(*args)
+    for _ in range(5):
+        assert classify_execution_integrity(*args) is first
