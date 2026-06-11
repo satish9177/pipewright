@@ -15,8 +15,8 @@ Focuses on what no other suite pins:
   - The no-op commit guard still refuses to commit through the driver.
   - Resume is a driver entry mode: skip only on a verified checkpoint,
     fail closed (raise, never skip) on an unverifiable one.
-  - human_retry / steered are named seams that refuse loudly (item 12 /
-    Phase 3); auto_retry is internal-only.
+  - human_retry is a driver entry mode; steered still refuses loudly for
+    Phase 3, and auto_retry is internal-only.
 
 Golden parity (statuses, commits, gates, stored reports, invocation counts)
 lives in test_golden_chunk_execution.py; the auto-retry budget/exclusion rules
@@ -30,6 +30,10 @@ from sqlalchemy import text
 from backend.db.database import engine
 from backend.models.chunk import ChunkDefinition
 from backend.pipeline import chunk_driver, chunked_orchestrator
+from backend.pipeline.chunk_attempt_store import (
+    list_chunk_attempts,
+    record_chunk_attempt,
+)
 from backend.pipeline.chunk_store import get_chunk_plan_status
 from backend.pipeline.patch_applier import PatchApplyOutcome
 from backend.pipeline.patch_failures import PatchFailureType
@@ -42,6 +46,7 @@ from backend.tests.test_chunked_orchestrator import (
     make_test_result,
     patch_git_preflight,
     patch_retry_pipeline,
+    patch_resume_git,
     patch_success_pipeline,
     reset_worktree_state,
 )
@@ -57,6 +62,7 @@ def tracked_runs():
         for run_id in run_ids:
             for table in (
                 "scope_expansion_requests",
+                "chunk_attempts",
                 "chunk_reviews",
                 "approval_gates",
                 "checkpoints",
@@ -305,10 +311,9 @@ async def test_human_retry_failed_tests_roll_back_via_driver(
     monkeypatch, tmp_repo, tracked_runs
 ):
     """
-    The human-retry path (still `_execute_retry_attempt` until item 12) relied
-    on the tester-side rollback; it now routes the verify step through the
-    driver's run_tests_with_rollback, so a failed retry run still restores a
-    clean tree — exactly once.
+    The human-retry path routes the verify step through the driver's
+    run_tests_with_rollback, so a failed retry run still restores a clean tree
+    exactly once.
     """
     run_id, project = create_run(tmp_repo, tracked_runs)
     frid = _seed_failed_chunk(
@@ -484,7 +489,111 @@ def _seam_chunk() -> ChunkDefinition:
 
 
 @pytest.mark.asyncio
-async def test_unimplemented_entry_modes_refuse_loudly():
+async def test_human_retry_uses_driver_without_planner_and_records_attempt(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    frid = _seed_failed_chunk(
+        run_id, 1, failure_type=PatchFailureType.HARNESS_ERROR
+    )
+    calls = []
+    patch_git_preflight(monkeypatch, calls, run_id=run_id)
+    patch_retry_pipeline(monkeypatch, run_id, calls=calls)
+
+    async def boom_planner(*_a, **_k):
+        raise AssertionError("human_retry must not run planner")
+
+    monkeypatch.setattr(chunked_orchestrator, "run_planner", boom_planner)
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "get_current_hash",
+        lambda repo: "retry-head",
+    )
+
+    result = await chunked_orchestrator.retry_failed_chunk(run_id, 1, frid)
+
+    assert result["status"] == "awaiting_chunk_approval"
+    assert not any(call[0] == "planner" for call in calls)
+    assert [c[0] for c in calls if c[0] in {"coder", "dry_run", "patch", "test"}] == [
+        "coder",
+        "dry_run",
+        "patch",
+        "test",
+    ]
+    attempts = list_chunk_attempts(run_id, 1)
+    assert len(attempts) == 1
+    assert attempts[0]["entry_mode"] == chunk_driver.EntryMode.HUMAN_RETRY.value
+    assert attempts[0]["final_status"] == "awaiting_chunk_approval"
+    assert attempts[0]["final_outcome_class"] == "NEEDS_HUMAN"
+    assert attempts[0]["head_sha"] == "retry-head"
+
+
+@pytest.mark.asyncio
+async def test_resume_fails_closed_when_attempt_head_drifted(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, project = create_run(tmp_repo, tracked_runs)
+    record_chunk_attempt(
+        run_id=run_id,
+        project_id=project["id"],
+        chunk_number=1,
+        entry_mode=chunk_driver.EntryMode.FRESH.value,
+        stage_outcomes=[],
+        final_outcome_class="SUCCESS",
+        final_status="completed",
+        head_sha="expected-head",
+    )
+    patch_resume_git(monkeypatch)
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "get_current_hash",
+        lambda repo: "actual-head",
+    )
+
+    with pytest.raises(RuntimeError, match="HEAD does not match"):
+        await chunked_orchestrator.resume_chunked_pipeline(run_id)
+
+
+@pytest.mark.asyncio
+async def test_resume_proceeds_when_attempt_head_matches(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    """
+    P7 no-false-positive (brief §12.3): when the branch is exactly where the
+    last completed attempt left it, the drift check must NOT dead-end resume.
+    Also covers the pre-ledger degradation: no recorded HEAD -> no block.
+    """
+    run_id, project = create_run(tmp_repo, tracked_runs)
+    record_chunk_attempt(
+        run_id=run_id,
+        project_id=project["id"],
+        chunk_number=1,
+        entry_mode=chunk_driver.EntryMode.FRESH.value,
+        stage_outcomes=[],
+        final_outcome_class="SUCCESS",
+        final_status="completed",
+        head_sha="expected-head",
+    )
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "get_current_hash",
+        lambda repo: "expected-head",
+    )
+    # HEAD matches the last completed attempt -> must not raise.
+    chunked_orchestrator._verify_resume_head_matches_last_attempt(
+        run_id, str(tmp_repo)
+    )
+
+    # Pre-ledger / partially recorded run (no completed HEAD rows) -> degrade to
+    # legacy behavior, never invent a block. Use a fresh run with no attempts.
+    other_run_id, _other_project = create_run(tmp_repo, tracked_runs)
+    chunked_orchestrator._verify_resume_head_matches_last_attempt(
+        other_run_id, str(tmp_repo)
+    )
+
+
+@pytest.mark.asyncio
+async def test_entry_modes_refuse_invalid_external_dispatch():
     kwargs = dict(
         run_id="run-x",
         project_id="proj-x",
@@ -495,8 +604,6 @@ async def test_unimplemented_entry_modes_refuse_loudly():
     )
 
     with pytest.raises(NotImplementedError):
-        await chunk_driver.drive_chunk(chunk_driver.EntryMode.HUMAN_RETRY, **kwargs)
-    with pytest.raises(NotImplementedError):
         await chunk_driver.drive_chunk(chunk_driver.EntryMode.STEERED, **kwargs)
     # auto_retry is internal to the driver loop, never an external entry.
     with pytest.raises(ValueError):
@@ -504,3 +611,6 @@ async def test_unimplemented_entry_modes_refuse_loudly():
     # resume requires the chunk_status row backing checkpoint verification.
     with pytest.raises(ValueError):
         await chunk_driver.drive_chunk(chunk_driver.EntryMode.RESUME, **kwargs)
+    # human_retry is implemented, but requires retry-specific context.
+    with pytest.raises(ValueError):
+        await chunk_driver.drive_chunk(chunk_driver.EntryMode.HUMAN_RETRY, **kwargs)

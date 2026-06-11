@@ -512,6 +512,7 @@ def _migrate_db(conn) -> None:
             "ON memory_suggestions(project_id, status)",
             ("project_id", "status"),
         )
+        _ensure_chunk_attempts_shape(conn)
         _ensure_project_index_fingerprints_shape(conn)
         _ensure_file_index_shape(conn)
     except Exception as error:
@@ -529,6 +530,48 @@ def _table_exists(conn, table_name: str) -> bool:
         raise RuntimeError(
             f"database.py: Failed to inspect table {table_name}: {error}"
         )
+
+
+def _ensure_chunk_attempts_shape(conn) -> None:
+    """
+    Ensure the append-only chunk_attempts ledger exists for existing DB files.
+
+    The table is additive and metadata-only. It is safe to create on every
+    startup and does not backfill older runs; missing rows are meaningful to the
+    resume path and degrade to legacy behavior.
+    """
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS chunk_attempts (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            chunk_number INTEGER NOT NULL,
+            attempt_number INTEGER NOT NULL,
+            entry_mode TEXT NOT NULL,
+            stage_outcomes_json TEXT,
+            evidence_refs_json TEXT,
+            final_outcome_class TEXT,
+            final_status TEXT,
+            head_sha TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (run_id) REFERENCES pipeline_runs(id),
+            UNIQUE(run_id, chunk_number, attempt_number)
+        )
+    """))
+    _create_index_if_columns_exist(
+        conn,
+        "chunk_attempts",
+        "CREATE INDEX IF NOT EXISTS idx_chunk_attempts_run_chunk "
+        "ON chunk_attempts(run_id, chunk_number, attempt_number)",
+        ("run_id", "chunk_number", "attempt_number"),
+    )
+    _create_index_if_columns_exist(
+        conn,
+        "chunk_attempts",
+        "CREATE INDEX IF NOT EXISTS idx_chunk_attempts_completed_head "
+        "ON chunk_attempts(run_id, final_status, chunk_number)",
+        ("run_id", "final_status", "chunk_number"),
+    )
 
 
 def _ensure_file_index_shape(conn) -> None:

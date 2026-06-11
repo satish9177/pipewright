@@ -42,22 +42,25 @@ from backend.pipeline.chunk_store import (
     save_chunk_completion_summary,
     save_chunk_test_run_verdict,
 )
+from backend.pipeline.chunk_attempt_store import (
+    get_latest_completed_attempt_head,
+    record_chunk_attempt,
+)
 from backend.memory.conflict_scope import is_db_sensitive_run
 from backend.memory.memory_store import mark_fact_stale
 from backend.memory.repo_reality import evaluate_db_memory_conflicts
-from backend.pipeline.coder import run_coder
-from backend.pipeline.patch_applier import (
-    apply_patch_guarded,
-    classify_patch_failure,
-    rollback_patch,
-)
-from backend.pipeline.patch_dry_run import dry_run_changes
+# The chunk driver resolves stage callables through this module at call time;
+# these imports are intentional re-export seams for tests and the strangler.
+from backend.pipeline.coder import run_coder  # noqa: F401
+from backend.pipeline.patch_applier import apply_patch_guarded  # noqa: F401
+from backend.pipeline.patch_applier import rollback_patch
+from backend.pipeline.patch_dry_run import dry_run_changes  # noqa: F401
 from backend.pipeline.patch_failures import (
     PatchFailureReport,
     PatchFailureType,
+    RECOVERED_PATCH_REVIEW_KIND,
     RETRY_INELIGIBLE_WRONG_BRANCH,
     RecoveredPatchReviewSummary,
-    build_patch_failure_report,
     evaluate_patch_retry_eligibility,
     patch_failure_report_from_completion_summary,
     patch_failure_report_to_completion_summary,
@@ -92,14 +95,13 @@ from backend.pipeline.scope_expansion_store import (
     maybe_create_scope_expansion_request_for_failure,
     update_scope_expansion_request_status,
 )
-from backend.pipeline.scope_guard import ScopeDriftError, assert_files_in_scope
 from backend.pipeline.policy import AUTO_RETRY_INFRA_BUDGET
-# Canonical home of the post-apply test-failure helpers (Phase 2 item 10):
-# moved verbatim to stage_contract so the orchestrator and the stage adapters
-# share one implementation. Aliased to keep this module's internal names.
+# Canonical post-apply test-failure helpers. The driver uses stage_contract
+# directly; these aliases stay as compatibility seams for tests and callers that
+# imported them from this module during the strangler.
 from backend.pipeline.stage_contract import (
-    build_test_failure_report as _build_test_failure_report,
-    classify_test_failure as _classify_test_failure,
+    build_test_failure_report as _build_test_failure_report,  # noqa: F401
+    classify_test_failure as _classify_test_failure,  # noqa: F401
 )
 from backend.pipeline.test_run_validation import (
     ExecutionIntegrity,
@@ -773,7 +775,7 @@ def _commit_and_complete_chunk(
     plan: PlannerHandoff | None = None,
     recovery_attempts: list | None = None,
     verification_disclosure: dict | None = None,
-) -> None:
+) -> str | None:
     chunk_number = chunk.chunk_number
     touched_files = _files_touched(coder_output)
     if not touched_files:
@@ -793,7 +795,7 @@ def _commit_and_complete_chunk(
         raise RuntimeError(NO_EFFECTIVE_CHANGES_MESSAGE)
 
     commit_message = f"chunk {chunk_number}: {chunk.title}"
-    local_git.commit_files(touched_files, commit_message, target_repo_path)
+    commit_hash = local_git.commit_files(touched_files, commit_message, target_repo_path)
 
     summary_plan = plan or _fallback_plan_for_summary(run_id, chunk_number)
     completion_summary = _build_completion_summary(
@@ -819,6 +821,71 @@ def _commit_and_complete_chunk(
         run_id=run_id,
         chunk_number=chunk_number,
     )
+    return commit_hash
+
+
+def _record_approval_completion_attempt(
+    run_id: str,
+    project_id: str,
+    chunk_number: int,
+    completion_summary: str | None,
+    target_repo_path: str,
+    commit_hash: str | None,
+) -> None:
+    """
+    Record the HEAD produced by a previously paused chunk approval.
+
+    The driver records the attempt that reached the human gate. Approval commits
+    happen outside the driver, so this additive row gives resume an exact HEAD
+    for high-risk/recovered chunks too. Best-effort: the commit already
+    succeeded, and audit recording must not convert that into a failed approval.
+    """
+    entry_mode = chunk_driver.EntryMode.FRESH.value
+    if completion_summary:
+        try:
+            parsed = json.loads(completion_summary)
+            if parsed.get("kind") == RECOVERED_PATCH_REVIEW_KIND:
+                entry_mode = chunk_driver.EntryMode.HUMAN_RETRY.value
+        except Exception:
+            pass
+    head_sha = commit_hash
+    if not head_sha:
+        try:
+            head_sha = local_git.get_current_hash(target_repo_path)
+        except Exception as error:
+            logger.warning(
+                "[CHUNKED] approval completion HEAD capture skipped | "
+                "run_id=%s | chunk=%s | error=%s",
+                run_id,
+                chunk_number,
+                error,
+            )
+            head_sha = None
+    try:
+        record_chunk_attempt(
+            run_id=run_id,
+            project_id=project_id,
+            chunk_number=chunk_number,
+            entry_mode=entry_mode,
+            stage_outcomes=[
+                {
+                    "stage": "gate_or_commit",
+                    "outcome_class": "SUCCESS",
+                }
+            ],
+            evidence_refs=["approved_chunk_gate"],
+            final_outcome_class="SUCCESS",
+            final_status="completed",
+            head_sha=head_sha,
+        )
+    except Exception as error:
+        logger.warning(
+            "[CHUNKED] approval completion attempt ledger skipped | "
+            "run_id=%s | chunk=%s | error=%s",
+            run_id,
+            chunk_number,
+            error,
+        )
 
 
 def _build_final_approval_summary(
@@ -1310,6 +1377,37 @@ def _verify_resume_branch(branch_name: str, repo_path: str) -> None:
         raise RuntimeError(
             f"chunked_orchestrator.py: failed to checkout resume branch "
             f"{branch_name}: {result.stderr.strip()}"
+        )
+
+
+def _verify_resume_head_matches_last_attempt(run_id: str, repo_path: str) -> None:
+    """
+    Fail closed when resume branch HEAD drifted from the last completed attempt.
+
+    Older runs have no chunk_attempts rows, and partially recorded rows may have
+    no HEAD. In those cases resume keeps the legacy checkpoint behavior.
+    """
+    latest = get_latest_completed_attempt_head(run_id)
+    if latest is None:
+        return
+    expected_head = latest.get("head_sha")
+    if not expected_head:
+        return
+    try:
+        current_head = local_git.get_current_hash(repo_path)
+    except Exception as error:
+        raise RuntimeError(
+            "chunked_orchestrator.py: unsafe resume recovery. Could not read "
+            f"current HEAD for run {run_id}: {error}. Manual intervention "
+            "required."
+        )
+    if current_head != expected_head:
+        raise RuntimeError(
+            "chunked_orchestrator.py: unsafe resume recovery. Resume branch "
+            "HEAD does not match the last recorded completed chunk attempt. "
+            f"run_id={run_id} | chunk={latest.get('chunk_number')} | "
+            f"expected_head={expected_head} | current_head={current_head}. "
+            "Manual intervention required."
         )
 
 
@@ -1863,6 +1961,7 @@ async def _resume_chunked_pipeline_locked(
 
     _validate_target_repo(target_repo_path, require_clean=False)
     _verify_resume_branch(branch_name, target_repo_path)
+    _verify_resume_head_matches_last_attempt(run_id, target_repo_path)
 
     awaiting_chunk = _awaiting_approval_chunk(plan_status)
     if awaiting_chunk is not None:
@@ -1999,13 +2098,21 @@ def _approve_chunk_and_commit_locked(
         else None
     )
     _decide_pending_chunk_gate(run_id, chunk_number, "approved")
-    _commit_and_complete_chunk(
+    commit_hash = _commit_and_complete_chunk(
         run_id,
         definitions[chunk_number],
         code,
         target_repo_path,
         plan_status.project_id,
         verification_disclosure=verification_disclosure,
+    )
+    _record_approval_completion_attempt(
+        run_id,
+        plan_status.project_id,
+        chunk_number,
+        chunk_status.completion_summary,
+        target_repo_path,
+        commit_hash,
     )
     if test_result is not None:
         _roll_verification_baseline_forward(run_id, verification_baseline, test_result)
@@ -2487,165 +2594,6 @@ def _pause_recovered_chunk(
     )
 
 
-async def _execute_retry_attempt(
-    run_id: str,
-    chunk_number: int,
-    chunk: ChunkDefinition,
-    plan_status: ChunkPlanResponse,
-    project_runtime: ProjectRuntimeConfig,
-    target_repo_path: str,
-    prior_attempts: list,
-    branch_name: str,
-    report: PatchFailureReport,
-) -> dict:
-    """
-    Regenerate, validate, apply, and test a retry inside the active project
-    context (#26D2 audit correction #2: coder/apply/tester read the active
-    project's repo path and test command).
-
-    Returns the awaiting-approval result on success or a failed result for a
-    modeled failure (scope/dry-run/apply/test). Raises only on a truly
-    unexpected error; the caller turns that into a failed chunk.
-    """
-    with active_project(project_runtime):
-        plan = _retry_plan_for_chunk(run_id, chunk)
-        code = await run_coder(
-            plan,
-            run_id,
-            chunk_number=chunk_number,
-            project_id=plan_status.project_id,
-        )
-
-        # Pre-apply scope guard against the UNCHANGED files_expected.
-        try:
-            assert_files_in_scope(code, chunk.files_expected)
-        except ScopeDriftError as drift:
-            scope_report = build_patch_failure_report(
-                PatchFailureType.SCOPE_VIOLATION,
-                technical_details=str(drift),
-                changed_files_attempted=[c.path for c in code.files_changed],
-                allowed_files=chunk.files_expected,
-                working_tree_clean=local_git.is_working_tree_clean(
-                    target_repo_path
-                ),
-                chunk_number=chunk_number,
-                failed_step="patch",
-            )
-            return _persist_retry_patch_failure(
-                run_id, chunk_number, scope_report, prior_attempts
-            )
-
-        # Zero-mutation pre-apply validation (#26B). On failure nothing is
-        # written, so apply/tests are skipped entirely.
-        dry = dry_run_changes(code, target_repo_path)
-        if not dry.ok:
-            failure_type = classify_patch_failure(
-                RuntimeError(dry.error_message or ""), phase="apply"
-            )
-            dry_report = build_patch_failure_report(
-                failure_type,
-                technical_details=dry.error_message,
-                changed_files_attempted=[c.path for c in code.files_changed],
-                allowed_files=chunk.files_expected,
-                working_tree_clean=local_git.is_working_tree_clean(
-                    target_repo_path
-                ),
-                chunk_number=chunk_number,
-                failed_step="patch",
-            )
-            return _persist_retry_patch_failure(
-                run_id, chunk_number, dry_report, prior_attempts
-            )
-
-        # #32C: offload blocking patch-apply / test subprocess work to a worker
-        # thread (same rationale as _execute_single_chunk). The retry path runs
-        # under the project repo lock held by the caller; `await` keeps that lock
-        # held for the full duration and contextvars (active_project) propagate to
-        # the thread, so behavior and serialization are unchanged.
-        outcome = await asyncio.to_thread(
-            apply_patch_guarded,
-            code,
-            run_id,
-            chunk_number=chunk_number,
-            files_expected=chunk.files_expected,
-        )
-        if not outcome.success:
-            return _persist_retry_patch_failure(
-                run_id, chunk_number, outcome.failure, prior_attempts
-            )
-
-        # T2 (item 11): tester returns a verdict only; the driver-owned
-        # rollback runs with the tests on the worker thread — the same trigger
-        # and result as the tester-side rollback this path relied on before.
-        # Do NOT roll back again after this call.
-        verification_baseline = _load_verification_baseline(run_id)
-        test_result = await asyncio.to_thread(
-            chunk_driver.run_tests_with_rollback,
-            outcome.patch_result,
-            run_id,
-            chunk_number,
-            _run_tests_baseline_kwargs(verification_baseline),
-        )
-
-        # #28D: record the display-only runtime test verdict on the retry path
-        # too, for BOTH pass and fail, before any branch decision. Without this a
-        # retried/recovered chunk would carry a NULL verdict, which the #28F final-
-        # approval gate treats as "no acknowledgement required" — letting a weak
-        # command (e.g. `python --version`) slip past unacknowledged. Display-only:
-        # this writes only the chunk's test_run_* columns and never changes the
-        # outcome below (pass/fail stays exit-code based via test_result.passed).
-        _persist_test_run_verdict(run_id, chunk_number, test_result)
-
-        if not test_result.passed:
-            failure_type, _integrity = _classify_test_failure(test_result)
-            clean = local_git.is_working_tree_clean(target_repo_path)
-            test_report = _build_test_failure_report(
-                failure_type,
-                test_result,
-                code,
-                chunk,
-                clean=clean,
-                attempts=0,
-                max_attempts=AUTO_RETRY_INFRA_BUDGET,
-            )
-            return _persist_retry_patch_failure(
-                run_id,
-                chunk_number,
-                test_report,
-                prior_attempts,
-                test_outcome="failed",
-            )
-
-        # Adversarial Reviewer v1 (advisory, display-only) on the retry-success
-        # path. Mirrors the normal _execute_single_chunk site: the retry patch
-        # applied, tests passed, and the verdict is persisted, so there is a
-        # standing applied diff to review. Best-effort and fully swallowed — it
-        # NEVER changes the retry outcome, gates nothing, and is not run on a
-        # failed retry apply or a rolled-back test failure (both returned above).
-        await _run_advisory_review_safe(
-            run_id,
-            plan_status.project_id,
-            chunk,
-            code,
-            outcome.patch_result,
-            test_result,
-        )
-
-        # Success: pause at the existing approval gate. No commit here; the
-        # existing approval path commits the newest code checkpoint later.
-        verification_disclosure = _verification_disclosure_from_result(
-            verification_baseline,
-            test_result,
-        )
-        return _pause_recovered_chunk(
-            run_id,
-            chunk,
-            code,
-            branch_name,
-            report,
-            verification_disclosure=verification_disclosure,
-        )
-
 
 async def _retry_failed_chunk_locked(
     run_id: str,
@@ -2719,31 +2667,24 @@ async def _retry_failed_chunk_locked(
     prior_attempts = list(report.attempts)
     branch_name = f"pipewright/{run_id[:8]}"
 
-    # Enter retry execution. Mark running so a crash leaves a resumable chunk and
-    # so the "must be failed" eligibility guard cannot pass twice concurrently.
-    update_chunk_status(run_id, chunk_number, "running")
-    _update_run_status(
-        run_id, "running_chunks", f"chunk_{chunk_number}_retry", chunk_number
+    # Execute the regeneration through the item-12 driver. The driver marks the
+    # chunk running and converts stage exceptions into the standard failed-chunk
+    # result, matching the fresh/resume execution guard.
+    drive = await chunk_driver.drive_chunk(
+        chunk_driver.EntryMode.HUMAN_RETRY,
+        run_id=run_id,
+        project_id=plan_status.project_id,
+        chunk=chunk,
+        target_repo_path=target_repo_path,
+        branch_name=branch_name,
+        status_by_number=status_by_number,
+        verification_baseline=_load_verification_baseline(run_id),
+        retry_report=report,
+        prior_attempts=prior_attempts,
+        project_runtime=project_runtime,
+        run_step=f"chunk_{chunk_number}_retry",
     )
-
-    # Execute the regeneration. An unexpected raise (e.g. the coder LLM or the
-    # test subprocess failing hard) must still leave the chunk failed, not stuck
-    # running — mirroring the orchestrator's own execution guard
-    # (_execute_approved_chunks_locked).
-    try:
-        return await _execute_retry_attempt(
-            run_id,
-            chunk_number,
-            chunk,
-            plan_status,
-            project_runtime,
-            target_repo_path,
-            prior_attempts,
-            branch_name,
-            report,
-        )
-    except Exception as error:
-        return _fail_chunk(run_id, chunk_number, error)
+    return drive.pause
 
 
 async def retry_failed_chunk(
@@ -2821,7 +2762,7 @@ async def _approve_and_retry_scope_expansion_locked(
       9. any side-effect-free precheck failure -> typed error, request stays
          pending, nothing retried/committed, chunks.files_expected untouched
       10. atomically flip pending -> approved (persist approved_files)
-      11. re-drive #26 internal execution (_execute_retry_attempt) with the
+      11. re-drive #26 through chunk_driver.EntryMode.HUMAN_RETRY with the
           effective scope already overlaid by get_chunk_plan_status
       12. flip approved -> applied once the retry has been driven
 
@@ -3011,31 +2952,26 @@ async def _approve_and_retry_scope_expansion_locked(
     prior_attempts = list(report.attempts)
     branch_name = f"pipewright/{run_id[:8]}"
 
-    # Enter retry execution. Mark running so a crash leaves a resumable chunk.
-    update_chunk_status(run_id, chunk_number, "running")
-    _update_run_status(
-        run_id, "running_chunks", f"chunk_{chunk_number}_scope_retry", chunk_number
-    )
-
     # 11/12. Drive the retry under the amended effective scope, then flip
     #        approved -> applied: the approval has been consumed by an attempt
     #        that wrote a fresh result. Only a hard process crash before this
     #        leaves the request 'approved' (re-drivable, section 14).
     try:
-        try:
-            result = await _execute_retry_attempt(
-                run_id,
-                chunk_number,
-                chunk,
-                fresh_plan,
-                project_runtime,
-                target_repo_path,
-                prior_attempts,
-                branch_name,
-                report,
-            )
-        except Exception as error:
-            result = _fail_chunk(run_id, chunk_number, error)
+        drive = await chunk_driver.drive_chunk(
+            chunk_driver.EntryMode.HUMAN_RETRY,
+            run_id=run_id,
+            project_id=fresh_plan.project_id,
+            chunk=chunk,
+            target_repo_path=target_repo_path,
+            branch_name=branch_name,
+            status_by_number=_status_by_number(fresh_plan),
+            verification_baseline=_load_verification_baseline(run_id),
+            retry_report=report,
+            prior_attempts=prior_attempts,
+            project_runtime=project_runtime,
+            run_step=f"chunk_{chunk_number}_scope_retry",
+        )
+        result = drive.pause
     finally:
         try:
             update_scope_expansion_request_status(

@@ -20,7 +20,7 @@ unchanged approval path). These tests prove:
   - a successful retry pauses at awaiting_chunk_approval and never commits;
   - a retry failure persists normally; a re-failed SCOPE_VIOLATION respects the
     MAX_SCOPE_AMENDMENTS cap (no second pending request);
-  - _execute_retry_attempt is never called when a precheck fails;
+  - chunk_driver.HUMAN_RETRY is never called when a precheck fails;
   - #26's public retry eligibility still rejects SCOPE_VIOLATION.
 """
 
@@ -68,6 +68,7 @@ def tracked_runs():
     with engine.begin() as conn:
         for run_id in run_ids:
             conn.execute(text("DELETE FROM scope_expansion_requests WHERE run_id = :r"), {"r": run_id})
+            conn.execute(text("DELETE FROM chunk_attempts WHERE run_id = :r"), {"r": run_id})
             conn.execute(text("DELETE FROM chunks WHERE run_id = :r"), {"r": run_id})
             conn.execute(text("DELETE FROM pipeline_runs WHERE id = :r"), {"r": run_id})
 
@@ -207,8 +208,11 @@ def _patch_git(monkeypatch, run_id, *, current_branch=None, clean=True):
 
 
 def _patch_retry_success(monkeypatch, captured):
-    async def fake(run_id, chunk_number, chunk, plan_status, project_runtime,
-                   target_repo_path, prior_attempts, branch_name, report):
+    async def fake(mode, **kwargs):
+        assert mode is chunked_orchestrator.chunk_driver.EntryMode.HUMAN_RETRY
+        run_id = kwargs["run_id"]
+        chunk = kwargs["chunk"]
+        chunk_number = chunk.chunk_number
         captured["called"] = True
         captured["files_expected"] = list(chunk.files_expected)
         # Mirror the real success path's observable effects: pause at the chunk
@@ -220,19 +224,24 @@ def _patch_retry_success(monkeypatch, captured):
             run_id, "awaiting_chunk_approval",
             f"chunk_{chunk_number}_recovered", chunk_number,
         )
-        return {
+        pause = {
             "status": "awaiting_chunk_approval",
             "run_id": run_id,
             "chunk_number": chunk_number,
             "failure_report_id": "recovered-frid",
         }
+        return chunked_orchestrator.chunk_driver.ChunkDriveResult(pause=pause)
 
-    monkeypatch.setattr(chunked_orchestrator, "_execute_retry_attempt", fake)
+    monkeypatch.setattr(chunked_orchestrator.chunk_driver, "drive_chunk", fake)
 
 
 def _patch_retry_failure(monkeypatch, captured, *, failure_type):
-    async def fake(run_id, chunk_number, chunk, plan_status, project_runtime,
-                   target_repo_path, prior_attempts, branch_name, report):
+    async def fake(mode, **kwargs):
+        assert mode is chunked_orchestrator.chunk_driver.EntryMode.HUMAN_RETRY
+        run_id = kwargs["run_id"]
+        chunk = kwargs["chunk"]
+        chunk_number = chunk.chunk_number
+        prior_attempts = kwargs["prior_attempts"]
         captured["called"] = True
         captured["files_expected"] = list(chunk.files_expected)
         fail_report = build_patch_failure_report(
@@ -243,18 +252,19 @@ def _patch_retry_failure(monkeypatch, captured, *, failure_type):
             chunk_number=chunk_number,
         )
         # Genuinely persist the failure via the real #26 retry-failure seam.
-        return chunked_orchestrator._persist_retry_patch_failure(
+        result = chunked_orchestrator._persist_retry_patch_failure(
             run_id, chunk_number, fail_report, prior_attempts
         )
+        return chunked_orchestrator.chunk_driver.ChunkDriveResult(pause=result)
 
-    monkeypatch.setattr(chunked_orchestrator, "_execute_retry_attempt", fake)
+    monkeypatch.setattr(chunked_orchestrator.chunk_driver, "drive_chunk", fake)
 
 
 def _patch_retry_boom(monkeypatch):
     async def fake(*args, **kwargs):
-        raise AssertionError("_execute_retry_attempt must not be called")
+        raise AssertionError("human_retry driver must not be called")
 
-    monkeypatch.setattr(chunked_orchestrator, "_execute_retry_attempt", fake)
+    monkeypatch.setattr(chunked_orchestrator.chunk_driver, "drive_chunk", fake)
 
 
 def _approve(run_id, request_id, approved_files, *, chunk=1, reason="needed"):

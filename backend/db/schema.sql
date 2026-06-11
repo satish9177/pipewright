@@ -196,6 +196,29 @@ CREATE TABLE IF NOT EXISTS chunks (
     UNIQUE(run_id, chunk_number)
 );
 
+-- chunk_attempts is the append-only execution ledger for Phase 2 item 12. It
+-- stores metadata about driver passes only: stage outcome classes, small
+-- evidence refs, final outcome/status, and the git HEAD at attempt end. It never
+-- stores prompts, diffs, file contents, test output, or secrets. Older runs may
+-- have no rows; resume degrades to the legacy checkpoint behavior when no
+-- completed attempt HEAD exists.
+CREATE TABLE IF NOT EXISTS chunk_attempts (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    chunk_number INTEGER NOT NULL,
+    attempt_number INTEGER NOT NULL,
+    entry_mode TEXT NOT NULL,
+    stage_outcomes_json TEXT,
+    evidence_refs_json TEXT,
+    final_outcome_class TEXT,
+    final_status TEXT,
+    head_sha TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES pipeline_runs(id),
+    UNIQUE(run_id, chunk_number, attempt_number)
+);
+
 -- scope_expansion_requests is the authoritative, audited home for human-approved
 -- scope amendments (#27). chunks.files_expected stays immutable; effective scope
 -- is reconstructed as original files_expected UNION the approved_files of in-force
@@ -338,6 +361,8 @@ CREATE TABLE IF NOT EXISTS memory_injection_events (
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_project ON pipeline_runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);
 CREATE INDEX IF NOT EXISTS idx_chunks_run_status ON chunks(run_id, status);
+CREATE INDEX IF NOT EXISTS idx_chunk_attempts_run_chunk ON chunk_attempts(run_id, chunk_number, attempt_number);
+CREATE INDEX IF NOT EXISTS idx_chunk_attempts_completed_head ON chunk_attempts(run_id, final_status, chunk_number);
 CREATE INDEX IF NOT EXISTS idx_approval_gates_run_status ON approval_gates(run_id, approval_type, status);
 CREATE INDEX IF NOT EXISTS idx_project_index_fingerprints_updated ON project_index_fingerprints(updated_at);
 CREATE INDEX IF NOT EXISTS idx_scope_expansion_requests_run_chunk_status ON scope_expansion_requests(run_id, chunk_number, status);

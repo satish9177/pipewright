@@ -59,6 +59,7 @@ def tracked_runs():
         for run_id in run_ids:
             for table in (
                 "scope_expansion_requests",
+                "chunk_attempts",
                 "chunk_reviews",
                 "approval_gates",
                 "checkpoints",

@@ -51,6 +51,7 @@ def tracked_runs():
     with engine.begin() as conn:
         for run_id in run_ids:
             conn.execute(text("DELETE FROM scope_expansion_requests WHERE run_id = :r"), {"r": run_id})
+            conn.execute(text("DELETE FROM chunk_attempts WHERE run_id = :r"), {"r": run_id})
             conn.execute(text("DELETE FROM chunks WHERE run_id = :r"), {"r": run_id})
             conn.execute(text("DELETE FROM pipeline_runs WHERE id = :r"), {"r": run_id})
 
@@ -308,12 +309,12 @@ def test_reject_does_not_retry_or_commit(tmp_repo, tracked_runs, monkeypatch):
     run_id, _project_id, request_id = _seed_pending(tmp_repo, tracked_runs)
 
     async def _boom_retry(*args, **kwargs):
-        raise AssertionError("_execute_retry_attempt must not be called on reject")
+        raise AssertionError("human_retry driver must not be called on reject")
 
     def _boom_commit(*args, **kwargs):
         raise AssertionError("commit must not be called on reject")
 
-    monkeypatch.setattr(chunked_orchestrator, "_execute_retry_attempt", _boom_retry)
+    monkeypatch.setattr(chunked_orchestrator.chunk_driver, "drive_chunk", _boom_retry)
     monkeypatch.setattr(chunked_orchestrator.local_git, "commit_files", _boom_commit)
 
     response = _client().post(

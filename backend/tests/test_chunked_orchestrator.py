@@ -118,6 +118,9 @@ def tracked_runs():
             conn.execute(text("DELETE FROM approval_gates WHERE run_id = :run_id"), {
                 "run_id": run_id,
             })
+            conn.execute(text("DELETE FROM chunk_attempts WHERE run_id = :run_id"), {
+                "run_id": run_id,
+            })
             conn.execute(text("DELETE FROM chunks WHERE run_id = :run_id"), {
                 "run_id": run_id,
             })
@@ -461,7 +464,7 @@ def patch_success_pipeline(monkeypatch, run_id: str, calls=None):
     )
 
 
-def patch_resume_git(monkeypatch, calls=None, branch_exists=True, clean=True):
+def patch_resume_git(monkeypatch, calls=None, branch_exists=True, clean=True, head_sha="hash"):
     monkeypatch.setattr(chunked_orchestrator.local_git, "ensure_git_repo", lambda repo: None)
     monkeypatch.setattr(
         chunked_orchestrator.local_git,
@@ -497,6 +500,15 @@ def patch_resume_git(monkeypatch, calls=None, branch_exists=True, clean=True):
         chunked_orchestrator.local_git,
         "commit_files",
         lambda files, message, repo: calls.append(("commit", files, message, repo)) if calls is not None else "hash",
+    )
+    # P7 (item 12): resume reads HEAD to compare against the last completed chunk
+    # attempt's recorded head_sha. In fakes that SHA is "hash" (fake_commit_files
+    # returns it), so model HEAD already there — no real git in the tmp repo, no
+    # false-positive drift. Tests asserting drift override this after the call.
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "get_current_hash",
+        lambda repo: head_sha,
     )
 
 
@@ -4406,7 +4418,7 @@ async def test_test_failure_records_verdict_and_fails_by_exit_code(
 # --------------------------------------------------------------------------
 # #28 bug: every run_tests path must persist the runtime verdict before the
 # pass/fail branch. The auto/no-human-review path (above) already did; the
-# #26D2 human retry path (_execute_retry_attempt) ran tests WITHOUT persisting,
+# #26D2 human retry path ran tests WITHOUT persisting,
 # so a retried-then-completed chunk carried a NULL verdict and silently slipped
 # past the #28F final-approval acknowledgement gate. These lock that path in.
 # --------------------------------------------------------------------------
