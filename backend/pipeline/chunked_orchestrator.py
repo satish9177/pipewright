@@ -89,6 +89,13 @@ from backend.pipeline.scope_expansion_store import (
 )
 from backend.pipeline.scope_guard import ScopeDriftError, assert_files_in_scope
 from backend.pipeline.policy import AUTO_RETRY_INFRA_BUDGET
+# Canonical home of the post-apply test-failure helpers (Phase 2 item 10):
+# moved verbatim to stage_contract so the orchestrator and the stage adapters
+# share one implementation. Aliased to keep this module's internal names.
+from backend.pipeline.stage_contract import (
+    build_test_failure_report as _build_test_failure_report,
+    classify_test_failure as _classify_test_failure,
+)
 from backend.pipeline.test_run_validation import (
     ExecutionIntegrity,
     classify_execution_integrity,
@@ -1584,62 +1591,6 @@ async def _ensure_verification_baseline(run_id: str) -> tuple[dict, dict | None]
     if integrity is not ExecutionIntegrity.OK:
         return baseline, _baseline_failure_result(run_id, test_result, integrity)
     return baseline, None
-
-
-def _classify_test_failure(test_result) -> tuple[PatchFailureType, ExecutionIntegrity]:
-    integrity = classify_execution_integrity(
-        getattr(test_result, "exit_code", None),
-        getattr(test_result, "output", None),
-        timed_out=getattr(test_result, "timed_out", False),
-    )
-    if integrity is ExecutionIntegrity.OK:
-        return PatchFailureType.TEST_REGRESSION, integrity
-    return PatchFailureType.HARNESS_ERROR, integrity
-
-
-def _build_test_failure_report(
-    failure_type: PatchFailureType,
-    test_result,
-    code: CoderHandoff,
-    chunk: ChunkDefinition,
-    *,
-    clean: bool,
-    attempts: int = 0,
-    max_attempts: int | None = None,
-) -> PatchFailureReport:
-    output = getattr(test_result, "output", None)
-    exit_code = getattr(test_result, "exit_code", None)
-    timed_out = getattr(test_result, "timed_out", False)
-    details = (
-        f"exit_code={exit_code}; timed_out={timed_out}\n{output}"
-        if output is not None
-        else f"exit_code={exit_code}; timed_out={timed_out}"
-    )
-    if getattr(test_result, "failing_test_ids", None):
-        details += (
-            "\nfailing_test_ids="
-            + json.dumps(list(getattr(test_result, "failing_test_ids", [])))
-        )
-    if getattr(test_result, "newly_failing_test_ids", None):
-        details += (
-            "\nnewly_failing_test_ids="
-            + json.dumps(list(getattr(test_result, "newly_failing_test_ids", [])))
-        )
-    parse_error = getattr(test_result, "failing_test_ids_parse_error", None)
-    if parse_error:
-        details += f"\nfailing_test_ids_parse_error={parse_error}"
-    return build_patch_failure_report(
-        failure_type,
-        technical_details=details,
-        changed_files_attempted=[change.path for change in code.files_changed],
-        allowed_files=chunk.files_expected,
-        rollback_performed=True,
-        working_tree_clean=clean,
-        attempts=attempts,
-        max_attempts=max_attempts,
-        chunk_number=chunk.chunk_number,
-        failed_step="test",
-    )
 
 
 def _should_auto_retry_harness_error(
