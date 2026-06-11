@@ -38,11 +38,9 @@ It is **not** sound as a flat fan-out across the whole redesign, for three reaso
 ### What the proposal does NOT cover (don't lose these)
 
 From the 2026-06-10 coverage check of `ARCHITECTURE_REVIEW.md` against the proposal, three items have no home in the proposal:
-1. **P7** — branch-HEAD drift check on *resume* (only checked on fresh execution today).
-2. **ARCH-M1** — `_archive_unscoped_pre_m1_memory` runs a no-op `WHERE project_id IS NULL` table scan on *every* memory read.
+1. **P7** — branch-HEAD drift check on *resume* (only checked on fresh execution today). **DEFERRED to Phase 2 (2026-06-11 decision).** Investigation found `_commit_and_complete_chunk` records no per-chunk commit SHA, so a correct resume HEAD-drift check needs recorded state. A no-new-state heuristic risks false-positive dead-ends on the safety-critical resume path; the correct exact-SHA version overlaps Phase 2's attempt ledger (which records per-chunk HEADs natively). Resume already fails closed on missing commits (`_verify_completed_checkpoint_safe`), dirty tree, and missing branch — so the residual gap (foreign commits stacked on top) is the only uncovered case. Do P7 as part of Phase 2.
+2. ~~**ARCH-M1**~~ ✓ **done (2026-06-11)** — the `project_id IS NULL` sweep is now a one-time startup migration (`migrate_unscoped_pre_m1_memory`), removed from `add_fact` / `load_hard_facts` / `list_all_facts`.
 3. **P2 (outbox/saga)** — the proposal judged the double-commit risk "already mitigated" by `_verify_completed_checkpoint_safe` and declined the outbox table. Revisit only if you disagree with that call.
-
-1 and 2 are good candidates for two small standalone Phase-0-style PRs. Recorded here so they don't silently vanish.
 
 ---
 
@@ -50,13 +48,13 @@ From the 2026-06-10 coverage check of `ARCHITECTURE_REVIEW.md` against the propo
 
 - **Phase 0 — independent, decision-free, parallel-safe** *(the endorsed band)*:
   - ~~E2 `stdin=DEVNULL`~~ ✓ **done**
-  - E9 scope-intent parser
-  - E8 main-path symmetry (`files_expected` into planner + dry-run before apply)
-  - E4 shared retry executor (delete the 60s lock-held sleeps)
-  - §8b policy-module hygiene (dead constants → new policy module)
-  - test-command auto-detection
-  - P7 branch-HEAD drift on resume *(ARCH-review item)*
-  - ARCH-M1 no-op table scan fix *(ARCH-review item)*
+  - ~~E9 scope-intent parser~~ ✓ **done**
+  - ~~E8 main-path symmetry (`files_expected` into planner + dry-run before apply)~~ ✓ **done**
+  - ~~E4 shared retry executor (delete the 60s lock-held sleeps)~~ ✓ **done**
+  - ~~§8b policy-module hygiene (dead constants → new policy module)~~ ✓ **done**
+  - ~~test-command auto-detection~~ ✓ **done + wired** *(POST /projects/detect returns `suggested_test_command`; New Project form prefills it without overwriting user input)*
+  - P7 branch-HEAD drift on resume *(ARCH-review item)* — **DEFERRED to Phase 2** (needs the attempt ledger's recorded HEADs; see "What the proposal does NOT cover")
+  - ~~ARCH-M1 no-op table scan fix~~ ✓ **done** *(ARCH-review item; one-time startup migration)*
 - **Phase 1 — needs §5 decisions:** Signal-C infra classifier; split `TEST_FAILURE_AFTER_APPLY` → regression/harness; baseline-aware verification.
 - **Phase 2 — strangler refactor:** extract stages → driver replaces `_execute_single_chunk` → retry/resume collapse into entry modes + attempt ledger.
 - **Phase 3 — needs Phase 2:** continuation / steer turns.
@@ -70,11 +68,11 @@ Fable implements all remaining Phase 0 items. Because some touch shared files, t
 
 | Batch | Items | Key files touched | Can run in parallel? |
 |---|---|---|---|
-| **A** | E9 scope-intent parser · test-command auto-detection | `file_scope_intent.py`, new detection module | Yes — no overlap |
-| **B** | E8 main-path symmetry · E4 retry executor | `planner.py`, `coder.py`, `chunked_orchestrator.py` | Sequence: E8 first, then E4 (both touch `planner.py`) |
-| **C** | §8b policy-module hygiene · P7 · ARCH-M1 | sweeps stage files + new policy module | After B merges; P7 + ARCH-M1 independent of §8b |
+| ~~**A**~~ | ~~E9 scope-intent parser · test-command auto-detection~~ | ~~`file_scope_intent.py`, new detection module~~ | ✓ **done** |
+| ~~**B**~~ | ~~E8 main-path symmetry · E4 retry executor~~ | ~~`planner.py`, `coder.py`, `chunked_orchestrator.py`~~ | ✓ **done** |
+| ~~**C**~~ | ~~§8b policy-module hygiene~~ ✓ · ~~ARCH-M1~~ ✓ · P7 (deferred) | stage files + policy module + memory_store | §8b + ARCH-M1 done; P7 deferred to Phase 2 |
 
-Fable can **write and implement all 5 (or all 8) in one session** if given the full batch list and the sequencing constraint above. The human reviews + merges batch A, then hands batch B, then batch C.
+All of Phase 0 is now complete except P7, which is deliberately deferred to Phase 2 (it needs the attempt ledger's recorded per-chunk HEADs to be done without false-positive dead-ends on resume).
 
 ---
 
@@ -92,11 +90,13 @@ Plus §7 open questions (attempt-budget defaults; whether post-success refinemen
 ## How to resume (next actions)
 
 1. ~~E2 `stdin=DEVNULL` — done.~~
-2. **Hand Fable 5 `FABLE5_IMPL_SPEC_BRIEF.md`** with the Batch A task list (E9 + test-command detection). Fable implements both, runs `python -m pytest backend/tests -q -m unit` + `ruff check`, reports.
-3. Human reviews + merges Batch A PRs.
-4. Hand Fable Batch B (E8, then E4). Merge in order.
-5. Hand Fable Batch C (§8b + P7 + ARCH-M1).
-6. **Before Phase 1:** the user rules on the four §5 decisions. Do **not** let the loop cross into Phase 1/2 unreviewed (see CRITICAL BOUNDARY).
+2. ~~Batch A (E9 + test-command detection) — done.~~
+3. ~~Batch B (E8 + E4) — done.~~
+4. ~~§8b policy-module hygiene — done.~~
+5. ~~ARCH-M1 (one-time startup migration) — done.~~
+6. ~~Wire `detect_test_command` into the setup route + New Project form — done.~~
+7. **P7 deferred to Phase 2** — fold the resume HEAD-drift check into the attempt-ledger work (it records per-chunk HEADs, making the check exact and false-positive-free).
+7. **Before Phase 1:** the user rules on the four §5 decisions. Do **not** let the loop cross into Phase 1/2 unreviewed (see CRITICAL BOUNDARY).
 
 ---
 

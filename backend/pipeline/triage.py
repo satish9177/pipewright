@@ -25,7 +25,6 @@ from backend.repo.index_freshness import (
 from backend.repo.repo_indexer import get_relevant_files
 from backend.utils.json_helpers import clean_json_response
 
-TRIAGE_MODEL = "gemini-2.5-flash-lite"
 TRIAGE_TEMPERATURE = 0.2
 TRIAGE_MAX_TOKENS = 4000
 
@@ -152,7 +151,7 @@ def _build_llm_request(prompt: str) -> LLMRequest:
             Message(role="system", content=TRIAGE_SYSTEM_PROMPT),
             Message(role="user", content=prompt),
         ],
-        model=TRIAGE_MODEL,
+        model="",  # resolved per role by complete_for_role
         temperature=TRIAGE_TEMPERATURE,
         max_output_tokens=TRIAGE_MAX_TOKENS,
         response_format="json_object",

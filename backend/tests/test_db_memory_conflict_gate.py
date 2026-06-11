@@ -35,6 +35,7 @@ from backend.memory.prompt_builder import build_project_memory_block
 from backend.memory.repo_reality import ConflictEntry, ConflictReport
 from backend.models.chunk import ChunkDefinition, TriageResult
 from backend.pipeline import chunked_orchestrator
+from backend.pipeline.patch_dry_run import DryRunResult
 from backend.pipeline.approval_gate import (
     get_approved_memory_conflict_gate,
     get_pending_memory_conflict_gate,
@@ -198,6 +199,11 @@ def _mock_pipeline_and_git_with_memory_capture(
         )
         return make_coder_result(run_id, chunk_number)
 
+    def fake_dry(code, repo_path):
+        if calls is not None:
+            calls.append(("dry_run", None))
+        return DryRunResult(ok=True)
+
     def fake_tests(patch, run_id, chunk_number=0):
         if calls is not None:
             calls.append(("test", chunk_number))
@@ -205,6 +211,7 @@ def _mock_pipeline_and_git_with_memory_capture(
 
     monkeypatch.setattr(chunked_orchestrator, "run_planner", fake_planner)
     monkeypatch.setattr(chunked_orchestrator, "run_coder", fake_coder)
+    monkeypatch.setattr(chunked_orchestrator, "dry_run_changes", fake_dry)
     monkeypatch.setattr(
         chunked_orchestrator, "apply_patch_guarded", make_guarded_apply(calls)
     )

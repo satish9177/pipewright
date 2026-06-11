@@ -11,10 +11,8 @@ import subprocess
 from backend.models.handoff import PatchResult, PipelineTestResult
 from backend.checkpoint.checkpoint_store import save_checkpoint
 from backend.pipeline.patch_applier import rollback_patch
+from backend.pipeline.policy import MAX_OUTPUT_CHARS, TESTER_TIMEOUT_SECONDS
 from backend.projects.project_context import get_target_repo_path, get_test_command
-
-TESTER_TIMEOUT_SECONDS = 300
-MAX_OUTPUT_CHARS = 10000
 
 
 def _resolve_command(command: str) -> str:

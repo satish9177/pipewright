@@ -14,6 +14,7 @@ from backend.models.handoff import (
     ProjectDetectResponse,
     ProjectUpdate,
 )
+from backend.pipeline.test_command_detection import detect_test_command
 from backend.pipeline.run_locks import (
     ProjectRepoLockError,
     project_repo_lock_sync,
@@ -66,12 +67,18 @@ def detect_project_route(request: ProjectDetectRequest):
     """
     Read-only detection for the New Project flow.
 
-    Inspects the repo at repo_path and recommends a pr_mode. This endpoint
-    never saves project settings and never mutates git state: it does not
-    create branches, push, or create PRs.
+    Inspects the repo at repo_path and recommends a pr_mode, and suggests a
+    test command (detect-and-prefill only). This endpoint never saves project
+    settings and never mutates git state: it does not create branches, push,
+    create PRs, or execute the suggested test command.
     """
     try:
         detection = detect_repo(request.repo_path)
+        # Detect-and-prefill only: suggest a test command from repo markers for
+        # the New Project form. Pure/read-only (no subprocess, no execution);
+        # returns None when no confident signal is found. The endpoint persists
+        # nothing, so this can never overwrite a configured command.
+        detection["suggested_test_command"] = detect_test_command(request.repo_path)
         return ProjectDetectResponse(**detection)
     except Exception as error:
         # Detection must never leak raw errors to the frontend.

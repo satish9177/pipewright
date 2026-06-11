@@ -25,13 +25,17 @@ Two stages
    into hard_allowlist / preferred / forbidden / reference_only / uncertain.
 2. ``reconcile_file_scope`` — apply those constraints to a (already repo-grounded)
    ``TriageResult``: seed/cap to a hard allowlist, drop forbidden files, never
-   auto-add reference-only or prose-only mentions, and harden + annotate chunks
-   ([SCOPE] rationale notes + requires_human_review) on any drop/cap/mismatch.
+   auto-add reference-only or prose-only mentions. Scope mutations (drops/caps)
+   harden the chunk ([SCOPE] note + requires_human_review + high risk); a
+   note-only prose mismatch is annotated + requires_human_review without risk
+   escalation, and a prose path scoped in another chunk of the run is no
+   mismatch at all (E9).
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 from backend.models.chunk import ChunkDefinition, TriageResult
@@ -81,6 +85,27 @@ _FILLERS = {
 
 # Punctuation stripped from the edges of a lowered token for cue matching.
 _CUE_STRIP = ",.;:!?()[]{}\"'"
+
+# A list marker at the START of a line: "-", "*", "+", "1.", "2)". Markers are
+# bare tokens only — "*.py" and "3.11" never match (digits capped at 3 so a
+# year like "2026." is not a marker either).
+_BULLET_RE = re.compile(r"^(?:[-*+]|\d{1,3}[.)])$")
+
+
+def _tokenize(feature_description: str) -> list[str]:
+    """
+    Line-aware whitespace tokenization (E9). A bullet/number marker at the
+    start of a line is dropped, so a bulleted or numbered list after a cue
+    ("Only modify:") parses exactly like the inline comma form. Mid-line
+    hyphens/asterisks are untouched and still terminate a file list.
+    """
+    tokens: list[str] = []
+    for line in feature_description.splitlines():
+        parts = line.split()
+        if parts and _BULLET_RE.match(parts[0]):
+            parts = parts[1:]
+        tokens.extend(parts)
+    return tokens
 
 
 @dataclass(frozen=True)
@@ -218,7 +243,7 @@ def extract_user_file_constraints(feature_description: str) -> UserFileConstrain
     if not feature_description:
         return UserFileConstraints()
 
-    raw_tokens = feature_description.split()
+    raw_tokens = _tokenize(feature_description)
     lower = [_lower(t) for t in raw_tokens]
     roles: dict[str, set[str]] = {}
 
@@ -302,6 +327,7 @@ def _apply_scope_notes(
     notes: list[str],
     *,
     harden: bool,
+    require_review: bool = False,
 ) -> ChunkDefinition:
     update: dict = {"files_expected": files}
     if notes:
@@ -315,6 +341,10 @@ def _apply_scope_notes(
     if harden:
         update["requires_human_review"] = True
         update["risk_level"] = "high"
+    elif require_review:
+        # Note-only mismatch (E9): a human must look, but the chunk's scope
+        # was not changed, so risk_level is never inflated to "high".
+        update["requires_human_review"] = True
     return chunk.model_copy(update=update)
 
 
@@ -332,15 +362,27 @@ def reconcile_file_scope(
     The user-constraint logic (allowlist seed/cap, forbidden removal, preferred
     include) only fires when the user named files. The plan-consistency check
     (planner prose names a grounded file missing from ``files_expected``) always
-    runs, since that mismatch is independent of what the user typed. Never
-    auto-adds reference-only or planner-prose-only paths to ``files_expected``;
-    those are surfaced as [SCOPE] warnings with ``requires_human_review``.
+    runs, since that mismatch is independent of what the user typed — but it is
+    run-aware (E9): a prose path that lives in another chunk's
+    ``files_expected`` in the same run is planned work elsewhere, not a
+    mismatch, and produces no note. Never auto-adds reference-only or
+    planner-prose-only paths to ``files_expected``; a genuinely unscoped
+    mention is surfaced as a [SCOPE] warning with ``requires_human_review``
+    (note-only — it never escalates ``risk_level``). Scope mutations
+    (forbidden/allowlist removals) keep full hardening.
     """
     index = get_indexed_paths_and_dirs(project_id)
     sanctioned = _norm_set(sanctioned_new_paths or set())
 
     forbidden = _norm_set(constraints.forbidden_files)
     reference = _norm_set(constraints.reference_only_files)
+
+    # Run-level scope for the consistency check, computed over the incoming
+    # plan. Forbidden/allowlist removals below still produce their own loud
+    # notes on the chunk that owns the removed file.
+    run_scope: set[str] = set()
+    for chunk in triage_result.chunks:
+        run_scope.update(_norm_set(chunk.files_expected))
 
     allow_all = _dedupe([
         norm for path in constraints.hard_allowlist
@@ -368,6 +410,7 @@ def reconcile_file_scope(
         prose_paths = _grounded_prose_paths(chunk, index, sanctioned)
         notes: list[str] = []
         harden = False
+        needs_review = False
 
         # 1. Forbidden files must never be in scope.
         removed_forbidden = [f for f in files if f in forbidden]
@@ -412,10 +455,16 @@ def reconcile_file_scope(
                 )
 
         # 4. Plan consistency: prose names a grounded file missing from scope.
-        #    Never auto-add it; flag for human review instead.
+        #    Run-aware (E9): a path scoped in another chunk of this run is not
+        #    a mismatch and produces no note. A genuinely unscoped mention is
+        #    never auto-added; it is flagged for human review only — risk_level
+        #    is not escalated for a note-only mismatch.
         missing_prose = [
             p for p in prose_paths
-            if p not in set(files) and p not in forbidden and p not in reference
+            if p not in set(files)
+            and p not in forbidden
+            and p not in reference
+            and p not in run_scope
         ]
         if missing_prose:
             notes.append(
@@ -423,11 +472,13 @@ def reconcile_file_scope(
                 "(not auto-added; confirm scope): "
                 + ", ".join(sorted(set(missing_prose)))
             )
-            harden = True
+            needs_review = True
 
         files = _dedupe(files)
         if notes or files != list(chunk.files_expected):
-            chunk = _apply_scope_notes(chunk, files, notes, harden=harden)
+            chunk = _apply_scope_notes(
+                chunk, files, notes, harden=harden, require_review=needs_review
+            )
         new_chunks.append(chunk)
 
     # Multi-chunk: ensure every grounded allowlist file appears somewhere.

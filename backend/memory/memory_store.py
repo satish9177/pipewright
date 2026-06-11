@@ -353,7 +353,21 @@ def _estimate_tokens(text_value: str) -> int:
     return max(1, (len(text_value) + 3) // 4)
 
 
+# Process-once guard for the pre-M1 migration (ARCH-M1). The archive sweep used
+# to run on every memory read/write (add_fact / load_hard_facts / list_all_facts)
+# — a write-locked no-op table scan once a deployment was migrated. It is now a
+# one-time startup migration; the hot paths no longer call it.
+_pre_m1_migration_done = False
+
+
 def _archive_unscoped_pre_m1_memory() -> None:
+    """
+    Archive legacy unscoped (project_id IS NULL) rows so they are never injected.
+
+    Idempotent, but it takes a SQLite write lock. Do NOT call this on the
+    read/write hot path — call :func:`migrate_unscoped_pre_m1_memory` once at
+    startup instead. Kept callable directly for tests and explicit migration.
+    """
     with engine.connect() as conn:
         conn.execute(text("""
             UPDATE memory_facts
@@ -365,6 +379,31 @@ def _archive_unscoped_pre_m1_memory() -> None:
               AND status = 'active'
         """), {"reason": PRE_M1_ARCHIVE_REASON, "now": _utc_now()})
         conn.commit()
+
+
+def migrate_unscoped_pre_m1_memory() -> None:
+    """
+    One-time startup migration (ARCH-M1): archive any legacy unscoped rows, at
+    most once per process. Safe to call repeatedly (e.g. repeated app startup in
+    tests); only the first successful call touches the database.
+
+    Memory safety does not depend on this running: ``load_hard_facts`` filters by
+    ``project_id`` (and returns nothing for a missing one) and ``list_all_facts``
+    filters ``project_id IS NOT NULL``, so a legacy NULL row is never injected
+    even before this migration runs. The sweep is hygiene, not the guard.
+    """
+    global _pre_m1_migration_done
+    if _pre_m1_migration_done:
+        return
+    try:
+        _archive_unscoped_pre_m1_memory()
+        _pre_m1_migration_done = True
+    except Exception as error:
+        # Never block startup on a hygiene migration; it retries next boot.
+        logger.warning(
+            "memory_store.py: pre-M1 memory migration failed (ignored): %s",
+            error,
+        )
 
 
 def validate_fact_fields(
@@ -483,7 +522,6 @@ def add_fact(
     )
 
     try:
-        _archive_unscoped_pre_m1_memory()
         with engine.begin() as conn:
             return insert_fact_in_conn(
                 conn,
@@ -551,19 +589,11 @@ def load_hard_facts(
     no memory to prevent cross-project or legacy-row leaks.
     """
     if not project_id or not str(project_id).strip():
-        try:
-            _archive_unscoped_pre_m1_memory()
-        except Exception as error:
-            logger.warning(
-                "memory_store.py: failed to archive unscoped memory: %s",
-                error,
-            )
         logger.warning("memory_store.py: load_hard_facts called without project_id")
         return ""
 
     try:
         project_id = _validate_project_id(project_id)
-        _archive_unscoped_pre_m1_memory()
         with engine.connect() as conn:
             result = conn.execute(text("""
                 SELECT content, category, priority, created_at
@@ -952,7 +982,6 @@ def list_all_facts(project_id: str | None = None) -> list[dict]:
     never treats unscoped legacy rows as active memory.
     """
     try:
-        _archive_unscoped_pre_m1_memory()
         with engine.connect() as conn:
             if project_id:
                 result = conn.execute(text("""

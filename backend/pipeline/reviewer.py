@@ -42,6 +42,7 @@ from backend.pipeline.chunk_review_store import (
     current_chunk_review_identity,
 )
 from backend.pipeline.chunk_store import get_chunk_test_run_verdict
+from backend.pipeline.policy import REVIEWER_MAX_DIFF_CHARS
 from backend.pipeline.reviewer_models import (
     ChunkReviewRecord,
     ChunkReviewStatus,
@@ -55,7 +56,7 @@ logger = logging.getLogger(__name__)
 # Conservative caps so a large diff / test log never bloats the prompt, blows up
 # token cost, or becomes an egress vector. Diffs keep the head (where the change
 # starts); test output keeps the tail (where the pass/fail summary lives).
-REVIEWER_MAX_DIFF_CHARS = 6000
+# The diff cap is shared policy (policy.py §8b); the rest stay reviewer-local.
 REVIEWER_MAX_TEST_OUTPUT_CHARS = 4000
 REVIEWER_MAX_FILES_LISTED = 50
 REVIEWER_MAX_ERROR_CHARS = 300

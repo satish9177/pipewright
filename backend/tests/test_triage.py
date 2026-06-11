@@ -150,7 +150,8 @@ async def test_triage_llm_request_uses_messages(monkeypatch, tmp_repo):
     assert request.messages[0].content == triage.TRIAGE_SYSTEM_PROMPT
     assert request.messages[1].role == "user"
     assert "FEATURE REQUEST:\nAdd chunk planning" in request.messages[1].content
-    assert request.model == triage.TRIAGE_MODEL
+    # The stage no longer pins a model; complete_for_role resolves it per role.
+    assert request.model == ""
     assert request.temperature == triage.TRIAGE_TEMPERATURE
     assert request.max_output_tokens == triage.TRIAGE_MAX_TOKENS
     assert request.response_format == "json_object"

@@ -360,6 +360,11 @@ def patch_success_pipeline(monkeypatch, run_id: str, calls=None):
             calls.append(("coder", chunk_number))
         return make_coder_result(run_id, chunk_number)
 
+    def fake_dry(code, repo_path):
+        if calls is not None:
+            calls.append(("dry_run", None))
+        return DryRunResult(ok=True)
+
     def fake_tests(patch, run_id, chunk_number=0):
         if calls is not None:
             calls.append(("test", chunk_number))
@@ -368,6 +373,7 @@ def patch_success_pipeline(monkeypatch, run_id: str, calls=None):
     reset_worktree_state()
     monkeypatch.setattr(chunked_orchestrator, "run_planner", fake_planner)
     monkeypatch.setattr(chunked_orchestrator, "run_coder", fake_coder)
+    monkeypatch.setattr(chunked_orchestrator, "dry_run_changes", fake_dry)
     monkeypatch.setattr(
         chunked_orchestrator, "apply_patch_guarded", make_guarded_apply(calls)
     )
@@ -2553,6 +2559,99 @@ async def test_success_path_writes_no_patch_failure_summary(
     # A successful chunk keeps its normal success summary, never a failure one.
     assert summary.get("kind") != PATCH_FAILURE_KIND
     assert "chunk_title" in summary
+
+
+# ---------------------------------------------------------------------------
+# E8 symmetry: the main path surfaces files_expected (planner prompt + coder
+# plan) and runs the zero-mutation dry-run pre-flight before apply, exactly
+# like the human-retry path.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_main_path_surfaces_files_expected_to_planner_and_coder(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    captured_plans = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    async def capture_coder(plan, run_id_arg, chunk_number=0, **kwargs):
+        captured_plans.append(plan)
+        return make_coder_result(run_id_arg, chunk_number)
+
+    monkeypatch.setattr(chunked_orchestrator, "run_coder", capture_coder)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "awaiting_final_approval"
+    # The planner prompt context names every approved file...
+    planner_calls = [c for c in calls if c[0] == "planner"]
+    assert planner_calls
+    enriched = planner_calls[0][2]
+    for path in ("created_1.py", "modified_1.py", "deleted_1.py"):
+        assert path in enriched
+    # ...and the plan handed to the coder surfaces them via files_to_modify
+    # (prompt context only — write scope stays files_expected).
+    plan = captured_plans[0]
+    for path in ("created_1.py", "modified_1.py", "deleted_1.py"):
+        assert path in plan.files_to_modify
+
+
+@pytest.mark.asyncio
+async def test_main_path_dry_run_runs_before_apply(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "awaiting_final_approval"
+    names = [c[0] for c in calls]
+    assert "dry_run" in names
+    assert "patch" in names
+    assert names.index("dry_run") < names.index("patch")
+
+
+@pytest.mark.asyncio
+async def test_main_path_dry_run_failure_prevents_apply(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    def failing_dry(code, repo_path):
+        calls.append(("dry_run", None))
+        return DryRunResult(
+            ok=False,
+            failed_path="modified_1.py",
+            failed_action="edit",
+            error_message=(
+                "patch_applier.py: edit old_string not found in modified_1.py. "
+                "The text to replace must match the file exactly."
+            ),
+        )
+
+    monkeypatch.setattr(chunked_orchestrator, "dry_run_changes", failing_dry)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    assert result["failed_chunk"] == 1
+    # Dry-run gates apply/test/commit entirely in the main path too.
+    assert not any(c[0] in {"patch", "test", "commit"} for c in calls)
+    assert _chunk_status_value(run_id, 1) == "failed"
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["kind"] == PATCH_FAILURE_KIND
+    assert summary["failure_type"] == PatchFailureType.PATCH_DOES_NOT_APPLY.value
+    assert summary["failed_step"] == "patch"
 
 
 # ---------------------------------------------------------------------------

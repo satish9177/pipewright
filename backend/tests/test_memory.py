@@ -12,6 +12,7 @@ from backend.db.database import engine, init_db
 from backend.memory.memory_store import (
     MEMORY_SAFETY_ERROR,
     PRE_M1_ARCHIVE_REASON,
+    _archive_unscoped_pre_m1_memory,
     add_fact,
     archive_fact,
     compute_content_hash,
@@ -110,8 +111,20 @@ def test_unscoped_pre_m1_memory_not_returned():
             VALUES (:id, 'Old global memory should not load', 'legacy', 'test', 'active', 0)
         """), {"id": memory_id})
 
+    # Safety does not depend on archiving: a missing project_id returns nothing.
     assert load_hard_facts(None) == ""
 
+    # ARCH-M1: reads no longer run the archive sweep, so the legacy row is still
+    # active after a read — it is simply never injected (filtered by project_id).
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT status, is_stale FROM memory_facts WHERE id = :id"
+        ), {"id": memory_id}).fetchone()
+    assert row[0] == "active"
+    assert row[1] == 0
+
+    # The one-time migration archives it.
+    _archive_unscoped_pre_m1_memory()
     with engine.connect() as conn:
         row = conn.execute(text("""
             SELECT status, is_stale, archived_reason

@@ -7,7 +7,7 @@ returns a validated CoderHandoff Pydantic object.
 Rules:
   - Coder never writes files to disk
   - Never pass API key as argument - load from settings
-  - Always pin model version to CODER_MODEL constant
+  - Model selection is resolved per role by role_config (complete_for_role)
   - Always set temperature=0.2 for structured output
   - Always log token usage after every API call
   - Never silently swallow exceptions
@@ -16,34 +16,27 @@ Rules:
 """
 
 import json
-import asyncio
 import logging
 from pathlib import Path
 from pydantic import ValidationError
 
 from backend.llm import complete_for_role, log_token_usage
 from backend.llm.base import LLMRequest, LLMResponse, Message
-from backend.llm.errors import ProviderRateLimitError
+from backend.llm.retry import ProviderRetryExhaustedError, call_with_rate_limit_retry
 from backend.llm.role_config import Role
 from backend.models.handoff import PlannerHandoff, CoderHandoff
 from backend.memory.injection_store import capture_memory_injection
 from backend.memory.prompt_builder import build_project_memory_block_detailed
 from backend.checkpoint.checkpoint_store import save_checkpoint
 from backend.pipeline.llm_call_provenance_store import try_record_llm_call_provenance
+from backend.pipeline.policy import LARGE_FILE_CONTEXT_LINE_CAP, MAX_FILE_LINES
 from backend.utils.json_helpers import clean_json_response
 from backend.utils.path_safety import normalize_relative_path, validate_safe_relative_path
 from backend.projects.project_context import get_target_repo_path
 
-CODER_MODEL = "gemini-2.5-flash-lite"
 CODER_TEMPERATURE = 0.2
 CODER_MAX_TOKENS = 8000
 CODER_TIMEOUT_SECONDS = 120
-MAX_FILE_LINES = 200
-# Absolute cap for including a modify target as edit grounding context. A file
-# between MAX_FILE_LINES and this cap may not be rewritten wholesale, but is
-# still small enough to include in full so the model can locate the exact text
-# to target with action="edit". Beyond this cap we refuse rather than truncate.
-LARGE_FILE_CONTEXT_LINE_CAP = 1500
 
 logger = logging.getLogger(__name__)
 
@@ -266,7 +259,7 @@ def _build_llm_request(user_prompt: str) -> LLMRequest:
             Message(role="system", content=CODER_SYSTEM_PROMPT),
             Message(role="user", content=user_prompt),
         ],
-        model=CODER_MODEL,
+        model="",  # resolved per role by complete_for_role
         temperature=CODER_TEMPERATURE,
         max_output_tokens=CODER_MAX_TOKENS,
         timeout_seconds=CODER_TIMEOUT_SECONDS,
@@ -294,7 +287,7 @@ def _build_correction_request(
             Message(role="assistant", content=raw_text),
             Message(role="user", content=correction_prompt),
         ],
-        model=CODER_MODEL,
+        model="",  # resolved per role by complete_for_role
         temperature=CODER_TEMPERATURE,
         max_output_tokens=CODER_MAX_TOKENS,
         timeout_seconds=CODER_TIMEOUT_SECONDS,
@@ -303,7 +296,13 @@ def _build_correction_request(
 
 
 async def _call_llm(request: LLMRequest, run_id: str) -> LLMResponse:
-    response = await complete_for_role(Role.CODER, request)
+    # Bounded rate-limit retry (E4): backoff + jitter, Retry-After honored —
+    # never a 60s sleep while the project repo lock is held. Non-rate-limit
+    # errors propagate unchanged.
+    response = await call_with_rate_limit_retry(
+        lambda: complete_for_role(Role.CODER, request),
+        description="coder LLM call",
+    )
     log_token_usage(response, run_id=run_id, role=Role.CODER)
     return response
 
@@ -398,6 +397,13 @@ async def run_coder(
 
     except RuntimeError:
         raise
+    except ProviderRetryExhaustedError as exhausted:
+        # First-attempt rate limit: _call_llm already retried with bounded
+        # backoff (E4) before giving up.
+        raise RuntimeError(
+            f"coder.py: Rate limited; retries exhausted. "
+            f"run_id={run_id} | error={exhausted}"
+        )
     except Exception as unexpected:
         raise RuntimeError(
             f"coder.py: Unexpected error during coding. "
@@ -479,26 +485,14 @@ async def _retry_after_parse_failure(
             f"coder.py: LLM failed to return valid code handoff "
             f"after 2 attempts. run_id={run_id} | error={second_error}"
         )
+    except ProviderRetryExhaustedError as exhausted:
+        # _call_llm already retried with bounded backoff (E4).
+        raise RuntimeError(
+            f"coder.py: Rate limited; retries exhausted. "
+            f"run_id={run_id} | error={exhausted}"
+        )
     except Exception as unexpected:
-        error_str = str(unexpected)
-        if isinstance(unexpected, ProviderRateLimitError) or "429" in error_str:
-            logger.warning("[CODER] Rate limited by LLM. Waiting 60 seconds...")
-            await asyncio.sleep(60)
-            logger.info("[CODER] Retrying after rate limit wait...")
-            try:
-                coder_response = await _call_llm(
-                    _build_llm_request(user_prompt), run_id
-                )
-                handoff = _parse_handoff(coder_response.text, run_id)
-                logger.info("[CODER] Handoff validated after rate limit retry")
-                return handoff, coder_response
-            except Exception as retry_error:
-                raise RuntimeError(
-                    f"coder.py: Failed after rate limit retry. "
-                    f"run_id={run_id} | error={retry_error}"
-                )
-        else:
-            raise RuntimeError(
-                f"coder.py: Unexpected error during coding. "
-                f"run_id={run_id} | error={unexpected}"
-            )
+        raise RuntimeError(
+            f"coder.py: Unexpected error during coding. "
+            f"run_id={run_id} | error={unexpected}"
+        )

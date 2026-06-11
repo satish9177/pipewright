@@ -16,6 +16,7 @@ from sqlalchemy import text
 
 from backend.config.keys import settings
 from backend.db.database import engine
+from backend.llm import retry as llm_retry
 from backend.llm.base import LLMResponse
 from backend.llm.errors import LLMError
 from backend.llm.role_config import Role
@@ -129,7 +130,9 @@ def _cleanup_memory(project_id: str):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_coder_429_retry_path_does_not_crash(monkeypatch, tmp_repo):
+async def test_coder_429_during_correction_retried_with_bounded_backoff(
+    monkeypatch, tmp_repo
+):
     run_id = str(uuid.uuid4())
     plan = make_test_plan(run_id)
     llm = _CoderLLM([
@@ -149,13 +152,16 @@ async def test_coder_429_retry_path_does_not_crash(monkeypatch, tmp_repo):
         "save_checkpoint",
         lambda **kwargs: checkpoint_calls.append(kwargs),
     )
-    monkeypatch.setattr(coder.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(llm_retry.asyncio, "sleep", fake_sleep)
 
     result = await run_coder(plan=plan, run_id=run_id)
 
     assert result.run_id == run_id
     assert len(result.files_changed) == 1
-    assert sleeps == [60]
+    # E4: one bounded backoff (2s base + <=1s jitter), never a 60s
+    # lock-held sleep.
+    assert len(sleeps) == 1
+    assert 2.0 <= sleeps[0] <= 3.0
     assert not hasattr(coder, "time")
     assert llm.roles == [Role.CODER, Role.CODER, Role.CODER]
     assert checkpoint_calls[0]["step"] == "code"
@@ -165,25 +171,52 @@ async def test_coder_429_retry_path_does_not_crash(monkeypatch, tmp_repo):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_coder_429_retry_failure_raises_runtime_error(monkeypatch, tmp_repo):
+async def test_coder_429_exhaustion_raises_runtime_error(monkeypatch, tmp_repo):
     run_id = str(uuid.uuid4())
     plan = make_test_plan(run_id)
     llm = _CoderLLM([
         "{not json",
         RuntimeError("429 rate limit"),
-        RuntimeError("still rate limited"),
+        RuntimeError("429 still rate limited"),
+        RuntimeError("429 still rate limited"),
     ])
 
     async def fake_sleep(seconds):
         return None
 
     _patch_coder_dependencies(monkeypatch, llm, tmp_repo)
-    monkeypatch.setattr(coder.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(llm_retry.asyncio, "sleep", fake_sleep)
 
     with pytest.raises(RuntimeError) as error:
         await run_coder(plan=plan, run_id=run_id)
 
-    assert "coder.py: Failed after rate limit retry" in str(error.value)
+    assert "coder.py: Rate limited; retries exhausted" in str(error.value)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_coder_429_on_first_attempt_is_retried(monkeypatch, tmp_repo):
+    # New with E4: a first-attempt rate limit no longer dead-ends the chunk —
+    # the shared executor retries it like any other provider call.
+    run_id = str(uuid.uuid4())
+    plan = make_test_plan(run_id)
+    llm = _CoderLLM([
+        RuntimeError("429 rate limit"),
+        _coder_response(run_id),
+    ])
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    _patch_coder_dependencies(monkeypatch, llm, tmp_repo)
+    monkeypatch.setattr(llm_retry.asyncio, "sleep", fake_sleep)
+
+    result = await run_coder(plan=plan, run_id=run_id)
+
+    assert result.run_id == run_id
+    assert len(sleeps) == 1
+    assert llm.roles == [Role.CODER, Role.CODER]
 
 
 @pytest.mark.unit
@@ -215,7 +248,8 @@ async def test_coder_llm_request_uses_messages(monkeypatch, tmp_repo):
     assert request.messages[0].content == coder.CODER_SYSTEM_PROMPT
     assert request.messages[1].role == "user"
     assert "IMPLEMENTATION PLAN:" in request.messages[1].content
-    assert request.model == coder.CODER_MODEL
+    # The stage no longer pins a model; complete_for_role resolves it per role.
+    assert request.model == ""
     assert request.temperature == coder.CODER_TEMPERATURE
     assert request.max_output_tokens == coder.CODER_MAX_TOKENS
     assert request.response_format == "json_object"

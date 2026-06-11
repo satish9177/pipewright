@@ -159,6 +159,9 @@ export interface ProjectDetectResponse {
   gh_installed: boolean
   gh_authenticated: boolean
   recommended_pr_mode: PrMode | (string & {})
+  // Detect-and-prefill only: a suggested test command from repo markers, or
+  // null when no confident signal was found. Never executed or auto-saved.
+  suggested_test_command?: string | null
   warnings: string[]
 }
 

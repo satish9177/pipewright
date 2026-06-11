@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from backend.config.keys import settings
 from backend.db.database import engine
+from backend.llm import retry as llm_retry
 from backend.llm.base import LLMResponse
 from backend.llm.errors import LLMError
 from backend.llm.role_config import Role
@@ -102,7 +103,7 @@ def _skip_without_gemini_key():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_planner_429_retry_uses_asyncio_sleep(monkeypatch):
+async def test_planner_429_retried_with_bounded_backoff(monkeypatch):
     run_id = str(uuid.uuid4())
     llm = _PlannerLLM([
         RuntimeError("429 rate limit"),
@@ -120,12 +121,15 @@ async def test_planner_429_retry_uses_asyncio_sleep(monkeypatch):
         "save_checkpoint",
         lambda **kwargs: checkpoint_calls.append(kwargs),
     )
-    monkeypatch.setattr(planner.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(llm_retry.asyncio, "sleep", fake_sleep)
 
     result = await run_planner("Add ping endpoint", run_id)
 
     assert result.run_id == run_id
-    assert sleeps == [60]
+    # E4: one bounded backoff (2s base + <=1s jitter), never a 60s
+    # lock-held sleep.
+    assert len(sleeps) == 1
+    assert 2.0 <= sleeps[0] <= 3.0
     assert not hasattr(planner, "time")
     assert llm.roles == [Role.PLANNER, Role.PLANNER]
     assert checkpoint_calls[0]["step"] == "plan"
@@ -135,23 +139,25 @@ async def test_planner_429_retry_uses_asyncio_sleep(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_planner_429_retry_failure_raises_runtime_error(monkeypatch):
+async def test_planner_429_exhaustion_raises_runtime_error(monkeypatch):
     run_id = str(uuid.uuid4())
     llm = _PlannerLLM([
         RuntimeError("429 rate limit"),
-        RuntimeError("still rate limited"),
+        RuntimeError("429 still rate limited"),
+        RuntimeError("429 still rate limited"),
     ])
 
     async def fake_sleep(seconds):
         return None
 
     _patch_planner_dependencies(monkeypatch, llm)
-    monkeypatch.setattr(planner.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(llm_retry.asyncio, "sleep", fake_sleep)
 
     with pytest.raises(RuntimeError) as error:
         await run_planner("Add ping endpoint", run_id)
 
-    assert "planner.py: Failed after rate limit retry" in str(error.value)
+    assert "planner.py: Rate limited; retries exhausted" in str(error.value)
+    assert llm.roles == [Role.PLANNER] * llm_retry.RATE_LIMIT_MAX_ATTEMPTS
 
 
 @pytest.mark.unit
@@ -181,7 +187,8 @@ async def test_planner_llm_request_uses_messages(monkeypatch):
     assert request.messages[0].content == planner.SYSTEM_PROMPT
     assert request.messages[1].role == "user"
     assert "FEATURE REQUEST:\nAdd ping endpoint" in request.messages[1].content
-    assert request.model == planner.PLANNER_MODEL
+    # The stage no longer pins a model; complete_for_role resolves it per role.
+    assert request.model == ""
     assert request.temperature == planner.PLANNER_TEMPERATURE
     assert request.max_output_tokens == planner.PLANNER_MAX_TOKENS
     assert request.response_format == "json_object"

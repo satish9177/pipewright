@@ -27,6 +27,10 @@ interface BasicFields {
   description: string
 }
 
+// The placeholder default for a brand-new form. Detection may prefill over this
+// (it is not a real test command), but never over a value the user has typed.
+const DEFAULT_TEST_COMMAND = 'python --version'
+
 export default function NewProjectPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -35,7 +39,7 @@ export default function NewProjectPage() {
   const [basic, setBasic] = useState<BasicFields>({
     name: '',
     repo_path: '',
-    test_command: 'python --version',
+    test_command: DEFAULT_TEST_COMMAND,
     branch: 'main',
     description: '',
   })
@@ -89,6 +93,17 @@ export default function NewProjectPage() {
         github_owner: prev.github_owner || result.github_owner || '',
         github_repo: prev.github_repo || result.github_repo || '',
       }))
+      // Prefill the detected test command, but only when the user has not yet
+      // typed one (still empty or the untouched placeholder default). Never
+      // overwrite a command the user has entered.
+      if (result.suggested_test_command) {
+        setBasic(prev =>
+          prev.test_command.trim() === '' ||
+          prev.test_command === DEFAULT_TEST_COMMAND
+            ? { ...prev, test_command: result.suggested_test_command as string }
+            : prev,
+        )
+      }
     } catch {
       setDetection(null)
       setDetectError('Detection failed. You can still configure the project manually.')
@@ -215,6 +230,13 @@ export default function NewProjectPage() {
                   onChange={updateBasic('test_command')}
                   required
                 />
+                {detection?.suggested_test_command && (
+                  <p className="text-xs text-muted-foreground">
+                    Suggested from your repo:{' '}
+                    <code>{detection.suggested_test_command}</code>. You can edit
+                    or replace it.
+                  </p>
+                )}
               </div>
             </div>
           </CardContent>

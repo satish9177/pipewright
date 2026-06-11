@@ -6,7 +6,7 @@ PlannerHandoff Pydantic object.
 
 Rules:
   - Never pass API key as argument - load from settings
-  - Always pin model version to PLANNER_MODEL constant
+  - Model selection is resolved per role by role_config (complete_for_role)
   - Always set temperature=0.2 for structured output
   - Always log token usage after every API call
   - Never silently swallow exceptions
@@ -15,13 +15,12 @@ Rules:
 """
 
 import json
-import asyncio
 import logging
 from pydantic import ValidationError
 
 from backend.llm import complete_for_role, log_token_usage
 from backend.llm.base import LLMRequest, Message
-from backend.llm.errors import ProviderRateLimitError
+from backend.llm.retry import ProviderRetryExhaustedError, call_with_rate_limit_retry
 from backend.llm.role_config import Role
 from backend.models.handoff import PlannerHandoff
 from backend.memory.injection_store import capture_memory_injection
@@ -29,7 +28,6 @@ from backend.memory.prompt_builder import build_project_memory_block_detailed
 from backend.checkpoint.checkpoint_store import save_checkpoint
 from backend.utils.json_helpers import clean_json_response
 
-PLANNER_MODEL = "gemini-2.5-flash-lite"
 PLANNER_TEMPERATURE = 0.2
 PLANNER_MAX_TOKENS = 2000
 
@@ -91,7 +89,7 @@ def _build_llm_request(prompt: str) -> LLMRequest:
             Message(role="system", content=SYSTEM_PROMPT),
             Message(role="user", content=prompt),
         ],
-        model=PLANNER_MODEL,
+        model="",  # resolved per role by complete_for_role
         temperature=PLANNER_TEMPERATURE,
         max_output_tokens=PLANNER_MAX_TOKENS,
         response_format="json_object",
@@ -118,7 +116,7 @@ def _build_correction_request(
             Message(role="assistant", content=raw_text),
             Message(role="user", content=correction_prompt),
         ],
-        model=PLANNER_MODEL,
+        model="",  # resolved per role by complete_for_role
         temperature=PLANNER_TEMPERATURE,
         max_output_tokens=PLANNER_MAX_TOKENS,
         response_format="json_object",
@@ -126,7 +124,13 @@ def _build_correction_request(
 
 
 async def _call_llm(request: LLMRequest, run_id: str) -> str:
-    response = await complete_for_role(Role.PLANNER, request)
+    # Bounded rate-limit retry (E4): backoff + jitter, Retry-After honored —
+    # never a 60s sleep while the project repo lock is held. Non-rate-limit
+    # errors propagate unchanged.
+    response = await call_with_rate_limit_retry(
+        lambda: complete_for_role(Role.PLANNER, request),
+        description="planner LLM call",
+    )
     log_token_usage(response, run_id=run_id, role=Role.PLANNER)
     return response.text
 
@@ -218,26 +222,18 @@ async def run_planner(
                 f"error={second_error}"
             )
 
+    except ProviderRetryExhaustedError as exhausted:
+        # _call_llm already retried with bounded backoff (E4).
+        raise RuntimeError(
+            f"planner.py: Rate limited; retries exhausted. "
+            f"run_id={run_id} | error={exhausted}"
+        )
+
     except Exception as unexpected:
-        error_str = str(unexpected)
-        if isinstance(unexpected, ProviderRateLimitError) or "429" in error_str:
-            logger.warning("[PLANNER] Rate limited by LLM. Waiting 60 seconds...")
-            await asyncio.sleep(60)
-            logger.info("[PLANNER] Retrying after rate limit wait...")
-            try:
-                raw_text = await _call_llm(request, run_id)
-                handoff = _parse_handoff(raw_text, run_id)
-                logger.info("[PLANNER] Plan validated after rate limit retry")
-            except Exception as retry_error:
-                raise RuntimeError(
-                    f"planner.py: Failed after rate limit retry. "
-                    f"run_id={run_id} | error={retry_error}"
-                )
-        else:
-            raise RuntimeError(
-                f"planner.py: Unexpected error during planning. "
-                f"run_id={run_id} | error={unexpected}"
-            )
+        raise RuntimeError(
+            f"planner.py: Unexpected error during planning. "
+            f"run_id={run_id} | error={unexpected}"
+        )
 
     # Save checkpoint after successful plan
     try:

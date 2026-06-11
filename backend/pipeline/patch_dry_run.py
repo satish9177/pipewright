@@ -40,17 +40,19 @@ from enum import Enum
 from pathlib import Path
 
 from backend.models.handoff import CoderHandoff, FileChange
+from backend.pipeline.policy import MAX_FILE_LINES
 from backend.utils.path_safety import (
     is_forbidden_write_path,
     validate_safe_relative_path,
 )
 
-# Mirror of coder.MAX_FILE_LINES. Files larger than this may not be modified by
-# wholesale full-content replacement; they must be changed with a targeted
-# action="edit" instead. Kept here so the shared evaluator owns the single
-# large-file-modify policy (value unchanged from the previous patch_applier
-# definition).
-MAX_MODIFY_FILE_LINES = 200
+# Files larger than this may not be modified by wholesale full-content
+# replacement; they must be changed with a targeted action="edit" instead.
+# Single-sourced from policy (§8b) — previously a hand-mirrored copy of the
+# coder's cap that could drift. The local name is kept for existing readers;
+# policy.py is a constants-only module, so this import keeps the cycle-free
+# read-only contract.
+MAX_MODIFY_FILE_LINES = MAX_FILE_LINES
 
 
 class MatchStatus(str, Enum):

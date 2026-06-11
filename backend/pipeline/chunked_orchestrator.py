@@ -490,6 +490,12 @@ def _format_relevant_files(relevant_files: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _format_files_expected(files_expected: list[str]) -> str:
+    if not files_expected:
+        return "- No files approved yet"
+    return "\n".join(f"- {path}" for path in files_expected)
+
+
 def _normalize_previous_context(context: str) -> str:
     if not context or context.strip() == "[Previous Chunks Context]\n\n[End Previous Context]":
         return (
@@ -525,6 +531,8 @@ def _build_enriched_feature_description(
         f"{previous_context}\n\n"
         f"[Current Chunk Task]\n"
         f"{chunk.description}\n\n"
+        f"[Approved Files Expected (the hard scope for this chunk)]\n"
+        f"{_format_files_expected(chunk.files_expected)}\n\n"
         f"[Known Relevant Files in Project]\n"
         f"{_format_relevant_files(relevant_files)}"
     )
@@ -1399,6 +1407,14 @@ async def _execute_single_chunk(
         chunk_number=chunk_number,
         project_id=project_id,
     )
+    # E8 symmetry with the retry path: surface the approved files_expected to
+    # the coder via files_to_modify so edits are grounded against current
+    # on-disk contents instead of failing at apply with a stale old_string.
+    # Prompt context only — it grants NO write authority; the write scope stays
+    # files_expected, enforced by scope_guard and apply_patch_guarded. The plan
+    # checkpoint saved by run_planner keeps the raw planner output (the retry
+    # path re-surfaces on load).
+    plan = _surface_files_expected_for_edit(plan, chunk.files_expected)
     code = await run_coder(
         plan,
         run_id,
@@ -1423,6 +1439,24 @@ async def _execute_single_chunk(
         report = build_patch_failure_report(
             PatchFailureType.SCOPE_VIOLATION,
             technical_details=str(drift),
+            changed_files_attempted=[change.path for change in code.files_changed],
+            allowed_files=chunk.files_expected,
+            working_tree_clean=local_git.is_working_tree_clean(target_repo_path),
+            chunk_number=chunk_number,
+            failed_step="patch",
+        )
+        return _fail_chunk_with_report(run_id, chunk_number, report)
+
+    # Zero-mutation pre-apply validation (#26B), E8 symmetry with the retry
+    # path. On failure nothing is written, so apply/tests are skipped entirely.
+    dry = dry_run_changes(code, target_repo_path)
+    if not dry.ok:
+        failure_type = classify_patch_failure(
+            RuntimeError(dry.error_message or ""), phase="apply"
+        )
+        report = build_patch_failure_report(
+            failure_type,
+            technical_details=dry.error_message,
             changed_files_attempted=[change.path for change in code.files_changed],
             allowed_files=chunk.files_expected,
             working_tree_clean=local_git.is_working_tree_clean(target_repo_path),

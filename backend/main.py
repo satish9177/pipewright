@@ -13,6 +13,7 @@ from backend.core.config import get_config
 from backend.core.logging_config import configure_logging
 from backend.db.database import init_db
 from backend.db.database import engine
+from backend.memory.memory_store import migrate_unscoped_pre_m1_memory
 from backend.runtime.approval_gate_recovery import timeout_stale_approval_gates
 from backend.runtime.startup_diagnostics import run_startup_diagnostics
 from backend.runtime.startup_recovery import recover_interrupted_runs
@@ -39,6 +40,9 @@ app_config = get_config()
 @asynccontextmanager
 async def lifespan(app):
     init_db()
+    # One-time hygiene migration (ARCH-M1): archive legacy unscoped memory rows
+    # once at startup instead of on every memory read/write. Never blocks startup.
+    migrate_unscoped_pre_m1_memory()
     timeout_stale_approval_gates()
     recover_interrupted_runs()
     # Log-only local-first setup diagnostics (#32B). Never raises, never blocks

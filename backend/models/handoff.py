@@ -209,6 +209,10 @@ class ProjectDetectResponse(BaseModel):
     gh_installed: bool = False
     gh_authenticated: bool = False
     recommended_pr_mode: str = DEFAULT_PR_MODE
+    # Detect-and-prefill only (Phase 0, G4): a suggested test command for the
+    # New Project form, or None when no confident signal was found. Never
+    # executed and never auto-saved; the human confirms or edits it.
+    suggested_test_command: Optional[str] = None
     warnings: List[str] = Field(default_factory=list)
 
 
