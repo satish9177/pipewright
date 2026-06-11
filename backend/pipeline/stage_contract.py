@@ -280,12 +280,22 @@ async def code_stage(
     project_id: str | None,
     files_expected: list[str],
     run_coder_fn=None,
+    continuation_context: str | None = None,
 ) -> StageOutcome:
+    # The steered continuation context (item 13) is forwarded only when set,
+    # so the steer-less modes call the coder with the exact pre-item-13
+    # signature (and fakes without the new kwarg keep working).
+    extra_kwargs = (
+        {"continuation_context": continuation_context}
+        if continuation_context is not None
+        else {}
+    )
     code = await (run_coder_fn or run_coder)(
         plan,
         run_id,
         chunk_number=chunk_number,
         project_id=project_id,
+        **extra_kwargs,
     )
     if not code.files_changed:
         report = build_patch_failure_report(

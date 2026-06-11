@@ -31,6 +31,23 @@ AUTO_RETRY_INFRA_BUDGET = 1
 # default and is not wired into execution in this slice.
 SCOPED_VERIFICATION_ENABLED = False
 
+# --- Human attempts on a failed chunk (patch_failures.py, item 13) ----------
+# Combined per-chunk budget for human-triggered attempts on a failed chunk:
+# plain human retries and steered attempts (recovery_mode "human" /
+# "human_with_instruction") share this one budget. Auto attempts
+# (recovery_mode="auto") and the initial failed apply never consume it.
+# Relocated from patch_failures.MAX_HUMAN_RETRIES with the value preserved;
+# the redesign proposal suggests 5 as an alternative — raising it is a
+# deliberate maintainer choice, not a default to bury.
+HUMAN_ATTEMPT_BUDGET = 2
+# Length cap for one steer message. Over-cap steers are rejected with a clear
+# error, never silently truncated (truncation changes the user's meaning).
+MAX_STEER_TEXT_CHARS = 4000
+# Cap for the prior applied-diff text carried into a steered attempt's
+# continuation context (head-preserving, like the reviewer's diff cap). The
+# diff is prompt context only — never standing working-tree state.
+STEER_CONTINUATION_DIFF_MAX_CHARS = 10000
+
 # --- Coder file-context caps (coder.py, patch_dry_run.py) -------------------
 # Files over this many lines may not be rewritten wholesale; they must be
 # changed with a targeted action="edit". patch_dry_run enforces the same cap

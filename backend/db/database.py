@@ -513,6 +513,7 @@ def _migrate_db(conn) -> None:
             ("project_id", "status"),
         )
         _ensure_chunk_attempts_shape(conn)
+        _ensure_run_turns_shape(conn)
         _ensure_project_index_fingerprints_shape(conn)
         _ensure_file_index_shape(conn)
     except Exception as error:
@@ -571,6 +572,39 @@ def _ensure_chunk_attempts_shape(conn) -> None:
         "CREATE INDEX IF NOT EXISTS idx_chunk_attempts_completed_head "
         "ON chunk_attempts(run_id, final_status, chunk_number)",
         ("run_id", "final_status", "chunk_number"),
+    )
+
+
+def _ensure_run_turns_shape(conn) -> None:
+    """
+    Ensure the append-only run_turns conversation log exists for existing DB
+    files (Phase 3 item 13).
+
+    Additive only: CREATE TABLE IF NOT EXISTS, never DROP or rewrite, no
+    backfill. The table stores user steer text and metadata only; rows are
+    never updated or deleted by the application. Safe on every startup.
+    """
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS run_turns (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            turn_number INTEGER NOT NULL,
+            chunk_number INTEGER NOT NULL,
+            steer_text TEXT NOT NULL,
+            attempt_id TEXT,
+            outcome TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (run_id) REFERENCES pipeline_runs(id),
+            UNIQUE(run_id, turn_number)
+        )
+    """))
+    _create_index_if_columns_exist(
+        conn,
+        "run_turns",
+        "CREATE INDEX IF NOT EXISTS idx_run_turns_run_chunk "
+        "ON run_turns(run_id, chunk_number, turn_number)",
+        ("run_id", "chunk_number", "turn_number"),
     )
 
 

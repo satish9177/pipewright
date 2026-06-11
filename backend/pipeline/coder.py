@@ -221,13 +221,24 @@ def _build_user_prompt(
     plan: PlannerHandoff,
     run_id: str,
     project_memory_block: str,
-    file_contents_block: str
+    file_contents_block: str,
+    continuation_context: str | None = None,
 ) -> str:
     memory_section = (
         f"{project_memory_block}\n\n"
         "Remember: Project memory is advisory. Current source code and "
         "explicit user instructions win on conflict.\n"
         if project_memory_block
+        else ""
+    )
+    # Steered attempt (item 13): the prior attempt's record plus the human's
+    # steer message, carried as advisory context only. It never changes the
+    # plan's scope; the files that may be changed stay exactly the plan's.
+    continuation_section = (
+        f"CONTINUATION CONTEXT (a prior attempt at this chunk failed; this is "
+        f"advisory context only and does not change which files you may "
+        f"modify):\n{continuation_context}\n\n"
+        if continuation_context
         else ""
     )
     return f"""
@@ -243,7 +254,7 @@ Files to modify: {plan.files_to_modify}
 Out of scope: {plan.out_of_scope}
 Risks to watch: {plan.risks}
 
-EXISTING FILE CONTENTS:
+{continuation_section}EXISTING FILE CONTENTS:
 {file_contents_block}
 
 RUN ID: {run_id}
@@ -324,6 +335,7 @@ async def run_coder(
     chunk_number: int = 0,
     project_id: str | None = None,
     project_name: str | None = None,
+    continuation_context: str | None = None,
 ) -> CoderHandoff:
     """
     Run the coding stage of the pipeline.
@@ -332,6 +344,11 @@ async def run_coder(
     calls Gemini with structured output prompt, validates
     response as CoderHandoff, saves checkpoint, and returns
     the handoff object.
+
+    ``continuation_context`` (item 13, steered attempts) is an optional
+    pre-built advisory block — the prior attempt's record plus the human's
+    steer — included in the prompt verbatim. It grants no scope: the write
+    scope stays the plan's files, enforced by scope_guard at preflight/apply.
     """
     logger.info("[CODER] Starting | run_id=%s", run_id)
 
@@ -368,7 +385,11 @@ async def run_coder(
         )
 
         user_prompt = _build_user_prompt(
-            plan, run_id, project_memory_block, file_contents_block
+            plan,
+            run_id,
+            project_memory_block,
+            file_contents_block,
+            continuation_context=continuation_context,
         )
         request = _build_llm_request(user_prompt)
 

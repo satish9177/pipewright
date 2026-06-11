@@ -55,6 +55,7 @@ from backend.pipeline.patch_failures import (
 )
 from backend.models.chunk import TriageResult
 from backend.pipeline.chunked_orchestrator import (
+    SteerValidationError,
     approve_and_retry_scope_expansion,
     approve_chunk_and_commit,
     execute_approved_chunks,
@@ -62,6 +63,7 @@ from backend.pipeline.chunked_orchestrator import (
     retry_failed_chunk,
     resume_chunked_pipeline,
     settle_run_after_scope_expansion_reject,
+    steer_failed_chunk,
 )
 from backend.pipeline.scope_expansion import ScopeExpansionValidationError
 from backend.pipeline.scope_expansion_store import (
@@ -950,6 +952,25 @@ class RejectChunkApprovalRequest(BaseModel):
 
 class RetryChunkRequest(BaseModel):
     failure_report_id: str = Field(min_length=1)
+
+    @field_validator("failure_report_id")
+    @classmethod
+    def failure_report_id_must_not_be_blank(cls, value: str) -> str:
+        if _is_blank(value):
+            raise ValueError("Field must not be blank")
+        return value.strip()
+
+
+class SteerChunkRequest(BaseModel):
+    # The steered-attempt request (item 13): the retry_with_instruction action.
+    # steer_text length is enforced against the policy cap in the orchestrator
+    # (rejected, never truncated). confirm_in_scope is the explicit §5.3
+    # re-confirm: the human asserts the steer should proceed strictly inside
+    # the approved scope even though it mentions an outside path. It grants no
+    # scope; scope_guard still enforces at apply.
+    failure_report_id: str = Field(min_length=1)
+    steer_text: str = Field(min_length=1)
+    confirm_in_scope: bool = False
 
     @field_validator("failure_report_id")
     @classmethod
@@ -2626,6 +2647,59 @@ async def retry_chunk_route(
                 content=result,
             )
         return result
+    except ProjectRepoLockError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@router.post("/runs/{run_id}/chunks/{chunk_number}/steer")
+async def steer_chunk_route(
+    run_id: str,
+    chunk_number: int,
+    request: SteerChunkRequest,
+):
+    """
+    Steer a failed chunk with a human instruction (item 13) — the execution
+    path for the retry_with_instruction action the failure reports advertise.
+
+    Runs the same already-approved plan from the code stage with the steer as
+    advisory continuation context. Same gates as retry: a successful steered
+    attempt pauses at awaiting_chunk_approval and commits only through the
+    unchanged approval path; this route never commits and never expands scope.
+
+    Error mapping (a refused steer mutates nothing):
+      - blank/over-cap steer text                      -> 422
+      - ineligible (stale report, cap exhausted, ...)  -> the decision's code
+      - steer mentions a path outside effective scope  -> 409 with the §5.3
+        re-confirm / scope-expansion offer (nothing was run)
+    """
+    try:
+        _ensure_mutating_run(run_id)
+        result = await steer_failed_chunk(
+            run_id,
+            chunk_number,
+            request.failure_report_id,
+            request.steer_text,
+            confirm_in_scope=request.confirm_in_scope,
+        )
+        if (
+            isinstance(result, dict)
+            and result.get("status")
+            in {"retry_ineligible", "steer_needs_scope_confirmation"}
+            and isinstance(result.get("status_code"), int)
+        ):
+            return JSONResponse(
+                status_code=result["status_code"],
+                content=result,
+            )
+        return result
+    # SteerValidationError is a ValueError subclass; it MUST be caught before
+    # the generic ValueError (404) so steer validation maps to 422.
+    except SteerValidationError as error:
+        raise HTTPException(status_code=422, detail=str(error))
     except ProjectRepoLockError as error:
         raise HTTPException(status_code=409, detail=str(error))
     except ValueError as error:

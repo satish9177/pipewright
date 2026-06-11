@@ -265,8 +265,13 @@ async def test_golden_test_regression(monkeypatch, tmp_repo, tracked_runs):
         PatchFailureType.TEST_REGRESSION,
         technical_details="exit_code=1; timed_out=False\n1 failed, 4 passed in 1.0s",
         changed_files_attempted=FILES,
+        # Deliberate item-13 change (proposal §4.2 "un-dead-ending
+        # TEST_REGRESSION (steerable)"): a regression now advertises
+        # retry_with_instruction, which finally has an execution path. Plain
+        # retry stays excluded; everything else in this golden is unchanged.
         suggested_actions=[
-            "reject_chunk", "mark_manual_intervention", "view_details",
+            "retry_with_instruction", "reject_chunk",
+            "mark_manual_intervention", "view_details",
         ],
         rollback_performed=True,
         working_tree_clean=True,

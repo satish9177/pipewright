@@ -24,6 +24,7 @@ from typing import Any, Literal, Sequence
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.llm.sanitize import sanitize_for_log
+from backend.pipeline.policy import HUMAN_ATTEMPT_BUDGET
 
 
 # Discriminator stored inside the existing chunks.completion_summary JSON so a
@@ -40,9 +41,12 @@ MAX_TECHNICAL_DETAILS_CHARS = 4000
 # stored in chunks.completion_summary; oldest attempts are dropped past the cap.
 MAX_RECOVERY_ATTEMPTS = 10
 
-# Maximum human-triggered patch retries permitted per failure (#26D1). Auto
-# attempts and the initial failed apply do not count against this cap.
-MAX_HUMAN_RETRIES = 2
+# Maximum human-triggered attempts permitted per failure (#26D1, item 13).
+# Plain human retries and steered attempts share this one cap. Auto attempts
+# and the initial failed apply do not count against it. Single-sourced in
+# policy.HUMAN_ATTEMPT_BUDGET; this name stays as the local alias so existing
+# callers and stored-report semantics are unchanged.
+MAX_HUMAN_RETRIES = HUMAN_ATTEMPT_BUDGET
 
 # Discriminator for the future success-pause marker stored in
 # chunks.completion_summary once a recovered patch awaits human review (#26D1).
@@ -170,13 +174,19 @@ _RETRYABLE_TRANSIENT: frozenset[PatchFailureType] = frozenset(
     }
 )
 
-# Categories where replanning with a human instruction is a safe recovery.
+# Categories where regenerating with a human instruction (a steered attempt,
+# item 13) is a safe recovery. TEST_REGRESSION joins its pre-split umbrella
+# TEST_FAILURE_AFTER_APPLY here (proposal §4.2 "un-dead-ending TEST_REGRESSION
+# (steerable)"): the item-8 split left the new type out of this set, so a
+# regression was advertised as steerable only under the legacy type. Steerable
+# is NOT plain-retryable: TEST_REGRESSION stays out of _RETRYABLE_TRANSIENT.
 _RETRY_WITH_INSTRUCTION_TYPES: frozenset[PatchFailureType] = (
     _RETRYABLE_TRANSIENT
     | frozenset(
         {
             PatchFailureType.SCOPE_VIOLATION,
             PatchFailureType.NO_CHANGES,
+            PatchFailureType.TEST_REGRESSION,
         }
     )
 )
@@ -628,6 +638,58 @@ def evaluate_patch_retry_eligibility(
       - disallowed failure type             -> 422
       - human retry cap exhausted           -> 422
     """
+    return _evaluate_human_attempt_eligibility(
+        report,
+        requested_failure_report_id=requested_failure_report_id,
+        dependencies_met=dependencies_met,
+        working_tree_clean=working_tree_clean,
+        chunk_status=chunk_status,
+        max_human_retries=max_human_retries,
+        allowed_failure_types=_HUMAN_RETRYABLE_FAILURE_TYPES,
+    )
+
+
+def evaluate_patch_steer_eligibility(
+    report: PatchFailureReport | None,
+    *,
+    requested_failure_report_id: str | None,
+    dependencies_met: bool,
+    working_tree_clean: bool,
+    chunk_status: str,
+    max_human_retries: int = MAX_HUMAN_RETRIES,
+) -> PatchRetryEligibilityDecision:
+    """
+    Decide whether a human may steer a failed patch (item 13).
+
+    Identical gates, reasons, and status codes as
+    evaluate_patch_retry_eligibility — the steer-less retry is the special case
+    — except the allowed failure types are _RETRY_WITH_INSTRUCTION_TYPES (the
+    set already advertised to the UI as ACTION_RETRY_WITH_INSTRUCTION). Steered
+    and plain human attempts share one budget (count_human_retry_attempts
+    counts recovery_mode "human" and "human_with_instruction" alike).
+    """
+    return _evaluate_human_attempt_eligibility(
+        report,
+        requested_failure_report_id=requested_failure_report_id,
+        dependencies_met=dependencies_met,
+        working_tree_clean=working_tree_clean,
+        chunk_status=chunk_status,
+        max_human_retries=max_human_retries,
+        allowed_failure_types=_RETRY_WITH_INSTRUCTION_TYPES,
+    )
+
+
+def _evaluate_human_attempt_eligibility(
+    report: PatchFailureReport | None,
+    *,
+    requested_failure_report_id: str | None,
+    dependencies_met: bool,
+    working_tree_clean: bool,
+    chunk_status: str,
+    max_human_retries: int,
+    allowed_failure_types: frozenset[PatchFailureType],
+) -> PatchRetryEligibilityDecision:
+    """Shared gate sequence for human retry and steer eligibility."""
     # The None guard must come first: count_human_retry_attempts needs a report.
     if report is None:
         return PatchRetryEligibilityDecision(
@@ -666,7 +728,7 @@ def evaluate_patch_retry_eligibility(
     if not working_tree_clean:
         return _ineligible(RETRY_INELIGIBLE_DIRTY_WORKTREE, 409)
 
-    if report.failure_type not in _HUMAN_RETRYABLE_FAILURE_TYPES:
+    if report.failure_type not in allowed_failure_types:
         return _ineligible(RETRY_INELIGIBLE_DISALLOWED_FAILURE_TYPE, 422)
 
     if used >= max_human_retries:

@@ -603,7 +603,9 @@ async def test_entry_modes_refuse_invalid_external_dispatch():
         status_by_number={},
     )
 
-    with pytest.raises(NotImplementedError):
+    # steered is implemented (item 13) but requires retry-specific context
+    # plus the continuation context — bare dispatch refuses loudly.
+    with pytest.raises(ValueError):
         await chunk_driver.drive_chunk(chunk_driver.EntryMode.STEERED, **kwargs)
     # auto_retry is internal to the driver loop, never an external entry.
     with pytest.raises(ValueError):
