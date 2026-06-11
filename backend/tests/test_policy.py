@@ -24,6 +24,7 @@ pytestmark = pytest.mark.unit
 def test_policy_values_are_unchanged_by_relocation():
     assert policy.TESTER_TIMEOUT_SECONDS == 300
     assert policy.MAX_OUTPUT_CHARS == 10000
+    assert policy.SCOPED_VERIFICATION_ENABLED is False
     assert policy.MAX_FILE_LINES == 200
     assert policy.LARGE_FILE_CONTEXT_LINE_CAP == 1500
     assert policy.REVIEWER_MAX_DIFF_CHARS == 6000
