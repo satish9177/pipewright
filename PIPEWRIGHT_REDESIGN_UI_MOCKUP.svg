@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="940" height="1440" viewBox="0 0 940 1440" font-family="Segoe UI, Arial, sans-serif">
+  <title>Pipewright run experience after the redesign — thread of record with inline gate cards (Pass 3, Candidate F-B)</title>
+
+  <!-- page background -->
+  <rect x="0" y="0" width="940" height="1440" fill="#eef1f5"/>
+
+  <!-- app frame -->
+  <rect x="20" y="20" width="900" height="1400" rx="14" fill="#ffffff" stroke="#d6dae0"/>
+
+  <!-- ============ header ============ -->
+  <text x="44" y="56" font-size="17" font-weight="700" fill="#111827">Run #142 — Add per-user rate limiting to the public API</text>
+  <text x="44" y="78" font-size="12" fill="#6b7280">acme-api · branch feature/rate-limit-142 · created 10:31</text>
+  <line x1="20" y1="94" x2="920" y2="94" stroke="#e5e7eb"/>
+
+  <!-- safety strip -->
+  <rect x="44" y="108" width="92" height="24" rx="12" fill="#e7f6ec"/>
+  <text x="90" y="124" font-size="11" fill="#1a7f37" text-anchor="middle">✓ branch ok</text>
+  <rect x="148" y="108" width="136" height="24" rx="12" fill="#eef0f3"/>
+  <text x="216" y="124" font-size="11" fill="#4b5563" text-anchor="middle">scope guard: active</text>
+  <rect x="296" y="108" width="118" height="24" rx="12" fill="#eef0f3"/>
+  <text x="355" y="124" font-size="11" fill="#4b5563" text-anchor="middle">PR base: staging</text>
+  <rect x="426" y="108" width="104" height="24" rx="12" fill="#eef0f3"/>
+  <text x="478" y="124" font-size="11" fill="#4b5563" text-anchor="middle">no auto-merge</text>
+  <line x1="20" y1="146" x2="920" y2="146" stroke="#e5e7eb"/>
+
+  <!-- ============ turn 1: user message ============ -->
+  <text x="876" y="170" font-size="11" fill="#9ca3af" text-anchor="end">You · 10:31</text>
+  <rect x="436" y="178" width="440" height="40" rx="12" fill="#e8f0fe" stroke="#c7dbfb"/>
+  <text x="456" y="203" font-size="13" fill="#1e3a8a">Add per-user rate limiting to the public API endpoints</text>
+
+  <!-- ============ plan gate card v1 (superseded) ============ -->
+  <rect x="44" y="236" width="832" height="184" rx="10" fill="#ffffff" stroke="#d6dae0"/>
+  <rect x="44" y="236" width="5" height="184" rx="2" fill="#6d5ae0"/>
+  <rect x="804" y="248" width="52" height="20" rx="10" fill="#efeafe"/>
+  <text x="830" y="262" font-size="11" font-weight="700" fill="#6d5ae0" text-anchor="middle">GATE</text>
+  <text x="64" y="266" font-size="13.5" font-weight="700" fill="#111827">Chunk plan v1 — 3 chunks · awaiting approval</text>
+  <text x="64" y="292" font-size="12" fill="#374151">1 · Rate-limit config + middleware skeleton — 2 files · low risk</text>
+  <text x="64" y="312" font-size="12" fill="#374151">2 · Wire middleware into all API routes — 6 files · medium risk</text>
+  <text x="64" y="332" font-size="12" fill="#374151">3 · Tests + docs — 2 files · depends on 1, 2</text>
+  <rect x="64" y="346" width="792" height="26" rx="6" fill="#fff8e6" stroke="#f0d77b"/>
+  <text x="76" y="363" font-size="11.5" fill="#92600a">⚠ [SIZE] chunk 2 ≈ 21k tokens — over the coder-model budget. Consider splitting. (advisory — never blocks)</text>
+  <text x="64" y="400" font-size="11.5" font-style="italic" fill="#9ca3af">Superseded by plan v2 ↓ (kept append-only for audit)</text>
+
+  <!-- ============ turn 2: user plan-gate turn ============ -->
+  <text x="876" y="444" font-size="11" fill="#9ca3af" text-anchor="end">You · 10:34 · plan turn</text>
+  <rect x="436" y="452" width="440" height="40" rx="12" fill="#e8f0fe" stroke="#c7dbfb"/>
+  <text x="456" y="477" font-size="13" fill="#1e3a8a">Split chunk 2 — and keep the auth routes out of scope</text>
+
+  <!-- ============ plan gate card v2 (approved) ============ -->
+  <rect x="44" y="510" width="832" height="212" rx="10" fill="#ffffff" stroke="#d6dae0"/>
+  <rect x="44" y="510" width="5" height="212" rx="2" fill="#6d5ae0"/>
+  <rect x="680" y="522" width="112" height="20" rx="10" fill="#e7f6ec"/>
+  <text x="736" y="536" font-size="11" font-weight="700" fill="#1a7f37" text-anchor="middle">APPROVED 10:36</text>
+  <rect x="804" y="522" width="52" height="20" rx="10" fill="#efeafe"/>
+  <text x="830" y="536" font-size="11" font-weight="700" fill="#6d5ae0" text-anchor="middle">GATE</text>
+  <text x="64" y="540" font-size="13.5" font-weight="700" fill="#111827">Chunk plan v2 — 4 chunks</text>
+  <text x="64" y="562" font-size="11.5" fill="#6b7280">v1 → v2: chunk 2 split into 2–3 · auth routes removed from files_expected</text>
+  <text x="64" y="586" font-size="12" fill="#374151">1 · Config + middleware skeleton — 2 files · low</text>
+  <text x="64" y="606" font-size="12" fill="#374151">2 · Middleware on public read routes — 3 files · depends on 1</text>
+  <text x="64" y="626" font-size="12" fill="#374151">3 · Middleware on public write routes — 3 files · depends on 1</text>
+  <text x="64" y="646" font-size="12" fill="#374151">4 · Tests + docs — 2 files · depends on 1–3</text>
+  <text x="64" y="670" font-size="11.5" fill="#1a7f37">[SIZE] all chunks within the coder budget ✓</text>
+  <line x1="64" y1="682" x2="856" y2="682" stroke="#eceef1"/>
+  <text x="64" y="702" font-size="11.5" fill="#4b5563">✓ Approved by you — explicit gate action recorded (plan_version = 2)</text>
+
+  <!-- ============ attempt card: chunk 1 success ============ -->
+  <rect x="44" y="740" width="832" height="86" rx="10" fill="#ffffff" stroke="#d6dae0"/>
+  <rect x="44" y="740" width="5" height="86" rx="2" fill="#2da44e"/>
+  <rect x="786" y="752" width="70" height="20" rx="10" fill="#e7f6ec"/>
+  <text x="821" y="766" font-size="11" font-weight="700" fill="#1a7f37" text-anchor="middle">SUCCESS</text>
+  <text x="64" y="766" font-size="13" font-weight="700" fill="#111827">✓ Chunk 1 — completed (attempt 1 · fresh)</text>
+  <text x="64" y="790" font-size="12" fill="#374151">Middleware skeleton added · 14 tests passed, baseline clean · committed a1f3c92</text>
+  <text x="64" y="812" font-size="11.5" fill="#1a56db">Details ▾ (stages, diff, test verdict, review)</text>
+
+  <!-- ============ attempt card: chunk 2 failure ============ -->
+  <rect x="44" y="844" width="832" height="150" rx="10" fill="#ffffff" stroke="#d6dae0"/>
+  <rect x="44" y="844" width="5" height="150" rx="2" fill="#d29922"/>
+  <rect x="772" y="856" width="84" height="20" rx="10" fill="#fff8e6"/>
+  <text x="814" y="870" font-size="11" font-weight="700" fill="#92600a" text-anchor="middle">NEEDS YOU</text>
+  <text x="64" y="870" font-size="13" font-weight="700" fill="#111827">✕ Chunk 2 — tests failed after apply (attempt 1 · fresh)</text>
+  <text x="64" y="894" font-size="12" fill="#374151">2 new failures vs. baseline, confirmed on re-run · patch rolled back — working tree clean</text>
+  <text x="64" y="914" font-size="12" fill="#374151">What's next: retry with guidance, or inspect the failure report</text>
+  <rect x="64" y="932" width="232" height="32" rx="8" fill="#1f6feb"/>
+  <text x="180" y="952" font-size="12.5" font-weight="700" fill="#ffffff" text-anchor="middle">Retry with your 1 queued note</text>
+  <rect x="308" y="932" width="76" height="32" rx="8" fill="#ffffff" stroke="#d0d4da"/>
+  <text x="346" y="952" font-size="12.5" fill="#374151" text-anchor="middle">More ▾</text>
+
+  <!-- ============ turn 3: queued user steer ============ -->
+  <text x="876" y="1018" font-size="11" fill="#9ca3af" text-anchor="end">You · 10:52 · QUEUED — applies after you decide</text>
+  <rect x="396" y="1026" width="480" height="58" rx="12" fill="#fffbeb" stroke="#d29922" stroke-dasharray="4 3"/>
+  <text x="416" y="1049" font-size="13" fill="#713f12">Use the existing RateLimiter helper in utils/throttle.py</text>
+  <text x="416" y="1067" font-size="13" fill="#713f12">instead of adding a new one</text>
+
+  <!-- ============ divider: now ============ -->
+  <line x1="44" y1="1108" x2="438" y2="1108" stroke="#d6dae0"/>
+  <text x="460" y="1112" font-size="11" font-weight="700" fill="#9ca3af" text-anchor="middle">NOW</text>
+  <line x1="482" y1="1108" x2="876" y2="1108" stroke="#d6dae0"/>
+
+  <!-- ============ current-state card (operator_state) ============ -->
+  <rect x="44" y="1124" width="832" height="150" rx="10" fill="#f0f6ff" stroke="#b6d0f7"/>
+  <rect x="44" y="1124" width="5" height="150" rx="2" fill="#1f6feb"/>
+  <text x="64" y="1152" font-size="14" font-weight="700" fill="#0b3d91">Waiting on you — chunk 2 needs a decision</text>
+  <text x="64" y="1176" font-size="12" fill="#374151">The engine is paused at a recoverable failure. Your queued note will be included when you retry.</text>
+  <rect x="64" y="1192" width="140" height="22" rx="11" fill="#eef0f3"/>
+  <text x="134" y="1207" font-size="11" fill="#4b5563" text-anchor="middle">scope: 3 approved files</text>
+  <rect x="214" y="1192" width="84" height="22" rx="11" fill="#e7f6ec"/>
+  <text x="256" y="1207" font-size="11" fill="#1a7f37" text-anchor="middle">tree: clean</text>
+  <rect x="308" y="1192" width="104" height="22" rx="11" fill="#fff8e6"/>
+  <text x="360" y="1207" font-size="11" fill="#92600a" text-anchor="middle">1 note queued</text>
+  <rect x="64" y="1226" width="220" height="34" rx="8" fill="#1f6feb"/>
+  <text x="174" y="1248" font-size="12.5" font-weight="700" fill="#ffffff" text-anchor="middle">Retry chunk 2 with 1 note</text>
+  <rect x="296" y="1226" width="120" height="34" rx="8" fill="#ffffff" stroke="#cfd4db"/>
+  <text x="356" y="1248" font-size="12.5" fill="#374151" text-anchor="middle">More actions ▾</text>
+
+  <!-- ============ composer ============ -->
+  <rect x="44" y="1292" width="760" height="46" rx="23" fill="#ffffff" stroke="#cfd4db"/>
+  <text x="68" y="1320" font-size="12.5" fill="#9ca3af">Steer chunk 2, refine the plan, or leave a note…</text>
+  <rect x="816" y="1294" width="60" height="42" rx="21" fill="#1f6feb"/>
+  <text x="846" y="1320" font-size="12.5" font-weight="700" fill="#ffffff" text-anchor="middle">Send</text>
+  <text x="460" y="1364" font-size="11" fill="#9ca3af" text-anchor="middle">Free text never approves or expands scope · approvals happen only on gate cards · messages queue while Pipewright works</text>
+</svg>

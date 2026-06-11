@@ -153,6 +153,7 @@ def run_tests(
             shell=True,
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
             timeout=TESTER_TIMEOUT_SECONDS
         )
         duration = time.perf_counter() - start

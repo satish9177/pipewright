@@ -6,6 +6,7 @@ Uses real subprocess commands available on Windows.
 Mocks patch_result with pre-built PatchResult objects.
 """
 
+import os
 import uuid
 import pytest
 from backend.models.handoff import PatchResult, PipelineTestResult
@@ -337,3 +338,178 @@ def test_stderr_only_output_is_captured(monkeypatch, tmp_path):
 
     assert result.passed is True
     assert "stderr-only-evidence" in result.output
+
+
+# --------------------------------------------------------------------------
+# E2 — stdin=DEVNULL: the parent's stdin must never leak into the test
+# subprocess. The anchor pins the subprocess.run call contract; the probe
+# tests prove EOF semantics and inheritance override with real subprocesses.
+# Probes are written into the fake repo (tmp_path) and referenced by BARE
+# FILENAME: run_tests executes with cwd=target_repo_path, so the relative
+# name resolves there and no absolute path ever needs quoting under
+# shell=True on Windows.
+# --------------------------------------------------------------------------
+
+
+def _write_probe(tmp_path, name: str, body: str) -> None:
+    (tmp_path / name).write_text(body, encoding="utf-8")
+
+
+def test_subprocess_run_called_with_stdin_devnull_and_contract_unchanged(
+    monkeypatch, tmp_path
+):
+    """
+    Anchor: run_tests must call subprocess.run with stdin=subprocess.DEVNULL
+    and leave the rest of the call contract exactly as it was. This is the
+    red/green pin for E2 — it fails on the pre-fix call in every environment,
+    independent of how the test harness's own stdin is wired.
+    """
+    import subprocess
+    import backend.pipeline.tester as tester
+
+    _set_command(monkeypatch, tmp_path, "echo anchor")
+
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(
+            args=args[0], returncode=0, stdout="1 passed in 0.01s", stderr=""
+        )
+
+    monkeypatch.setattr(tester.subprocess, "run", fake_run)
+    monkeypatch.setattr(tester, "save_checkpoint", lambda **kwargs: {"id": "x"})
+
+    run_id = str(uuid.uuid4())
+    result = run_tests(make_patch_result(run_id), run_id)
+
+    assert result.passed is True
+    # The new kwarg: stdin is redirected to the null device.
+    assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
+    # Everything else about the call is unchanged by E2.
+    assert captured["args"] == ("echo anchor",)
+    assert captured["kwargs"]["cwd"] == str(tmp_path)
+    assert captured["kwargs"]["shell"] is True
+    assert captured["kwargs"]["capture_output"] is True
+    assert captured["kwargs"]["text"] is True
+    assert captured["kwargs"]["timeout"] == tester.TESTER_TIMEOUT_SECONDS
+    assert set(captured["kwargs"]) == {
+        "cwd", "shell", "capture_output", "text", "timeout", "stdin"
+    }
+
+
+def test_devnull_gives_stdin_reading_command_immediate_eof(
+    monkeypatch, tmp_path
+):
+    """
+    EOF semantics, proven with a real subprocess: a test command that reads
+    stdin and exits 0 only on empty input must be classified passed, because
+    DEVNULL makes the read return '' immediately.
+    """
+    _write_probe(
+        tmp_path,
+        "read_stdin_probe.py",
+        "import sys\n"
+        "data = sys.stdin.read()\n"
+        "print('1 passed' if data == '' else '1 failed')\n"
+        "sys.exit(0 if data == '' else 1)\n",
+    )
+    _set_command(monkeypatch, tmp_path, "python read_stdin_probe.py")
+
+    run_id = str(uuid.uuid4())
+    result = run_tests(make_patch_result(run_id), run_id)
+
+    assert result.passed is True
+    assert result.passed_tests == 1
+
+
+def test_unbounded_stdin_read_completes_well_under_timeout(
+    monkeypatch, tmp_path
+):
+    """
+    The extreme case — the production hang: an unbounded sys.stdin.read()
+    blocks to the 300s TESTER_TIMEOUT_SECONDS if the child inherits an open
+    stdin. With DEVNULL it returns at once. The 60s bound is generous
+    (interpreter startup is ~1s) so slow CI cannot flake it, while the
+    pre-fix hang path returns passed=False after ~300s and fails every
+    assert here.
+    """
+    _write_probe(
+        tmp_path,
+        "drain_stdin_probe.py",
+        "import sys\n"
+        "sys.stdin.read()\n"
+        "print('1 passed in 0.01s')\n",
+    )
+    _set_command(monkeypatch, tmp_path, "python drain_stdin_probe.py")
+
+    run_id = str(uuid.uuid4())
+    result = run_tests(make_patch_result(run_id), run_id)
+
+    assert result.passed is True
+    assert result.duration_seconds < 60
+    assert result.passed_tests == 1
+
+
+def test_child_stdin_is_null_device_even_when_parent_stdin_is_a_pipe(
+    monkeypatch, tmp_path
+):
+    """
+    Adversarial: wire the parent's fd 0 to a held-open pipe — the exact
+    inherited-stdin hang condition — and prove the child still sees the null
+    character device, i.e. DEVNULL overrides inheritance. The probe inspects
+    its stdin's device type instead of reading from it, so a wrong answer is
+    a fast exit(1), never a 300s block.
+    """
+    _write_probe(
+        tmp_path,
+        "stdin_device_probe.py",
+        "import os, stat, sys\n"
+        "is_chr = stat.S_ISCHR(os.fstat(0).st_mode)\n"
+        "print('1 passed' if is_chr else '1 failed')\n"
+        "sys.exit(0 if is_chr else 1)\n",
+    )
+    _set_command(monkeypatch, tmp_path, "python stdin_device_probe.py")
+
+    try:
+        saved_stdin_fd = os.dup(0)
+    except OSError:
+        pytest.skip("fd 0 is not duplicable in this environment")
+
+    read_end, write_end = os.pipe()
+    os.dup2(read_end, 0)
+    try:
+        run_id = str(uuid.uuid4())
+        result = run_tests(make_patch_result(run_id), run_id)
+    finally:
+        os.dup2(saved_stdin_fd, 0)
+        os.close(saved_stdin_fd)
+        os.close(read_end)
+        os.close(write_end)
+
+    assert result.passed is True
+    assert result.passed_tests == 1
+
+
+def test_devnull_does_not_mask_real_test_failures(monkeypatch, tmp_path):
+    """
+    Regression guard: a genuinely failing test command is still classified
+    failed after E2 — DEVNULL must not make the world look green. (Rollback
+    wiring on this path is already pinned by
+    test_failing_command_rolls_back_chunk.)
+    """
+    _write_probe(
+        tmp_path,
+        "always_fail_probe.py",
+        "import sys\n"
+        "print('1 failed')\n"
+        "sys.exit(1)\n",
+    )
+    _set_command(monkeypatch, tmp_path, "python always_fail_probe.py")
+
+    run_id = str(uuid.uuid4())
+    result = run_tests(make_patch_result(run_id), run_id)
+
+    assert result.passed is False
+    assert result.failed_tests == 1
