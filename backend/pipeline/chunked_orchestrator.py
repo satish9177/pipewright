@@ -44,8 +44,11 @@ from backend.pipeline.chunk_store import (
 )
 from backend.pipeline.chunk_attempt_store import (
     get_latest_completed_attempt_head,
+    list_chunk_attempts,
     record_chunk_attempt,
 )
+from backend.pipeline.file_scope_intent import extract_user_file_constraints
+from backend.pipeline.run_turn_store import record_run_turn
 from backend.memory.conflict_scope import is_db_sensitive_run
 from backend.memory.memory_store import mark_fact_stale
 from backend.memory.repo_reality import evaluate_db_memory_conflicts
@@ -62,6 +65,7 @@ from backend.pipeline.patch_failures import (
     RETRY_INELIGIBLE_WRONG_BRANCH,
     RecoveredPatchReviewSummary,
     evaluate_patch_retry_eligibility,
+    evaluate_patch_steer_eligibility,
     patch_failure_report_from_completion_summary,
     patch_failure_report_to_completion_summary,
     record_initial_attempt,
@@ -95,7 +99,11 @@ from backend.pipeline.scope_expansion_store import (
     maybe_create_scope_expansion_request_for_failure,
     update_scope_expansion_request_status,
 )
-from backend.pipeline.policy import AUTO_RETRY_INFRA_BUDGET
+from backend.pipeline.policy import (
+    AUTO_RETRY_INFRA_BUDGET,
+    MAX_STEER_TEXT_CHARS,
+    STEER_CONTINUATION_DIFF_MAX_CHARS,
+)
 # Canonical post-apply test-failure helpers. The driver uses stage_contract
 # directly; these aliases stay as compatibility seams for tests and callers that
 # imported them from this module during the strangler.
@@ -2459,15 +2467,18 @@ def _persist_retry_patch_failure(
     prior_attempts: list,
     *,
     test_outcome: str = "not_run",
+    recovery_mode: str = "human",
 ) -> dict:
     """
     Persist a fresh patch_failure summary for a failed retry attempt.
 
     Carries the prior attempt history forward and appends exactly ONE human
-    retry attempt (#26D1 record_retry_attempt) with freshly minted ids, then
+    attempt (#26D1 record_retry_attempt) with freshly minted ids, then
     marks the chunk failed and emits the slim stage_failed event. Mirrors
     _fail_chunk_with_report but for a human retry. Never commits; never mutates
-    files_expected.
+    files_expected. A steered attempt (item 13) records
+    recovery_mode="human_with_instruction" — same shared budget, distinct
+    audit label.
     """
     carried = report.model_copy(update={"attempts": list(prior_attempts)})
     enriched = record_retry_attempt(
@@ -2475,7 +2486,7 @@ def _persist_retry_patch_failure(
         failure_report_id=str(uuid.uuid4()),
         attempt_id=str(uuid.uuid4()),
         started_at=_utc_now(),
-        recovery_mode="human",
+        recovery_mode=recovery_mode,
         failure_type=report.failure_type,
         failed_step=report.failed_step,
         changed_files_attempted=list(report.changed_files_attempted),
@@ -2487,7 +2498,11 @@ def _persist_retry_patch_failure(
             if report.manual_intervention_needed
             else "failed"
         ),
-        human_decision="retry",
+        human_decision=(
+            "retry_with_instruction"
+            if recovery_mode == "human_with_instruction"
+            else "retry"
+        ),
         working_tree_clean=report.working_tree_clean,
         rollback_performed=report.rollback_performed,
     )
@@ -2542,6 +2557,7 @@ def _pause_recovered_chunk(
     branch_name: str,
     original_report: PatchFailureReport,
     verification_disclosure: dict | None = None,
+    recovery_mode: str = "human",
 ) -> dict:
     """
     Store the recovered_patch_review marker and pause at the existing chunk
@@ -2561,7 +2577,7 @@ def _pause_recovered_chunk(
         failure_report_id=str(uuid.uuid4()),
         attempt_id=recovery_attempt_id,
         started_at=_utc_now(),
-        recovery_mode="human",
+        recovery_mode=recovery_mode,
         failure_type=None,
         failed_step=None,
         changed_files_attempted=touched,
@@ -2569,7 +2585,11 @@ def _pause_recovered_chunk(
         scope_ok=True,
         test_outcome="passed",
         outcome="recovered",
-        human_decision="retry",
+        human_decision=(
+            "retry_with_instruction"
+            if recovery_mode == "human_with_instruction"
+            else "retry"
+        ),
         # The regenerated patch is applied but not yet committed, so the working
         # tree is intentionally not clean at the pause point.
         working_tree_clean=False,
@@ -2594,15 +2614,240 @@ def _pause_recovered_chunk(
     )
 
 
+# ---------------------------------------------------------------------------
+# Steered attempts on failed chunks (Phase 3 item 13)
+# ---------------------------------------------------------------------------
+
+
+class SteerValidationError(ValueError):
+    """Invalid steer input (blank / over the policy length cap). Maps to 422."""
+
+
+STEER_NEEDS_SCOPE_CONFIRMATION = "steer_needs_scope_confirmation"
+
+
+def _validate_steer_text(steer_text: str) -> str:
+    """
+    Validate the raw steer message before any lock or work.
+
+    Over-cap steers are rejected, never silently truncated: truncation changes
+    the user's meaning, and the steer's whole job is to carry that meaning.
+    """
+    if not isinstance(steer_text, str) or not steer_text.strip():
+        raise SteerValidationError(
+            "chunked_orchestrator.py: steer_text must not be blank."
+        )
+    if len(steer_text) > MAX_STEER_TEXT_CHARS:
+        raise SteerValidationError(
+            f"chunked_orchestrator.py: steer_text exceeds the "
+            f"{MAX_STEER_TEXT_CHARS}-character policy cap "
+            f"({len(steer_text)} characters). Shorten the steer; it is not "
+            "truncated automatically."
+        )
+    return steer_text.strip()
+
+
+def _steer_mentions_outside_scope(
+    steer_text: str,
+    files_expected: list[str],
+) -> list[str]:
+    """
+    Conservative §5.3 pre-check: grounded-looking file mentions in the steer
+    text that fall outside the chunk's EFFECTIVE approved scope.
+
+    Reuses file_scope_intent's deterministic extraction (never a second
+    parser). Every mention bucket — including uncertain ones — is checked,
+    fail-safe by design: a false-positive re-confirm is mere friction, while
+    scope_guard at apply remains the hard backstop for any false negative.
+    ``files_expected`` must come from the plan-status chunk definition, which
+    already overlays approved scope expansions (effective = original ∪
+    approved #27 amendments), so a path the human already approved via #27
+    never re-confirms.
+    """
+    constraints = extract_user_file_constraints(steer_text)
+    mentioned = (
+        set(constraints.hard_allowlist)
+        | set(constraints.preferred_files)
+        | set(constraints.forbidden_files)
+        | set(constraints.reference_only_files)
+        | set(constraints.uncertain_mentions)
+    )
+    if not mentioned:
+        return []
+    effective = {
+        normalized
+        for normalized in (_safe_norm(path) for path in files_expected)
+        if normalized is not None
+    }
+    return sorted(
+        mention
+        for mention in mentioned
+        if (_safe_norm(mention) or mention) not in effective
+    )
+
+
+def _steer_scope_confirmation_result(
+    run_id: str,
+    chunk_number: int,
+    outside_mentions: list[str],
+) -> dict:
+    """
+    Side-effect-free NEEDS_HUMAN result for a steer whose text mentions paths
+    outside effective approved scope (§5.3, conservative variant — decided).
+
+    Nothing ran: no coder, no write, no chunk/run state change, no budget
+    spent. The human may (a) re-confirm the same steer with confirm_in_scope
+    to proceed inside the current scope, or (b) widen scope through the
+    existing audited scope-expansion approval flow (#27). The steer itself
+    never grants scope; scope_guard still enforces at apply either way.
+    """
+    mentions = ", ".join(outside_mentions)
+    detail = (
+        f"The steer mentions file(s) outside this chunk's approved scope: "
+        f"{mentions}. Nothing was run. Either re-submit the steer with "
+        f"confirm_in_scope=true to proceed strictly inside the approved "
+        f"files, or request a scope expansion for the new file(s) via the "
+        f"scope-expansion approval flow."
+    )
+    print(
+        f"[CHUNKED] Steer needs scope confirmation | run_id={run_id} | "
+        f"chunk={chunk_number} | outside={mentions}"
+    )
+    return {
+        "status": STEER_NEEDS_SCOPE_CONFIRMATION,
+        "run_id": run_id,
+        "chunk_number": chunk_number,
+        "eligible": False,
+        "out_of_scope_mentions": outside_mentions,
+        "status_code": 409,
+        "detail": detail,
+    }
+
+
+def _truncate_head(value: str, cap: int) -> str:
+    if len(value) <= cap:
+        return value
+    return value[:cap] + "\n[truncated]"
+
+
+def _build_steer_continuation_context(
+    run_id: str,
+    chunk: ChunkDefinition,
+    report: PatchFailureReport,
+    steer_text: str,
+) -> str:
+    """
+    Assemble the continuation-context block for a steered attempt (§4.3):
+    prior coder handoff + prior applied diff AS TEXT + classified failure
+    evidence + the steer. The approved plan itself travels separately (it is
+    the plan the code stage re-runs with, via _retry_plan_for_chunk).
+
+    Context only: the tree was rolled back clean after the failure and stays
+    clean — the diff is never re-applied as working-tree state (rejected
+    alternative, proposal §5). The failure evidence reuses the report's
+    already-sanitized, capped technical_details; the diff is capped by policy.
+    """
+    chunk_number = chunk.chunk_number
+    parts: list[str] = []
+
+    code_checkpoint = load_chunk_step_checkpoint(run_id, chunk_number, "code")
+    if code_checkpoint:
+        try:
+            prior_code = CoderHandoff.model_validate(code_checkpoint["output"])
+            changed = "\n".join(
+                f"  - {change.action} {change.path}: {change.reason}"
+                for change in prior_code.files_changed
+            )
+            parts.append(
+                "[Prior attempt summary]\n"
+                f"{prior_code.summary}\n"
+                f"Files it changed:\n{changed or '  (none)'}"
+            )
+        except Exception:
+            pass
+
+    patch_checkpoint = load_chunk_step_checkpoint(run_id, chunk_number, "patch")
+    if patch_checkpoint:
+        try:
+            prior_diff = str(patch_checkpoint["output"].get("diff") or "")
+        except Exception:
+            prior_diff = ""
+        if prior_diff:
+            parts.append(
+                "[Diff the prior attempt applied (since rolled back — the "
+                "working tree no longer contains it)]\n"
+                + _truncate_head(prior_diff, STEER_CONTINUATION_DIFF_MAX_CHARS)
+            )
+
+    evidence = (
+        f"[Why the prior attempt failed]\n"
+        f"failure_type={report.failure_type.value} | "
+        f"failed_step={report.failed_step}\n"
+        f"{report.message}"
+    )
+    if report.technical_details:
+        evidence += f"\nDetails:\n{report.technical_details}"
+    parts.append(evidence)
+
+    parts.append(
+        "[Human steer for this attempt]\n"
+        f"{steer_text}\n"
+        "Follow this steer within the approved plan and approved files. It "
+        "does not expand which files you may change."
+    )
+    return "\n\n".join(parts)
+
+
+def _record_steer_turn(
+    run_id: str,
+    project_id: str,
+    chunk_number: int,
+    steer_text: str,
+    outcome: str | None,
+) -> None:
+    """
+    Append the turn-log row for an executed steer, linked to the newest
+    steered chunk_attempts row. Best-effort like the attempt ledger: an audit
+    write must never break the pipeline result.
+    """
+    try:
+        attempt_id = next(
+            (
+                attempt["id"]
+                for attempt in reversed(list_chunk_attempts(run_id, chunk_number))
+                if attempt["entry_mode"] == chunk_driver.EntryMode.STEERED.value
+            ),
+            None,
+        )
+        record_run_turn(
+            run_id=run_id,
+            project_id=project_id,
+            chunk_number=chunk_number,
+            steer_text=steer_text,
+            attempt_id=attempt_id,
+            outcome=outcome,
+        )
+    except Exception as error:
+        logger.warning(
+            "run turn write skipped | run_id=%s | chunk=%s | error=%s",
+            run_id,
+            chunk_number,
+            error,
+        )
+
 
 async def _retry_failed_chunk_locked(
     run_id: str,
     chunk_number: int,
     failure_report_id: str,
     plan_status: ChunkPlanResponse,
+    *,
+    steer_text: str | None = None,
+    confirm_in_scope: bool = False,
 ) -> dict:
     """
-    Re-run a failed, human-retryable chunk against the current tree (#26D2).
+    Re-run a failed, human-retryable chunk against the current tree (#26D2),
+    optionally steered by a human instruction (item 13).
 
     Assumes the project repo lock is already held by the caller. Validates
     eligibility (#26D1), reuses the existing plan (never re-plans), regenerates
@@ -2611,6 +2856,14 @@ async def _retry_failed_chunk_locked(
     attempt and marks the chunk failed. On success it pauses at the existing
     awaiting_chunk_approval gate with a recovered_patch_review marker and does
     NOT commit.
+
+    With ``steer_text`` set, the same path runs as a STEERED attempt: steer
+    eligibility (the retry_with_instruction set, same shared budget), the
+    conservative §5.3 scope-mention pre-check (skipped only on an explicit
+    ``confirm_in_scope`` re-confirm; scope_guard still enforces at apply), the
+    continuation context threaded into the code stage, and one append-only
+    run_turns row linked to the steered attempt. The steer is advisory text:
+    it never grants scope, approves a gate, or changes the plan.
 
     Never calls _execute_single_chunk, never runs the planner, never mutates
     files_expected, never weakens scope_guard, never commits.
@@ -2648,12 +2901,18 @@ async def _retry_failed_chunk_locked(
         return branch_block
 
     # Eligibility (#26D1): a pure decision over already-computed observations. No
-    # coder/apply/test/disk work happens unless this passes.
+    # coder/apply/test/disk work happens unless this passes. A steer evaluates
+    # against the retry_with_instruction set; both share the human budget.
     report = _load_chunk_failure_report(plan_status, chunk_number)
     status_by_number = _status_by_number(plan_status)
     dependencies_met = not _unmet_dependencies(chunk, status_by_number)
     working_tree_clean = local_git.is_working_tree_clean(target_repo_path)
-    decision = evaluate_patch_retry_eligibility(
+    evaluate = (
+        evaluate_patch_steer_eligibility
+        if steer_text is not None
+        else evaluate_patch_retry_eligibility
+    )
+    decision = evaluate(
         report,
         requested_failure_report_id=failure_report_id,
         dependencies_met=dependencies_met,
@@ -2663,15 +2922,37 @@ async def _retry_failed_chunk_locked(
     if not decision.eligible:
         return _retry_ineligible_result(run_id, chunk_number, decision)
 
+    # Conservative §5.3 pre-check (steer only, DECIDED 2026-06-12): a steer
+    # mentioning a path outside effective approved scope does not run until the
+    # human explicitly re-confirms or routes through #27. chunk.files_expected
+    # here IS effective scope (get_chunk_plan_status overlays approved
+    # expansions). This is an additional fail-safe gate in FRONT of
+    # scope_guard, never a replacement for it.
+    if steer_text is not None and not confirm_in_scope:
+        outside = _steer_mentions_outside_scope(steer_text, chunk.files_expected)
+        if outside:
+            return _steer_scope_confirmation_result(run_id, chunk_number, outside)
+
     # report is non-None here (eligibility rejects a None/missing report).
     prior_attempts = list(report.attempts)
     branch_name = f"pipewright/{run_id[:8]}"
+
+    if steer_text is not None:
+        entry_mode = chunk_driver.EntryMode.STEERED
+        continuation_context = _build_steer_continuation_context(
+            run_id, chunk, report, steer_text
+        )
+        run_step = f"chunk_{chunk_number}_steer"
+    else:
+        entry_mode = chunk_driver.EntryMode.HUMAN_RETRY
+        continuation_context = None
+        run_step = f"chunk_{chunk_number}_retry"
 
     # Execute the regeneration through the item-12 driver. The driver marks the
     # chunk running and converts stage exceptions into the standard failed-chunk
     # result, matching the fresh/resume execution guard.
     drive = await chunk_driver.drive_chunk(
-        chunk_driver.EntryMode.HUMAN_RETRY,
+        entry_mode,
         run_id=run_id,
         project_id=plan_status.project_id,
         chunk=chunk,
@@ -2682,9 +2963,19 @@ async def _retry_failed_chunk_locked(
         retry_report=report,
         prior_attempts=prior_attempts,
         project_runtime=project_runtime,
-        run_step=f"chunk_{chunk_number}_retry",
+        run_step=run_step,
+        continuation_context=continuation_context,
     )
-    return drive.pause
+    result = drive.pause
+    if steer_text is not None:
+        _record_steer_turn(
+            run_id,
+            plan_status.project_id,
+            chunk_number,
+            steer_text,
+            outcome=(result or {}).get("status"),
+        )
+    return result
 
 
 async def retry_failed_chunk(
@@ -2710,6 +3001,39 @@ async def retry_failed_chunk(
         plan_status = get_chunk_plan_status(run_id)
         return await _retry_failed_chunk_locked(
             run_id, chunk_number, failure_report_id, plan_status
+        )
+
+
+async def steer_failed_chunk(
+    run_id: str,
+    chunk_number: int,
+    failure_report_id: str,
+    steer_text: str,
+    *,
+    confirm_in_scope: bool = False,
+) -> dict:
+    """
+    Entry point for a human-steered attempt on a failed chunk (item 13) — the
+    execution path behind the long-advertised ``retry_with_instruction``.
+
+    Validates the steer text (blank / policy length cap -> 422) BEFORE taking
+    the lock, then acquires the async project repo lock and delegates to
+    _retry_failed_chunk_locked with the steer threaded through. Same TOCTOU
+    discipline as retry_failed_chunk: all eligibility-relevant state is loaded
+    fresh inside the lock so a concurrent double-submit cannot bypass the
+    shared human-attempt budget on a stale snapshot.
+    """
+    validated_steer = _validate_steer_text(steer_text)
+    project_id = get_chunk_plan_status(run_id).project_id
+    async with project_repo_lock(project_id):
+        plan_status = get_chunk_plan_status(run_id)
+        return await _retry_failed_chunk_locked(
+            run_id,
+            chunk_number,
+            failure_report_id,
+            plan_status,
+            steer_text=validated_steer,
+            confirm_in_scope=confirm_in_scope,
         )
 
 

@@ -4,10 +4,13 @@ Phase 2 item 12 - the one driver for chunk execution (proposal section 4.1).
 
 Collapses the per-chunk stage sequence that previously existed in three copies
 (`_execute_single_chunk`, its inline auto-retry, and human retry)
-into one loop over the item-10 stage contract. In this slice the driver serves
-`fresh`, `resume`, and `human_retry` entry modes plus the bounded INFRA
-auto-retry internal to the loop. `steered` remains a named Phase 3 seam and
-dispatch refuses it loudly.
+into one loop over the item-10 stage contract. The driver serves `fresh`,
+`resume`, `human_retry`, and `steered` entry modes plus the bounded INFRA
+auto-retry internal to the loop. `steered` (Phase 3 item 13) is `human_retry`
+plus a continuation-context block threaded into the code stage: same approved
+plan, same files_expected, same gates, same rollback, same budget accounting.
+The steer is advisory context inside the approved chunk — never an authority
+channel for scope, approval, or Git decisions.
 
 The driver owns the cross-cutting concerns, identically in every mode:
 
@@ -81,9 +84,22 @@ class EntryMode(str, Enum):
     RESUME = "resume"
     # Internal to the driver loop: never a valid external entry.
     AUTO_RETRY = "auto_retry"
-    # Phase 3 plugs steered in here without reshaping the driver.
     HUMAN_RETRY = "human_retry"
+    # human_retry + a steer string in the continuation context (item 13).
     STEERED = "steered"
+
+
+# The two human-triggered attempt modes share one execution path: re-run from
+# the code stage with the same approved plan, pause at the chunk gate on
+# success, append a human attempt on failure, and never auto-retry internally.
+# steered differs only in the carried continuation context and its
+# recovery_mode in the attempt history (shared budget, distinct audit label).
+_HUMAN_ATTEMPT_MODES = frozenset({EntryMode.HUMAN_RETRY, EntryMode.STEERED})
+
+_RECOVERY_MODE_BY_ENTRY_MODE = {
+    EntryMode.HUMAN_RETRY: "human",
+    EntryMode.STEERED: "human_with_instruction",
+}
 
 
 @dataclass(frozen=True)
@@ -306,13 +322,14 @@ def _finalize_failed_attempt(
     retry did at each of its failure sites.
     """
     orch = _orch()
-    if mode is EntryMode.HUMAN_RETRY:
+    if mode in _HUMAN_ATTEMPT_MODES:
         return orch._persist_retry_patch_failure(
             run_id,
             chunk_number,
             report,
             list(prior_attempts or []),
             test_outcome="failed" if report.failed_step == "test" else "not_run",
+            recovery_mode=_RECOVERY_MODE_BY_ENTRY_MODE[mode],
         )
     if auto_retry_base is not None:
         report = orch._record_auto_retry_result(
@@ -341,10 +358,12 @@ async def _drive_stages(
     retry_report: PatchFailureReport | None = None,
     prior_attempts: list | None = None,
     run_step: str | None = None,
+    continuation_context: str | None = None,
 ) -> dict | None:
     """
-    Drive one chunk attempt. human_retry starts after planning; fresh/resume
-    start at planning. The public return remains the old pause-or-None shape.
+    Drive one chunk attempt. human_retry and steered start after planning
+    (same approved plan, never the planner); fresh/resume start at planning.
+    The public return remains the old pause-or-None shape.
     """
     orch = _orch()
     chunk_number = chunk.chunk_number
@@ -406,10 +425,10 @@ async def _drive_stages(
         return orch._fail_chunk_with_report(run_id, chunk_number, report)
 
     base_stage_outcomes: list[StageOutcome] = []
-    if mode is EntryMode.HUMAN_RETRY:
+    if mode in _HUMAN_ATTEMPT_MODES:
         if retry_report is None:
             raise ValueError(
-                "chunk_driver.py: human_retry mode requires the current "
+                f"chunk_driver.py: {mode.value} mode requires the current "
                 "PatchFailureReport."
             )
         plan = orch._retry_plan_for_chunk(run_id, chunk)
@@ -445,6 +464,7 @@ async def _drive_stages(
             project_id=project_id,
             files_expected=chunk.files_expected,
             run_coder_fn=orch.run_coder,
+            continuation_context=continuation_context,
         )
         stage_outcomes.append(code_outcome)
         code = code_outcome.payload
@@ -550,7 +570,7 @@ async def _drive_stages(
         if verify_outcome.failure is not None:
             report = verify_outcome.failure
             if (
-                mode is not EntryMode.HUMAN_RETRY
+                mode not in _HUMAN_ATTEMPT_MODES
                 and auto_retry_base is None
                 and orch._should_auto_retry_harness_error(
                     report.failure_type,
@@ -620,7 +640,7 @@ async def _drive_stages(
     )
     stage_outcomes.append(review_outcome)
 
-    if mode is EntryMode.HUMAN_RETRY:
+    if mode in _HUMAN_ATTEMPT_MODES:
         pause = orch._pause_recovered_chunk(
             run_id,
             chunk,
@@ -628,6 +648,7 @@ async def _drive_stages(
             branch_name,
             retry_report,
             verification_disclosure=verification_disclosure,
+            recovery_mode=_RECOVERY_MODE_BY_ENTRY_MODE[mode],
         )
         stage_outcomes.append(_gate_outcome(OutcomeClass.NEEDS_HUMAN))
         _record_attempt(
@@ -706,13 +727,18 @@ async def drive_chunk(
     prior_attempts: list | None = None,
     project_runtime=None,
     run_step: str | None = None,
+    continuation_context: str | None = None,
 ) -> ChunkDriveResult:
     """
     Execute one driver pass over one chunk in the given entry mode.
 
-    fresh:  all stages, top to bottom.
-    resume: skip-complete on a verified test checkpoint (fail closed on an
-            unverifiable one — raises, never skips); otherwise all stages.
+    fresh:   all stages, top to bottom.
+    resume:  skip-complete on a verified test checkpoint (fail closed on an
+             unverifiable one — raises, never skips); otherwise all stages.
+    steered: human_retry plus the caller-built continuation context (approved
+             plan + prior handoff + prior diff as text + failure evidence +
+             the steer), threaded into the code stage as advisory prompt
+             context only. Same gates, rollback, and budget as human_retry.
 
     Any exception from the stage sequence is converted to the standard failed
     chunk result, exactly as the orchestrator's per-chunk guard did. The
@@ -720,25 +746,25 @@ async def drive_chunk(
     resume recovery must keep raising out of the resume call, not soften into
     a per-chunk failure.
     """
-    if mode is EntryMode.STEERED:
-        raise NotImplementedError(
-            f"chunk_driver.py: entry mode '{mode.value}' is not implemented "
-            "until Phase 3."
-        )
     if mode is EntryMode.AUTO_RETRY:
         raise ValueError(
             "chunk_driver.py: auto_retry is internal to the driver loop; "
             "enter via fresh or resume."
         )
-    if mode is EntryMode.HUMAN_RETRY:
+    if mode in _HUMAN_ATTEMPT_MODES:
         if retry_report is None:
             raise ValueError(
-                "chunk_driver.py: human_retry mode requires retry_report."
+                f"chunk_driver.py: {mode.value} mode requires retry_report."
             )
         if project_runtime is None:
             raise ValueError(
-                "chunk_driver.py: human_retry mode requires project_runtime."
+                f"chunk_driver.py: {mode.value} mode requires project_runtime."
             )
+    if mode is EntryMode.STEERED and not continuation_context:
+        raise ValueError(
+            "chunk_driver.py: steered mode requires the continuation context "
+            "(the steer is its reason to exist)."
+        )
 
     if mode is EntryMode.RESUME:
         if chunk_status is None:
@@ -787,6 +813,7 @@ async def drive_chunk(
                 retry_report=retry_report,
                 prior_attempts=prior_attempts,
                 run_step=run_step,
+                continuation_context=continuation_context,
             )
         except Exception as error:
             _record_attempt(
@@ -805,7 +832,7 @@ async def drive_chunk(
             )
         return ChunkDriveResult(pause=pause)
 
-    if mode is EntryMode.HUMAN_RETRY:
+    if mode in _HUMAN_ATTEMPT_MODES:
         with _orch().active_project(project_runtime):
             return await _run_drive()
     return await _run_drive()

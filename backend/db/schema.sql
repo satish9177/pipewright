@@ -219,6 +219,32 @@ CREATE TABLE IF NOT EXISTS chunk_attempts (
     UNIQUE(run_id, chunk_number, attempt_number)
 );
 
+-- run_turns is the append-only conversation/turn log for a run (Phase 3 item 13;
+-- proposal §4.3). One row per human steer message: the sanitized steer text, the
+-- targeted chunk, and a link to the chunk_attempts row the turn produced
+-- (attempt_id; the attempt is the ledger's job, the message is this table's).
+-- The original pipeline_runs.feature_description stays immutable — it is the
+-- audit anchor; turns are additive context. The steer is advisory only: a turn
+-- row never grants scope, approves a gate, or alters Git/merge behavior. This
+-- table stores user steer text and metadata ONLY — never diffs, test output,
+-- provider/Git errors, prompts, or secrets (same discipline as chunk_attempts).
+-- Rows are never updated or deleted by the application. chunk_number is NOT NULL
+-- today (item 13 only services failed chunks) but the shape accommodates the
+-- deferred item-14 post-success turns without change.
+CREATE TABLE IF NOT EXISTS run_turns (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    turn_number INTEGER NOT NULL,
+    chunk_number INTEGER NOT NULL,
+    steer_text TEXT NOT NULL,
+    attempt_id TEXT,
+    outcome TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES pipeline_runs(id),
+    UNIQUE(run_id, turn_number)
+);
+
 -- scope_expansion_requests is the authoritative, audited home for human-approved
 -- scope amendments (#27). chunks.files_expected stays immutable; effective scope
 -- is reconstructed as original files_expected UNION the approved_files of in-force
@@ -363,6 +389,7 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);
 CREATE INDEX IF NOT EXISTS idx_chunks_run_status ON chunks(run_id, status);
 CREATE INDEX IF NOT EXISTS idx_chunk_attempts_run_chunk ON chunk_attempts(run_id, chunk_number, attempt_number);
 CREATE INDEX IF NOT EXISTS idx_chunk_attempts_completed_head ON chunk_attempts(run_id, final_status, chunk_number);
+CREATE INDEX IF NOT EXISTS idx_run_turns_run_chunk ON run_turns(run_id, chunk_number, turn_number);
 CREATE INDEX IF NOT EXISTS idx_approval_gates_run_status ON approval_gates(run_id, approval_type, status);
 CREATE INDEX IF NOT EXISTS idx_project_index_fingerprints_updated ON project_index_fingerprints(updated_at);
 CREATE INDEX IF NOT EXISTS idx_scope_expansion_requests_run_chunk_status ON scope_expansion_requests(run_id, chunk_number, status);
