@@ -94,6 +94,8 @@ class PipelineTestResult(BaseModel):
     handoff_to: str = "approval"
     run_id: str
     passed: bool
+    exit_code: Optional[int] = None
+    timed_out: bool = False
     total_tests: int = 0
     passed_tests: int = 0
     failed_tests: int = 0

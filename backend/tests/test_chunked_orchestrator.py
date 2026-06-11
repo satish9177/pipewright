@@ -293,10 +293,30 @@ def make_test_result(run_id: str, passed: bool = True) -> PipelineTestResult:
     return PipelineTestResult(
         run_id=run_id,
         passed=passed,
+        exit_code=0 if passed else 1,
         output="1 passed" if passed else "1 failed",
         total_tests=1,
         passed_tests=1 if passed else 0,
         failed_tests=0 if passed else 1,
+    )
+
+
+def make_failed_test_result(
+    run_id: str,
+    output: str,
+    *,
+    exit_code: int | None = 1,
+    timed_out: bool = False,
+) -> PipelineTestResult:
+    return PipelineTestResult(
+        run_id=run_id,
+        passed=False,
+        exit_code=exit_code,
+        timed_out=timed_out,
+        output=output,
+        total_tests=5 if "passed" in output else 0,
+        passed_tests=4 if "4 passed" in output else 0,
+        failed_tests=1 if "failed" in output else 0,
     )
 
 
@@ -2536,10 +2556,332 @@ async def test_test_failure_after_apply_reports_and_does_not_double_rollback(
     assert result["failed_chunk"] == 1
     assert not any(c[0] == "commit" for c in calls)
     summary = _read_completion_summary(run_id, 1)
-    assert summary["failure_type"] == PatchFailureType.TEST_FAILURE_AFTER_APPLY.value
+    assert summary["failure_type"] == PatchFailureType.TEST_REGRESSION.value
     assert summary["rollback_performed"] is True
     assert summary["working_tree_clean"] is True
     assert summary["failed_step"] == "test"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "test_result, expected_type",
+    [
+        (
+            lambda run_id: make_failed_test_result(
+                run_id, "1 failed, 4 passed in 1.0s", exit_code=1
+            ),
+            PatchFailureType.TEST_REGRESSION,
+        ),
+        (
+            lambda run_id: make_failed_test_result(
+                run_id, "Fatal Python error: init_sys_streams", exit_code=1
+            ),
+            PatchFailureType.HARNESS_ERROR,
+        ),
+        (
+            lambda run_id: make_failed_test_result(
+                run_id,
+                "'pytest' is not recognized as an internal or external command",
+                exit_code=9009,
+            ),
+            PatchFailureType.HARNESS_ERROR,
+        ),
+    ],
+)
+async def test_test_failure_split_distinguishes_regression_from_harness(
+    monkeypatch, tmp_repo, tracked_runs, test_result, expected_type
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    def fake_tests(patch, run_id_arg, chunk_number=0):
+        calls.append(("test", chunk_number))
+        reset_worktree_state()
+        return test_result(run_id_arg)
+
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", fake_tests)
+    clean_checks = {"count": 0}
+
+    def clean_once_then_dirty(repo):
+        clean_checks["count"] += 1
+        return clean_checks["count"] == 1
+
+    # Keep this taxonomy test to one pass. Harness failures would otherwise be
+    # eligible for the item-8 auto retry.
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "is_working_tree_clean",
+        clean_once_then_dirty,
+    )
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["failure_type"] == expected_type.value
+    assert [c[0] for c in calls].count("test") == 1
+
+
+@pytest.mark.asyncio
+async def test_harness_error_auto_retries_once_then_continues(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+    results = [
+        make_failed_test_result(
+            run_id, "Fatal Python error: init_sys_streams", exit_code=1
+        ),
+        make_test_result(run_id, True),
+    ]
+
+    def fake_tests(patch, run_id_arg, chunk_number=0):
+        calls.append(("test", chunk_number))
+        result = results.pop(0)
+        if not result.passed:
+            reset_worktree_state()
+        return result
+
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", fake_tests)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "awaiting_final_approval"
+    names = [c[0] for c in calls if c[0] in {"coder", "dry_run", "patch", "test"}]
+    assert names.count("coder") == 2
+    assert names.count("dry_run") == 2
+    assert names.count("patch") == 2
+    assert names.count("test") == 2
+    summary = _read_completion_summary(run_id, 1)
+    auto_attempts = [
+        attempt
+        for attempt in summary["attempts"]
+        if attempt["recovery_mode"] == "auto"
+    ]
+    assert len(auto_attempts) == 1
+    assert auto_attempts[0]["outcome"] == "recovered"
+    assert auto_attempts[0]["test_outcome"] == "passed"
+
+
+@pytest.mark.asyncio
+async def test_harness_error_auto_retries_once_then_human_retryable_failure(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+    results = [
+        make_failed_test_result(
+            run_id, "Fatal Python error: init_sys_streams", exit_code=1
+        ),
+        make_failed_test_result(
+            run_id, "Fatal Python error: init_sys_streams", exit_code=1
+        ),
+    ]
+
+    def fake_tests(patch, run_id_arg, chunk_number=0):
+        calls.append(("test", chunk_number))
+        result = results.pop(0)
+        reset_worktree_state()
+        return result
+
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", fake_tests)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    names = [c[0] for c in calls if c[0] in {"coder", "dry_run", "patch", "test"}]
+    assert names.count("coder") == 2
+    assert names.count("dry_run") == 2
+    assert names.count("patch") == 2
+    assert names.count("test") == 2
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["failure_type"] == PatchFailureType.HARNESS_ERROR.value
+    assert summary["manual_intervention_needed"] is True
+    assert [a["recovery_mode"] for a in summary["attempts"]] == ["initial", "auto"]
+    assert summary["attempts"][-1]["outcome"] == "manual_intervention"
+    assert summary["attempts"][-1]["test_outcome"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_real_test_regression_does_not_auto_retry(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    def fake_tests(patch, run_id_arg, chunk_number=0):
+        calls.append(("test", chunk_number))
+        reset_worktree_state()
+        return make_failed_test_result(
+            run_id_arg, "1 failed, 4 passed in 1.0s", exit_code=1
+        )
+
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", fake_tests)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    names = [c[0] for c in calls if c[0] in {"coder", "dry_run", "patch", "test"}]
+    assert names.count("coder") == 1
+    assert names.count("patch") == 1
+    assert names.count("test") == 1
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["failure_type"] == PatchFailureType.TEST_REGRESSION.value
+    assert [a["recovery_mode"] for a in summary["attempts"]] == ["initial"]
+
+
+@pytest.mark.asyncio
+async def test_timeout_is_harness_error_but_not_auto_retried(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    def fake_tests(patch, run_id_arg, chunk_number=0):
+        calls.append(("test", chunk_number))
+        reset_worktree_state()
+        return make_failed_test_result(
+            run_id_arg,
+            "[TESTER] command timed out",
+            exit_code=None,
+            timed_out=True,
+        )
+
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", fake_tests)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    names = [c[0] for c in calls if c[0] in {"coder", "dry_run", "patch", "test"}]
+    assert names.count("coder") == 1
+    assert names.count("patch") == 1
+    assert names.count("test") == 1
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["failure_type"] == PatchFailureType.HARNESS_ERROR.value
+    assert [a["recovery_mode"] for a in summary["attempts"]] == ["initial"]
+
+
+@pytest.mark.asyncio
+async def test_harness_error_does_not_auto_retry_when_rollback_tree_dirty(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    def fake_tests(patch, run_id_arg, chunk_number=0):
+        calls.append(("test", chunk_number))
+        return make_failed_test_result(
+            run_id_arg, "Fatal Python error: init_sys_streams", exit_code=1
+        )
+
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", fake_tests)
+    clean_checks = {"count": 0}
+
+    def clean_before_chunk_dirty_after_rollback(repo):
+        clean_checks["count"] += 1
+        return clean_checks["count"] == 1
+
+    monkeypatch.setattr(
+        chunked_orchestrator.local_git,
+        "is_working_tree_clean",
+        clean_before_chunk_dirty_after_rollback,
+    )
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    names = [c[0] for c in calls if c[0] in {"coder", "dry_run", "patch", "test"}]
+    assert names.count("coder") == 1
+    assert names.count("patch") == 1
+    assert names.count("test") == 1
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["failure_type"] == PatchFailureType.HARNESS_ERROR.value
+    assert summary["working_tree_clean"] is False
+    assert summary["manual_intervention_needed"] is True
+
+
+@pytest.mark.asyncio
+async def test_scope_and_forbidden_failures_do_not_auto_retry(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs, chunks=2)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+
+    out_of_scope = CoderHandoff(
+        run_id=run_id,
+        feature_description="enriched",
+        files_changed=[
+            FileChange(
+                path="outside.py",
+                action="create",
+                content="print('no')\n",
+                reason="out of scope",
+            )
+        ],
+        summary="bad scope",
+        suggested_memory_entries=[],
+    )
+
+    async def fake_coder(plan, run_id_arg, chunk_number=0, **kwargs):
+        calls.append(("coder", chunk_number))
+        return out_of_scope
+
+    monkeypatch.setattr(chunked_orchestrator, "run_coder", fake_coder)
+
+    first = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert first["status"] == "failed"
+    assert _read_completion_summary(run_id, 1)["failure_type"] == (
+        PatchFailureType.SCOPE_VIOLATION.value
+    )
+    assert [c[0] for c in calls if c[0] == "coder"].count("coder") == 1
+    assert not any(c[0] == "patch" for c in calls)
+
+    run_id_2, _project_2 = create_run(tmp_repo, tracked_runs)
+    calls_2 = []
+    patch_git_preflight(monkeypatch, calls_2)
+    patch_success_pipeline(monkeypatch, run_id_2, calls_2)
+    forbidden = build_patch_failure_report(
+        PatchFailureType.FORBIDDEN_FILE,
+        technical_details="protected path",
+        changed_files_attempted=["created_1.py"],
+        allowed_files=_files_expected(1),
+        rollback_performed=True,
+        working_tree_clean=True,
+        chunk_number=1,
+        failed_step="patch",
+    )
+
+    def fake_forbidden_apply(code, run_id_arg, chunk_number=0, *, files_expected, repo_path=None):
+        calls_2.append(("patch", chunk_number))
+        return PatchApplyOutcome.from_failure(forbidden)
+
+    monkeypatch.setattr(chunked_orchestrator, "apply_patch_guarded", fake_forbidden_apply)
+
+    second = await chunked_orchestrator.execute_approved_chunks(run_id_2)
+
+    assert second["status"] == "failed"
+    assert _read_completion_summary(run_id_2, 1)["failure_type"] == (
+        PatchFailureType.FORBIDDEN_FILE.value
+    )
+    names_2 = [c[0] for c in calls_2 if c[0] in {"coder", "patch", "test"}]
+    assert names_2.count("coder") == 1
+    assert names_2.count("patch") == 1
+    assert names_2.count("test") == 0
 
 
 @pytest.mark.asyncio
@@ -3350,7 +3692,7 @@ async def test_retry_test_failure_persists_report_with_rollback(
     assert not any(c[0] == "commit" for c in calls)
     summary = _read_completion_summary(run_id, 1)
     assert summary["failure_type"] == (
-        PatchFailureType.TEST_FAILURE_AFTER_APPLY.value
+        PatchFailureType.TEST_REGRESSION.value
     )
     assert summary["rollback_performed"] is True
     recovered = summary["attempts"][-1]

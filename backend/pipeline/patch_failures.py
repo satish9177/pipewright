@@ -149,6 +149,8 @@ class PatchFailureType(str, Enum):
     STALE_INDEX_OR_FILE_CHANGED = "STALE_INDEX_OR_FILE_CHANGED"
     NO_CHANGES = "NO_CHANGES"
     TEST_FAILURE_AFTER_APPLY = "TEST_FAILURE_AFTER_APPLY"
+    TEST_REGRESSION = "TEST_REGRESSION"
+    HARNESS_ERROR = "HARNESS_ERROR"
     DIRTY_WORKTREE = "DIRTY_WORKTREE"
     UNKNOWN_PATCH_FAILURE = "UNKNOWN_PATCH_FAILURE"
 
@@ -163,6 +165,7 @@ _RETRYABLE_TRANSIENT: frozenset[PatchFailureType] = frozenset(
         PatchFailureType.PATCH_PARTIAL_APPLY_BLOCKED,
         PatchFailureType.TARGET_MISSING,
         PatchFailureType.TEST_FAILURE_AFTER_APPLY,
+        PatchFailureType.HARNESS_ERROR,
         PatchFailureType.UNKNOWN_PATCH_FAILURE,
     }
 )
@@ -201,8 +204,10 @@ _STALE_INDEX_HINT_TYPES: frozenset[PatchFailureType] = frozenset(
 # Failure types where a human-triggered retry of the *same plan* is safe to even
 # consider (#26D1). Deliberately a small allowlist — NOT _RETRYABLE_TRANSIENT,
 # which also contains PATCH_MALFORMED / TEST_FAILURE_AFTER_APPLY /
-# UNKNOWN_PATCH_FAILURE (all disallowed for human retry). Anything not in this
-# set — including SCOPE_VIOLATION, FORBIDDEN_FILE, NO_CHANGES, DIRTY_WORKTREE,
+# UNKNOWN_PATCH_FAILURE (all disallowed for human retry). HARNESS_ERROR is the
+# one test-phase exception: after the bounded auto retry is spent, a human can
+# retry once the environment is stable. Anything not in this set — including
+# TEST_REGRESSION, SCOPE_VIOLATION, FORBIDDEN_FILE, NO_CHANGES, DIRTY_WORKTREE,
 # STALE_INDEX_OR_FILE_CHANGED — is rejected. This module only *evaluates*
 # eligibility; no retry is executed here (execution lands in #26D2+).
 _HUMAN_RETRYABLE_FAILURE_TYPES: frozenset[PatchFailureType] = frozenset(
@@ -210,6 +215,7 @@ _HUMAN_RETRYABLE_FAILURE_TYPES: frozenset[PatchFailureType] = frozenset(
         PatchFailureType.PATCH_DOES_NOT_APPLY,
         PatchFailureType.TARGET_MISSING,
         PatchFailureType.PATCH_PARTIAL_APPLY_BLOCKED,
+        PatchFailureType.HARNESS_ERROR,
     }
 )
 
@@ -248,6 +254,14 @@ _DEFAULT_MESSAGES: dict[PatchFailureType, str] = {
     PatchFailureType.TEST_FAILURE_AFTER_APPLY: (
         "The change applied but the project's tests failed, so it was rolled "
         "back."
+    ),
+    PatchFailureType.TEST_REGRESSION: (
+        "The change applied and the test harness ran, but the project's tests "
+        "failed, so the change was rolled back."
+    ),
+    PatchFailureType.HARNESS_ERROR: (
+        "The change applied, but the test command did not produce a trustworthy "
+        "test result, so the change was rolled back."
     ),
     PatchFailureType.DIRTY_WORKTREE: (
         "You have uncommitted changes. Commit or stash them before running "
@@ -530,7 +544,12 @@ def record_initial_attempt(
 
     test_outcome = (
         "failed"
-        if report.failure_type == PatchFailureType.TEST_FAILURE_AFTER_APPLY
+        if report.failure_type
+        in {
+            PatchFailureType.TEST_FAILURE_AFTER_APPLY,
+            PatchFailureType.TEST_REGRESSION,
+            PatchFailureType.HARNESS_ERROR,
+        }
         else "not_run"
     )
     outcome = (
