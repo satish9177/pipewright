@@ -28,7 +28,7 @@ from backend.events.schema import Event
 from backend.git import local_git
 from backend.checkpoint.checkpoint_store import load_chunk_step_checkpoint
 from backend.models.chunk import ChunkDefinition, ChunkPlanResponse, ChunkStatus
-from backend.models.handoff import CoderHandoff, PlannerHandoff
+from backend.models.handoff import CoderHandoff, PipelineTestResult, PlannerHandoff
 from backend.pipeline.approval_gate import (
     create_chunk_approval_gate_and_mark_chunk,
     create_final_approval_gate_and_mark_run,
@@ -94,7 +94,7 @@ from backend.pipeline.test_run_validation import (
     classify_execution_integrity,
     classify_test_run,
 )
-from backend.pipeline.tester import run_tests
+from backend.pipeline.tester import run_baseline_tests, run_tests
 from backend.projects.project_context import (
     ProjectRuntimeConfig,
     active_project,
@@ -111,6 +111,8 @@ NO_EFFECTIVE_CHANGES_MESSAGE = (
     "Patch produced no effective changes (working tree clean). "
     "The requested change may already be present; nothing was committed."
 )
+VERIFICATION_BASELINE_KEY = "verification_baseline"
+VERIFICATION_BASELINE_KIND = "baseline_aware_verification_v1"
 
 
 def _utc_now() -> str:
@@ -552,6 +554,7 @@ def _build_completion_summary(
     plan: PlannerHandoff,
     coder_output: CoderHandoff,
     recovery_attempts: list | None = None,
+    verification_disclosure: dict | None = None,
 ) -> dict:
     files_created = []
     files_modified = []
@@ -595,6 +598,8 @@ def _build_completion_summary(
             else attempt
             for attempt in recovery_attempts
         ]
+    if verification_disclosure:
+        summary["verification_baseline"] = verification_disclosure
     return summary
 
 
@@ -635,23 +640,43 @@ def _load_code_from_checkpoint(run_id: str, chunk_number: int) -> CoderHandoff:
         )
 
 
+def _load_test_result_from_checkpoint(
+    run_id: str,
+    chunk_number: int,
+) -> PipelineTestResult | None:
+    checkpoint = load_chunk_step_checkpoint(run_id, chunk_number, "test")
+    if checkpoint is None:
+        return None
+    try:
+        return PipelineTestResult.model_validate(checkpoint["output"])
+    except Exception:
+        return None
+
+
 def _chunk_approval_summary(
     run_id: str,
     chunk: ChunkDefinition | ChunkStatus,
     coder_output: CoderHandoff,
+    verification_disclosure: dict | None = None,
 ) -> str:
     files = _files_touched(coder_output)
     title = getattr(chunk, "title", f"Chunk {getattr(chunk, 'chunk_number', '')}")
     chunk_number = getattr(chunk, "chunk_number")
     branch_name = f"pipewright/{run_id[:8]}"
     file_lines = "\n".join(f"- {path}" for path in files) if files else "- none"
-    return (
+    summary = (
         f"Chunk approval required for run {run_id}\n\n"
         f"Chunk: {chunk_number} - {title}\n"
         f"Branch: {branch_name}\n\n"
         f"Changed files:\n{file_lines}\n\n"
         "Tests have passed. Commit is pending human approval."
     )
+    if verification_disclosure:
+        summary += (
+            "\n\nVerification baseline:\n"
+            f"{verification_disclosure['message']}"
+        )
+    return summary
 
 
 def _pause_for_chunk_approval(
@@ -659,8 +684,14 @@ def _pause_for_chunk_approval(
     chunk: ChunkDefinition,
     coder_output: CoderHandoff,
     branch_name: str,
+    verification_disclosure: dict | None = None,
 ) -> dict:
-    summary = _chunk_approval_summary(run_id, chunk, coder_output)
+    summary = _chunk_approval_summary(
+        run_id,
+        chunk,
+        coder_output,
+        verification_disclosure=verification_disclosure,
+    )
     create_chunk_approval_gate_and_mark_chunk(
         run_id,
         chunk.chunk_number,
@@ -729,6 +760,7 @@ def _commit_and_complete_chunk(
     project_id: str,
     plan: PlannerHandoff | None = None,
     recovery_attempts: list | None = None,
+    verification_disclosure: dict | None = None,
 ) -> None:
     chunk_number = chunk.chunk_number
     touched_files = _files_touched(coder_output)
@@ -757,6 +789,7 @@ def _commit_and_complete_chunk(
         summary_plan,
         coder_output,
         recovery_attempts=recovery_attempts,
+        verification_disclosure=verification_disclosure,
     )
     save_chunk_completion_summary(run_id, chunk_number, completion_summary)
     update_chunk_status(run_id, chunk_number, "completed")
@@ -1341,6 +1374,218 @@ def _persist_test_run_verdict(run_id: str, chunk_number: int, test_result) -> No
         )
 
 
+def _load_run_report_json(run_id: str) -> dict:
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT report_json FROM pipeline_runs WHERE id = :run_id"),
+                {"run_id": run_id},
+            ).fetchone()
+    except Exception as error:
+        logger.warning(
+            "[CHUNKED] verification baseline load skipped | run_id=%s | error=%s",
+            run_id,
+            error,
+        )
+        return {}
+    if row is None or not row[0]:
+        return {}
+    try:
+        value = json.loads(row[0])
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _save_run_report_json(run_id: str, value: dict) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                UPDATE pipeline_runs
+                SET report_json = :report_json
+                WHERE id = :run_id
+            """),
+            {"run_id": run_id, "report_json": json.dumps(value)},
+        )
+
+
+def _verification_baseline_from_result(test_result) -> dict:
+    now = _utc_now()
+    return {
+        "kind": VERIFICATION_BASELINE_KIND,
+        "recorded_at": now,
+        "last_updated_at": now,
+        "passed": bool(getattr(test_result, "passed", False)),
+        "exit_code": getattr(test_result, "exit_code", None),
+        "timed_out": bool(getattr(test_result, "timed_out", False)),
+        "failing_test_ids": list(getattr(test_result, "failing_test_ids", []) or []),
+        "failing_test_ids_parseable": bool(
+            getattr(test_result, "failing_test_ids_parseable", True)
+        ),
+        "failing_test_ids_parse_error": getattr(
+            test_result,
+            "failing_test_ids_parse_error",
+            None,
+        ),
+        "output_preview": getattr(test_result, "output", None),
+    }
+
+
+def _load_verification_baseline(run_id: str) -> dict | None:
+    report = _load_run_report_json(run_id)
+    baseline = report.get(VERIFICATION_BASELINE_KEY)
+    return baseline if isinstance(baseline, dict) else None
+
+
+def _save_verification_baseline(run_id: str, baseline: dict) -> None:
+    report = _load_run_report_json(run_id)
+    report[VERIFICATION_BASELINE_KEY] = baseline
+    _save_run_report_json(run_id, report)
+
+
+def _run_tests_baseline_kwargs(baseline: dict | None) -> dict:
+    if not baseline:
+        return {}
+    ids = list(baseline.get("failing_test_ids") or [])
+    parseable = bool(baseline.get("failing_test_ids_parseable", True))
+    if not ids and parseable:
+        return {}
+    return {
+        "baseline_failing_test_ids": ids,
+        "baseline_failing_test_ids_parseable": parseable,
+    }
+
+
+def _verification_disclosure_from_result(
+    baseline: dict | None,
+    test_result,
+) -> dict | None:
+    if not baseline:
+        return None
+    baseline_ids = list(baseline.get("failing_test_ids") or [])
+    baseline_parseable = bool(baseline.get("failing_test_ids_parseable", True))
+    current_parseable = bool(
+        getattr(test_result, "failing_test_ids_parseable", True)
+    )
+    current_ids = list(getattr(test_result, "failing_test_ids", []) or [])
+    baseline_accepted = bool(getattr(test_result, "baseline_accepted", False))
+    non_comparable = not baseline_parseable or not current_parseable
+    if (
+        not baseline_ids
+        and baseline_parseable
+        and current_parseable
+        and not baseline_accepted
+        and not current_ids
+    ):
+        return None
+    pre_existing = list(
+        getattr(test_result, "pre_existing_failing_test_ids", []) or []
+    )
+    newly_failing = list(getattr(test_result, "newly_failing_test_ids", []) or [])
+    message = "Baseline-aware verification found no new failing tests."
+    if non_comparable:
+        message = (
+            "Baseline-aware verification was non-comparable; the chunk used "
+            "the whole-suite-green fail-safe."
+        )
+    elif baseline_accepted:
+        message = (
+            "The test command is still red, but only with failures present in "
+            "the run-start baseline."
+        )
+    return {
+        "kind": VERIFICATION_BASELINE_KIND,
+        "message": message,
+        "baseline_failing_test_ids": baseline_ids,
+        "baseline_failing_test_ids_parseable": baseline_parseable,
+        "current_failing_test_ids": current_ids,
+        "current_failing_test_ids_parseable": current_parseable,
+        "pre_existing_failing_test_ids": pre_existing,
+        "newly_failing_test_ids": newly_failing,
+        "baseline_accepted": baseline_accepted,
+        "non_comparable": non_comparable,
+    }
+
+
+def _roll_verification_baseline_forward(
+    run_id: str,
+    baseline: dict | None,
+    test_result,
+) -> None:
+    if not baseline:
+        return
+    if not bool(baseline.get("failing_test_ids_parseable", True)):
+        return
+    if not bool(getattr(test_result, "failing_test_ids_parseable", True)):
+        return
+    integrity = classify_execution_integrity(
+        getattr(test_result, "exit_code", None),
+        getattr(test_result, "output", None),
+        timed_out=getattr(test_result, "timed_out", False),
+    )
+    if integrity is not ExecutionIntegrity.OK:
+        return
+    updated = dict(baseline)
+    updated.update({
+        "last_updated_at": _utc_now(),
+        "passed": bool(getattr(test_result, "passed", False)),
+        "exit_code": getattr(test_result, "exit_code", None),
+        "timed_out": bool(getattr(test_result, "timed_out", False)),
+        "failing_test_ids": list(getattr(test_result, "failing_test_ids", []) or []),
+        "failing_test_ids_parseable": True,
+        "failing_test_ids_parse_error": None,
+        "output_preview": getattr(test_result, "output", None),
+    })
+    baseline.clear()
+    baseline.update(updated)
+    _save_verification_baseline(run_id, baseline)
+
+
+def _baseline_failure_result(
+    run_id: str,
+    _test_result,
+    integrity: ExecutionIntegrity,
+) -> dict:
+    message = (
+        "Baseline verification failed before chunk execution because the test "
+        f"harness did not produce an interpretable run ({integrity.value}). "
+        "Fix the test environment or command, then rerun the approved plan."
+    )
+    _update_run_status(run_id, "failed", "verification_baseline_failed")
+    return {
+        "status": "failed",
+        "run_id": run_id,
+        "error": message,
+        "verification_baseline_failed": True,
+        "integrity": integrity.value,
+    }
+
+
+async def _ensure_verification_baseline(run_id: str) -> tuple[dict, dict | None]:
+    baseline = _load_verification_baseline(run_id)
+    if baseline is not None:
+        integrity = classify_execution_integrity(
+            baseline.get("exit_code"),
+            baseline.get("output_preview"),
+            timed_out=bool(baseline.get("timed_out", False)),
+        )
+        if integrity is not ExecutionIntegrity.OK:
+            return baseline, _baseline_failure_result(run_id, baseline, integrity)
+        return baseline, None
+
+    test_result = await asyncio.to_thread(run_baseline_tests, run_id)
+    baseline = _verification_baseline_from_result(test_result)
+    _save_verification_baseline(run_id, baseline)
+    integrity = classify_execution_integrity(
+        getattr(test_result, "exit_code", None),
+        getattr(test_result, "output", None),
+        timed_out=getattr(test_result, "timed_out", False),
+    )
+    if integrity is not ExecutionIntegrity.OK:
+        return baseline, _baseline_failure_result(run_id, test_result, integrity)
+    return baseline, None
+
+
 def _classify_test_failure(test_result) -> tuple[PatchFailureType, ExecutionIntegrity]:
     integrity = classify_execution_integrity(
         getattr(test_result, "exit_code", None),
@@ -1370,6 +1615,19 @@ def _build_test_failure_report(
         if output is not None
         else f"exit_code={exit_code}; timed_out={timed_out}"
     )
+    if getattr(test_result, "failing_test_ids", None):
+        details += (
+            "\nfailing_test_ids="
+            + json.dumps(list(getattr(test_result, "failing_test_ids", [])))
+        )
+    if getattr(test_result, "newly_failing_test_ids", None):
+        details += (
+            "\nnewly_failing_test_ids="
+            + json.dumps(list(getattr(test_result, "newly_failing_test_ids", [])))
+        )
+    parse_error = getattr(test_result, "failing_test_ids_parse_error", None)
+    if parse_error:
+        details += f"\nfailing_test_ids_parse_error={parse_error}"
     return build_patch_failure_report(
         failure_type,
         technical_details=details,
@@ -1488,6 +1746,7 @@ async def _execute_single_chunk(
     target_repo_path: str,
     branch_name: str,
     status_by_number: dict[int, str],
+    verification_baseline: dict | None = None,
 ) -> dict | None:
     chunk_number = chunk.chunk_number
 
@@ -1616,7 +1875,11 @@ async def _execute_single_chunk(
 
     patch = outcome.patch_result
     test_result = await asyncio.to_thread(
-        run_tests, patch, run_id, chunk_number=chunk_number
+        run_tests,
+        patch,
+        run_id,
+        chunk_number=chunk_number,
+        **_run_tests_baseline_kwargs(verification_baseline),
     )
 
     # #28D: record the display-only runtime test verdict for BOTH pass and fail,
@@ -1753,6 +2016,7 @@ async def _execute_single_chunk(
                 retry_outcome.patch_result,
                 run_id,
                 chunk_number=chunk_number,
+                **_run_tests_baseline_kwargs(verification_baseline),
             )
             _persist_test_run_verdict(run_id, chunk_number, retry_test_result)
 
@@ -1795,6 +2059,11 @@ async def _execute_single_chunk(
         else:
             return _fail_chunk_with_report(run_id, chunk_number, report)
 
+    verification_disclosure = _verification_disclosure_from_result(
+        verification_baseline,
+        test_result,
+    )
+
     # Adversarial Reviewer v1 (advisory, display-only). The patch applied, tests
     # passed, and the runtime verdict is persisted, so there is a standing applied
     # diff to review. This runs BEFORE the commit/pause branch below but is purely
@@ -1806,7 +2075,13 @@ async def _execute_single_chunk(
     )
 
     if chunk.requires_human_review:
-        return _pause_for_chunk_approval(run_id, chunk, code, branch_name)
+        return _pause_for_chunk_approval(
+            run_id,
+            chunk,
+            code,
+            branch_name,
+            verification_disclosure=verification_disclosure,
+        )
 
     _commit_and_complete_chunk(
         run_id,
@@ -1816,7 +2091,9 @@ async def _execute_single_chunk(
         project_id,
         plan,
         recovery_attempts=recovery_attempts,
+        verification_disclosure=verification_disclosure,
     )
+    _roll_verification_baseline_forward(run_id, verification_baseline, test_result)
     return None
 
 
@@ -1886,6 +2163,11 @@ async def _execute_approved_chunks_locked(
     # blocking and a re-read per chunk.
     status_by_number = _status_by_number(plan_status)
     with active_project(project_runtime):
+        verification_baseline, baseline_failure = await _ensure_verification_baseline(
+            run_id
+        )
+        if baseline_failure is not None:
+            return baseline_failure
         for chunk_status in pending:
             chunk_number = chunk_status.chunk_number
             chunk = definitions[chunk_number]
@@ -1897,6 +2179,7 @@ async def _execute_approved_chunks_locked(
                     target_repo_path,
                     branch_name,
                     status_by_number,
+                    verification_baseline,
                 )
                 if pause_result is not None:
                     return pause_result
@@ -1984,6 +2267,11 @@ async def _resume_chunked_pipeline_locked(
         return pause
 
     with active_project(project_runtime):
+        verification_baseline, baseline_failure = await _ensure_verification_baseline(
+            run_id
+        )
+        if baseline_failure is not None:
+            return baseline_failure
         for chunk_status in resumable:
             chunk_number = chunk_status.chunk_number
             chunk = definitions[chunk_number]
@@ -2031,6 +2319,7 @@ async def _resume_chunked_pipeline_locked(
                     target_repo_path,
                     branch_name,
                     status_by_number,
+                    verification_baseline,
                 )
                 if pause_result is not None:
                     return pause_result
@@ -2097,6 +2386,13 @@ def _approve_chunk_and_commit_locked(
     _validate_target_repo(target_repo_path, require_clean=False)
 
     code = _load_code_from_checkpoint(run_id, chunk_number)
+    test_result = _load_test_result_from_checkpoint(run_id, chunk_number)
+    verification_baseline = _load_verification_baseline(run_id)
+    verification_disclosure = (
+        _verification_disclosure_from_result(verification_baseline, test_result)
+        if test_result is not None
+        else None
+    )
     _decide_pending_chunk_gate(run_id, chunk_number, "approved")
     _commit_and_complete_chunk(
         run_id,
@@ -2104,7 +2400,10 @@ def _approve_chunk_and_commit_locked(
         code,
         target_repo_path,
         plan_status.project_id,
+        verification_disclosure=verification_disclosure,
     )
+    if test_result is not None:
+        _roll_verification_baseline_forward(run_id, verification_baseline, test_result)
     _update_run_status(run_id, "chunk_approved", "chunk_approved", chunk_number)
 
     # If approving this chunk completed the final outstanding chunk, advance
@@ -2530,6 +2829,7 @@ def _pause_recovered_chunk(
     code: CoderHandoff,
     branch_name: str,
     original_report: PatchFailureReport,
+    verification_disclosure: dict | None = None,
 ) -> dict:
     """
     Store the recovered_patch_review marker and pause at the existing chunk
@@ -2573,7 +2873,13 @@ def _pause_recovered_chunk(
         chunk.chunk_number,
         recovered_patch_review_to_completion_summary(summary),
     )
-    return _pause_for_chunk_approval(run_id, chunk, code, branch_name)
+    return _pause_for_chunk_approval(
+        run_id,
+        chunk,
+        code,
+        branch_name,
+        verification_disclosure=verification_disclosure,
+    )
 
 
 async def _execute_retry_attempt(
@@ -2664,8 +2970,13 @@ async def _execute_retry_attempt(
             )
 
         # tester.py rolls back on failure; do NOT roll back again here.
+        verification_baseline = _load_verification_baseline(run_id)
         test_result = await asyncio.to_thread(
-            run_tests, outcome.patch_result, run_id, chunk_number=chunk_number
+            run_tests,
+            outcome.patch_result,
+            run_id,
+            chunk_number=chunk_number,
+            **_run_tests_baseline_kwargs(verification_baseline),
         )
 
         # #28D: record the display-only runtime test verdict on the retry path
@@ -2714,8 +3025,17 @@ async def _execute_retry_attempt(
 
         # Success: pause at the existing approval gate. No commit here; the
         # existing approval path commits the newest code checkpoint later.
+        verification_disclosure = _verification_disclosure_from_result(
+            verification_baseline,
+            test_result,
+        )
         return _pause_recovered_chunk(
-            run_id, chunk, code, branch_name, report
+            run_id,
+            chunk,
+            code,
+            branch_name,
+            report,
+            verification_disclosure=verification_disclosure,
         )
 
 
