@@ -7,6 +7,7 @@ Mocks patch_result with pre-built PatchResult objects.
 """
 
 import os
+import subprocess
 import uuid
 import pytest
 from backend.models.handoff import PatchResult, PipelineTestResult
@@ -273,6 +274,158 @@ def test_failing_command_rolls_back_chunk(monkeypatch, tmp_path):
 
     assert result.passed is False
     assert calls == [(run_id, 2)]
+
+
+def test_baseline_only_failures_pass_without_rollback(monkeypatch, tmp_path):
+    from backend.config import keys
+    import backend.pipeline.tester as tester
+
+    _set_command(monkeypatch, tmp_path, "pytest")
+
+    old_id = "tests/test_app.py::test_old"
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=1,
+            stdout=f"FAILED {old_id} - AssertionError\n1 failed\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(tester.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        tester,
+        "rollback_patch",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("baseline-only failures should not roll back")
+        ),
+    )
+    monkeypatch.setattr(keys.settings, "target_repo_path", str(tmp_path))
+
+    run_id = str(uuid.uuid4())
+    result = run_tests(
+        make_patch_result(run_id),
+        run_id,
+        baseline_failing_test_ids=[old_id],
+    )
+
+    assert result.passed is True
+    assert result.baseline_accepted is True
+    assert result.pre_existing_failing_test_ids == [old_id]
+    assert result.newly_failing_test_ids == []
+    assert result.exit_code == 1
+
+
+def test_new_failure_vs_baseline_fails_and_rolls_back(monkeypatch, tmp_path):
+    import backend.pipeline.tester as tester
+
+    _set_command(monkeypatch, tmp_path, "pytest")
+
+    old_id = "tests/test_app.py::test_old"
+    new_id = "tests/test_app.py::test_new"
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=1,
+            stdout=(
+                f"FAILED {old_id} - AssertionError\n"
+                f"FAILED {new_id} - AssertionError\n"
+                "2 failed\n"
+            ),
+            stderr="",
+        )
+
+    calls = []
+    monkeypatch.setattr(tester.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        tester,
+        "rollback_patch",
+        lambda run_id, chunk_number=0: calls.append((run_id, chunk_number)) or True,
+    )
+
+    run_id = str(uuid.uuid4())
+    result = run_tests(
+        make_patch_result(run_id),
+        run_id,
+        chunk_number=3,
+        baseline_failing_test_ids=[old_id],
+    )
+
+    assert result.passed is False
+    assert result.pre_existing_failing_test_ids == [old_id]
+    assert result.newly_failing_test_ids == [new_id]
+    assert calls == [(run_id, 3)]
+
+
+def test_unparseable_failing_ids_fail_safe_and_roll_back(monkeypatch, tmp_path):
+    import backend.pipeline.tester as tester
+
+    _set_command(monkeypatch, tmp_path, "pytest")
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=1,
+            stdout="1 failed, 4 passed in 0.30s\n",
+            stderr="",
+        )
+
+    calls = []
+    monkeypatch.setattr(tester.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        tester,
+        "rollback_patch",
+        lambda run_id, chunk_number=0: calls.append((run_id, chunk_number)) or True,
+    )
+
+    run_id = str(uuid.uuid4())
+    result = run_tests(
+        make_patch_result(run_id),
+        run_id,
+        baseline_failing_test_ids=["tests/test_app.py::test_old"],
+    )
+
+    assert result.passed is False
+    assert result.failing_test_ids_parseable is False
+    assert "no node IDs" in result.failing_test_ids_parse_error
+    assert calls == [(run_id, 0)]
+
+
+def test_timeout_is_not_accepted_by_baseline(monkeypatch, tmp_path):
+    import backend.pipeline.tester as tester
+
+    _set_command(monkeypatch, tmp_path, "pytest")
+
+    def fake_run(*args, **kwargs):
+        error = subprocess.TimeoutExpired(
+            cmd=args[0],
+            timeout=kwargs["timeout"],
+            output="FAILED tests/test_app.py::test_old - AssertionError\n1 failed",
+            stderr="",
+        )
+        error.stdout = "FAILED tests/test_app.py::test_old - AssertionError\n1 failed"
+        raise error
+
+    calls = []
+    monkeypatch.setattr(tester.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        tester,
+        "rollback_patch",
+        lambda run_id, chunk_number=0: calls.append((run_id, chunk_number)) or True,
+    )
+
+    run_id = str(uuid.uuid4())
+    result = run_tests(
+        make_patch_result(run_id),
+        run_id,
+        baseline_failing_test_ids=["tests/test_app.py::test_old"],
+    )
+
+    assert result.passed is False
+    assert result.timed_out is True
+    assert result.failing_test_ids_parseable is False
+    assert calls == [(run_id, 0)]
 
 
 # --------------------------------------------------------------------------

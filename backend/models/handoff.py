@@ -99,6 +99,13 @@ class PipelineTestResult(BaseModel):
     total_tests: int = 0
     passed_tests: int = 0
     failed_tests: int = 0
+    failing_test_ids: List[str] = Field(default_factory=list)
+    failing_test_ids_parseable: bool = True
+    failing_test_ids_parse_error: Optional[str] = None
+    baseline_accepted: bool = False
+    baseline_failing_test_ids: List[str] = Field(default_factory=list)
+    pre_existing_failing_test_ids: List[str] = Field(default_factory=list)
+    newly_failing_test_ids: List[str] = Field(default_factory=list)
     output: str
     duration_seconds: float = 0.0
 

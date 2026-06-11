@@ -27,6 +27,7 @@ from backend.models.handoff import (
     PlannerHandoff,
 )
 from backend.pipeline import chunked_orchestrator
+from backend.pipeline import reviewer as reviewer_stage
 from backend.pipeline.chunk_store import (
     approve_chunk_plan,
     create_chunked_run,
@@ -68,6 +69,18 @@ _worktree_applied = {"value": False}
 START_BRANCH = "feature/start"
 START_SHA = "abcdef1234567890abcdef1234567890abcdef1234"
 OTHER_SHA = "1111111111111111111111111111111111111111"
+
+
+@pytest.fixture(autouse=True)
+def offline_reviewer_guard(monkeypatch):
+    async def fake_run_chunk_review(**kwargs):
+        return None
+
+    async def fail_provider_call(*args, **kwargs):
+        raise AssertionError("orchestrator unit tests must not call real LLM providers")
+
+    monkeypatch.setattr(chunked_orchestrator, "run_chunk_review", fake_run_chunk_review)
+    monkeypatch.setattr(reviewer_stage, "complete_for_role", fail_provider_call)
 
 
 def reset_worktree_state() -> None:
@@ -320,6 +333,34 @@ def make_failed_test_result(
     )
 
 
+def make_baseline_test_result(
+    run_id: str,
+    failing_ids: list[str],
+    *,
+    parseable: bool = True,
+    exit_code: int | None = 1,
+    timed_out: bool = False,
+    output: str | None = None,
+) -> PipelineTestResult:
+    output = output or "\n".join(
+        [f"FAILED {test_id} - AssertionError" for test_id in failing_ids]
+        + [f"{len(failing_ids)} failed"]
+    )
+    return PipelineTestResult(
+        run_id=run_id,
+        passed=False,
+        exit_code=exit_code,
+        timed_out=timed_out,
+        output=output,
+        total_tests=len(failing_ids),
+        passed_tests=0,
+        failed_tests=len(failing_ids),
+        failing_test_ids=failing_ids,
+        failing_test_ids_parseable=parseable,
+        failing_test_ids_parse_error=None if parseable else "not parseable",
+    )
+
+
 def patch_git_preflight(monkeypatch, calls=None, run_id=None):
     # #26D3a: when a retry run_id is given, model HEAD already on the run branch so
     # the verify-only branch pre-check passes. Patched only when run_id is set so
@@ -390,6 +431,16 @@ def patch_success_pipeline(monkeypatch, run_id: str, calls=None):
             calls.append(("test", chunk_number))
         return make_test_result(run_id, True)
 
+    def fake_baseline(run_id):
+        if calls is not None:
+            calls.append(("baseline", 0))
+        return make_test_result(run_id, True)
+
+    async def fake_review(**kwargs):
+        if calls is not None:
+            calls.append(("review", kwargs["chunk"].chunk_number))
+        return None
+
     reset_worktree_state()
     monkeypatch.setattr(chunked_orchestrator, "run_planner", fake_planner)
     monkeypatch.setattr(chunked_orchestrator, "run_coder", fake_coder)
@@ -398,6 +449,8 @@ def patch_success_pipeline(monkeypatch, run_id: str, calls=None):
         chunked_orchestrator, "apply_patch_guarded", make_guarded_apply(calls)
     )
     monkeypatch.setattr(chunked_orchestrator, "run_tests", fake_tests)
+    monkeypatch.setattr(chunked_orchestrator, "run_baseline_tests", fake_baseline)
+    monkeypatch.setattr(chunked_orchestrator, "run_chunk_review", fake_review)
     # Stateful working-tree fake: clean before apply, dirty after, clean after
     # commit. Keeps both the clean-tree precondition and the no-effective-change
     # commit guard correct without a constant that can only model one moment.
@@ -961,13 +1014,27 @@ async def test_chunk_number_propagation(monkeypatch, tmp_repo, tracked_runs):
 
     await chunked_orchestrator.execute_approved_chunks(run_id)
 
-    assert ("planner", 1, calls[1][2]) in calls
-    assert ("coder", 1) in calls
-    assert ("patch", 1) in calls
-    assert ("test", 1) in calls
-    assert ("coder", 2) in calls
-    assert ("patch", 2) in calls
-    assert ("test", 2) in calls
+    ordered = [
+        call[:2]
+        for call in calls
+        if call[0] in {"baseline", "planner", "coder", "patch", "test", "review"}
+    ]
+    assert ordered == [
+        ("baseline", 0),
+        ("planner", 1),
+        ("coder", 1),
+        ("patch", 1),
+        ("test", 1),
+        ("review", 1),
+        ("planner", 2),
+        ("coder", 2),
+        ("patch", 2),
+        ("test", 2),
+        ("review", 2),
+    ]
+    planner_calls = [call for call in calls if call[0] == "planner"]
+    assert len(planner_calls) == 2
+    assert all(call[2] for call in planner_calls)
 
 
 @pytest.mark.asyncio
@@ -2810,6 +2877,194 @@ async def test_harness_error_does_not_auto_retry_when_rollback_tree_dirty(
     assert summary["failure_type"] == PatchFailureType.HARNESS_ERROR.value
     assert summary["working_tree_clean"] is False
     assert summary["manual_intervention_needed"] is True
+
+
+@pytest.mark.asyncio
+async def test_baseline_existing_failure_does_not_fail_chunk(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    old_id = "tests/test_app.py::test_old"
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "run_baseline_tests",
+        lambda run_id_arg: make_baseline_test_result(run_id_arg, [old_id]),
+    )
+
+    def fake_tests(patch, run_id_arg, chunk_number=0, **kwargs):
+        calls.append(("test", chunk_number, kwargs))
+        assert kwargs == {
+            "baseline_failing_test_ids": [old_id],
+            "baseline_failing_test_ids_parseable": True,
+        }
+        return PipelineTestResult(
+            run_id=run_id_arg,
+            passed=True,
+            exit_code=1,
+            output=f"FAILED {old_id} - AssertionError\n1 failed",
+            total_tests=1,
+            passed_tests=0,
+            failed_tests=1,
+            failing_test_ids=[old_id],
+            baseline_accepted=True,
+            baseline_failing_test_ids=[old_id],
+            pre_existing_failing_test_ids=[old_id],
+            newly_failing_test_ids=[],
+        )
+
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", fake_tests)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "awaiting_final_approval"
+    assert any(c[0] == "commit" for c in calls)
+    summary = _read_completion_summary(run_id, 1)
+    disclosure = summary["verification_baseline"]
+    assert disclosure["baseline_accepted"] is True
+    assert disclosure["pre_existing_failing_test_ids"] == [old_id]
+    assert disclosure["newly_failing_test_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_new_failure_vs_baseline_fails_as_regression(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    old_id = "tests/test_app.py::test_old"
+    new_id = "tests/test_app.py::test_new"
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "run_baseline_tests",
+        lambda run_id_arg: make_baseline_test_result(run_id_arg, [old_id]),
+    )
+
+    def fake_tests(patch, run_id_arg, chunk_number=0, **kwargs):
+        calls.append(("test", chunk_number, kwargs))
+        reset_worktree_state()
+        return PipelineTestResult(
+            run_id=run_id_arg,
+            passed=False,
+            exit_code=1,
+            output=(
+                f"FAILED {old_id} - AssertionError\n"
+                f"FAILED {new_id} - AssertionError\n"
+                "2 failed"
+            ),
+            total_tests=2,
+            passed_tests=0,
+            failed_tests=2,
+            failing_test_ids=[old_id, new_id],
+            baseline_failing_test_ids=[old_id],
+            pre_existing_failing_test_ids=[old_id],
+            newly_failing_test_ids=[new_id],
+        )
+
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", fake_tests)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    assert not any(c[0] == "commit" for c in calls)
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["failure_type"] == PatchFailureType.TEST_REGRESSION.value
+    assert f'"{new_id}"' in summary["technical_details"]
+
+
+@pytest.mark.asyncio
+async def test_unparseable_baseline_fails_safe_with_whole_suite_gate(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    patch_success_pipeline(monkeypatch, run_id, calls)
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "run_baseline_tests",
+        lambda run_id_arg: make_baseline_test_result(
+            run_id_arg,
+            [],
+            parseable=False,
+            output="1 failed",
+        ),
+    )
+
+    def fake_tests(patch, run_id_arg, chunk_number=0, **kwargs):
+        calls.append(("test", chunk_number, kwargs))
+        assert kwargs == {
+            "baseline_failing_test_ids": [],
+            "baseline_failing_test_ids_parseable": False,
+        }
+        reset_worktree_state()
+        return PipelineTestResult(
+            run_id=run_id_arg,
+            passed=False,
+            exit_code=1,
+            output="1 failed",
+            total_tests=1,
+            passed_tests=0,
+            failed_tests=1,
+            failing_test_ids=[],
+            failing_test_ids_parseable=False,
+            failing_test_ids_parse_error="no node IDs",
+        )
+
+    monkeypatch.setattr(chunked_orchestrator, "run_tests", fake_tests)
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    assert not any(c[0] == "commit" for c in calls)
+    summary = _read_completion_summary(run_id, 1)
+    assert summary["failure_type"] == PatchFailureType.TEST_REGRESSION.value
+    assert "failing_test_ids_parse_error=no node IDs" in summary["technical_details"]
+
+
+@pytest.mark.asyncio
+async def test_baseline_harness_error_fails_before_planner_or_coder(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "run_baseline_tests",
+        lambda run_id_arg: make_baseline_test_result(
+            run_id_arg,
+            [],
+            parseable=False,
+            exit_code=9009,
+            output="'pytest' is not recognized as an internal or external command",
+        ),
+    )
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "run_planner",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("planner should not run after baseline harness error")
+        ),
+    )
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "run_coder",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("coder should not run after baseline harness error")
+        ),
+    )
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    assert result["verification_baseline_failed"] is True
+    assert result["integrity"] == "command_not_found"
+    assert not any(c[0] == "commit" for c in calls)
 
 
 @pytest.mark.asyncio
