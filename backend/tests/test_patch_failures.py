@@ -61,6 +61,8 @@ EXPECTED_FAILURE_TYPES = {
     "STALE_INDEX_OR_FILE_CHANGED",
     "NO_CHANGES",
     "TEST_FAILURE_AFTER_APPLY",
+    "TEST_REGRESSION",
+    "HARNESS_ERROR",
     "DIRTY_WORKTREE",
     "UNKNOWN_PATCH_FAILURE",
 }
@@ -414,6 +416,31 @@ def test_from_completion_summary_parses_valid_dict():
     assert report.retry.max_attempts == 2
 
 
+def test_old_test_failure_after_apply_summary_still_parses():
+    data = {
+        "kind": PATCH_FAILURE_KIND,
+        "failure_type": "TEST_FAILURE_AFTER_APPLY",
+        "message": "The change applied but the project's tests failed.",
+        "technical_details": "1 failed",
+        "changed_files_attempted": ["app.py"],
+        "changed_files_actual": [],
+        "allowed_files": ["app.py"],
+        "suggested_actions": [ACTION_VIEW_DETAILS],
+        "rollback_performed": True,
+        "working_tree_clean": True,
+        "retry": {"attempts": 0, "max_attempts": 1, "retryable": False},
+        "stale_index_hint": False,
+        "chunk_number": 1,
+        "failed_step": "test",
+        "manual_intervention_needed": False,
+    }
+
+    report = patch_failure_report_from_completion_summary(data)
+
+    assert isinstance(report, PatchFailureReport)
+    assert report.failure_type == PatchFailureType.TEST_FAILURE_AFTER_APPLY
+
+
 # --------------------------------------------------------------------------- #
 # Recovery attempt history / diagnostics (#26C)
 # --------------------------------------------------------------------------- #
@@ -756,6 +783,7 @@ def test_eligibility_dirty_worktree_is_409():
         PatchFailureType.PATCH_DOES_NOT_APPLY,
         PatchFailureType.TARGET_MISSING,
         PatchFailureType.PATCH_PARTIAL_APPLY_BLOCKED,
+        PatchFailureType.HARNESS_ERROR,
     ],
 )
 def test_eligibility_allowed_failure_types(failure_type):
@@ -773,6 +801,7 @@ def test_eligibility_allowed_failure_types(failure_type):
         PatchFailureType.NO_CHANGES,
         PatchFailureType.DIRTY_WORKTREE,
         PatchFailureType.TEST_FAILURE_AFTER_APPLY,
+        PatchFailureType.TEST_REGRESSION,
         PatchFailureType.UNKNOWN_PATCH_FAILURE,
         PatchFailureType.STALE_INDEX_OR_FILE_CHANGED,
     ],
@@ -782,6 +811,18 @@ def test_eligibility_disallowed_failure_types_are_422(failure_type):
     assert decision.eligible is False
     assert decision.status_code == 422
     assert decision.reason == RETRY_INELIGIBLE_DISALLOWED_FAILURE_TYPE
+
+
+def test_harness_error_is_human_retryable_where_old_test_failure_was_not():
+    harness = _eligible_report(PatchFailureType.HARNESS_ERROR)
+    old = _eligible_report(PatchFailureType.TEST_FAILURE_AFTER_APPLY)
+
+    harness_decision = _evaluate(harness)
+    old_decision = _evaluate(old)
+
+    assert harness_decision.eligible is True
+    assert old_decision.eligible is False
+    assert old_decision.reason == RETRY_INELIGIBLE_DISALLOWED_FAILURE_TYPE
 
 
 def test_eligibility_cap_exhausted_is_422():

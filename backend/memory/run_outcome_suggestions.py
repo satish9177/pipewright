@@ -99,6 +99,18 @@ _PATCH_FAILURE_NOTES: dict[PatchFailureType, tuple[str, str, str]] = {
         "test",
         "medium",
     ),
+    PatchFailureType.TEST_REGRESSION: (
+        "Run {run_ref} introduced or exposed a test regression after applying "
+        "changes; review the failing test names before retrying.",
+        "test",
+        "medium",
+    ),
+    PatchFailureType.HARNESS_ERROR: (
+        "Run {run_ref} could not get a trustworthy test result from the harness; "
+        "check the test command and environment before retrying.",
+        "test",
+        "medium",
+    ),
 }
 
 

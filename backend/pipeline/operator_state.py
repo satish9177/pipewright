@@ -643,6 +643,38 @@ _FAMILY_TEST_FAILURE = _PatchFailureFamily(
         "The change was rolled back after tests failed, so there is nothing to approve."
     ),
 )
+_FAMILY_TEST_REGRESSION = _PatchFailureFamily(
+    title="Tests found a regression",
+    explanation=(
+        "What happened: Pipewright applied the change and the test harness ran, "
+        "but project tests failed. Why: this points to a real code regression, "
+        "not a broken test command. What next: review the failing tests before "
+        "trying a different fix. Nothing was committed."
+    ),
+    patch_detail="The change applied, but tests found a regression, so it was rolled back.",
+    tests_status=OperatorSafetyCheckStatus.FAILED,
+    tests_detail="Tests ran and failed, so the change wasn't kept.",
+    approve_final_reason=(
+        "The change was rolled back after tests found a regression, so there "
+        "is nothing to approve."
+    ),
+)
+_FAMILY_HARNESS_ERROR = _PatchFailureFamily(
+    title="Test harness failed",
+    explanation=(
+        "What happened: Pipewright applied the change, but the test command did "
+        "not produce a trustworthy result. Why: the runner may have crashed, "
+        "been missing, collected no tests, or timed out; a timeout can also mean "
+        "the change introduced a loop. What next: fix the test environment or "
+        "retry once it is stable. Nothing was committed."
+    ),
+    patch_detail="The change applied, but the test harness failed, so it was rolled back.",
+    tests_status=OperatorSafetyCheckStatus.FAILED,
+    tests_detail="The test command failed before Pipewright could trust the result.",
+    approve_final_reason=(
+        "The change was rolled back after the test harness failed, so there is nothing to approve."
+    ),
+)
 _FAMILY_BLOCKED_SCOPE = _PatchFailureFamily(
     title="Change was blocked — outside approved scope",
     explanation=(
@@ -707,6 +739,8 @@ _PATCH_FAILURE_FAMILY_BY_TYPE: dict[str, _PatchFailureFamily] = {
     "TARGET_MISSING": _FAMILY_COULD_NOT_APPLY,
     "STALE_INDEX_OR_FILE_CHANGED": _FAMILY_COULD_NOT_APPLY,
     "TEST_FAILURE_AFTER_APPLY": _FAMILY_TEST_FAILURE,
+    "TEST_REGRESSION": _FAMILY_TEST_REGRESSION,
+    "HARNESS_ERROR": _FAMILY_HARNESS_ERROR,
     "SCOPE_VIOLATION": _FAMILY_BLOCKED_SCOPE,
     "FORBIDDEN_FILE": _FAMILY_BLOCKED_FORBIDDEN,
     "NO_CHANGES": _FAMILY_NO_CHANGE,

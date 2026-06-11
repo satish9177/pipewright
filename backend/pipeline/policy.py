@@ -23,6 +23,10 @@ per-stage model constants were deleted, not moved).
 TESTER_TIMEOUT_SECONDS = 300
 # Stored/displayed test-output cap (tail-preserving; see tester.py).
 MAX_OUTPUT_CHARS = 10000
+# Bounded autonomous retry budget for infrastructure/harness failures after a
+# patch has been rolled back. TIMEOUT is classified as a harness error but is
+# explicitly not auto-retried by the orchestrator.
+AUTO_RETRY_INFRA_BUDGET = 1
 
 # --- Coder file-context caps (coder.py, patch_dry_run.py) -------------------
 # Files over this many lines may not be rewritten wholesale; they must be

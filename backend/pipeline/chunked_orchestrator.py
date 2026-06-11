@@ -88,7 +88,12 @@ from backend.pipeline.scope_expansion_store import (
     update_scope_expansion_request_status,
 )
 from backend.pipeline.scope_guard import ScopeDriftError, assert_files_in_scope
-from backend.pipeline.test_run_validation import classify_test_run
+from backend.pipeline.policy import AUTO_RETRY_INFRA_BUDGET
+from backend.pipeline.test_run_validation import (
+    ExecutionIntegrity,
+    classify_execution_integrity,
+    classify_test_run,
+)
 from backend.pipeline.tester import run_tests
 from backend.projects.project_context import (
     ProjectRuntimeConfig,
@@ -546,6 +551,7 @@ def _build_completion_summary(
     chunk: ChunkDefinition,
     plan: PlannerHandoff,
     coder_output: CoderHandoff,
+    recovery_attempts: list | None = None,
 ) -> dict:
     files_created = []
     files_modified = []
@@ -567,7 +573,7 @@ def _build_completion_summary(
         if "test" in lower_path or "/tests/" in lower_path:
             tests_added_or_updated.append(path)
 
-    return {
+    summary = {
         "chunk_title": chunk.title,
         "chunk_description": chunk.description,
         "files_created": files_created,
@@ -582,6 +588,14 @@ def _build_completion_summary(
         ),
         "suggested_memory_entries": coder_output.suggested_memory_entries,
     }
+    if recovery_attempts:
+        summary["attempts"] = [
+            attempt.model_dump(mode="json")
+            if hasattr(attempt, "model_dump")
+            else attempt
+            for attempt in recovery_attempts
+        ]
+    return summary
 
 
 def _fallback_plan_for_summary(run_id: str, chunk_number: int) -> PlannerHandoff:
@@ -714,6 +728,7 @@ def _commit_and_complete_chunk(
     target_repo_path: str,
     project_id: str,
     plan: PlannerHandoff | None = None,
+    recovery_attempts: list | None = None,
 ) -> None:
     chunk_number = chunk.chunk_number
     touched_files = _files_touched(coder_output)
@@ -737,7 +752,12 @@ def _commit_and_complete_chunk(
     local_git.commit_files(touched_files, commit_message, target_repo_path)
 
     summary_plan = plan or _fallback_plan_for_summary(run_id, chunk_number)
-    completion_summary = _build_completion_summary(chunk, summary_plan, coder_output)
+    completion_summary = _build_completion_summary(
+        chunk,
+        summary_plan,
+        coder_output,
+        recovery_attempts=recovery_attempts,
+    )
     save_chunk_completion_summary(run_id, chunk_number, completion_summary)
     update_chunk_status(run_id, chunk_number, "completed")
     print(
@@ -961,16 +981,18 @@ def _fail_chunk_with_report(
         f"chunk={chunk_number} | type={report.failure_type.value}"
     )
     # #26C: enrich the persisted summary with a failure_report_id and an initial
-    # attempt record (diagnostics/idempotency foundation). Ids/timestamp are
-    # generated here so build_patch_failure_report stays deterministic. This is
-    # additive: the user-facing message, status, event, and all execution
-    # behavior are unchanged.
-    enriched = record_initial_attempt(
-        report,
-        failure_report_id=str(uuid.uuid4()),
-        attempt_id=str(uuid.uuid4()),
-        started_at=_utc_now(),
-    )
+    # attempt record (diagnostics/idempotency foundation). Item 8's auto-retry
+    # path may pass an already-enriched report carrying initial+auto attempts;
+    # preserve that history instead of appending a second synthetic initial.
+    if report.failure_report_id or report.attempts:
+        enriched = report
+    else:
+        enriched = record_initial_attempt(
+            report,
+            failure_report_id=str(uuid.uuid4()),
+            attempt_id=str(uuid.uuid4()),
+            started_at=_utc_now(),
+        )
     save_chunk_completion_summary(
         run_id,
         chunk_number,
@@ -1296,15 +1318,18 @@ def _persist_test_run_verdict(run_id: str, chunk_number: int, test_result) -> No
     Best-effort and fully swallowed on error — a problem recording evidence must
     never fail a chunk or perturb the #26/#27 paths. Called inside the active
     project context so ``get_test_command()`` resolves the same command the tester
-    used. ``exit_code`` is derived from ``test_result.passed`` (the tester sets it
-    from the real returncode == 0); the classifier only distinguishes zero from
-    non-zero, so this is faithful. Output is the #28C tail-preserving preview, so
-    a summary at the end of long output is still classifiable.
+    used. ``exit_code`` comes from the tester's real subprocess return code when
+    available, falling back to the historical synthetic 0/1 for older or faked
+    PipelineTestResult shapes. Output is the #28C tail-preserving preview, so a
+    summary at the end of long output is still classifiable.
     """
     try:
+        exit_code = getattr(test_result, "exit_code", None)
+        if exit_code is None:
+            exit_code = 0 if getattr(test_result, "passed", False) else 1
         verdict = classify_test_run(
             get_test_command(),
-            0 if getattr(test_result, "passed", False) else 1,
+            exit_code,
             getattr(test_result, "output", None),
         )
         save_chunk_test_run_verdict(run_id, chunk_number, verdict)
@@ -1314,6 +1339,111 @@ def _persist_test_run_verdict(run_id: str, chunk_number: int, test_result) -> No
             "run_id=%s | chunk=%s | error=%s",
             run_id, chunk_number, error,
         )
+
+
+def _classify_test_failure(test_result) -> tuple[PatchFailureType, ExecutionIntegrity]:
+    integrity = classify_execution_integrity(
+        getattr(test_result, "exit_code", None),
+        getattr(test_result, "output", None),
+        timed_out=getattr(test_result, "timed_out", False),
+    )
+    if integrity is ExecutionIntegrity.OK:
+        return PatchFailureType.TEST_REGRESSION, integrity
+    return PatchFailureType.HARNESS_ERROR, integrity
+
+
+def _build_test_failure_report(
+    failure_type: PatchFailureType,
+    test_result,
+    code: CoderHandoff,
+    chunk: ChunkDefinition,
+    *,
+    clean: bool,
+    attempts: int = 0,
+    max_attempts: int | None = None,
+) -> PatchFailureReport:
+    output = getattr(test_result, "output", None)
+    exit_code = getattr(test_result, "exit_code", None)
+    timed_out = getattr(test_result, "timed_out", False)
+    details = (
+        f"exit_code={exit_code}; timed_out={timed_out}\n{output}"
+        if output is not None
+        else f"exit_code={exit_code}; timed_out={timed_out}"
+    )
+    return build_patch_failure_report(
+        failure_type,
+        technical_details=details,
+        changed_files_attempted=[change.path for change in code.files_changed],
+        allowed_files=chunk.files_expected,
+        rollback_performed=True,
+        working_tree_clean=clean,
+        attempts=attempts,
+        max_attempts=max_attempts,
+        chunk_number=chunk.chunk_number,
+        failed_step="test",
+    )
+
+
+def _should_auto_retry_harness_error(
+    failure_type: PatchFailureType,
+    integrity: ExecutionIntegrity,
+    *,
+    auto_retries_spent: int,
+) -> bool:
+    return (
+        failure_type is PatchFailureType.HARNESS_ERROR
+        and integrity is not ExecutionIntegrity.TIMEOUT
+        and auto_retries_spent < AUTO_RETRY_INFRA_BUDGET
+    )
+
+
+def _record_auto_retry_start(report: PatchFailureReport) -> PatchFailureReport:
+    return record_initial_attempt(
+        report,
+        failure_report_id=str(uuid.uuid4()),
+        attempt_id=str(uuid.uuid4()),
+        started_at=_utc_now(),
+    )
+
+
+def _record_auto_retry_result(
+    base_report: PatchFailureReport,
+    report: PatchFailureReport,
+    *,
+    outcome: str,
+    code: CoderHandoff,
+) -> PatchFailureReport:
+    touched = _files_touched(code)
+    recovered = outcome == "recovered"
+    carried = report.model_copy(
+        update={
+            "failure_report_id": base_report.failure_report_id,
+            "attempts": list(base_report.attempts),
+        }
+    )
+    return record_retry_attempt(
+        carried,
+        failure_report_id=str(uuid.uuid4()),
+        attempt_id=str(uuid.uuid4()),
+        started_at=_utc_now(),
+        recovery_mode="auto",
+        failure_type=(None if recovered else report.failure_type),
+        failed_step=(None if recovered else report.failed_step),
+        changed_files_attempted=(
+            touched if recovered else list(report.changed_files_attempted)
+        ),
+        changed_files_actual=touched if recovered else [],
+        scope_ok=True if recovered else report.failure_type != PatchFailureType.SCOPE_VIOLATION,
+        test_outcome=(
+            "passed"
+            if recovered
+            else "failed" if report.failed_step == "test" else "not_run"
+        ),
+        outcome=outcome,
+        human_decision=None,
+        working_tree_clean=False if recovered else report.working_tree_clean,
+        rollback_performed=False if recovered else report.rollback_performed,
+    )
 
 
 async def _run_advisory_review_safe(
@@ -1415,6 +1545,7 @@ async def _execute_single_chunk(
     # checkpoint saved by run_planner keeps the raw planner output (the retry
     # path re-surfaces on load).
     plan = _surface_files_expected_for_edit(plan, chunk.files_expected)
+    recovery_attempts = None
     code = await run_coder(
         plan,
         run_id,
@@ -1496,18 +1627,173 @@ async def _execute_single_chunk(
     if not test_result.passed:
         # tester.py already attempted rollback on failure; verify cleanliness
         # and report. Do NOT roll back again here (avoids a double rollback).
+        failure_type, integrity = _classify_test_failure(test_result)
         clean = local_git.is_working_tree_clean(target_repo_path)
-        report = build_patch_failure_report(
-            PatchFailureType.TEST_FAILURE_AFTER_APPLY,
-            technical_details=getattr(test_result, "output", None),
-            changed_files_attempted=[change.path for change in code.files_changed],
-            allowed_files=chunk.files_expected,
-            rollback_performed=True,
-            working_tree_clean=clean,
-            chunk_number=chunk_number,
-            failed_step="test",
+        report = _build_test_failure_report(
+            failure_type,
+            test_result,
+            code,
+            chunk,
+            clean=clean,
+            attempts=0,
+            max_attempts=AUTO_RETRY_INFRA_BUDGET,
         )
-        return _fail_chunk_with_report(run_id, chunk_number, report)
+
+        if _should_auto_retry_harness_error(
+            failure_type,
+            integrity,
+            auto_retries_spent=0,
+        ) and clean:
+            auto_retry_report = _record_auto_retry_start(report)
+            retry_code = await run_coder(
+                plan,
+                run_id,
+                chunk_number=chunk_number,
+                project_id=project_id,
+            )
+            if not retry_code.files_changed:
+                retry_report = build_patch_failure_report(
+                    PatchFailureType.NO_CHANGES,
+                    allowed_files=chunk.files_expected,
+                    chunk_number=chunk_number,
+                    failed_step="patch",
+                )
+                retry_report = _record_auto_retry_result(
+                    auto_retry_report,
+                    retry_report,
+                    outcome=(
+                        "manual_intervention"
+                        if retry_report.manual_intervention_needed
+                        else "failed"
+                    ),
+                    code=retry_code,
+                )
+                return _fail_chunk_with_report(run_id, chunk_number, retry_report)
+
+            try:
+                assert_files_in_scope(retry_code, chunk.files_expected)
+            except ScopeDriftError as drift:
+                retry_report = build_patch_failure_report(
+                    PatchFailureType.SCOPE_VIOLATION,
+                    technical_details=str(drift),
+                    changed_files_attempted=[
+                        change.path for change in retry_code.files_changed
+                    ],
+                    allowed_files=chunk.files_expected,
+                    working_tree_clean=local_git.is_working_tree_clean(
+                        target_repo_path
+                    ),
+                    chunk_number=chunk_number,
+                    failed_step="patch",
+                )
+                retry_report = _record_auto_retry_result(
+                    auto_retry_report,
+                    retry_report,
+                    outcome=(
+                        "manual_intervention"
+                        if retry_report.manual_intervention_needed
+                        else "failed"
+                    ),
+                    code=retry_code,
+                )
+                return _fail_chunk_with_report(run_id, chunk_number, retry_report)
+
+            retry_dry = dry_run_changes(retry_code, target_repo_path)
+            if not retry_dry.ok:
+                retry_failure_type = classify_patch_failure(
+                    RuntimeError(retry_dry.error_message or ""), phase="apply"
+                )
+                retry_report = build_patch_failure_report(
+                    retry_failure_type,
+                    technical_details=retry_dry.error_message,
+                    changed_files_attempted=[
+                        change.path for change in retry_code.files_changed
+                    ],
+                    allowed_files=chunk.files_expected,
+                    working_tree_clean=local_git.is_working_tree_clean(
+                        target_repo_path
+                    ),
+                    chunk_number=chunk_number,
+                    failed_step="patch",
+                )
+                retry_report = _record_auto_retry_result(
+                    auto_retry_report,
+                    retry_report,
+                    outcome=(
+                        "manual_intervention"
+                        if retry_report.manual_intervention_needed
+                        else "failed"
+                    ),
+                    code=retry_code,
+                )
+                return _fail_chunk_with_report(run_id, chunk_number, retry_report)
+
+            retry_outcome = await asyncio.to_thread(
+                apply_patch_guarded,
+                retry_code,
+                run_id,
+                chunk_number=chunk_number,
+                files_expected=chunk.files_expected,
+            )
+            if not retry_outcome.success:
+                retry_report = _record_auto_retry_result(
+                    auto_retry_report,
+                    retry_outcome.failure,
+                    outcome=(
+                        "manual_intervention"
+                        if retry_outcome.failure.manual_intervention_needed
+                        else "failed"
+                    ),
+                    code=retry_code,
+                )
+                return _fail_chunk_with_report(run_id, chunk_number, retry_report)
+
+            retry_test_result = await asyncio.to_thread(
+                run_tests,
+                retry_outcome.patch_result,
+                run_id,
+                chunk_number=chunk_number,
+            )
+            _persist_test_run_verdict(run_id, chunk_number, retry_test_result)
+
+            if not retry_test_result.passed:
+                retry_failure_type, _retry_integrity = _classify_test_failure(
+                    retry_test_result
+                )
+                retry_clean = local_git.is_working_tree_clean(target_repo_path)
+                retry_report = _build_test_failure_report(
+                    retry_failure_type,
+                    retry_test_result,
+                    retry_code,
+                    chunk,
+                    clean=retry_clean,
+                    attempts=AUTO_RETRY_INFRA_BUDGET,
+                    max_attempts=AUTO_RETRY_INFRA_BUDGET,
+                )
+                retry_report = _record_auto_retry_result(
+                    auto_retry_report,
+                    retry_report,
+                    outcome=(
+                        "manual_intervention"
+                        if retry_report.manual_intervention_needed
+                        else "failed"
+                    ),
+                    code=retry_code,
+                )
+                return _fail_chunk_with_report(run_id, chunk_number, retry_report)
+
+            recovered = _record_auto_retry_result(
+                auto_retry_report,
+                auto_retry_report,
+                outcome="recovered",
+                code=retry_code,
+            )
+            recovery_attempts = recovered.attempts
+            code = retry_code
+            patch = retry_outcome.patch_result
+            test_result = retry_test_result
+        else:
+            return _fail_chunk_with_report(run_id, chunk_number, report)
 
     # Adversarial Reviewer v1 (advisory, display-only). The patch applied, tests
     # passed, and the runtime verdict is persisted, so there is a standing applied
@@ -1522,7 +1808,15 @@ async def _execute_single_chunk(
     if chunk.requires_human_review:
         return _pause_for_chunk_approval(run_id, chunk, code, branch_name)
 
-    _commit_and_complete_chunk(run_id, chunk, code, target_repo_path, project_id, plan)
+    _commit_and_complete_chunk(
+        run_id,
+        chunk,
+        code,
+        target_repo_path,
+        project_id,
+        plan,
+        recovery_attempts=recovery_attempts,
+    )
     return None
 
 
@@ -2384,16 +2678,16 @@ async def _execute_retry_attempt(
         _persist_test_run_verdict(run_id, chunk_number, test_result)
 
         if not test_result.passed:
+            failure_type, _integrity = _classify_test_failure(test_result)
             clean = local_git.is_working_tree_clean(target_repo_path)
-            test_report = build_patch_failure_report(
-                PatchFailureType.TEST_FAILURE_AFTER_APPLY,
-                technical_details=getattr(test_result, "output", None),
-                changed_files_attempted=[c.path for c in code.files_changed],
-                allowed_files=chunk.files_expected,
-                rollback_performed=True,
-                working_tree_clean=clean,
-                chunk_number=chunk_number,
-                failed_step="test",
+            test_report = _build_test_failure_report(
+                failure_type,
+                test_result,
+                code,
+                chunk,
+                clean=clean,
+                attempts=0,
+                max_attempts=AUTO_RETRY_INFRA_BUDGET,
             )
             return _persist_retry_patch_failure(
                 run_id,

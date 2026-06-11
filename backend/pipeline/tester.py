@@ -174,6 +174,7 @@ def run_tests(
             test_result = PipelineTestResult(
                 run_id=run_id,
                 passed=True,
+                exit_code=completed.returncode,
                 total_tests=total_tests,
                 passed_tests=passed_tests,
                 failed_tests=failed_tests,
@@ -207,6 +208,7 @@ def run_tests(
         return PipelineTestResult(
             run_id=run_id,
             passed=False,
+            exit_code=completed.returncode,
             total_tests=total_tests,
             passed_tests=passed_tests,
             failed_tests=failed_tests,
@@ -231,6 +233,8 @@ def run_tests(
         return PipelineTestResult(
             run_id=run_id,
             passed=False,
+            exit_code=None,
+            timed_out=True,
             total_tests=0,
             passed_tests=0,
             failed_tests=0,

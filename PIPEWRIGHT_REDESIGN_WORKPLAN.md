@@ -9,7 +9,7 @@
 
 - **What:** executing the Pipewright pipeline + memory redesign described in `PIPEWRIGHT_REDESIGN_PROPOSAL.md` (the authoritative, code-verified design).
 - **How (the meta-decision):** *not* hand-written PR-by-PR. **Fable 5 owns the full implementation** — it reads the proposal, reasons about edge cases, writes the tests, and implements. A human reviews each completed PR before the next batch starts. Harness for this lives in `FABLE5_IMPL_SPEC_BRIEF.md`.
-- **Where we are (2026-06-11):** **Phase 0 is complete and code-verified** (all items present + 105 targeted tests pass; P7 deferred to Phase 2 by design). **§5.1 and §5.2 are now DECIDED** (baseline gate + scoped option default-off; auto-retry budget 1), which unblocks Phase 1. **Phase 1 has started with item 7 — Signal C execution-integrity classifier** (pure, decision-free; `backend/pipeline/test_run_validation.py`). Items 8 and 9 follow as separate PRs.
+- **Where we are (2026-06-11):** **Phase 0 is complete and code-verified** (all items present + 105 targeted tests pass; P7 deferred to Phase 2 by design). **§5.1 and §5.2 are now DECIDED** (baseline gate + scoped option default-off; auto-retry budget 1). **Phase 1 items 7 and 8 are done**: Signal C execution-integrity classification is pure in `backend/pipeline/test_run_validation.py`, and item 8 split post-apply test failures into `TEST_REGRESSION` vs. `HARNESS_ERROR` with one non-timeout harness auto-retry. **Resume at item 9 only**: baseline-aware verification + scoped option default-off. Do not start Phase 2.
 - **CRITICAL BOUNDARY:** the parallel batch is endorsed **only for the independent Phase 0 items.** **Stop and reassess at the Phase 1/2 line** — the four §5 decisions *and* the strangler refactor of `_execute_single_chunk`. There, human judgment + a strong-model review gate become load-bearing again. Do not let momentum carry the loop across that line unreviewed.
 
 ---
@@ -97,7 +97,7 @@ Plus §7 open questions (attempt-budget defaults; whether post-success refinemen
 6. ~~Wire `detect_test_command` into the setup route + New Project form — done.~~
 7. **P7 deferred to Phase 2** — fold the resume HEAD-drift check into the attempt-ledger work (it records per-chunk HEADs, making the check exact and false-positive-free).
 8. ~~**Before Phase 1:** the user rules on the four §5 decisions.~~ **§5.1 + §5.2 decided 2026-06-11** (the two that gate Phase 1); §5.3/§5.4 still pending but gate Phases 3/4. Do **not** let the loop cross into Phase 2 (the strangler refactor) unreviewed (see CRITICAL BOUNDARY).
-9. **Phase 1 sequence (separate PRs, in order):** ~~item 7 Signal C classifier~~ ✅ **done** (`classify_execution_integrity` in `test_run_validation.py`; 51 tests) → item 8 split `TEST_FAILURE_AFTER_APPLY` → regression/harness + auto-retry budget 1 (uses §5.2) → item 9 baseline-aware verification + scoped option default-off (uses §5.1). **Implementation handoff brief for items 8 + 9: `PHASE1_ITEMS_8_9_BRIEF.md`.**
+9. **Phase 1 sequence (separate PRs, in order):** ~~item 7 Signal C classifier~~ ✅ **done** (`classify_execution_integrity` in `test_run_validation.py`; 51 tests) → ~~item 8 split `TEST_FAILURE_AFTER_APPLY` → regression/harness + auto-retry budget 1~~ ✅ **done** (uses §5.2; `TEST_FAILURE_AFTER_APPLY` retained for backward compatibility) → item 9 baseline-aware verification + scoped option default-off (uses §5.1). **Implementation handoff brief for items 8 + 9: `PHASE1_ITEMS_8_9_BRIEF.md`.**
 
 ---
 

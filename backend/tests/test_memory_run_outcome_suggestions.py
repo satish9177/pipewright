@@ -352,6 +352,30 @@ def test_test_failure_suggestion_has_no_raw_stack_trace(run_env):
     assert "failed the project tests" in content
 
 
+@pytest.mark.parametrize(
+    "failure_type, expected",
+    [
+        (PatchFailureType.TEST_REGRESSION, "test regression"),
+        (PatchFailureType.HARNESS_ERROR, "test result from the harness"),
+    ],
+)
+def test_new_test_failure_types_generate_suggestions(run_env, failure_type, expected):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    run_env.add_chunk(
+        run_id,
+        project_id,
+        1,
+        completion_summary=_failure_summary(failure_type),
+        status="failed",
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    assert len(result.generated) == 1
+    assert expected in result.generated[0]["content"]
+
+
 # G. Rejected run -------------------------------------------------------------
 
 def test_rejected_approval_generates_rejected_approach_suggestion(run_env):

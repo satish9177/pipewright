@@ -224,6 +224,32 @@ def test_patch_failure_test_failure_after_apply_is_test_specific():
     assert "retry_patch" in _blocked_ids(state)
 
 
+def test_patch_failure_test_regression_has_regression_narrative():
+    state = _patch_failure_panel("TEST_REGRESSION")
+
+    assert state.title == "Tests found a regression"
+    visible = _all_visible_copy(state).lower()
+    assert "what happened:" in visible
+    assert "why:" in visible
+    assert "what next:" in visible
+    assert "real code regression" in visible
+    assert _check(state, "tests").status == "failed"
+    assert state.primary_action is None
+
+
+def test_patch_failure_harness_error_has_harness_narrative_and_retry():
+    state = _patch_failure_panel("HARNESS_ERROR", eligible=True)
+
+    assert state.title == "Test harness failed"
+    visible = _all_visible_copy(state).lower()
+    assert "what happened:" in visible
+    assert "why:" in visible
+    assert "what next:" in visible
+    assert "timed out" in visible
+    assert _check(state, "tests").status == "failed"
+    assert state.primary_action.id == "retry_patch"
+
+
 @pytest.mark.parametrize(
     "failure_type, expected_title",
     [
@@ -232,6 +258,8 @@ def test_patch_failure_test_failure_after_apply_is_test_specific():
         ("PATCH_PARTIAL_APPLY_BLOCKED", "Code change couldn't be applied"),
         ("TARGET_MISSING", "Code change couldn't be applied"),
         ("STALE_INDEX_OR_FILE_CHANGED", "Code change couldn't be applied"),
+        ("TEST_REGRESSION", "Tests found a regression"),
+        ("HARNESS_ERROR", "Test harness failed"),
         ("SCOPE_VIOLATION", "Change was blocked — outside approved scope"),
         ("FORBIDDEN_FILE", "Change was blocked — protected file"),
         ("NO_CHANGES", "No change was produced"),
