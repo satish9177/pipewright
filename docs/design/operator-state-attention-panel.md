@@ -251,6 +251,36 @@ current safe path is a human decision about expanded scope.
 
 ---
 
+## Run Phase Projection (item 16)
+
+`operator_state` carries two additive, derived, display-only fields (proposal
+§4.8): a user-facing `phase` and a structured `narrative`. Both are recomputed
+on every read, never persisted, and grant no authority — the same contract as
+the rest of `operator_state`.
+
+`phase` is one of six buckets, projected from the **already-selected** state by
+its visible properties (so the phase can never disagree with what the operator
+sees) plus two run-status splits:
+
+| Phase | When |
+| --- | --- |
+| `planning` | system busy forming the plan — `waiting_on == system` and `run_status == running` (pre-execution pipeline) |
+| `working` | system busy executing/pushing — `waiting_on == system` otherwise (`running_chunks`, `pushing`, strong-tests fallback) |
+| `waiting_for_you` | an expected human gate / acknowledgement / decision — `waiting_on == human` with an available action and not a failure (chunk-plan/chunk/final approval, execute, weak/review acks, scope-expansion **pending**, memory conflict, create-PR) |
+| `needs_attention` | a failure / anomaly / blocked state needing a human — `unknown_state_warning`, `decision_type == none`, `push_failed`, a **retryable patch failure** (a failure first, despite offering retry), `final_approval_blocked`, `stalled`, wrong branch, scope-expansion **rejected**, and terminal `failed`/`rejected`/`final_rejected` |
+| `done` | terminal `complete`, PR created/reused, local-only completion (`waiting_on == nobody`) |
+| `stopped` | reserved for an explicit user cancel/stop terminal status — **no such status exists today**, so no current state reaches it; failed/rejected map to `needs_attention`, not `stopped` |
+
+The fail-safe rule (proposal §0 analog): the unknown/unmapped fallback and every
+failure/anomaly map to `needs_attention` — a phase is never the optimistic guess,
+so a degraded or stuck read never reads as healthy.
+
+`narrative` is `{what_happened, why, whats_next}`: `what_happened`/`why` reuse
+the backend-owned `title`/`explanation` verbatim (no new prose, so no correctness
+claim and no raw-evidence leak), and `whats_next` is derived ONLY from the
+available actions (primary → neutral → secondary), so it can never present a
+blocked or nonexistent action as available.
+
 ## Backend and Frontend Responsibility Split
 
 ### Backend Responsibilities

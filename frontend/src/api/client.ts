@@ -426,6 +426,14 @@ export interface ChunkStatus extends ExtraFields {
 // OperatorState.model_dump() shape in backend/pipeline/operator_state.py.
 export type OperatorWaitingOn = 'human' | 'system' | 'nobody'
 export type OperatorDecisionType = 'progress' | 'risk_decision' | 'none'
+// Item 16: derived, display-only user-facing phase + structured narrative.
+export type OperatorRunPhase =
+  | 'planning'
+  | 'waiting_for_you'
+  | 'working'
+  | 'needs_attention'
+  | 'done'
+  | 'stopped'
 export type OperatorActionSeverity = 'normal' | 'caution' | 'danger'
 export type OperatorSafetyCheckStatus =
   | 'passed'
@@ -456,6 +464,15 @@ export interface OperatorTrustFact extends ExtraFields {
   detail: string
 }
 
+// Item 16: structured what/why/next narrative. Display-only; whats_next is
+// derived from the computed actions, so it never lists a blocked/unavailable
+// step.
+export interface OperatorNarrative extends ExtraFields {
+  what_happened: string
+  why: string
+  whats_next: string[]
+}
+
 export interface OperatorState extends ExtraFields {
   title: string
   explanation: string
@@ -471,6 +488,9 @@ export interface OperatorState extends ExtraFields {
   out_of_app_instruction?: string | null
   is_terminal: boolean
   unknown_state_warning?: string | null
+  // Additive, derived, display-only (item 16).
+  phase?: OperatorRunPhase | null
+  narrative?: OperatorNarrative | null
 }
 
 export interface ChunkPlanResponse extends ExtraFields {

@@ -1,5 +1,6 @@
 import type {
   OperatorAction,
+  OperatorRunPhase,
   OperatorState,
   OperatorWaitingOn,
 } from '@/api/client'
@@ -40,6 +41,51 @@ const WAITING_ON: Record<
     label: 'Nothing needed',
     className: 'border-green-200 bg-green-100 text-green-800',
   },
+}
+
+// Item 16: the derived, display-only run phase. A coarse six-bucket label that
+// answers "where is this run?" at a glance. Backend-owned (operator_state.phase);
+// the panel only renders it. The other two narrative parts — what_happened and
+// why — are the title/explanation already shown below, and whats_next is the
+// computed action set rendered in the actions section, so they are not
+// duplicated here.
+const PHASE: Record<OperatorRunPhase, { label: string; className: string }> = {
+  planning: {
+    label: 'Planning',
+    className: 'border-slate-200 bg-slate-100 text-slate-700',
+  },
+  waiting_for_you: {
+    label: 'Waiting for you',
+    className: 'border-amber-200 bg-amber-100 text-amber-900',
+  },
+  working: {
+    label: 'Working',
+    className: 'border-blue-200 bg-blue-100 text-blue-800',
+  },
+  needs_attention: {
+    label: 'Needs attention',
+    className: 'border-red-200 bg-red-100 text-red-800',
+  },
+  done: {
+    label: 'Done',
+    className: 'border-green-200 bg-green-100 text-green-800',
+  },
+  stopped: {
+    label: 'Stopped',
+    className: 'border-slate-300 bg-slate-200 text-slate-700',
+  },
+}
+
+function PhasePill({ phase }: { phase: OperatorRunPhase }) {
+  const meta = PHASE[phase]
+  if (!meta) return null
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border px-2.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wider ${meta.className}`}
+    >
+      {meta.label}
+    </span>
+  )
 }
 
 // #38A: the decision_type still drives layout (one primary CTA for `progress`
@@ -234,16 +280,20 @@ function TrustFacts({ facts }: { facts: OperatorState['trust_facts'] }) {
 function PreviewAction({
   action,
   className,
+  label,
 }: {
   action: OperatorAction
   className?: string
+  // Item 16: optional display label (narrative.whats_next text). Defaults to the
+  // computed action's own label; never changes the action itself.
+  label?: string
 }) {
   return (
     <span
       title={action.intent}
       className={`inline-flex items-center gap-2 rounded-md border border-dashed border-muted-foreground/40 bg-muted/30 px-3 py-1.5 text-sm text-muted-foreground ${className ?? ''}`}
     >
-      {action.label}
+      {label ?? action.label}
       <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70">
         preview
       </span>
@@ -285,7 +335,28 @@ export default function OperatorAttentionPanel({
     blocked_actions,
     trust_facts,
     out_of_app_instruction,
+    phase,
+    narrative,
   } = operatorState
+
+  // Item 16: prefer the backend narrative as the display SOURCE for the existing
+  // headline, body, and action labels, falling back to the legacy fields for
+  // older payloads. The narrative mirrors title/explanation and the
+  // available-action labels (primary → neutral → secondary order), so this
+  // changes only the text shown — never which actions exist, what they do, or
+  // how they are computed. whats_next is display text only; the controls below
+  // stay sourced from the computed operator_state actions.
+  const headline = narrative?.what_happened ?? title
+  const body = narrative?.why ?? explanation
+  const orderedActions = [
+    ...(primary_action ? [primary_action] : []),
+    ...neutral_actions,
+    ...secondary_actions,
+  ]
+  const actionLabel = (action: OperatorAction): string => {
+    const idx = orderedActions.indexOf(action)
+    return (idx >= 0 ? narrative?.whats_next?.[idx] : undefined) ?? action.label
+  }
 
   const isRisk = decision_type === 'risk_decision'
   const hasPreviewActions =
@@ -351,13 +422,14 @@ export default function OperatorAttentionPanel({
       />
       <CardHeader>
         <div className="flex flex-wrap items-center gap-2.5">
+          {phase && <PhasePill phase={phase} />}
           <WaitingPill waitingOn={waiting_on} />
         </div>
         <CardTitle className="text-lg leading-snug tracking-tight">
-          {title}
+          {headline}
         </CardTitle>
         <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
-          {explanation}
+          {body}
         </p>
       </CardHeader>
 
@@ -416,7 +488,7 @@ export default function OperatorAttentionPanel({
                         >
                           {wiredPrimary.isPending
                             ? 'Working…'
-                            : primary_action.label}
+                            : actionLabel(primary_action)}
                         </Button>
                       </div>
                       {primaryEffects && (
@@ -425,7 +497,10 @@ export default function OperatorAttentionPanel({
                     </>
                   ) : (
                     <div className="flex flex-wrap gap-2.5">
-                      <PreviewAction action={primary_action} />
+                      <PreviewAction
+                        action={primary_action}
+                        label={actionLabel(primary_action)}
+                      />
                     </div>
                   )}
                 </div>
@@ -445,6 +520,7 @@ export default function OperatorAttentionPanel({
                         <PreviewAction
                           key={action.id}
                           action={action}
+                          label={actionLabel(action)}
                           className={isRisk ? 'w-full justify-center' : undefined}
                         />
                       )
@@ -470,7 +546,7 @@ export default function OperatorAttentionPanel({
                           title={action.intent}
                           className={isRisk ? 'w-full' : undefined}
                         >
-                          {wired.isPending ? 'Working…' : action.label}
+                          {wired.isPending ? 'Working…' : actionLabel(action)}
                         </Button>
                         {coEqualEffects && (
                           <ActionEffectsLedger effects={coEqualEffects} />

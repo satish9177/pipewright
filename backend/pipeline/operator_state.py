@@ -11,13 +11,17 @@ mutation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, is_dataclass
+from dataclasses import dataclass, field, is_dataclass, replace
 from enum import Enum
 from typing import Any
 
+from backend.core.statuses import RunStatus
 from backend.pipeline.patch_failures import human_retry_ineligible_reason
 
-SCHEMA_VERSION = 1
+# Bumped to 2 by item 16 (phase/narrative read-model): OperatorState now also
+# carries an additive, derived `phase` and `narrative`. The bump lets the
+# frontend evolve rendering safely; all pre-existing fields are unchanged.
+SCHEMA_VERSION = 2
 UNKNOWN_STATE_MESSAGE = (
     "Pipewright cannot determine the next safe action. No action is available. "
     "Investigate before proceeding."
@@ -48,6 +52,28 @@ class OperatorSafetyCheckStatus(str, Enum):
     WEAK = "weak"
     NOT_EVALUATED = "not_evaluated"
     NOT_APPLICABLE = "not_applicable"
+
+
+class RunPhase(str, Enum):
+    """User-facing run/chunk phase (proposal §4.8, item 16).
+
+    A coarse, derived projection of the already-selected OperatorState — six
+    buckets the UI renders instead of internal status strings. Display-only and
+    advisory: the phase grants no authority, is never persisted, and is never
+    read by a route to make a decision. It is recomputed on every read.
+    """
+
+    PLANNING = "planning"
+    WAITING_FOR_YOU = "waiting_for_you"
+    WORKING = "working"
+    NEEDS_ATTENTION = "needs_attention"
+    DONE = "done"
+    # Reserved for an explicit user cancel/stop terminal status. The codebase
+    # has no such status today (terminal = complete/failed/rejected/
+    # final_rejected), so no current state reaches STOPPED — failed/rejected map
+    # to NEEDS_ATTENTION per the §5.4/D1 ruling. The value exists so a future
+    # cancel status lands in the right phase without re-deriving this logic.
+    STOPPED = "stopped"
 
 
 def _dump_value(value: Any) -> Any:
@@ -101,6 +127,21 @@ class OperatorTrustFact(_Dumpable):
 
 
 @dataclass(frozen=True)
+class OperatorNarrative(_Dumpable):
+    """Structured what/why/next narrative (proposal §4.8, item 16).
+
+    A display-only structuring of the state's already-curated copy and computed
+    actions — it introduces NO new prose, so it cannot add a correctness claim
+    or leak raw evidence, and ``whats_next`` is derived ONLY from the available
+    actions, so it can never advertise a blocked or nonexistent action.
+    """
+
+    what_happened: str
+    why: str
+    whats_next: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class OperatorState(_Dumpable):
     title: str
     explanation: str
@@ -116,6 +157,11 @@ class OperatorState(_Dumpable):
     out_of_app_instruction: str | None = None
     is_terminal: bool = False
     unknown_state_warning: str | None = None
+    # Additive, derived, display-only (item 16). Populated by
+    # compute_operator_state after the state is selected; None only if an
+    # OperatorState is built directly without going through that entry point.
+    phase: RunPhase | None = None
+    narrative: OperatorNarrative | None = None
 
 
 @dataclass(frozen=True)
@@ -196,6 +242,24 @@ def compute_operator_state(context: OperatorStateContext) -> OperatorState:
     Precedence follows docs/design/operator-state-attention-panel.md. This is a
     display/read helper only; every mutating route must still revalidate fresh
     state under its existing guard/lock flow.
+
+    Item 16 wraps the selected state with an additive, derived `phase` and
+    `narrative` (both display-only). The pre-existing fields are unchanged.
+    """
+    state = _select_state(context)
+    return replace(
+        state,
+        phase=project_phase(state, context),
+        narrative=build_narrative(state),
+    )
+
+
+def _select_state(context: OperatorStateContext) -> OperatorState:
+    """Select the displayed OperatorState by precedence (the pre-item-16 body).
+
+    Unchanged from the original compute_operator_state: same branches, same
+    order, same returned states. Kept as its own function so phase/narrative
+    derivation can wrap it without editing any state builder.
     """
     if context.wrong_branch:
         return _wrong_branch_state(context)
@@ -286,6 +350,86 @@ def compute_operator_state(context: OperatorStateContext) -> OperatorState:
         return _strong_tests_state(context)
 
     return _unknown_state()
+
+
+def project_phase(
+    state: OperatorState, context: OperatorStateContext
+) -> RunPhase:
+    """Project the displayed OperatorState onto one user-facing RunPhase (item 16).
+
+    Pure and display-only. It classifies the ALREADY-SELECTED state by its
+    visible properties (so it can never disagree with the state the operator
+    sees) plus two run-status splits. The unknown/fallback state and every
+    failure/anomaly map to NEEDS_ATTENTION — the fail-safe default: a phase is
+    never the optimistic guess, so a degraded or stuck read never reads as
+    healthy.
+    """
+    # Fail-safe: the unknown/unmapped fallback is always NEEDS_ATTENTION.
+    if state.unknown_state_warning is not None:
+        return RunPhase.NEEDS_ATTENTION
+    # Terminal: success -> Done; failed/rejected -> Needs attention (D1).
+    if state.is_terminal:
+        return _terminal_phase(context)
+    # The system is busy: plan formation -> Planning, execution/push -> Working.
+    if state.waiting_on is OperatorWaitingOn.SYSTEM:
+        return _system_phase(context)
+    # Nothing for a human and not terminal (local-only done, PR created) -> Done.
+    if state.waiting_on is OperatorWaitingOn.NOBODY:
+        return RunPhase.DONE
+    # waiting_on is HUMAN below.
+    # A failed push still needs a human even though it offers a retry action.
+    if context.push_failed:
+        return RunPhase.NEEDS_ATTENTION
+    # No available action (blocked/anomaly: wrong branch, scope rejected,
+    # final-approval blocked, stalled, non-retryable failure) -> Needs attention.
+    if state.decision_type is OperatorDecisionType.NONE:
+        return RunPhase.NEEDS_ATTENTION
+    # A retryable patch failure is a failure first, despite offering retry (D1).
+    if state.primary_action is not None and state.primary_action.id == "retry_patch":
+        return RunPhase.NEEDS_ATTENTION
+    # Everything else is an expected human gate / acknowledgement / decision.
+    return RunPhase.WAITING_FOR_YOU
+
+
+def _terminal_phase(context: OperatorStateContext) -> RunPhase:
+    status = context.terminal_status or context.run_status
+    if status == RunStatus.COMPLETE:
+        return RunPhase.DONE
+    # failed / rejected / final_rejected -> Needs attention (D1). There is no
+    # explicit cancel/stop terminal status today; if one is added, route it to
+    # RunPhase.STOPPED here.
+    return RunPhase.NEEDS_ATTENTION
+
+
+def _system_phase(context: OperatorStateContext) -> RunPhase:
+    # The initial pre-execution pipeline (triage/planner forming the plan) runs
+    # under RunStatus.RUNNING; chunk execution and push are RUNNING_CHUNKS /
+    # PUSHING. The strong-tests fallback is post-execution, so it lands in
+    # Working too.
+    if context.run_status == RunStatus.RUNNING:
+        return RunPhase.PLANNING
+    return RunPhase.WORKING
+
+
+def build_narrative(state: OperatorState) -> OperatorNarrative:
+    """Structure the state's curated copy + computed actions into what/why/next.
+
+    Display-only and additive (item 16): it reuses the backend-owned
+    title/explanation verbatim (no new prose, so it cannot introduce a
+    correctness claim or leak raw evidence) and derives whats_next ONLY from the
+    available actions (primary, then neutral, then secondary), so it can never
+    advertise a blocked or nonexistent action.
+    """
+    available: list[OperatorAction] = []
+    if state.primary_action is not None:
+        available.append(state.primary_action)
+    available.extend(state.neutral_actions)
+    available.extend(state.secondary_actions)
+    return OperatorNarrative(
+        what_happened=state.title,
+        why=state.explanation,
+        whats_next=tuple(action.label for action in available),
+    )
 
 
 def safety_check(

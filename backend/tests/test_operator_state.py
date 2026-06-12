@@ -17,7 +17,11 @@ from backend.pipeline.operator_state import (
     OperatorSafetyCheckStatus,
     OperatorStateContext,
     OperatorWaitingOn,
+    RunPhase,
+    _select_state,
+    build_narrative,
     compute_operator_state,
+    project_phase,
     safety_check,
 )
 
@@ -663,3 +667,297 @@ def test_pending_scope_expansion_beats_stale_old_patch_failure():
         "reject_scope_expansion",
     }
     assert "retry_patch" in _blocked_ids(state)
+
+
+# --- Item 16: phase / narrative read-model ----------------------------------
+# All display-only. The phase projects the already-selected state onto one of
+# six user-facing buckets; the narrative structures the curated copy + computed
+# actions into what/why/next. Neither grants authority or is persisted.
+
+_RETRYABLE = SimpleNamespace(eligible=True)
+_INELIGIBLE = SimpleNamespace(eligible=False, reason="disallowed_failure_type")
+_PUSH_FAILURE = {
+    "push_failed": True,
+    "push_failure_summary": "Auth failed.",
+    "push_failure_next_action": "Re-auth, then retry.",
+    "push_failure_retryable": True,
+}
+
+# (id, context kwargs, expected phase). Covers every branch compute_operator_state
+# can produce — the phase projection must be total over these and never optimistic
+# for a failure/anomaly/unknown.
+_PHASE_CASES = [
+    ("chunk_plan_awaiting_approval", {"chunk_plan_awaiting_approval": True}, RunPhase.WAITING_FOR_YOU),
+    ("plan_approved_not_executed", {"plan_approved_not_executed": True}, RunPhase.WAITING_FOR_YOU),
+    ("running_pre_execution", {"is_running": True, "run_status": "running"}, RunPhase.PLANNING),
+    ("running_chunks", {"is_running": True, "run_status": "running_chunks"}, RunPhase.WORKING),
+    ("pushing", {"is_running": True, "run_status": "pushing"}, RunPhase.WORKING),
+    (
+        "patch_failure_retryable",
+        {"patch_failure_present": True, "patch_retry_decision": _RETRYABLE, "failure_type": "PATCH_DOES_NOT_APPLY"},
+        RunPhase.NEEDS_ATTENTION,
+    ),
+    (
+        "patch_failure_blocked",
+        {"patch_failure_present": True, "patch_retry_decision": _INELIGIBLE, "failure_type": "TEST_REGRESSION"},
+        RunPhase.NEEDS_ATTENTION,
+    ),
+    ("pending_scope_expansion", {"pending_scope_expansion": True}, RunPhase.WAITING_FOR_YOU),
+    ("scope_expansion_rejected", {"scope_expansion_rejected": True}, RunPhase.NEEDS_ATTENTION),
+    ("memory_conflict", {"memory_conflict_pending": True}, RunPhase.WAITING_FOR_YOU),
+    ("chunk_awaiting_approval", {"chunk_awaiting_approval": True, "test_verdict": "strong"}, RunPhase.WAITING_FOR_YOU),
+    (
+        "recovered_chunk_awaiting_approval",
+        {"recovered_scope_retry_awaiting_chunk_approval": True},
+        RunPhase.WAITING_FOR_YOU,
+    ),
+    ("weak_ack_missing", {"test_verdict": "weak", "test_ack_state": "missing"}, RunPhase.WAITING_FOR_YOU),
+    ("weak_ack_stale", {"test_verdict": "weak", "test_ack_state": "stale"}, RunPhase.WAITING_FOR_YOU),
+    (
+        "review_ack_missing_at_chunk_gate",
+        {"chunk_awaiting_approval": True, "review_ack_state": "missing"},
+        RunPhase.WAITING_FOR_YOU,
+    ),
+    ("review_ack_missing_at_final", {"review_ack_state": "missing"}, RunPhase.WAITING_FOR_YOU),
+    ("final_approval_available", {"final_approval_available": True, "test_verdict": "strong"}, RunPhase.WAITING_FOR_YOU),
+    ("final_approval_blocked", {"final_approval_blocked": True}, RunPhase.NEEDS_ATTENTION),
+    ("pr_created", {"pr_created": True}, RunPhase.DONE),
+    ("push_failed", _PUSH_FAILURE, RunPhase.NEEDS_ATTENTION),
+    (
+        "local_only_done",
+        {"local_only_manual_push": True, "pr_ready": True, "pr_mode": "local_only"},
+        RunPhase.DONE,
+    ),
+    ("pr_ready_github", {"pr_ready": True, "pr_mode": "github_cli"}, RunPhase.WAITING_FOR_YOU),
+    ("wrong_branch", {"wrong_branch": True}, RunPhase.NEEDS_ATTENTION),
+    ("stalled", {"is_stalled": True}, RunPhase.NEEDS_ATTENTION),
+    ("terminal_complete", {"is_terminal": True, "terminal_status": "complete"}, RunPhase.DONE),
+    ("terminal_failed", {"is_terminal": True, "terminal_status": "failed"}, RunPhase.NEEDS_ATTENTION),
+    ("terminal_rejected", {"is_terminal": True, "terminal_status": "rejected"}, RunPhase.NEEDS_ATTENTION),
+    ("terminal_final_rejected", {"is_terminal": True, "terminal_status": "final_rejected"}, RunPhase.NEEDS_ATTENTION),
+    ("strong_tests_fallback", {"test_verdict": "strong"}, RunPhase.WORKING),
+    ("unknown", {"unknown": True}, RunPhase.NEEDS_ATTENTION),
+    ("empty_falls_through_to_unknown", {}, RunPhase.NEEDS_ATTENTION),
+]
+
+
+@pytest.mark.parametrize("case_id, kwargs, expected", _PHASE_CASES, ids=[c[0] for c in _PHASE_CASES])
+def test_phase_projection_is_total_and_matches_expected(case_id, kwargs, expected):
+    state = _state(**kwargs)
+    assert isinstance(state.phase, RunPhase)
+    assert state.phase == expected
+    # Serializes to the wire string, never the enum repr.
+    assert state.model_dump()["phase"] == expected.value
+
+
+def test_phase_projection_never_optimistic_on_failure_or_unknown():
+    # The fail-safe guarantee: a failure/anomaly/unknown is NEVER labelled with a
+    # "healthy" phase (Done/Working/Planning/Waiting).
+    healthy = {RunPhase.DONE, RunPhase.WORKING, RunPhase.PLANNING, RunPhase.WAITING_FOR_YOU}
+    for kwargs in (
+        {"unknown": True},
+        {},
+        {"is_stalled": True},
+        {"wrong_branch": True},
+        {"scope_expansion_rejected": True},
+        {"final_approval_blocked": True},
+        _PUSH_FAILURE,
+        {"is_terminal": True, "terminal_status": "failed"},
+        {"patch_failure_present": True, "patch_retry_decision": _RETRYABLE, "failure_type": "PATCH_DOES_NOT_APPLY"},
+    ):
+        assert _state(**kwargs).phase not in healthy
+
+
+def test_unknown_fallback_phase_is_needs_attention():
+    state = _state(unknown=True)
+    assert state.title == "Next safe action is unknown"
+    assert state.phase == RunPhase.NEEDS_ATTENTION
+
+
+def test_d1_retryable_patch_failure_is_needs_attention_not_waiting():
+    # A retryable patch failure offers a PROGRESS retry action, but it is a
+    # failure first (D1) — it must not read as an ordinary "waiting for you" gate.
+    state = _state(
+        patch_failure_present=True,
+        patch_retry_decision=_RETRYABLE,
+        failure_type="PATCH_DOES_NOT_APPLY",
+    )
+    assert state.primary_action.id == "retry_patch"
+    assert state.decision_type == OperatorDecisionType.PROGRESS.value
+    assert state.phase == RunPhase.NEEDS_ATTENTION
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"pending_scope_expansion": True},
+        {"memory_conflict_pending": True},
+        {"test_verdict": "weak", "test_ack_state": "missing"},
+        {"review_ack_state": "missing"},
+    ],
+)
+def test_d1_expected_gates_and_acks_are_waiting_for_you(kwargs):
+    assert _state(**kwargs).phase == RunPhase.WAITING_FOR_YOU
+
+
+def test_d1_stalled_is_needs_attention():
+    assert _state(is_stalled=True).phase == RunPhase.NEEDS_ATTENTION
+
+
+def test_d1_planning_vs_working_split():
+    assert _state(is_running=True, run_status="running").phase == RunPhase.PLANNING
+    assert _state(is_running=True, run_status="running_chunks").phase == RunPhase.WORKING
+
+
+def test_d1_terminal_success_done_failure_needs_attention():
+    assert _state(is_terminal=True, terminal_status="complete").phase == RunPhase.DONE
+    for status in ("failed", "rejected", "final_rejected"):
+        assert _state(is_terminal=True, terminal_status=status).phase == RunPhase.NEEDS_ATTENTION
+
+
+def test_phase_matches_displayed_state_on_gate_failure_overlap():
+    # When a higher-precedence gate is displayed even though a failure flag is
+    # also set (the "scope expansion beats stale patch failure" case), the phase
+    # follows the DISPLAYED gate, not the incidental failure flag.
+    state = _state(
+        pending_scope_expansion=True,
+        patch_failure_present=True,
+        patch_retry_decision=_RETRYABLE,
+        stale_patch_failure_present=True,
+    )
+    assert state.title == "Scope expansion needs review"
+    assert state.phase == RunPhase.WAITING_FOR_YOU
+
+
+def test_narrative_structures_curated_copy_and_actions():
+    state = _state(chunk_plan_awaiting_approval=True)
+    narrative = state.narrative
+    # what_happened / why reuse the curated copy verbatim (no new prose).
+    assert narrative.what_happened == state.title
+    assert narrative.why == state.explanation
+    # whats_next is the available action labels, in order.
+    assert narrative.whats_next == ("Approve chunk plan",)
+    # Serializes as a nested object the frontend can render.
+    dumped = state.model_dump()["narrative"]
+    assert dumped["what_happened"] == state.title
+    assert dumped["why"] == state.explanation
+    assert list(dumped["whats_next"]) == ["Approve chunk plan"]
+
+
+def test_narrative_whats_next_includes_co_equal_actions():
+    state = _state(pending_scope_expansion=True)
+    # Risk decision: both neutral actions are offered as next steps, no primary.
+    assert set(state.narrative.whats_next) == {
+        "Approve scope expansion and retry",
+        "Reject scope expansion",
+    }
+
+
+def _available_labels(state) -> set[str]:
+    actions = []
+    if state.primary_action is not None:
+        actions.append(state.primary_action)
+    actions += list(state.neutral_actions) + list(state.secondary_actions)
+    return {action.label for action in actions}
+
+
+@pytest.mark.parametrize("case_id, kwargs, expected", _PHASE_CASES, ids=[c[0] for c in _PHASE_CASES])
+def test_narrative_whats_next_is_subset_of_computed_actions(case_id, kwargs, expected):
+    state = _state(**kwargs)
+    nxt = set(state.narrative.whats_next)
+    # No phantom action: every next step is an actually-computed available action.
+    assert nxt <= _available_labels(state)
+    # No blocked action is ever presented as available.
+    blocked = {action.label for action in state.blocked_actions}
+    assert nxt.isdisjoint(blocked)
+
+
+def test_narrative_whats_next_empty_when_no_available_action():
+    # Running, terminal, and blocked-only states offer nothing to do in-app.
+    for kwargs in ({"is_running": True}, {"is_terminal": True, "terminal_status": "complete"}, {"unknown": True}):
+        assert _state(**kwargs).narrative.whats_next == ()
+
+
+def test_narrative_makes_no_code_correctness_claim():
+    # Strong tests are a PROCESS signal only; the narrative must inherit the
+    # existing honest disclaimer and never claim the code itself is correct.
+    strong = _state(test_verdict="strong")
+    assert "does not prove code correctness" in strong.narrative.why.lower()
+
+    forbidden = ("code is correct", "proven correct", "guaranteed correct", "definitely correct")
+    for kwargs in (
+        {"test_verdict": "strong"},
+        {"test_verdict": "strong", "final_approval_available": True},
+        {"chunk_awaiting_approval": True, "test_verdict": "strong"},
+    ):
+        narrative = _state(**kwargs).narrative
+        blob = " ".join([narrative.what_happened, narrative.why, *narrative.whats_next]).lower()
+        for phrase in forbidden:
+            assert phrase not in blob
+
+
+def test_narrative_does_not_leak_raw_evidence():
+    # The narrative is built only from curated title/explanation/action labels;
+    # operator_state never ingests raw test output, diffs, or stack traces, so
+    # none of those markers can appear in the narrative.
+    state = _state(
+        patch_failure_present=True,
+        patch_retry_decision=_INELIGIBLE,
+        failure_type="TEST_REGRESSION",
+    )
+    narrative = state.narrative
+    assert narrative.what_happened == state.title
+    assert narrative.why == state.explanation
+    blob = " ".join([narrative.what_happened, narrative.why, *narrative.whats_next])
+    for marker in ("Traceback", "exit_code=", "--- a/", "+++ b/", "assert ", "failing_test_ids"):
+        assert marker not in blob
+
+
+def test_existing_fields_unchanged_only_phase_and_narrative_added():
+    # The slice is additive: every pre-existing field is byte-identical to the
+    # pre-item-16 selection; only phase + narrative are new, and schema_version
+    # is bumped to 2.
+    pre_item16_fields = [
+        "title", "explanation", "waiting_on", "decision_type", "primary_action",
+        "neutral_actions", "secondary_actions", "blocked_actions", "safety_checks",
+        "trust_facts", "out_of_app_instruction", "is_terminal", "unknown_state_warning",
+    ]
+    for _case_id, kwargs, _expected in _PHASE_CASES:
+        context = OperatorStateContext(**kwargs)
+        base = _select_state(context)
+        full = compute_operator_state(context)
+        for name in pre_item16_fields:
+            assert getattr(full, name) == getattr(base, name), name
+        assert full.schema_version == 2
+        assert full.phase is not None
+        assert full.narrative is not None
+        # The selection helper itself does not populate the additive fields.
+        assert base.phase is None
+        assert base.narrative is None
+
+
+def test_model_dump_adds_phase_and_narrative_keys_only():
+    dumped = _state(chunk_plan_awaiting_approval=True).model_dump()
+    expected_keys = {
+        "title", "explanation", "waiting_on", "decision_type", "schema_version",
+        "primary_action", "neutral_actions", "secondary_actions", "blocked_actions",
+        "safety_checks", "trust_facts", "out_of_app_instruction", "is_terminal",
+        "unknown_state_warning", "phase", "narrative",
+    }
+    assert set(dumped) == expected_keys
+    assert dumped["schema_version"] == 2
+    assert dumped["phase"] in {p.value for p in RunPhase}
+    assert set(dumped["narrative"]) == {"what_happened", "why", "whats_next"}
+
+
+def test_project_phase_and_build_narrative_are_pure_helpers():
+    # The projection reads the selected state + context; the narrative builder
+    # reads only the state. Neither mutates its inputs.
+    context = OperatorStateContext(final_approval_available=True, test_verdict="strong")
+    state = _select_state(context)
+    assert project_phase(state, context) == RunPhase.WAITING_FOR_YOU
+    narrative = build_narrative(state)
+    assert narrative.whats_next == ("Approve final",)
+    # State is frozen/unchanged; helpers returned new values, not mutations.
+    assert state.phase is None
+    assert state.narrative is None
