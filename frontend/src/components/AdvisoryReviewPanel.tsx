@@ -6,19 +6,24 @@ import type {
   ReviewFindingSeverity,
 } from '@/api/client'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 
 interface AdvisoryReviewPanelProps {
   review?: ChunkReview | null
+  chunkStatus?: string
+  onSteerFinding?: (finding: ChunkReviewFinding) => void
+  isSteering?: boolean
 }
 
 /**
  * Display-only Advisory AI Review panel (Adversarial Reviewer v1).
  *
  * Renders the read-only `ChunkStatus.review` overlay for the human reviewing a
- * chunk's result. It is advisory evidence ONLY: it has no buttons, makes no route
- * calls, wires no actions, and never approves, rejects, acknowledges, or blocks
- * anything. It must never imply the code or tests are correct, and a stale review
- * is visually demoted and never presented as current advice.
+ * chunk's result. It is advisory evidence ONLY: it never approves, rejects,
+ * acknowledges, or blocks anything. When the parent says the chunk is failed or
+ * completed, a finding can offer "Steer this" through the existing steer route;
+ * awaiting_chunk_approval deliberately gets no steer affordance. It must never
+ * imply the code or tests are correct, and a stale review is visually demoted.
  *
  * Renders nothing when no review exists (review is null/undefined = "missing").
  */
@@ -148,8 +153,22 @@ function IndependenceNote({
   )
 }
 
-function FindingRow({ finding }: { finding: ChunkReviewFinding }) {
+function FindingRow({
+  finding,
+  canSteer,
+  onSteerFinding,
+  isSteering = false,
+}: {
+  finding: ChunkReviewFinding
+  canSteer: boolean
+  onSteerFinding?: (finding: ChunkReviewFinding) => void
+  isSteering?: boolean
+}) {
   const severity = SEVERITY_META[finding.severity] ?? SEVERITY_META.info
+  const showSteer =
+    canSteer &&
+    Boolean(finding.steer_text) &&
+    typeof onSteerFinding === 'function'
   return (
     <li className="grid gap-0.5 rounded border border-slate-200 bg-white px-2 py-1.5">
       <div className="flex flex-wrap items-center gap-1.5">
@@ -170,17 +189,35 @@ function FindingRow({ finding }: { finding: ChunkReviewFinding }) {
           Suggested check: {finding.suggested_human_check}
         </p>
       )}
+      {showSteer && (
+        <div className="pt-1">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => onSteerFinding?.(finding)}
+            disabled={isSteering}
+          >
+            {isSteering ? 'Steering...' : 'Steer this'}
+          </Button>
+        </div>
+      )}
     </li>
   )
 }
 
 export default function AdvisoryReviewPanel({
   review,
+  chunkStatus,
+  onSteerFinding,
+  isSteering = false,
 }: AdvisoryReviewPanelProps) {
   if (!review) return null
 
   const isStale = review.staleness === 'stale'
   const isCompleted = review.review_status === 'completed'
+  const canSteer =
+    review.staleness === 'current' &&
+    (chunkStatus === 'completed' || chunkStatus === 'failed')
   const verdict =
     isCompleted && review.verdict ? VERDICT_META[review.verdict] : null
 
@@ -263,7 +300,13 @@ export default function AdvisoryReviewPanel({
               </p>
               <ul className="grid gap-1">
                 {sortedFindings.map((finding, index) => (
-                  <FindingRow key={index} finding={finding} />
+                  <FindingRow
+                    key={index}
+                    finding={finding}
+                    canSteer={canSteer}
+                    onSteerFinding={onSteerFinding}
+                    isSteering={isSteering}
+                  />
                 ))}
               </ul>
             </div>

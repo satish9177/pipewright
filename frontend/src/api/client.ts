@@ -358,6 +358,7 @@ export interface ChunkReviewFinding extends ExtraFields {
   affected_files: string[]
   suggested_human_check: string
   confidence?: number | null
+  steer_text?: string | null
 }
 
 export type ReviewerIndependenceStatus =
@@ -393,6 +394,10 @@ export interface ChunkReview extends ExtraFields {
   model?: string | null
   created_at?: string | null
   reviewer_independence?: ReviewerIndependence | null
+  requires_acknowledgement?: boolean
+  acknowledgement_status?: TestValidationAckStatus
+  acknowledgement_required_finding_count?: number
+  acknowledgement_required_categories?: string[]
 }
 
 export interface ChunkStatus extends ExtraFields {
@@ -667,6 +672,7 @@ export interface RetryChunkRequest {
 }
 
 export type ChunkRetryResponse = ChunkOperationResponse
+export type ChunkSteerResponse = ChunkOperationResponse
 
 // #27F scope expansion approve/reject. Approve sends the human-approved
 // allowlist (for v1 the UI approves exactly the request's requested_files); the
@@ -705,6 +711,16 @@ export interface TestValidationAckResponse extends ExtraFields {
   verdict: TestRunVerdict
   acknowledged_diff_hash: string
   acknowledged_at?: string | null
+}
+
+export interface ReviewFindingsAckResponse extends ExtraFields {
+  status: string
+  run_id: string
+  chunk_number: number
+  acknowledged_diff_hash: string
+  acknowledged_at?: string | null
+  finding_count: number
+  categories: string[]
 }
 
 export interface PushPrResponse extends ExtraFields {
@@ -1180,6 +1196,21 @@ export const runsApi = {
       `/runs/${runId}/chunks/${chunkNumber}/retry`,
       { failure_report_id: failureReportId } satisfies RetryChunkRequest,
     ).then(r => r.data),
+  steerChunk: (
+    runId: string,
+    chunkNumber: number,
+    steerText: string,
+    failureReportId?: string | null,
+    confirmInScope = false,
+  ) =>
+    api.post<ChunkSteerResponse>(
+      `/runs/${runId}/chunks/${chunkNumber}/steer`,
+      {
+        failure_report_id: failureReportId ?? null,
+        steer_text: steerText,
+        confirm_in_scope: confirmInScope,
+      },
+    ).then(r => r.data),
   approveScopeExpansion: (
     runId: string,
     chunkNumber: number,
@@ -1208,6 +1239,15 @@ export const runsApi = {
   ) =>
     api.post<TestValidationAckResponse>(
       `/runs/${runId}/chunks/${chunkNumber}/test-validation/acknowledge`,
+      { reason },
+    ).then(r => r.data),
+  acknowledgeReviewFindings: (
+    runId: string,
+    chunkNumber: number,
+    reason?: string | null,
+  ) =>
+    api.post<ReviewFindingsAckResponse>(
+      `/runs/${runId}/chunks/${chunkNumber}/review/acknowledge`,
       { reason },
     ).then(r => r.data),
   approveFinalApproval: (runId: string) =>

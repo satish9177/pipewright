@@ -62,6 +62,15 @@ LARGE_FILE_CONTEXT_LINE_CAP = 1500
 # Diff prompt cap (head-preserving) so a large diff never bloats the prompt
 # or becomes an egress vector.
 REVIEWER_MAX_DIFF_CHARS = 6000
+# Reviewer informed-approval soft gate (Phase 4 item 15). Only current delivered
+# high-severity findings in these categories require acknowledgement by default.
+# Future per-project opt-ins for other categories belong in a later policy layer;
+# this constant is the default-off seam for that future work.
+REVIEW_ACK_REQUIRED_SEVERITY = "high"
+REVIEW_ACK_REQUIRED_CATEGORIES = frozenset({
+    "requirement_mismatch",
+    "security",
+})
 
 # --- Final-approval summary (chunked_orchestrator.py, item 14) --------------
 # Display-only cap for the cumulative branch diff (base..HEAD) shown in the

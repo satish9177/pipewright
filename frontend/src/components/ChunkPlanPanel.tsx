@@ -3,6 +3,7 @@ import type {
   ChunkDefinition,
   ChunkPlanResponse,
   ChunkReview,
+  ChunkReviewFinding,
   ChunkStatus,
   StartContextDriftedResponse,
   TestRunValidation,
@@ -23,6 +24,7 @@ import PatchFailureBanner from '@/components/PatchFailureBanner'
 import ScopeExpansionBanner from '@/components/ScopeExpansionBanner'
 import RuntimeTestValidationBanner from '@/components/RuntimeTestValidationBanner'
 import AdvisoryReviewPanel from '@/components/AdvisoryReviewPanel'
+import ReviewFindingsAckPanel from '@/components/ReviewFindingsAckPanel'
 import AttemptHistory from '@/components/AttemptHistory'
 import {
   parsePatchFailureSummary,
@@ -53,6 +55,7 @@ interface ChunkPlanPanelProps {
   hiddenApprovalChunkNumbers?: number[]
   // Patch retry wiring (#26E2). Optional so existing callers/tests stay valid.
   retryingChunkNumber?: number | null
+  steeringChunkNumber?: number | null
   // Authoritative human-retry eligibility (#26E2 affordance parity). Threaded to
   // PatchFailureBanner so the enabled "Retry code change" button matches
   // operator_state / the route gate. Display-only; changes no behavior.
@@ -60,6 +63,7 @@ interface ChunkPlanPanelProps {
   // #27F: called after a successful scope expansion approve/reject so the parent
   // refreshes run/chunks/gates query data via the existing invalidation pattern.
   onScopeActionComplete?: () => void
+  onReviewActionComplete?: () => void
   // #39A: hide the duplicate legacy primary buttons when the wired top-cockpit
   // twin is the single primary control. Default false so any caller that does not
   // pass these (or any state where the top action is unwired) keeps the legacy
@@ -73,6 +77,11 @@ interface ChunkPlanPanelProps {
   onApproveChunk: (chunkNumber: number) => void
   onRejectChunk: (chunkNumber: number, reason: string) => void
   onRetryChunk?: (chunkNumber: number, failureReportId: string) => void
+  onSteerReviewFinding?: (
+    chunkNumber: number,
+    steerText: string,
+    failureReportId?: string | null,
+  ) => void
 }
 
 function formatList(values: Array<string | number>) {
@@ -515,6 +524,7 @@ interface InlineChunkApprovalControlsProps {
   chunkActionPending: boolean
   approvingChunkNumber: number | null
   rejectingChunkNumber: number | null
+  reviewAcknowledgementBlocking?: boolean
   onApproveChunk: (chunkNumber: number) => void
   onRejectChunk: (chunkNumber: number, reason: string) => void
 }
@@ -530,9 +540,11 @@ function InlineChunkApprovalControls({
   chunkActionPending,
   approvingChunkNumber,
   rejectingChunkNumber,
+  reviewAcknowledgementBlocking = false,
   onApproveChunk,
   onRejectChunk,
 }: InlineChunkApprovalControlsProps) {
+  const approveDisabled = actionPending || reviewAcknowledgementBlocking
   return (
     <div className="grid gap-3 rounded border border-yellow-400 p-3">
       <div>
@@ -549,10 +561,17 @@ function InlineChunkApprovalControls({
         disabled={actionPending}
       />
 
+      {reviewAcknowledgementBlocking && (
+        <p className="text-sm font-medium text-red-700">
+          Chunk approval is blocked until you acknowledge the current
+          high-severity reviewer findings above.
+        </p>
+      )}
+
       <div className="flex flex-wrap gap-3">
         <Button
           onClick={() => onApproveChunk(chunkNumber)}
-          disabled={actionPending}
+          disabled={approveDisabled}
           className="bg-green-600 hover:bg-green-700 text-white"
         >
           {chunkActionPending && approvingChunkNumber
@@ -691,6 +710,7 @@ interface ChunkCardProps {
   approvingChunkNumber: number | null
   rejectingChunkNumber: number | null
   retryingChunkNumber: number | null
+  steeringChunkNumber: number | null
   retryEligible?: boolean
   hiddenApprovalChunkNumbers: number[]
   rejectReason: string
@@ -699,6 +719,12 @@ interface ChunkCardProps {
   onRejectChunk: (chunkNumber: number, reason: string) => void
   onRetryChunk?: (chunkNumber: number, failureReportId: string) => void
   onScopeActionComplete?: () => void
+  onReviewActionComplete?: () => void
+  onSteerReviewFinding?: (
+    chunkNumber: number,
+    steerText: string,
+    failureReportId?: string | null,
+  ) => void
 }
 
 // A single chunk's card: metadata, evidence (scope warning, runtime test
@@ -714,6 +740,7 @@ function ChunkCard({
   approvingChunkNumber,
   rejectingChunkNumber,
   retryingChunkNumber,
+  steeringChunkNumber,
   retryEligible = false,
   hiddenApprovalChunkNumbers,
   rejectReason,
@@ -722,6 +749,8 @@ function ChunkCard({
   onRejectChunk,
   onRetryChunk,
   onScopeActionComplete,
+  onReviewActionComplete,
+  onSteerReviewFinding,
 }: ChunkCardProps) {
   const filesExpected =
     chunk.files_expected.length > 0
@@ -760,6 +789,22 @@ function ChunkCard({
   const hasScopeWarning = scopeWarnings.length > 0
   const isAwaitingChunkApproval =
     chunk.status === 'awaiting_chunk_approval'
+  const reviewAckBlocking =
+    chunk.review?.requires_acknowledgement === true &&
+    (chunk.review.acknowledgement_status === 'missing' ||
+      chunk.review.acknowledgement_status === 'stale')
+  const canSteerReviewFinding =
+    (chunk.status === 'completed' ||
+      (chunk.status === 'failed' && Boolean(patchFailure?.failure_report_id))) &&
+    typeof onSteerReviewFinding === 'function'
+  const handleSteerFinding = (finding: ChunkReviewFinding) => {
+    if (!finding.steer_text || !canSteerReviewFinding) return
+    onSteerReviewFinding?.(
+      chunk.chunk_number,
+      finding.steer_text,
+      chunk.status === 'failed' ? patchFailure?.failure_report_id ?? null : null,
+    )
+  }
   const showInlineChunkApproval =
     isAwaitingChunkApproval &&
     !patchFailure &&
@@ -880,7 +925,21 @@ function ChunkCard({
               review exists; never gates approval, exposes no actions,
               and is shown below the test-validation banner / above the
               chunk's approval controls. */}
-          <AdvisoryReviewPanel review={chunk.review} />
+          <AdvisoryReviewPanel
+            review={chunk.review}
+            chunkStatus={chunk.status}
+            onSteerFinding={
+              canSteerReviewFinding ? handleSteerFinding : undefined
+            }
+            isSteering={steeringChunkNumber === chunk.chunk_number}
+          />
+          {chunk.review?.requires_acknowledgement === true && (
+            <ReviewFindingsAckPanel
+              runId={runId}
+              chunks={[chunk]}
+              onAcknowledged={onReviewActionComplete}
+            />
+          )}
         </ChunkEvidenceSection>
 
         {pendingScope && (
@@ -969,6 +1028,7 @@ function ChunkCard({
             chunkActionPending={chunkActionPending}
             approvingChunkNumber={approvingChunkNumber}
             rejectingChunkNumber={rejectingChunkNumber}
+            reviewAcknowledgementBlocking={reviewAckBlocking}
             onApproveChunk={onApproveChunk}
             onRejectChunk={onRejectChunk}
           />
@@ -1293,8 +1353,10 @@ export default function ChunkPlanPanel({
   chunkActionError,
   hiddenApprovalChunkNumbers = [],
   retryingChunkNumber = null,
+  steeringChunkNumber = null,
   retryEligible = false,
   onScopeActionComplete,
+  onReviewActionComplete,
   hideLegacyPlanApprove = false,
   hideLegacyExecute = false,
   onApprove,
@@ -1304,6 +1366,7 @@ export default function ChunkPlanPanel({
   onApproveChunk,
   onRejectChunk,
   onRetryChunk,
+  onSteerReviewFinding,
 }: ChunkPlanPanelProps) {
   const [rejectReason, setRejectReason] = useState('')
   const [chunkRejectReasons, setChunkRejectReasons] = useState<
@@ -1416,6 +1479,7 @@ export default function ChunkPlanPanel({
               approvingChunkNumber,
               rejectingChunkNumber,
               retryingChunkNumber,
+              steeringChunkNumber,
               retryEligible,
               hiddenApprovalChunkNumbers,
               rejectReason: chunkRejectReasons[chunk.chunk_number] ?? '',
@@ -1428,6 +1492,8 @@ export default function ChunkPlanPanel({
               onRejectChunk,
               onRetryChunk,
               onScopeActionComplete,
+              onReviewActionComplete,
+              onSteerReviewFinding,
             }
             // #36D/#39C: attention/decision chunks render the full ChunkCard and
             // stay expanded; others collapse to a compact row with details one

@@ -292,6 +292,27 @@ CREATE TABLE IF NOT EXISTS test_validation_acknowledgements (
     FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
 );
 
+-- review_finding_acknowledgements is the audited home for human
+-- acknowledgements of current high-severity reviewer findings in the default
+-- ack-required policy categories (Phase 4 item 15). Each row binds a
+-- panel-level acknowledgement to the exact chunk diff identity
+-- (acknowledged_diff_hash). It stores metadata only: no finding bodies, diffs,
+-- provider errors, prompts, file contents, secrets, or token-like values.
+-- Acknowledgement is a soft precondition for chunk/final approval; it never
+-- approves, rejects, commits, pushes, creates PRs, or changes reviewer output.
+CREATE TABLE IF NOT EXISTS review_finding_acknowledgements (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    chunk_number INTEGER NOT NULL,
+    acknowledged_diff_hash TEXT NOT NULL,
+    acknowledged_by TEXT,
+    acknowledged_at DATETIME,
+    reason TEXT,
+    status TEXT DEFAULT 'active',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
+);
+
 -- chunk_reviews is the isolated, additive home for advisory per-chunk AI reviews
 -- (Adversarial Reviewer Stage v1; docs/design/adversarial-reviewer-stage.md). It is
 -- deliberately separate from checkpoints (resume/safety substrate) and from
@@ -394,6 +415,7 @@ CREATE INDEX IF NOT EXISTS idx_approval_gates_run_status ON approval_gates(run_i
 CREATE INDEX IF NOT EXISTS idx_project_index_fingerprints_updated ON project_index_fingerprints(updated_at);
 CREATE INDEX IF NOT EXISTS idx_scope_expansion_requests_run_chunk_status ON scope_expansion_requests(run_id, chunk_number, status);
 CREATE INDEX IF NOT EXISTS idx_test_validation_ack_run_chunk_status ON test_validation_acknowledgements(run_id, chunk_number, status);
+CREATE INDEX IF NOT EXISTS idx_review_finding_ack_run_chunk_status ON review_finding_acknowledgements(run_id, chunk_number, status);
 CREATE INDEX IF NOT EXISTS idx_chunk_reviews_run_chunk ON chunk_reviews(run_id, chunk_number, created_at);
 CREATE INDEX IF NOT EXISTS idx_llm_call_provenance_run_chunk_role ON llm_call_provenance(run_id, chunk_number, role);
 CREATE INDEX IF NOT EXISTS idx_memory_injection_events_run_chunk_role ON memory_injection_events(run_id, chunk_number, role);

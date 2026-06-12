@@ -41,6 +41,7 @@ import { chunkNeedsAttention } from '@/utils/chunkAttention'
 import OperatorAttentionPanel from '@/components/OperatorAttentionPanel'
 import FinalApprovalPanel from '@/components/FinalApprovalPanel'
 import TestValidationAckPanel from '@/components/TestValidationAckPanel'
+import ReviewFindingsAckPanel from '@/components/ReviewFindingsAckPanel'
 import MemoryConflictPanel from '@/components/MemoryConflictPanel'
 import PushPrPanel from '@/components/PushPrPanel'
 import PrStatusPanel from '@/components/PrStatusPanel'
@@ -668,6 +669,12 @@ export default function RunDetailPage() {
     },
   })
 
+  const refreshRunDecisionState = () => {
+    queryClient.invalidateQueries({ queryKey: ['run', runId] })
+    queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+    queryClient.invalidateQueries({ queryKey: ['gates'] })
+  }
+
   const { data: project } = useQuery({
     queryKey: ['project', run?.project_id],
     queryFn: () => projectsApi.get(run!.project_id!),
@@ -915,6 +922,33 @@ export default function RunDetailPage() {
     },
   })
 
+  const steerReviewFindingMutation = useMutation({
+    mutationFn: ({
+      chunkNumber,
+      steerText,
+      failureReportId,
+    }: {
+      chunkNumber: number
+      steerText: string
+      failureReportId?: string | null
+    }) =>
+      runsApi.steerChunk(runId!, chunkNumber, steerText, failureReportId),
+    onSuccess: (response) => {
+      setChunkActionMessage(retrySuccessMessage(response.status))
+      setChunkActionError(null)
+      setChunkExecutionMessage(null)
+      setChunkExecutionError(null)
+      refreshRunDecisionState()
+    },
+    onError: (error: unknown) => {
+      setChunkActionMessage(null)
+      setChunkActionError(getRetryErrorMessage(error))
+      setChunkExecutionMessage(null)
+      setChunkExecutionError(null)
+      refreshRunDecisionState()
+    },
+  })
+
   const approveFinalApprovalMutation = useMutation({
     mutationFn: () => runsApi.approveFinalApproval(runId!),
     onSuccess: () => {
@@ -1143,6 +1177,15 @@ export default function RunDetailPage() {
       )
     }),
   )
+  const reviewAcknowledgementBlocking = Boolean(
+    chunkPlan?.chunks?.some(chunk => {
+      const status = chunk.review?.acknowledgement_status
+      return (
+        chunk.review?.requires_acknowledgement === true &&
+        (status === 'missing' || status === 'stale')
+      )
+    }),
+  )
 
   // #35F: map an operator_state primary_action to the SAME legacy mutation its
   // twin control already calls. Returns null for unmapped IDs, or when the
@@ -1168,7 +1211,11 @@ export default function RunDetailPage() {
       case 'approve_final':
         // Mirror FinalApprovalPanel's enable rule so the top button is never
         // clickable when the legacy Approve Final would be hidden/disabled.
-        if (!pendingFinalGate || acknowledgementBlocking) return null
+        if (
+          !pendingFinalGate ||
+          acknowledgementBlocking ||
+          reviewAcknowledgementBlocking
+        ) return null
         return {
           onClick: () => approveFinalApprovalMutation.mutate(),
           isPending: approveFinalApprovalMutation.isPending,
@@ -1286,6 +1333,11 @@ export default function RunDetailPage() {
           ? retryChunkMutation.variables?.chunkNumber ?? null
           : null
       }
+      steeringChunkNumber={
+        steerReviewFindingMutation.isPending
+          ? steerReviewFindingMutation.variables?.chunkNumber ?? null
+          : null
+      }
       retryEligible={retryEligible}
       hideLegacyPlanApprove={hideLegacyPlanApprove}
       hideLegacyExecute={hideLegacyExecute}
@@ -1302,13 +1354,19 @@ export default function RunDetailPage() {
       onRetryChunk={(chunkNumber, failureReportId) =>
         retryChunkMutation.mutate({ chunkNumber, failureReportId })
       }
+      onSteerReviewFinding={(chunkNumber, steerText, failureReportId) =>
+        steerReviewFindingMutation.mutate({
+          chunkNumber,
+          steerText,
+          failureReportId,
+        })
+      }
+      onReviewActionComplete={refreshRunDecisionState}
       onScopeActionComplete={() => {
         // #27F: refresh run/chunks/gates after a scope expansion
         // approve/reject, matching the invalidation used by the chunk
         // approve/reject/retry mutations above.
-        queryClient.invalidateQueries({ queryKey: ['run', runId] })
-        queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
-        queryClient.invalidateQueries({ queryKey: ['gates'] })
+        refreshRunDecisionState()
       }}
     />
   ) : (
@@ -1417,6 +1475,13 @@ export default function RunDetailPage() {
                         }}
                       />
                     )}
+                    {chunkPlan && (
+                      <ReviewFindingsAckPanel
+                        runId={runId!}
+                        chunks={chunkPlan.chunks}
+                        onAcknowledged={refreshRunDecisionState}
+                      />
+                    )}
                     <FinalApprovalPanel
                       run={run}
                       hasPendingFinalGate={Boolean(pendingFinalGate)}
@@ -1426,6 +1491,7 @@ export default function RunDetailPage() {
                       message={finalApprovalMessage}
                       error={finalApprovalError}
                       acknowledgementBlocking={acknowledgementBlocking}
+                      reviewAcknowledgementBlocking={reviewAcknowledgementBlocking}
                       onApprove={() => approveFinalApprovalMutation.mutate()}
                       onReject={(reason) =>
                         rejectFinalApprovalMutation.mutate(reason)

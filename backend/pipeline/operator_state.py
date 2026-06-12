@@ -161,6 +161,8 @@ class OperatorStateContext:
     test_verdict: str | None = None
     test_ack_state: str | None = None
     final_ack_decision: Any | None = None
+    review_ack_state: str | None = None
+    final_review_ack_decision: Any | None = None
 
     chunk_awaiting_approval: bool = False
     recovered_scope_retry_awaiting_chunk_approval: bool = False
@@ -210,6 +212,17 @@ def compute_operator_state(context: OperatorStateContext) -> OperatorState:
     if context.patch_failure_present:
         return _patch_failure_state(context)
 
+    review_ack_state = _effective_review_ack_state(context)
+    if (
+        context.chunk_awaiting_approval
+        or context.recovered_scope_retry_awaiting_chunk_approval
+    ) and review_ack_state in {"missing", "stale"}:
+        return _review_ack_required_state(
+            context,
+            review_ack_state,
+            at_chunk_gate=True,
+        )
+
     # Chunk approval outranks the weak/no-test acknowledgement gate. While a
     # chunk is awaiting human review/approval, the immediate next action is to
     # review that change; the acknowledgement matters at the final-approval
@@ -220,6 +233,12 @@ def compute_operator_state(context: OperatorStateContext) -> OperatorState:
         return _chunk_approval_state(context)
 
     ack_state = _effective_ack_state(context)
+    if review_ack_state in {"missing", "stale"}:
+        return _review_ack_required_state(
+            context,
+            review_ack_state,
+            at_chunk_gate=False,
+        )
     if ack_state in {"missing", "stale"}:
         return _test_ack_required_state(context, ack_state)
 
@@ -426,6 +445,36 @@ def _ack_check(state: str | None) -> OperatorSafetyCheck:
     )
 
 
+def _review_ack_check(state: str | None) -> OperatorSafetyCheck:
+    if state == "current":
+        return safety_check(
+            "review_acknowledgement",
+            "Review acknowledgement",
+            OperatorSafetyCheckStatus.PASSED,
+            "The reviewer-finding acknowledgement matches the current diff.",
+        )
+    if state == "stale":
+        return safety_check(
+            "review_acknowledgement",
+            "Review acknowledgement",
+            OperatorSafetyCheckStatus.FAILED,
+            "The previous reviewer-finding acknowledgement is stale for the current diff.",
+        )
+    if state == "missing":
+        return safety_check(
+            "review_acknowledgement",
+            "Review acknowledgement",
+            OperatorSafetyCheckStatus.FAILED,
+            "Current high-severity reviewer findings have not been acknowledged.",
+        )
+    return safety_check(
+        "review_acknowledgement",
+        "Review acknowledgement",
+        OperatorSafetyCheckStatus.NOT_APPLICABLE,
+        "No reviewer-finding acknowledgement is required.",
+    )
+
+
 def _effective_ack_state(context: OperatorStateContext) -> str | None:
     if context.test_ack_state:
         return context.test_ack_state
@@ -438,6 +487,19 @@ def _effective_ack_state(context: OperatorStateContext) -> str | None:
         return "missing"
     if context.test_verdict in {"weak", "none"} and _decision_eligible(decision):
         return "current"
+    return None
+
+
+def _effective_review_ack_state(context: OperatorStateContext) -> str | None:
+    if context.review_ack_state:
+        return context.review_ack_state
+    decision = context.final_review_ack_decision
+    if decision is not None and not _decision_eligible(decision):
+        blocked = getattr(decision, "blocked_requirements", ()) or ()
+        states = {getattr(item, "state", None) for item in blocked}
+        if "stale" in states:
+            return "stale"
+        return "missing"
     return None
 
 
@@ -860,6 +922,75 @@ def _test_ack_required_state(context: OperatorStateContext, ack_state: str) -> O
     )
 
 
+def _review_ack_required_state(
+    context: OperatorStateContext,
+    ack_state: str,
+    *,
+    at_chunk_gate: bool,
+) -> OperatorState:
+    stale = ack_state == "stale"
+    title = (
+        "Reviewer acknowledgement is stale"
+        if stale
+        else "Acknowledge reviewer findings"
+    )
+    explanation = (
+        "The previous reviewer acknowledgement was made for a different diff. "
+        "The current change needs a fresh acknowledgement before approval."
+        if stale
+        else "The current review contains high-severity requirement-mismatch or "
+        "security findings. A human must acknowledge those findings before "
+        "approving this change."
+    )
+    blocked = [
+        _blocked_action(
+            "approve_chunk" if at_chunk_gate else "approve_final",
+            "Approve chunk" if at_chunk_gate else "Approve final",
+            "Reviewer-finding acknowledgement is not current.",
+        ),
+        _blocked_action(
+            "create_pr",
+            "Create PR",
+            "Approval is blocked by reviewer-finding acknowledgement.",
+        ),
+    ]
+    if at_chunk_gate:
+        blocked.insert(
+            1,
+            _blocked_action(
+                "approve_final",
+                "Approve final",
+                "A chunk is awaiting reviewer-finding acknowledgement.",
+            ),
+        )
+    return _state(
+        title=title,
+        explanation=explanation,
+        waiting_on=OperatorWaitingOn.HUMAN,
+        decision_type=OperatorDecisionType.RISK_DECISION,
+        neutral_actions=[
+            _action(
+                "acknowledge_review_findings",
+                "Acknowledge reviewer findings",
+                "Acknowledge current high-severity reviewer findings for the current diff.",
+                severity=OperatorActionSeverity.CAUTION,
+            )
+        ],
+        blocked_actions=blocked,
+        safety_checks=[
+            _tests_check(context),
+            _ack_check(_effective_ack_state(context)),
+            _review_ack_check(ack_state),
+            safety_check(
+                "approval",
+                "Approval",
+                OperatorSafetyCheckStatus.FAILED,
+                "Approval is blocked by reviewer-finding acknowledgement.",
+            ),
+        ],
+    )
+
+
 def _chunk_approval_state(context: OperatorStateContext) -> OperatorState:
     recovered = context.recovered_scope_retry_awaiting_chunk_approval
     ack_state = _effective_ack_state(context)
@@ -902,9 +1033,11 @@ def _chunk_approval_state(context: OperatorStateContext) -> OperatorState:
 
 def _final_approval_available_state(context: OperatorStateContext) -> OperatorState:
     ack_state = _effective_ack_state(context)
+    review_ack_state = _effective_review_ack_state(context)
     checks = [
         _tests_check(context),
         _ack_check(ack_state),
+        _review_ack_check(review_ack_state),
         safety_check("final_approval", "Final approval", OperatorSafetyCheckStatus.NOT_EVALUATED, "All required gates are satisfied for final approval."),
     ]
     return _state(
@@ -942,6 +1075,7 @@ def _final_approval_blocked_state(context: OperatorStateContext) -> OperatorStat
         safety_checks=[
             _tests_check(context),
             _ack_check(_effective_ack_state(context)),
+            _review_ack_check(_effective_review_ack_state(context)),
             safety_check("final_approval", "Final approval", OperatorSafetyCheckStatus.FAILED, reason),
         ],
     )

@@ -514,6 +514,7 @@ def _migrate_db(conn) -> None:
         )
         _ensure_chunk_attempts_shape(conn)
         _ensure_run_turns_shape(conn)
+        _ensure_review_finding_acknowledgements_shape(conn)
         _ensure_project_index_fingerprints_shape(conn)
         _ensure_file_index_shape(conn)
     except Exception as error:
@@ -605,6 +606,36 @@ def _ensure_run_turns_shape(conn) -> None:
         "CREATE INDEX IF NOT EXISTS idx_run_turns_run_chunk "
         "ON run_turns(run_id, chunk_number, turn_number)",
         ("run_id", "chunk_number", "turn_number"),
+    )
+
+
+def _ensure_review_finding_acknowledgements_shape(conn) -> None:
+    """
+    Ensure the review-finding acknowledgement table exists for existing DBs.
+
+    Additive only and metadata-only. Older runs have no rows; missing rows mean
+    "not acknowledged" only when a current delivered A1 finding exists.
+    """
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS review_finding_acknowledgements (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            chunk_number INTEGER NOT NULL,
+            acknowledged_diff_hash TEXT NOT NULL,
+            acknowledged_by TEXT,
+            acknowledged_at DATETIME,
+            reason TEXT,
+            status TEXT DEFAULT 'active',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
+        )
+    """))
+    _create_index_if_columns_exist(
+        conn,
+        "review_finding_acknowledgements",
+        "CREATE INDEX IF NOT EXISTS idx_review_finding_ack_run_chunk_status "
+        "ON review_finding_acknowledgements(run_id, chunk_number, status)",
+        ("run_id", "chunk_number", "status"),
     )
 
 
