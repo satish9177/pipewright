@@ -33,6 +33,7 @@ from backend.pipeline.chunk_store import (
     get_chunk_plan_status,
     get_chunk_test_run_verdict,
     reject_chunk_plan,
+    request_file_constraints_read_model,
 )
 from backend.pipeline.test_validation_ack_store import (
     ACK_REQUIRED_VERDICTS,
@@ -1467,6 +1468,7 @@ async def _create_chunked_run_core(
     create_target_path: str | None = None
     index_freshness: dict | None = None
     start_inspection: StartBranchInspection | None = None
+    request_file_constraints = extract_user_file_constraints(feature_description)
 
     try:
         if intent == REPORT_ONLY:
@@ -1794,7 +1796,7 @@ async def _create_chunked_run_core(
         triage_result = reconcile_file_scope(
             project_id,
             triage_result,
-            extract_user_file_constraints(feature_description),
+            request_file_constraints,
             sanctioned_new_paths=(
                 {create_target_path} if create_target_path is not None else None
             ),
@@ -1818,6 +1820,9 @@ async def _create_chunked_run_core(
                 current_chunk_number=0,
                 triage=triage_result,
                 chunks=[],
+                request_file_constraints=request_file_constraints_read_model(
+                    request_file_constraints
+                ),
             )
 
         start_branch, start_head_sha = _start_context_from_inspection(
@@ -1830,6 +1835,7 @@ async def _create_chunked_run_core(
             triage_result=triage_result,
             start_branch=start_branch,
             start_head_sha=start_head_sha,
+            request_file_constraints=request_file_constraints,
         )
         if intent == IMPLEMENTATION:
             # Re-read after triage so a cold-start lazy index build can surface

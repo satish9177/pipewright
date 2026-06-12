@@ -18,8 +18,13 @@ from backend.models.chunk import (
     ChunkPlanResponse,
     ChunkStatus,
     PendingScopeExpansion,
+    RequestFileConstraints,
     TestRunValidation,
     TriageResult,
+)
+from backend.pipeline.file_scope_intent import (
+    UserFileConstraints,
+    extract_user_file_constraints,
 )
 from backend.pipeline.scope_expansion import (
     ScopeExpansionStatus,
@@ -57,6 +62,41 @@ def _nullable_bool(value) -> bool | None:
 
 
 _VALID_TEST_RUN_VERDICTS = {"strong", "weak", "none", "unknown"}
+REQUEST_FILE_CONSTRAINTS_REPORT_KEY = "request_file_constraints"
+
+
+def request_file_constraints_read_model(
+    constraints: UserFileConstraints,
+) -> RequestFileConstraints:
+    return RequestFileConstraints(
+        hard_allowlist=list(constraints.hard_allowlist),
+        preferred_files=list(constraints.preferred_files),
+        forbidden_files=list(constraints.forbidden_files),
+        reference_only_files=list(constraints.reference_only_files),
+        uncertain_mentions=list(constraints.uncertain_mentions),
+        has_explicit_file_constraints=not constraints.is_empty,
+    )
+
+
+def _request_file_constraints_payload(
+    constraints: UserFileConstraints,
+) -> dict:
+    return request_file_constraints_read_model(constraints).model_dump(mode="json")
+
+
+def _request_file_constraints_from_run_data(
+    run_data: dict,
+) -> RequestFileConstraints:
+    report = _json_loads_dict(run_data.get("report_json"))
+    stored = report.get(REQUEST_FILE_CONSTRAINTS_REPORT_KEY)
+    if isinstance(stored, dict):
+        try:
+            return RequestFileConstraints.model_validate(stored)
+        except Exception:
+            pass
+    return request_file_constraints_read_model(
+        extract_user_file_constraints(run_data.get("feature_description") or "")
+    )
 
 
 def _test_validation_from_row(data: dict) -> TestRunValidation | None:
@@ -237,6 +277,7 @@ def create_chunked_run(
     source_plan_run_id: str | None = None,
     start_branch: str | None = None,
     start_head_sha: str | None = None,
+    request_file_constraints: UserFileConstraints | None = None,
 ) -> ChunkPlanResponse:
     """
     Create one parent pipeline run and its proposed chunks transactionally.
@@ -247,12 +288,24 @@ def create_chunked_run(
     """
     try:
         init_db()
+        constraints = request_file_constraints or extract_user_file_constraints(
+            feature_description
+        )
+        report_json = json.dumps(
+            {
+                REQUEST_FILE_CONSTRAINTS_REPORT_KEY: (
+                    _request_file_constraints_payload(constraints)
+                )
+            },
+            sort_keys=True,
+        )
         with engine.begin() as conn:
             conn.execute(text("""
                 INSERT INTO pipeline_runs
                 (
                     id, project_id, feature_description, status,
-                    current_step, intent, chunk_plan_status, chunk_plan,
+                    current_step, intent, report_json,
+                    chunk_plan_status, chunk_plan,
                     total_chunks, current_chunk_number,
                     source_plan_run_id, start_branch, start_head_sha,
                     created_at
@@ -260,7 +313,7 @@ def create_chunked_run(
                 VALUES
                 (
                     :id, :project_id, :feature_description,
-                    :status, 'chunk_plan', :intent,
+                    :status, 'chunk_plan', :intent, :report_json,
                     :chunk_plan_status, :chunk_plan, :total_chunks,
                     0, :source_plan_run_id, :start_branch, :start_head_sha,
                     :created_at
@@ -271,6 +324,7 @@ def create_chunked_run(
                 "feature_description": feature_description,
                 "status": RunStatus.AWAITING_CHUNK_PLAN_APPROVAL,
                 "intent": intent or "implementation",
+                "report_json": report_json,
                 "chunk_plan_status": ChunkPlanStatus.AWAITING_APPROVAL,
                 "chunk_plan": triage_result.model_dump_json(),
                 "total_chunks": triage_result.total_chunks,
@@ -356,6 +410,7 @@ def get_chunk_plan_status(run_id: str) -> ChunkPlanResponse:
             current_chunk_number=run_data.get("current_chunk_number") or 0,
             triage=triage,
             chunks=chunks,
+            request_file_constraints=_request_file_constraints_from_run_data(run_data),
         )
     except ValueError:
         raise

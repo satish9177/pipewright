@@ -5,6 +5,7 @@ import type {
   ChunkReview,
   ChunkReviewFinding,
   ChunkStatus,
+  RequestFileConstraints,
   StartContextDriftedResponse,
   TestRunValidation,
 } from '@/api/client'
@@ -340,6 +341,74 @@ function ChunkPlanSummary({ plan }: { plan: ChunkPlanResponse }) {
         </p>
       </div>
     </>
+  )
+}
+
+function RequestConstraintsPanel({
+  constraints,
+}: {
+  constraints?: RequestFileConstraints | null
+}) {
+  const groups = [
+    {
+      key: 'hard_allowlist',
+      label: 'Only modify',
+      values: constraints?.hard_allowlist ?? [],
+    },
+    {
+      key: 'preferred_files',
+      label: 'Mentioned for edits',
+      values: constraints?.preferred_files ?? [],
+    },
+    {
+      key: 'forbidden_files',
+      label: 'Do not touch',
+      values: constraints?.forbidden_files ?? [],
+    },
+    {
+      key: 'reference_only_files',
+      label: 'Reference only',
+      values: constraints?.reference_only_files ?? [],
+    },
+    {
+      key: 'uncertain_mentions',
+      label: 'Uncertain mentions',
+      values: constraints?.uncertain_mentions ?? [],
+    },
+  ]
+  const visibleGroups = groups.filter(group => group.values.length > 0)
+  const emptyState =
+    constraints?.empty_state ?? 'No explicit file constraints detected.'
+  const conceptNote =
+    constraints?.concept_level_note ??
+    'Concept-level constraints may still need human review in the plan files below.'
+
+  return (
+    <div className="grid gap-2 rounded border bg-background p-3 text-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="font-medium">Detected request constraints</p>
+        <Badge variant="outline">Read-only</Badge>
+      </div>
+
+      {visibleGroups.length === 0 ? (
+        <p className="text-muted-foreground">{emptyState}</p>
+      ) : (
+        <div className="grid gap-2">
+          {visibleGroups.map(group => (
+            <div key={group.key}>
+              <p className="text-xs font-medium text-muted-foreground">
+                {group.label}
+              </p>
+              <p className="break-words font-mono text-xs">
+                {group.values.join(', ')}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="text-xs text-muted-foreground">{conceptNote}</p>
+    </div>
   )
 }
 
@@ -1437,6 +1506,8 @@ export default function ChunkPlanPanel({
       </CardHeader>
       <CardContent className="grid gap-4">
         <ChunkPlanSummary plan={plan} />
+
+        <RequestConstraintsPanel constraints={plan.request_file_constraints} />
 
         <Separator />
 

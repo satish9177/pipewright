@@ -144,6 +144,29 @@ class TestRunValidation(BaseModel):
     ] = "not_required"
 
 
+REQUEST_FILE_CONSTRAINTS_EMPTY_STATE = "No explicit file constraints detected."
+REQUEST_FILE_CONSTRAINTS_CONCEPT_NOTE = (
+    "Concept-level constraints may still need human review in the plan files below."
+)
+
+
+class RequestFileConstraints(BaseModel):
+    """
+    Read-only display of deterministic file-scope cues parsed from the user's
+    original request. This is plan-gate visibility only: it never grants scope,
+    blocks approval, or bypasses scope_guard.
+    """
+
+    hard_allowlist: list[str] = Field(default_factory=list)
+    preferred_files: list[str] = Field(default_factory=list)
+    forbidden_files: list[str] = Field(default_factory=list)
+    reference_only_files: list[str] = Field(default_factory=list)
+    uncertain_mentions: list[str] = Field(default_factory=list)
+    has_explicit_file_constraints: bool = False
+    empty_state: str = REQUEST_FILE_CONSTRAINTS_EMPTY_STATE
+    concept_level_note: str = REQUEST_FILE_CONSTRAINTS_CONCEPT_NOTE
+
+
 class ChunkReviewFindingReadModel(BaseModel):
     """One advisory finding, flattened for display. Display hints only — it carries
     no action id and grants no authority."""
@@ -276,6 +299,10 @@ class ChunkPlanResponse(BaseModel):
     current_chunk_number: int
     triage: TriageResult | None = None
     chunks: list[ChunkStatus]
+    # Additive read-only plan-gate visibility for deterministic file/path
+    # constraints parsed from the user request. Display/audit metadata only:
+    # scope_guard and approved files remain the enforcement authority.
+    request_file_constraints: RequestFileConstraints | None = None
     # Additive read-only operator attention state. It is computed on reads and
     # never persisted; existing clients can ignore it safely.
     operator_state: dict[str, Any] | None = None

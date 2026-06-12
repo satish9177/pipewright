@@ -420,6 +420,20 @@ export interface ChunkStatus extends ExtraFields {
   review?: ChunkReview | null
 }
 
+// Read-only plan-gate visibility for deterministic file/path constraints parsed
+// from the original request. Display/audit only: approved files + scope_guard
+// remain the enforcement authority.
+export interface RequestFileConstraints extends ExtraFields {
+  hard_allowlist: string[]
+  preferred_files: string[]
+  forbidden_files: string[]
+  reference_only_files: string[]
+  uncertain_mentions: string[]
+  has_explicit_file_constraints: boolean
+  empty_state: string
+  concept_level_note: string
+}
+
 // Read-only operator attention state. It is computed on chunk reads and never
 // persisted; existing clients can ignore it. Display-only: it never gates,
 // triggers, or replaces the real mutating controls. Mirrors the backend
@@ -501,6 +515,7 @@ export interface ChunkPlanResponse extends ExtraFields {
   current_chunk_number: number
   triage?: TriageResult | null
   chunks: ChunkStatus[]
+  request_file_constraints?: RequestFileConstraints | null
   // Additive read-only operator attention state (display-only).
   operator_state?: OperatorState | null
 }
