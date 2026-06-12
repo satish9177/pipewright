@@ -33,6 +33,9 @@ def test_policy_values_are_unchanged_by_relocation():
         "requirement_mismatch",
         "security",
     })
+    assert policy.MERGED_PROFILE_SAMPLE_PCT == 50
+    assert "schema.sql" in policy.TRIVIAL_PROFILE_DENYLIST_PATTERNS
+    assert "requirements*.txt" in policy.TRIVIAL_PROFILE_DENYLIST_PATTERNS
 
 
 def test_stages_read_constants_from_policy():

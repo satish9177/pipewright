@@ -110,6 +110,7 @@ from backend.pipeline.policy import (
     AUTO_RETRY_INFRA_BUDGET,
     FINAL_DIFF_MAX_CHARS,
     MAX_STEER_TEXT_CHARS,
+    MERGED_PROFILE_SAMPLE_PCT,
     STEER_CONTINUATION_DIFF_MAX_CHARS,
 )
 # Canonical post-apply test-failure helpers. The driver uses stage_contract
@@ -118,6 +119,11 @@ from backend.pipeline.policy import (
 from backend.pipeline.stage_contract import (
     build_test_failure_report as _build_test_failure_report,  # noqa: F401
     classify_test_failure as _classify_test_failure,  # noqa: F401
+)
+from backend.pipeline.stage_profile import (
+    StageProfile,
+    resolve_stage_profile,
+    synthesize_trivial_plan,
 )
 from backend.pipeline.test_run_validation import (
     ExecutionIntegrity,
@@ -572,6 +578,19 @@ def _build_enriched_feature_description(
         f"{_format_files_expected(chunk.files_expected)}\n\n"
         f"[Known Relevant Files in Project]\n"
         f"{_format_relevant_files(relevant_files)}"
+    )
+
+
+def _synthesize_trivial_plan(
+    run_id: str,
+    feature_description: str,
+    chunk: ChunkDefinition,
+) -> PlannerHandoff:
+    """Deterministic item-17a planner handoff for profiled trivial chunks."""
+    return synthesize_trivial_plan(
+        run_id=run_id,
+        feature_description=feature_description,
+        chunk=chunk,
     )
 
 
@@ -1855,6 +1874,7 @@ async def _execute_single_chunk(
     branch_name: str,
     status_by_number: dict[int, str],
     verification_baseline: dict | None = None,
+    stage_profile: StageProfile | None = None,
 ) -> dict | None:
     """
     Thin fresh-mode entry into the chunk driver (Phase 2 item 11).
@@ -1875,8 +1895,31 @@ async def _execute_single_chunk(
         branch_name=branch_name,
         status_by_number=status_by_number,
         verification_baseline=verification_baseline,
+        stage_profile=stage_profile,
     )
     return result.pause
+
+
+def _resolve_fresh_stage_profile(
+    plan_status: ChunkPlanResponse,
+    chunk: ChunkDefinition,
+    target_repo_path: str,
+) -> StageProfile | None:
+    """
+    Resolve item-17a's planner-elision profile for fresh execution only.
+
+    ``None`` means the feature is fully disabled and preserves pre-item-17a
+    audit rows; explicit STANDARD is used only for the enabled soak control.
+    """
+    if MERGED_PROFILE_SAMPLE_PCT <= 0:
+        return None
+    return resolve_stage_profile(
+        plan_status.triage,
+        chunk,
+        target_repo_path,
+        run_id=plan_status.run_id,
+        sample_pct=MERGED_PROFILE_SAMPLE_PCT,
+    )
 
 
 async def _execute_approved_chunks_locked(
@@ -1955,6 +1998,11 @@ async def _execute_approved_chunks_locked(
             chunk = definitions[chunk_number]
             # The driver owns the per-chunk exception guard: any stage error
             # comes back as the standard failed-chunk pause result.
+            stage_profile = _resolve_fresh_stage_profile(
+                plan_status,
+                chunk,
+                target_repo_path,
+            )
             pause_result = await _execute_single_chunk(
                 run_id,
                 plan_status.project_id,
@@ -1963,6 +2011,7 @@ async def _execute_approved_chunks_locked(
                 branch_name,
                 status_by_number,
                 verification_baseline,
+                stage_profile=stage_profile,
             )
             if pause_result is not None:
                 return pause_result
