@@ -7,7 +7,8 @@ Rows are audit metadata only: no prompts, diffs, file contents, test output, or
 secrets. The driver records one row for each attempt it drives over a chunk, and
 resume uses completed rows as a fail-closed branch-HEAD drift check when they
 exist. stage_profile is a nullable closed audit label (standard or
-merged_plan_code) for item 17a and is never read as authority. Older runs
+merged_plan_code), and trivial_profile_eligible is nullable audit metadata for
+item 17a soak cohort reads. Neither is ever read as authority. Older runs
 without rows degrade to the pre-ledger resume behavior.
 """
 
@@ -31,6 +32,12 @@ def _json_dump(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def _nullable_bool(value: bool | None) -> int | None:
+    if value is None:
+        return None
+    return 1 if value else 0
+
+
 def record_chunk_attempt(
     *,
     run_id: str,
@@ -42,6 +49,7 @@ def record_chunk_attempt(
     final_outcome_class: str | None = None,
     final_status: str | None = None,
     stage_profile: str | None = None,
+    trivial_profile_eligible: bool | None = None,
     head_sha: str | None = None,
 ) -> dict[str, Any]:
     """
@@ -77,6 +85,7 @@ def record_chunk_attempt(
                     final_outcome_class,
                     final_status,
                     stage_profile,
+                    trivial_profile_eligible,
                     head_sha,
                     created_at
                 )
@@ -92,6 +101,7 @@ def record_chunk_attempt(
                     :final_outcome_class,
                     :final_status,
                     :stage_profile,
+                    :trivial_profile_eligible,
                     :head_sha,
                     :created_at
                 )
@@ -108,6 +118,9 @@ def record_chunk_attempt(
                 "final_outcome_class": final_outcome_class,
                 "final_status": final_status,
                 "stage_profile": stage_profile,
+                "trivial_profile_eligible": _nullable_bool(
+                    trivial_profile_eligible
+                ),
                 "head_sha": head_sha,
                 "created_at": created_at,
             },
@@ -122,6 +135,7 @@ def record_chunk_attempt(
         "final_outcome_class": final_outcome_class,
         "final_status": final_status,
         "stage_profile": stage_profile,
+        "trivial_profile_eligible": trivial_profile_eligible,
         "head_sha": head_sha,
         "created_at": created_at,
     }

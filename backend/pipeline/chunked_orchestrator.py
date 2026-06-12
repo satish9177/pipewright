@@ -122,7 +122,7 @@ from backend.pipeline.stage_contract import (
 )
 from backend.pipeline.stage_profile import (
     StageProfile,
-    resolve_stage_profile,
+    resolve_stage_profile_metadata,
     synthesize_trivial_plan,
 )
 from backend.pipeline.test_run_validation import (
@@ -1875,6 +1875,7 @@ async def _execute_single_chunk(
     status_by_number: dict[int, str],
     verification_baseline: dict | None = None,
     stage_profile: StageProfile | None = None,
+    trivial_profile_eligible: bool | None = None,
 ) -> dict | None:
     """
     Thin fresh-mode entry into the chunk driver (Phase 2 item 11).
@@ -1896,30 +1897,32 @@ async def _execute_single_chunk(
         status_by_number=status_by_number,
         verification_baseline=verification_baseline,
         stage_profile=stage_profile,
+        trivial_profile_eligible=trivial_profile_eligible,
     )
     return result.pause
 
 
-def _resolve_fresh_stage_profile(
+def _resolve_fresh_stage_profile_metadata(
     plan_status: ChunkPlanResponse,
     chunk: ChunkDefinition,
     target_repo_path: str,
-) -> StageProfile | None:
+) -> tuple[StageProfile | None, bool | None]:
     """
     Resolve item-17a's planner-elision profile for fresh execution only.
 
     ``None`` means the feature is fully disabled and preserves pre-item-17a
-    audit rows; explicit STANDARD is used only for the enabled soak control.
+    audit rows; explicit STANDARD is used only for enabled soak rows.
     """
     if MERGED_PROFILE_SAMPLE_PCT <= 0:
-        return None
-    return resolve_stage_profile(
+        return None, None
+    resolution = resolve_stage_profile_metadata(
         plan_status.triage,
         chunk,
         target_repo_path,
         run_id=plan_status.run_id,
         sample_pct=MERGED_PROFILE_SAMPLE_PCT,
     )
+    return resolution.stage_profile, resolution.trivial_profile_eligible
 
 
 async def _execute_approved_chunks_locked(
@@ -1998,10 +2001,12 @@ async def _execute_approved_chunks_locked(
             chunk = definitions[chunk_number]
             # The driver owns the per-chunk exception guard: any stage error
             # comes back as the standard failed-chunk pause result.
-            stage_profile = _resolve_fresh_stage_profile(
-                plan_status,
-                chunk,
-                target_repo_path,
+            stage_profile, trivial_profile_eligible = (
+                _resolve_fresh_stage_profile_metadata(
+                    plan_status,
+                    chunk,
+                    target_repo_path,
+                )
             )
             pause_result = await _execute_single_chunk(
                 run_id,
@@ -2012,6 +2017,7 @@ async def _execute_approved_chunks_locked(
                 status_by_number,
                 verification_baseline,
                 stage_profile=stage_profile,
+                trivial_profile_eligible=trivial_profile_eligible,
             )
             if pause_result is not None:
                 return pause_result

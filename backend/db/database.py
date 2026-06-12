@@ -555,6 +555,7 @@ def _ensure_chunk_attempts_shape(conn) -> None:
             final_outcome_class TEXT,
             final_status TEXT,
             stage_profile TEXT,
+            trivial_profile_eligible INTEGER,
             head_sha TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (run_id) REFERENCES pipeline_runs(id),
@@ -566,6 +567,12 @@ def _ensure_chunk_attempts_shape(conn) -> None:
         "chunk_attempts",
         "stage_profile",
         "ALTER TABLE chunk_attempts ADD COLUMN stage_profile TEXT",
+    )
+    _add_column_if_missing(
+        conn,
+        "chunk_attempts",
+        "trivial_profile_eligible",
+        "ALTER TABLE chunk_attempts ADD COLUMN trivial_profile_eligible INTEGER",
     )
     _create_index_if_columns_exist(
         conn,

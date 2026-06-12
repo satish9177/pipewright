@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Callable
@@ -27,6 +28,12 @@ from backend.utils.path_safety import normalize_relative_path, validate_safe_rel
 class StageProfile(StrEnum):
     STANDARD = "standard"
     MERGED_PLAN_CODE = "merged_plan_code"
+
+
+@dataclass(frozen=True)
+class StageProfileResolution:
+    stage_profile: StageProfile
+    trivial_profile_eligible: bool | None
 
 
 PathExistsFn = Callable[[str, str], bool]
@@ -127,8 +134,33 @@ def resolve_stage_profile(
 
     sample_pct <= 0 is the hard off switch and returns before reading repo state.
     """
+    return resolve_stage_profile_metadata(
+        triage,
+        chunk,
+        target_repo_path,
+        run_id=run_id,
+        sample_pct=sample_pct,
+        path_exists=path_exists,
+    ).stage_profile
+
+
+def resolve_stage_profile_metadata(
+    triage: TriageResult | None,
+    chunk: ChunkDefinition,
+    target_repo_path: str,
+    *,
+    run_id: str,
+    sample_pct: int,
+    path_exists: PathExistsFn = _default_repo_file_exists,
+) -> StageProfileResolution:
+    """
+    Resolve the active stage profile plus nullable soak eligibility metadata.
+
+    The eligibility flag is audit-only. ``None`` means the feature is off and
+    preserves pre-17a ledger parity.
+    """
     if sample_pct <= 0:
-        return StageProfile.STANDARD
+        return StageProfileResolution(StageProfile.STANDARD, None)
     if sample_pct > 100:
         sample_pct = 100
     if not is_trivial_eligible(
@@ -137,12 +169,13 @@ def resolve_stage_profile(
         target_repo_path,
         path_exists=path_exists,
     ):
-        return StageProfile.STANDARD
-    return (
+        return StageProfileResolution(StageProfile.STANDARD, False)
+    stage_profile = (
         StageProfile.MERGED_PLAN_CODE
         if sampling_bucket(run_id, chunk.chunk_number) < sample_pct
         else StageProfile.STANDARD
     )
+    return StageProfileResolution(stage_profile, True)
 
 
 def synthesize_trivial_plan(

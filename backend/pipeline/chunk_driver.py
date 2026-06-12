@@ -230,6 +230,7 @@ def _record_attempt(
     final_status: str,
     target_repo_path: str,
     stage_profile: StageProfile | None = None,
+    trivial_profile_eligible: bool | None = None,
     head_sha: str | None = None,
     evidence_refs: list[str] | None = None,
 ) -> dict:
@@ -247,6 +248,7 @@ def _record_attempt(
             final_outcome_class=final_outcome_class.value,
             final_status=final_status,
             stage_profile=stage_profile.value if stage_profile is not None else None,
+            trivial_profile_eligible=trivial_profile_eligible,
             head_sha=head_sha or _current_head_or_none(target_repo_path),
         )
     except Exception as error:
@@ -408,6 +410,7 @@ async def _drive_stages(
     continuation_context: str | None = None,
     refinement: RefinementContext | None = None,
     stage_profile: StageProfile | None = None,
+    trivial_profile_eligible: bool | None = None,
 ) -> dict | None:
     """
     Drive one chunk attempt. human_retry and steered start after planning
@@ -423,6 +426,9 @@ async def _drive_stages(
     chunk_number = chunk.chunk_number
     original_entry_mode = mode
     ledger_stage_profile = stage_profile if mode is EntryMode.FRESH else None
+    ledger_trivial_profile_eligible = (
+        trivial_profile_eligible if mode is EntryMode.FRESH else None
+    )
 
     unmet = orch._unmet_dependencies(chunk, status_by_number)
     if unmet:
@@ -440,6 +446,7 @@ async def _drive_stages(
             final_status="failed",
             target_repo_path=target_repo_path,
             stage_profile=ledger_stage_profile,
+            trivial_profile_eligible=ledger_trivial_profile_eligible,
         )
         message = orch._dependency_not_met_message(
             chunk_number, unmet, status_by_number
@@ -488,6 +495,7 @@ async def _drive_stages(
             final_status="failed",
             target_repo_path=target_repo_path,
             stage_profile=ledger_stage_profile,
+            trivial_profile_eligible=ledger_trivial_profile_eligible,
         )
         # Eligibility verified a clean tree under the same lock moments ago, so a
         # refinement cannot reach here in practice; if it ever did, restore the
@@ -570,6 +578,7 @@ async def _drive_stages(
                 final_status="failed",
                 target_repo_path=target_repo_path,
                 stage_profile=ledger_stage_profile,
+                trivial_profile_eligible=ledger_trivial_profile_eligible,
             )
             return _finalize_failed_attempt(
                 run_id,
@@ -602,6 +611,7 @@ async def _drive_stages(
                 final_status="failed",
                 target_repo_path=target_repo_path,
                 stage_profile=ledger_stage_profile,
+                trivial_profile_eligible=ledger_trivial_profile_eligible,
             )
             return _finalize_failed_attempt(
                 run_id,
@@ -635,6 +645,7 @@ async def _drive_stages(
                 final_status="failed",
                 target_repo_path=target_repo_path,
                 stage_profile=ledger_stage_profile,
+                trivial_profile_eligible=ledger_trivial_profile_eligible,
             )
             return _finalize_failed_attempt(
                 run_id,
@@ -689,6 +700,7 @@ async def _drive_stages(
                     final_status="auto_retrying",
                     target_repo_path=target_repo_path,
                     stage_profile=ledger_stage_profile,
+                    trivial_profile_eligible=ledger_trivial_profile_eligible,
                     evidence_refs=["auto_retry_scheduled"],
                 )
                 auto_retry_base = orch._record_auto_retry_start(report)
@@ -706,6 +718,7 @@ async def _drive_stages(
                 final_status="failed",
                 target_repo_path=target_repo_path,
                 stage_profile=ledger_stage_profile,
+                trivial_profile_eligible=ledger_trivial_profile_eligible,
             )
             return _finalize_failed_attempt(
                 run_id,
@@ -779,6 +792,7 @@ async def _drive_stages(
             final_status="awaiting_chunk_approval",
             target_repo_path=target_repo_path,
             stage_profile=ledger_stage_profile,
+            trivial_profile_eligible=ledger_trivial_profile_eligible,
         )
         return pause
 
@@ -801,6 +815,7 @@ async def _drive_stages(
             final_status="awaiting_chunk_approval",
             target_repo_path=target_repo_path,
             stage_profile=ledger_stage_profile,
+            trivial_profile_eligible=ledger_trivial_profile_eligible,
         )
         return pause
 
@@ -825,6 +840,7 @@ async def _drive_stages(
         final_status="completed",
         target_repo_path=target_repo_path,
         stage_profile=ledger_stage_profile,
+        trivial_profile_eligible=ledger_trivial_profile_eligible,
         head_sha=committed_head,
     )
     orch._roll_verification_baseline_forward(
@@ -851,6 +867,7 @@ async def drive_chunk(
     continuation_context: str | None = None,
     refinement: RefinementContext | None = None,
     stage_profile: StageProfile | None = None,
+    trivial_profile_eligible: bool | None = None,
 ) -> ChunkDriveResult:
     """
     Execute one driver pass over one chunk in the given entry mode.
@@ -900,6 +917,9 @@ async def drive_chunk(
             "(the steer is its reason to exist)."
         )
     active_stage_profile = stage_profile if mode is EntryMode.FRESH else None
+    active_trivial_profile_eligible = (
+        trivial_profile_eligible if mode is EntryMode.FRESH else None
+    )
 
     if mode is EntryMode.RESUME:
         if chunk_status is None:
@@ -951,6 +971,7 @@ async def drive_chunk(
                 continuation_context=continuation_context,
                 refinement=refinement,
                 stage_profile=active_stage_profile,
+                trivial_profile_eligible=active_trivial_profile_eligible,
             )
         except Exception as error:
             _record_attempt(
@@ -963,6 +984,7 @@ async def drive_chunk(
                 final_status="failed",
                 target_repo_path=target_repo_path,
                 stage_profile=active_stage_profile,
+                trivial_profile_eligible=active_trivial_profile_eligible,
                 evidence_refs=[f"exception={type(error).__name__}"],
             )
             # §0: an unexpected error during a refinement must not mark the

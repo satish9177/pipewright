@@ -6,16 +6,17 @@ replace the fresh planner LLM call with a deterministic PlannerHandoff for an
 eligible sampled chunk; every downstream stage stays on the standard path.
 """
 
+import inspect
 import json
 import uuid
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 
 from backend.db import database
 from backend.db.database import engine
 from backend.models.chunk import ChunkDefinition, TriageResult
-from backend.pipeline import chunk_driver, chunked_orchestrator
+from backend.pipeline import chunk_attempt_store, chunk_driver, chunked_orchestrator
 from backend.pipeline.chunk_attempt_store import (
     get_latest_completed_attempt_head,
     list_chunk_attempts,
@@ -29,6 +30,7 @@ from backend.pipeline.stage_profile import (
     is_profile_denylisted,
     is_trivial_eligible,
     resolve_stage_profile,
+    resolve_stage_profile_metadata,
     sampling_bucket,
     synthesize_trivial_plan,
 )
@@ -224,6 +226,16 @@ def test_sampling_is_stable_and_zero_is_hard_off():
         )
         is StageProfile.STANDARD
     )
+    off_resolution = resolve_stage_profile_metadata(
+        triage,
+        chunk,
+        "missing-repo",
+        run_id="run-any",
+        sample_pct=0,
+        path_exists=lambda *_: (_ for _ in ()).throw(RuntimeError("must not run")),
+    )
+    assert off_resolution.stage_profile is StageProfile.STANDARD
+    assert off_resolution.trivial_profile_eligible is None
 
     assert sampling_bucket("stable-run", 1) == sampling_bucket("stable-run", 1)
     sampled_run = next(
@@ -243,6 +255,16 @@ def test_sampling_is_stable_and_zero_is_hard_off():
         )
         is StageProfile.MERGED_PLAN_CODE
     )
+    sampled_resolution = resolve_stage_profile_metadata(
+        triage,
+        chunk,
+        "repo",
+        run_id=sampled_run,
+        sample_pct=50,
+        path_exists=_path_exists,
+    )
+    assert sampled_resolution.stage_profile is StageProfile.MERGED_PLAN_CODE
+    assert sampled_resolution.trivial_profile_eligible is True
     assert (
         resolve_stage_profile(
             triage,
@@ -254,6 +276,27 @@ def test_sampling_is_stable_and_zero_is_hard_off():
         )
         is StageProfile.STANDARD
     )
+    control_resolution = resolve_stage_profile_metadata(
+        triage,
+        chunk,
+        "repo",
+        run_id=control_run,
+        sample_pct=50,
+        path_exists=_path_exists,
+    )
+    assert control_resolution.stage_profile is StageProfile.STANDARD
+    assert control_resolution.trivial_profile_eligible is True
+
+    ineligible_resolution = resolve_stage_profile_metadata(
+        triage,
+        chunk,
+        "repo",
+        run_id=sampled_run,
+        sample_pct=50,
+        path_exists=lambda *_: False,
+    )
+    assert ineligible_resolution.stage_profile is StageProfile.STANDARD
+    assert ineligible_resolution.trivial_profile_eligible is False
 
 
 def test_synthesized_plan_is_deterministic_and_grounded():
@@ -298,6 +341,7 @@ async def test_feature_off_uses_standard_planner_path_and_null_ledger(
     assert _completion_summary(run_id)["key_decisions"] == ["Plan step", "Code step"]
     attempts = list_chunk_attempts(run_id, 1)
     assert attempts[0]["stage_profile"] is None
+    assert attempts[0]["trivial_profile_eligible"] is None
 
 
 @pytest.mark.asyncio
@@ -349,6 +393,7 @@ async def test_profiled_chunk_skips_only_planner_and_still_runs_reviewer(
     ]
     attempts = list_chunk_attempts(run_id, 1)
     assert attempts[0]["stage_profile"] == StageProfile.MERGED_PLAN_CODE.value
+    assert attempts[0]["trivial_profile_eligible"] == 1
     stages = json.loads(attempts[0]["stage_outcomes_json"])
     assert stages[0]["stage"] == "plan"
     assert stages[0]["evidence"] == ["synthesized_from_triage"]
@@ -389,6 +434,7 @@ async def test_eligible_unsampled_nonzero_profile_records_standard_control(
     assert any(call[0] == "planner" for call in calls)
     attempts = list_chunk_attempts(run_id, 1)
     assert attempts[0]["stage_profile"] == StageProfile.STANDARD.value
+    assert attempts[0]["trivial_profile_eligible"] == 1
 
 
 @pytest.mark.asyncio
@@ -407,6 +453,15 @@ async def test_sampled_but_ineligible_new_file_chunk_uses_planner_and_standard_l
     assert any(call[0] == "planner" for call in calls)
     attempts = list_chunk_attempts(run_id, 1)
     assert attempts[0]["stage_profile"] == StageProfile.STANDARD.value
+    assert attempts[0]["trivial_profile_eligible"] == 0
+    eligible_control = [
+        attempt
+        for attempt in attempts
+        if attempt["entry_mode"] == chunk_driver.EntryMode.FRESH.value
+        and attempt["trivial_profile_eligible"] == 1
+        and attempt["stage_profile"] == StageProfile.STANDARD.value
+    ]
+    assert eligible_control == []
 
 
 @pytest.mark.asyncio
@@ -433,6 +488,29 @@ async def test_stage_profile_does_not_change_scope_or_approval_state(
     ]
 
 
+def test_trivial_profile_eligible_is_not_authority():
+    runtime_sources = "\n".join(
+        inspect.getsource(module)
+        for module in (
+            chunk_attempt_store,
+            chunk_driver,
+            chunked_orchestrator,
+            database,
+        )
+    )
+    forbidden_predicates = (
+        "WHERE trivial_profile_eligible",
+        "AND trivial_profile_eligible",
+        "OR trivial_profile_eligible",
+        "if trivial_profile_eligible",
+        "elif trivial_profile_eligible",
+        "while trivial_profile_eligible",
+    )
+
+    for predicate in forbidden_predicates:
+        assert predicate not in runtime_sources
+
+
 def test_chunk_attempt_stage_profile_values_and_legacy_null_safety(
     tmp_repo,
     tracked_runs,
@@ -450,6 +528,7 @@ def test_chunk_attempt_stage_profile_values_and_legacy_null_safety(
         final_outcome_class="SUCCESS",
         final_status="completed",
         stage_profile=StageProfile.MERGED_PLAN_CODE.value,
+        trivial_profile_eligible=True,
         head_sha="merged-head",
     )
     standard = record_chunk_attempt(
@@ -461,6 +540,7 @@ def test_chunk_attempt_stage_profile_values_and_legacy_null_safety(
         final_outcome_class="SUCCESS",
         final_status="completed",
         stage_profile=StageProfile.STANDARD.value,
+        trivial_profile_eligible=True,
         head_sha="standard-head",
     )
     legacy = record_chunk_attempt(
@@ -475,12 +555,20 @@ def test_chunk_attempt_stage_profile_values_and_legacy_null_safety(
     )
 
     assert merged["stage_profile"] == "merged_plan_code"
+    assert merged["trivial_profile_eligible"] is True
     assert standard["stage_profile"] == "standard"
+    assert standard["trivial_profile_eligible"] is True
     assert legacy["stage_profile"] is None
+    assert legacy["trivial_profile_eligible"] is None
     attempts = list_chunk_attempts(run_id)
     assert [attempt["stage_profile"] for attempt in attempts] == [
         "merged_plan_code",
         "standard",
+        None,
+    ]
+    assert [attempt["trivial_profile_eligible"] for attempt in attempts] == [
+        1,
+        1,
         None,
     ]
     assert get_latest_completed_attempt_head(run_id)["head_sha"] == "legacy-head"
@@ -493,6 +581,42 @@ def test_chunk_attempt_stage_profile_values_and_legacy_null_safety(
             for row in conn.execute(text("PRAGMA table_info(chunk_attempts)")).fetchall()
         ]
     assert columns.count("stage_profile") == 1
+    assert columns.count("trivial_profile_eligible") == 1
+
+
+def test_chunk_attempt_shape_adds_trivial_profile_eligible_to_legacy_table():
+    legacy_engine = create_engine("sqlite:///:memory:")
+    with legacy_engine.begin() as conn:
+        conn.execute(
+            text("""
+                CREATE TABLE chunk_attempts (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    chunk_number INTEGER NOT NULL,
+                    attempt_number INTEGER NOT NULL,
+                    entry_mode TEXT NOT NULL,
+                    stage_outcomes_json TEXT,
+                    evidence_refs_json TEXT,
+                    final_outcome_class TEXT,
+                    final_status TEXT,
+                    stage_profile TEXT,
+                    head_sha TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(run_id, chunk_number, attempt_number)
+                )
+            """)
+        )
+
+        database._ensure_chunk_attempts_shape(conn)
+        database._ensure_chunk_attempts_shape(conn)
+        columns = [
+            row._mapping["name"]
+            for row in conn.execute(text("PRAGMA table_info(chunk_attempts)")).fetchall()
+        ]
+
+    assert columns.count("stage_profile") == 1
+    assert columns.count("trivial_profile_eligible") == 1
 
 
 @pytest.mark.asyncio
@@ -516,6 +640,7 @@ async def test_human_retry_records_null_stage_profile(
     attempts = list_chunk_attempts(run_id, 1)
     assert attempts[0]["entry_mode"] == chunk_driver.EntryMode.HUMAN_RETRY.value
     assert attempts[0]["stage_profile"] is None
+    assert attempts[0]["trivial_profile_eligible"] is None
 
 
 @pytest.mark.asyncio
@@ -551,6 +676,7 @@ async def test_steer_records_null_stage_profile(
     ]
     assert len(attempts) == 1
     assert attempts[0]["stage_profile"] is None
+    assert attempts[0]["trivial_profile_eligible"] is None
 
 
 @pytest.mark.asyncio
@@ -619,6 +745,7 @@ async def test_refinement_records_null_stage_profile(
     ]
     assert len(attempts) == 1
     assert attempts[0]["stage_profile"] is None
+    assert attempts[0]["trivial_profile_eligible"] is None
 
 
 @pytest.mark.asyncio
@@ -648,3 +775,4 @@ async def test_resume_ignores_stage_profile_argument_and_records_null(
     attempts = list_chunk_attempts(run_id, 1)
     assert attempts[0]["entry_mode"] == chunk_driver.EntryMode.RESUME.value
     assert attempts[0]["stage_profile"] is None
+    assert attempts[0]["trivial_profile_eligible"] is None

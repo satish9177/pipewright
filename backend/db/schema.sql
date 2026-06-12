@@ -198,8 +198,9 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 -- chunk_attempts is the append-only execution ledger for Phase 2 item 12. It
 -- stores metadata about driver passes only: stage outcome classes, small
--- evidence refs, final outcome/status, the optional item-17a stage profile,
--- and the git HEAD at attempt end. It never stores prompts, diffs, file
+-- evidence refs, final outcome/status, the optional item-17a stage profile and
+-- eligibility audit flag, and the git HEAD at attempt end. It never stores
+-- prompts, diffs, file
 -- contents, test output, or secrets. Older runs may have no rows; resume
 -- degrades to the legacy checkpoint behavior when no completed attempt HEAD
 -- exists.
@@ -215,6 +216,7 @@ CREATE TABLE IF NOT EXISTS chunk_attempts (
     final_outcome_class TEXT,
     final_status TEXT,
     stage_profile TEXT,
+    trivial_profile_eligible INTEGER,
     head_sha TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (run_id) REFERENCES pipeline_runs(id),
