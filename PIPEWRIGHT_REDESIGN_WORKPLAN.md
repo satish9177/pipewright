@@ -95,6 +95,8 @@ From the 2026-06-10 coverage check of `ARCHITECTURE_REVIEW.md` against the propo
 
 **Next:** **Phase 4 is COMPLETE — and with it Area A (Pipeline) Pass 1.** No further Phase-4 slice remains. The rolling `PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md` is dormant until the next pass (e.g. Area B / Pass 2 memory work) repurposes it. Outstanding follow-ups are **operational, not code:** monitor the item-17a soak per `docs/design/trivial-task-profile-soak.md`, and flip `PROMPT_CACHE_ENABLED = True` when ready to activate 17b caching for Anthropic-routed roles.
 
+**Post-Pass-1 red-team audit (2026-06-12):** a local-first-readiness adversarial review landed in `docs/audits/area-a-pass1-red-team-audit.md`. Verdict: the safety core (gates, scope, Git/PR, rollback, resume, reviewer ack, 17b caching) was attacked and held; remaining risks are local-first trust/onboarding/file-index/observability issues, catalogued as **F1–F10** (none implemented). Treat that doc as the local-first hardening queue before wider OSS invitation; recommended first PRs are F1 (Windows EOL preservation in the patch path), F2/F3 (indexer extension reach + exact skip-name matching), and F5 (17a soak cohort eligibility label + soak-doc refresh, which also corrects the stale "17b not implemented" note in `docs/design/trivial-task-profile-soak.md`). The audit explicitly does **not** start Area B or implement any fix.
+
 ---
 
 ## Phase 0 implementation batching
