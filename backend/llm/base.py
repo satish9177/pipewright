@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 class Message(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: str
+    cache: bool = False
 
 
 class LLMRequest(BaseModel):

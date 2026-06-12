@@ -106,6 +106,14 @@ TRIVIAL_PROFILE_DENYLIST_PATTERNS = frozenset({
     "tsconfig.json",
 })
 
+# --- Provider prompt caching (LLM providers, item 17b) ----------------------
+# Hard off switch for explicit prompt-cache translation. False must preserve
+# provider request shapes exactly.
+PROMPT_CACHE_ENABLED = False
+# Disabled seam for future Gemini explicit caching. The 17b slice must not create
+# CachedContent handles.
+GEMINI_EXPLICIT_CACHE_ENABLED = False
+
 # --- Coder file-context caps (coder.py, patch_dry_run.py) -------------------
 # Files over this many lines may not be rewritten wholesale; they must be
 # changed with a targeted action="edit". patch_dry_run enforces the same cap

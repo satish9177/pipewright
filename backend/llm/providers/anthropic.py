@@ -7,7 +7,7 @@ from typing import Any
 import anthropic
 
 from backend.config.keys import settings
-from backend.llm.base import BaseLLMProvider, LLMRequest, LLMResponse
+from backend.llm.base import BaseLLMProvider, LLMRequest, LLMResponse, Message
 from backend.llm.errors import (
     ProviderAuthError,
     ProviderConfigurationError,
@@ -19,6 +19,7 @@ from backend.llm.errors import (
     UnsupportedModelError,
 )
 from backend.llm.sanitize import sanitize_for_log
+from backend.pipeline import policy
 
 
 class AnthropicProvider(BaseLLMProvider):
@@ -91,17 +92,34 @@ class AnthropicProvider(BaseLLMProvider):
 
 def _translate_messages(
     request: LLMRequest,
-) -> tuple[str, list[dict[str, Any]]]:
-    system_parts: list[str] = []
+) -> tuple[str | list[dict[str, Any]], list[dict[str, Any]]]:
+    system_messages: list[Message] = []
     messages: list[dict[str, Any]] = []
 
     for message in request.messages:
         if message.role == "system":
-            system_parts.append(message.content)
+            system_messages.append(message)
         elif message.role in ("user", "assistant"):
             messages.append({"role": message.role, "content": message.content})
 
-    return "\n\n".join(system_parts), messages
+    system_text = "\n\n".join(message.content for message in system_messages)
+    if (
+        not system_text
+        or not policy.PROMPT_CACHE_ENABLED
+        or not any(message.cache for message in system_messages)
+    ):
+        return system_text, messages
+
+    system_blocks: list[dict[str, Any]] = []
+    for index, message in enumerate(system_messages):
+        if index:
+            system_blocks.append({"type": "text", "text": "\n\n"})
+        block: dict[str, Any] = {"type": "text", "text": message.content}
+        if message.cache:
+            block["cache_control"] = {"type": "ephemeral"}
+        system_blocks.append(block)
+
+    return system_blocks, messages
 
 
 def _to_llm_response(response: Any, provider: str, model: str) -> LLMResponse:
