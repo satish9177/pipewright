@@ -14,7 +14,6 @@ Usage:
 """
 
 import argparse
-import os
 import shutil
 import sys
 from datetime import datetime, timedelta, timezone
@@ -24,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.core.statuses import RunStatus
+from backend.core.statuses import RunStatus  # noqa: E402
 
 # Computed from the script location so importing this module does not pull in
 # the full patch_applier dependency graph (checkpoint_store, project_context, …).
@@ -78,6 +77,11 @@ def _format_bytes(n: int) -> str:
     if n < 1024 * 1024:
         return f"{n / 1024:.1f} KB"
     return f"{n / (1024 * 1024):.1f} MB"
+
+
+def _now_utc() -> datetime:
+    """Current UTC time; injectable in tests so CLI age checks are stable."""
+    return datetime.now(timezone.utc)
 
 
 def classify_backups(
@@ -302,7 +306,7 @@ def main() -> int:
     run_ids = [d.name for d in all_dirs]
     db_statuses = _load_run_statuses(run_ids)
 
-    now = datetime.now(timezone.utc)
+    now = _now_utc()
     eligible, skipped = classify_backups(
         all_dirs=all_dirs,
         db_statuses=db_statuses,

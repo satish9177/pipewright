@@ -48,6 +48,64 @@ MAX_STEER_TEXT_CHARS = 4000
 # diff is prompt context only — never standing working-tree state.
 STEER_CONTINUATION_DIFF_MAX_CHARS = 10000
 
+# --- Trivial-task stage profile (chunk_driver.py, item 17a) -----------------
+# Stable sample percentage for the first soak of the planner-elision profile.
+# 0 is the hard off switch and must preserve the standard planner path exactly.
+MERGED_PROFILE_SAMPLE_PCT = 50
+# Conservative force-standard denylist. These are not write-safety rules
+# (scope_guard/path_safety remain the authority); they only prevent planner
+# elision on files where the planner may add safety-relevant structure.
+TRIVIAL_PROFILE_DENYLIST_PATTERNS = frozenset({
+    "*/migrations/*",
+    "migrations/*",
+    "*/alembic/*",
+    "alembic/*",
+    "schema.sql",
+    "*.sql",
+    "auth",
+    "security",
+    "permission",
+    "permissions",
+    "login",
+    "password",
+    "crypto",
+    "jwt",
+    "oauth",
+    "session",
+    ".env*",
+    "*secrets*",
+    "*credentials*",
+    "*.pem",
+    "*.key",
+    "id_rsa*",
+    "requirements*.txt",
+    "pyproject.toml",
+    "poetry.lock",
+    "Pipfile*",
+    "setup.py",
+    "setup.cfg",
+    "package.json",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "go.mod",
+    "go.sum",
+    "Cargo.toml",
+    "Cargo.lock",
+    "Gemfile*",
+    ".github/*",
+    ".gitlab-ci.yml",
+    ".circleci/*",
+    "Jenkinsfile",
+    "Dockerfile*",
+    "docker-compose*",
+    "Makefile",
+    "tox.ini",
+    "*.config.js",
+    "*.config.ts",
+    "tsconfig.json",
+})
+
 # --- Coder file-context caps (coder.py, patch_dry_run.py) -------------------
 # Files over this many lines may not be rewritten wholesale; they must be
 # changed with a targeted action="edit". patch_dry_run enforces the same cap

@@ -6,7 +6,9 @@ Append-only chunk attempt ledger for Phase 2 item 12.
 Rows are audit metadata only: no prompts, diffs, file contents, test output, or
 secrets. The driver records one row for each attempt it drives over a chunk, and
 resume uses completed rows as a fail-closed branch-HEAD drift check when they
-exist. Older runs without rows degrade to the pre-ledger resume behavior.
+exist. stage_profile is a nullable closed audit label (standard or
+merged_plan_code) for item 17a and is never read as authority. Older runs
+without rows degrade to the pre-ledger resume behavior.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ def record_chunk_attempt(
     evidence_refs: list[str] | None = None,
     final_outcome_class: str | None = None,
     final_status: str | None = None,
+    stage_profile: str | None = None,
     head_sha: str | None = None,
 ) -> dict[str, Any]:
     """
@@ -73,6 +76,7 @@ def record_chunk_attempt(
                     evidence_refs_json,
                     final_outcome_class,
                     final_status,
+                    stage_profile,
                     head_sha,
                     created_at
                 )
@@ -87,6 +91,7 @@ def record_chunk_attempt(
                     :evidence_refs_json,
                     :final_outcome_class,
                     :final_status,
+                    :stage_profile,
                     :head_sha,
                     :created_at
                 )
@@ -102,6 +107,7 @@ def record_chunk_attempt(
                 "evidence_refs_json": _json_dump(evidence_refs or []),
                 "final_outcome_class": final_outcome_class,
                 "final_status": final_status,
+                "stage_profile": stage_profile,
                 "head_sha": head_sha,
                 "created_at": created_at,
             },
@@ -115,6 +121,7 @@ def record_chunk_attempt(
         "entry_mode": entry_mode,
         "final_outcome_class": final_outcome_class,
         "final_status": final_status,
+        "stage_profile": stage_profile,
         "head_sha": head_sha,
         "created_at": created_at,
     }

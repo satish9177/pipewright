@@ -58,6 +58,7 @@ from backend.pipeline.patch_failures import (
 from backend.pipeline.policy import AUTO_RETRY_INFRA_BUDGET
 from backend.pipeline.stage_contract import (
     OutcomeClass,
+    STAGE_PLAN,
     StageOutcome,
     apply_stage,
     code_stage,
@@ -66,6 +67,7 @@ from backend.pipeline.stage_contract import (
     review_stage,
     verify_outcome_from_result,
 )
+from backend.pipeline.stage_profile import StageProfile
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +229,7 @@ def _record_attempt(
     final_outcome_class: OutcomeClass,
     final_status: str,
     target_repo_path: str,
+    stage_profile: StageProfile | None = None,
     head_sha: str | None = None,
     evidence_refs: list[str] | None = None,
 ) -> dict:
@@ -243,6 +246,7 @@ def _record_attempt(
             evidence_refs=evidence_refs or [],
             final_outcome_class=final_outcome_class.value,
             final_status=final_status,
+            stage_profile=stage_profile.value if stage_profile is not None else None,
             head_sha=head_sha or _current_head_or_none(target_repo_path),
         )
     except Exception as error:
@@ -403,6 +407,7 @@ async def _drive_stages(
     run_step: str | None = None,
     continuation_context: str | None = None,
     refinement: RefinementContext | None = None,
+    stage_profile: StageProfile | None = None,
 ) -> dict | None:
     """
     Drive one chunk attempt. human_retry and steered start after planning
@@ -417,6 +422,7 @@ async def _drive_stages(
     orch = _orch()
     chunk_number = chunk.chunk_number
     original_entry_mode = mode
+    ledger_stage_profile = stage_profile if mode is EntryMode.FRESH else None
 
     unmet = orch._unmet_dependencies(chunk, status_by_number)
     if unmet:
@@ -433,6 +439,7 @@ async def _drive_stages(
             final_outcome_class=OutcomeClass.POLICY_BLOCKED,
             final_status="failed",
             target_repo_path=target_repo_path,
+            stage_profile=ledger_stage_profile,
         )
         message = orch._dependency_not_met_message(
             chunk_number, unmet, status_by_number
@@ -480,6 +487,7 @@ async def _drive_stages(
             final_outcome_class=outcome.outcome_class,
             final_status="failed",
             target_repo_path=target_repo_path,
+            stage_profile=ledger_stage_profile,
         )
         # Eligibility verified a clean tree under the same lock moments ago, so a
         # refinement cannot reach here in practice; if it ever did, restore the
@@ -509,13 +517,25 @@ async def _drive_stages(
             project_id,
             chunk,
         )
-        plan_outcome = await plan_stage(
-            enriched_description,
-            run_id,
-            chunk_number=chunk_number,
-            project_id=project_id,
-            run_planner_fn=orch.run_planner,
-        )
+        if ledger_stage_profile is StageProfile.MERGED_PLAN_CODE:
+            plan_outcome = StageOutcome(
+                stage=STAGE_PLAN,
+                outcome_class=OutcomeClass.SUCCESS,
+                payload=orch._synthesize_trivial_plan(
+                    run_id,
+                    enriched_description,
+                    chunk,
+                ),
+                evidence=("synthesized_from_triage",),
+            )
+        else:
+            plan_outcome = await plan_stage(
+                enriched_description,
+                run_id,
+                chunk_number=chunk_number,
+                project_id=project_id,
+                run_planner_fn=orch.run_planner,
+            )
         base_stage_outcomes.append(plan_outcome)
         plan = orch._surface_files_expected_for_edit(
             plan_outcome.payload, chunk.files_expected
@@ -549,6 +569,7 @@ async def _drive_stages(
                 final_outcome_class=code_outcome.outcome_class,
                 final_status="failed",
                 target_repo_path=target_repo_path,
+                stage_profile=ledger_stage_profile,
             )
             return _finalize_failed_attempt(
                 run_id,
@@ -580,6 +601,7 @@ async def _drive_stages(
                 final_outcome_class=preflight_outcome.outcome_class,
                 final_status="failed",
                 target_repo_path=target_repo_path,
+                stage_profile=ledger_stage_profile,
             )
             return _finalize_failed_attempt(
                 run_id,
@@ -612,6 +634,7 @@ async def _drive_stages(
                 final_outcome_class=apply_outcome.outcome_class,
                 final_status="failed",
                 target_repo_path=target_repo_path,
+                stage_profile=ledger_stage_profile,
             )
             return _finalize_failed_attempt(
                 run_id,
@@ -665,6 +688,7 @@ async def _drive_stages(
                     final_outcome_class=verify_outcome.outcome_class,
                     final_status="auto_retrying",
                     target_repo_path=target_repo_path,
+                    stage_profile=ledger_stage_profile,
                     evidence_refs=["auto_retry_scheduled"],
                 )
                 auto_retry_base = orch._record_auto_retry_start(report)
@@ -681,6 +705,7 @@ async def _drive_stages(
                 final_outcome_class=verify_outcome.outcome_class,
                 final_status="failed",
                 target_repo_path=target_repo_path,
+                stage_profile=ledger_stage_profile,
             )
             return _finalize_failed_attempt(
                 run_id,
@@ -753,6 +778,7 @@ async def _drive_stages(
             final_outcome_class=OutcomeClass.NEEDS_HUMAN,
             final_status="awaiting_chunk_approval",
             target_repo_path=target_repo_path,
+            stage_profile=ledger_stage_profile,
         )
         return pause
 
@@ -774,6 +800,7 @@ async def _drive_stages(
             final_outcome_class=OutcomeClass.NEEDS_HUMAN,
             final_status="awaiting_chunk_approval",
             target_repo_path=target_repo_path,
+            stage_profile=ledger_stage_profile,
         )
         return pause
 
@@ -797,6 +824,7 @@ async def _drive_stages(
         final_outcome_class=OutcomeClass.SUCCESS,
         final_status="completed",
         target_repo_path=target_repo_path,
+        stage_profile=ledger_stage_profile,
         head_sha=committed_head,
     )
     orch._roll_verification_baseline_forward(
@@ -822,6 +850,7 @@ async def drive_chunk(
     run_step: str | None = None,
     continuation_context: str | None = None,
     refinement: RefinementContext | None = None,
+    stage_profile: StageProfile | None = None,
 ) -> ChunkDriveResult:
     """
     Execute one driver pass over one chunk in the given entry mode.
@@ -870,6 +899,7 @@ async def drive_chunk(
             "chunk_driver.py: steered mode requires the continuation context "
             "(the steer is its reason to exist)."
         )
+    active_stage_profile = stage_profile if mode is EntryMode.FRESH else None
 
     if mode is EntryMode.RESUME:
         if chunk_status is None:
@@ -920,6 +950,7 @@ async def drive_chunk(
                 run_step=run_step,
                 continuation_context=continuation_context,
                 refinement=refinement,
+                stage_profile=active_stage_profile,
             )
         except Exception as error:
             _record_attempt(
@@ -931,6 +962,7 @@ async def drive_chunk(
                 final_outcome_class=OutcomeClass.INFRA_ERROR,
                 final_status="failed",
                 target_repo_path=target_repo_path,
+                stage_profile=active_stage_profile,
                 evidence_refs=[f"exception={type(error).__name__}"],
             )
             # §0: an unexpected error during a refinement must not mark the

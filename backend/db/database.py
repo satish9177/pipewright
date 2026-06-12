@@ -554,12 +554,19 @@ def _ensure_chunk_attempts_shape(conn) -> None:
             evidence_refs_json TEXT,
             final_outcome_class TEXT,
             final_status TEXT,
+            stage_profile TEXT,
             head_sha TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (run_id) REFERENCES pipeline_runs(id),
             UNIQUE(run_id, chunk_number, attempt_number)
         )
     """))
+    _add_column_if_missing(
+        conn,
+        "chunk_attempts",
+        "stage_profile",
+        "ALTER TABLE chunk_attempts ADD COLUMN stage_profile TEXT",
+    )
     _create_index_if_columns_exist(
         conn,
         "chunk_attempts",

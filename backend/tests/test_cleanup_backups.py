@@ -21,8 +21,8 @@ _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-import cleanup_backups
-from cleanup_backups import (
+import cleanup_backups  # noqa: E402
+from cleanup_backups import (  # noqa: E402
     ACTIVE_STATUSES,
     _dir_size_bytes,
     _format_bytes,
@@ -256,6 +256,7 @@ def test_delete_removes_old_eligible(tmp_path, monkeypatch):
 
     statuses = {old_dir.name: "complete", recent_dir.name: "complete"}
     monkeypatch.setattr(cleanup_backups, "_load_run_statuses", lambda ids: statuses)
+    monkeypatch.setattr(cleanup_backups, "_now_utc", lambda: _NOW)
     monkeypatch.setattr(sys, "argv", [
         "cleanup_backups.py",
         "--backup-dir", str(tmp_path),
