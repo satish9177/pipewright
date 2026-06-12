@@ -120,6 +120,14 @@ def test_explicit_nested_path_grounds():
     assert result.path == "docs/usage.md"
 
 
+@pytest.mark.parametrize("path", ["src/main.rs", "src/main.go"])
+def test_explicit_multilanguage_source_path_grounds(path):
+    pid = _project([path, "README.md"])
+    result = resolve_explicit_edit_target(pid, f"add a comment to {path}")
+    assert result.outcome is EditTargetOutcome.GROUNDED
+    assert result.path == path
+
+
 def test_explicit_nested_path_not_found_when_missing():
     pid = _project(["README.md", "docs/intro.md"])
     result = resolve_explicit_edit_target(pid, "append test text to docs/usage.md")

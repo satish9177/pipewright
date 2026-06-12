@@ -13,7 +13,6 @@ Staleness behavior:
 """
 
 import json
-import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,20 +43,43 @@ SKIP_NAMES = {
     ".ruff_cache",
 }
 
+INDEX_FORBIDDEN_FILE_STEMS = {
+    "credentials",
+    "secrets",
+}
+
 SUPPORTED_EXTENSIONS = {
+    ".cs",
+    ".css",
+    ".go",
+    ".gradle",
+    ".html",
     ".py",
+    ".php",
     ".js",
     ".jsx",
+    ".java",
+    ".kt",
+    ".kts",
+    ".json",
+    ".md",
+    ".properties",
+    ".rb",
+    ".rs",
+    ".sass",
+    ".scala",
+    ".scss",
+    ".sql",
+    ".svelte",
+    ".swift",
+    ".toml",
     ".ts",
     ".tsx",
-    ".java",
-    ".sql",
-    ".yml",
-    ".yaml",
-    ".json",
-    ".toml",
-    ".md",
     ".txt",
+    ".vue",
+    ".xml",
+    ".yaml",
+    ".yml",
 }
 
 
@@ -74,13 +96,20 @@ def should_skip_path(path: Path) -> bool:
         lower_parts = [part.lower() for part in path.parts]
         lower_name = path.name.lower()
 
-        if any(skip in lower_parts or skip in lower_name for skip in SKIP_NAMES):
+        path_parts_to_check = lower_parts if path.is_dir() else lower_parts[:-1]
+        if any(part in SKIP_NAMES for part in path_parts_to_check):
+            return True
+
+        if path.is_file() and lower_name in SKIP_NAMES:
             return True
 
         if path.is_file() and path.stat().st_size > MAX_FILE_SIZE_BYTES:
             return True
 
         if path.is_file() and is_forbidden_path(path.name):
+            return True
+
+        if path.is_file() and path.stem.lower() in INDEX_FORBIDDEN_FILE_STEMS:
             return True
 
         return False
