@@ -249,6 +249,41 @@ def test_previous_chunks_context_handles_null_completion_summary(tmp_repo, track
     assert "Summary: not available (crash recovery)" in context
 
 
+def test_previous_chunks_context_surfaces_synthesized_plan_label(
+    tmp_repo,
+    tracked_runs,
+):
+    project = make_project(tmp_repo)
+    run_id = str(uuid.uuid4())
+    tracked_runs.append(run_id)
+    create_chunked_run(
+        run_id,
+        project["id"],
+        "Build chunk planning",
+        make_triage(run_id, project["id"]),
+    )
+
+    update_chunk_status(run_id, 1, "completed")
+    save_chunk_completion_summary(
+        run_id,
+        1,
+        {
+            "key_decisions": ["Do the small edit"],
+            "plan_source_label": (
+                "Plan synthesized from approved triage for trivial-task profile."
+            ),
+            "summary": "Chunk one done",
+        },
+    )
+
+    context = get_previous_chunks_context(run_id, 2)
+
+    assert (
+        "Plan source: Plan synthesized from approved triage for "
+        "trivial-task profile."
+    ) in context
+
+
 def test_save_chunks_to_db_is_idempotent_for_duplicate_chunks(tmp_repo, tracked_runs):
     project = make_project(tmp_repo)
     run_id = str(uuid.uuid4())

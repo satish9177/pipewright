@@ -135,6 +135,23 @@ def _completion_summary(run_id: str) -> dict:
     return json.loads(row[0])
 
 
+def _final_approval_summary(run_id: str) -> str:
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT plain_english_summary
+                FROM approval_gates
+                WHERE run_id = :run_id
+                  AND approval_type = 'final'
+                ORDER BY created_at DESC
+                LIMIT 1
+            """),
+            {"run_id": run_id},
+        ).fetchone()
+    assert row is not None
+    return row[0]
+
+
 @pytest.mark.parametrize(
     ("triage", "chunk", "exists", "expected"),
     [
@@ -188,6 +205,15 @@ def test_trivial_eligibility_rejects_legacy_chunk_with_dependency():
         "migrations/001_add_table.py",
         "backend/db/schema.sql",
         "src/auth/login.py",
+        "src/auth.py",
+        "login.py",
+        "sessions.py",
+        "jwt_utils.py",
+        "oauth_client.py",
+        "password_reset.py",
+        "token_service.py",
+        "crypto.py",
+        "security.py",
         ".env.local",
         "config/api_secrets.py",
         "keys/private.pem",
@@ -338,7 +364,9 @@ async def test_feature_off_uses_standard_planner_path_and_null_ledger(
 
     assert result["status"] == "awaiting_final_approval"
     assert any(call[0] == "planner" for call in calls)
-    assert _completion_summary(run_id)["key_decisions"] == ["Plan step", "Code step"]
+    summary = _completion_summary(run_id)
+    assert summary["key_decisions"] == ["Plan step", "Code step"]
+    assert "plan_source_label" not in summary
     attempts = list_chunk_attempts(run_id, 1)
     assert attempts[0]["stage_profile"] is None
     assert attempts[0]["trivial_profile_eligible"] is None
@@ -391,6 +419,16 @@ async def test_profiled_chunk_skips_only_planner_and_still_runs_reviewer(
         "Implement chunk 1: Chunk 1",
         "Do chunk 1",
     ]
+    assert (
+        summary["plan_source_label"]
+        == chunked_orchestrator.SYNTHESIZED_TRIVIAL_PLAN_LABEL
+    )
+    assert summary["plan_source"] == "synthesized_from_approved_triage"
+    final_summary = _final_approval_summary(run_id)
+    assert (
+        f"Plan source: {chunked_orchestrator.SYNTHESIZED_TRIVIAL_PLAN_LABEL}"
+        in final_summary
+    )
     attempts = list_chunk_attempts(run_id, 1)
     assert attempts[0]["stage_profile"] == StageProfile.MERGED_PLAN_CODE.value
     assert attempts[0]["trivial_profile_eligible"] == 1
@@ -432,6 +470,12 @@ async def test_eligible_unsampled_nonzero_profile_records_standard_control(
 
     assert result["status"] == "awaiting_final_approval"
     assert any(call[0] == "planner" for call in calls)
+    summary = _completion_summary(run_id)
+    assert "plan_source_label" not in summary
+    assert (
+        f"Plan source: {chunked_orchestrator.SYNTHESIZED_TRIVIAL_PLAN_LABEL}"
+        not in _final_approval_summary(run_id)
+    )
     attempts = list_chunk_attempts(run_id, 1)
     assert attempts[0]["stage_profile"] == StageProfile.STANDARD.value
     assert attempts[0]["trivial_profile_eligible"] == 1

@@ -149,6 +149,16 @@ NO_EFFECTIVE_CHANGES_MESSAGE = (
 )
 VERIFICATION_BASELINE_KEY = "verification_baseline"
 VERIFICATION_BASELINE_KIND = "baseline_aware_verification_v1"
+SYNTHESIZED_TRIVIAL_PLAN_LABEL = (
+    "Plan synthesized from approved triage for trivial-task profile."
+)
+NO_TESTS_RAN_BASELINE_MESSAGE = (
+    "Baseline verification could not continue because this repository appears "
+    "to have no tests, or the configured test command ran zero tests. "
+    "Pipewright needs a verification command before it can safely continue. "
+    "Configure a real test, build, or check command; or use a weak validation "
+    "command only with explicit human acknowledgement."
+)
 
 
 def _utc_now() -> str:
@@ -604,6 +614,7 @@ def _build_completion_summary(
     coder_output: CoderHandoff,
     recovery_attempts: list | None = None,
     verification_disclosure: dict | None = None,
+    stage_profile: StageProfile | None = None,
 ) -> dict:
     files_created = []
     files_modified = []
@@ -649,6 +660,9 @@ def _build_completion_summary(
         ]
     if verification_disclosure:
         summary["verification_baseline"] = verification_disclosure
+    if stage_profile is StageProfile.MERGED_PLAN_CODE:
+        summary["plan_source"] = "synthesized_from_approved_triage"
+        summary["plan_source_label"] = SYNTHESIZED_TRIVIAL_PLAN_LABEL
     return summary
 
 
@@ -812,6 +826,7 @@ def _commit_and_complete_chunk(
     plan: PlannerHandoff | None = None,
     recovery_attempts: list | None = None,
     verification_disclosure: dict | None = None,
+    stage_profile: StageProfile | None = None,
 ) -> str | None:
     chunk_number = chunk.chunk_number
     touched_files = _files_touched(coder_output)
@@ -841,6 +856,7 @@ def _commit_and_complete_chunk(
         coder_output,
         recovery_attempts=recovery_attempts,
         verification_disclosure=verification_disclosure,
+        stage_profile=stage_profile,
     )
     save_chunk_completion_summary(run_id, chunk_number, completion_summary)
     update_chunk_status(run_id, chunk_number, "completed")
@@ -944,6 +960,17 @@ def _cumulative_branch_diff(run_id: str, target_repo_path: str) -> str:
     return _truncate_head_tail(diff, FINAL_DIFF_MAX_CHARS)
 
 
+def _plan_source_label_from_completion_summary(raw_summary: str) -> str | None:
+    try:
+        parsed = json.loads(raw_summary)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    label = parsed.get("plan_source_label")
+    return label if isinstance(label, str) and label.strip() else None
+
+
 def _build_final_approval_summary(
     run_id: str,
     plan_status: ChunkPlanResponse,
@@ -962,6 +989,11 @@ def _build_final_approval_summary(
         lines.append(f"{chunk.chunk_number}. {chunk.title} - {chunk.status}")
         if chunk.completion_summary:
             lines.append(f"   Summary: {chunk.completion_summary}")
+            plan_source_label = _plan_source_label_from_completion_summary(
+                chunk.completion_summary
+            )
+            if plan_source_label:
+                lines.append(f"   Plan source: {plan_source_label}")
     # Cumulative diff (item 14, D3): the whole branch vs. its base, so the human
     # approving the run sees what they are approving (final approval showed no
     # diff at all before). Display-only and best-effort — a diff failure must
@@ -1725,11 +1757,14 @@ def _baseline_failure_result(
     _test_result,
     integrity: ExecutionIntegrity,
 ) -> dict:
-    message = (
-        "Baseline verification failed before chunk execution because the test "
-        f"harness did not produce an interpretable run ({integrity.value}). "
-        "Fix the test environment or command, then rerun the approved plan."
-    )
+    if integrity is ExecutionIntegrity.NO_TESTS_RAN:
+        message = NO_TESTS_RAN_BASELINE_MESSAGE
+    else:
+        message = (
+            "Baseline verification failed before chunk execution because the test "
+            f"harness did not produce an interpretable run ({integrity.value}). "
+            "Fix the test environment or command, then rerun the approved plan."
+        )
     _update_run_status(run_id, "failed", "verification_baseline_failed")
     return {
         "status": "failed",

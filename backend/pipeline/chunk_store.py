@@ -627,6 +627,13 @@ def _format_summary_field(summary: dict, key: str) -> str:
     return "none"
 
 
+def _format_plan_source_line(summary: dict) -> str:
+    label = summary.get("plan_source_label")
+    if isinstance(label, str) and label.strip():
+        return f"Plan source: {label}\n"
+    return ""
+
+
 def _format_completed_chunk(row) -> str:
     data = dict(row._mapping)
     raw_summary = data.get("completion_summary")
@@ -649,6 +656,7 @@ def _format_completed_chunk(row) -> str:
                 f"Files created: {_format_summary_field(parsed, 'files_created')}\n"
                 f"Files modified: {_format_summary_field(parsed, 'files_modified')}\n"
                 f"Key decisions: {_format_summary_field(parsed, 'key_decisions')}\n"
+                f"{_format_plan_source_line(parsed)}"
                 f"Tests added: {_format_summary_field(parsed, 'tests_added')}\n"
                 f"Summary: {_format_summary_field(parsed, 'summary')}"
             )

@@ -7,6 +7,8 @@
 
 Item 17a (trivial-task stage profile) is **live on `develop`** at the soak default `policy.MERGED_PROFILE_SAMPLE_PCT = 50`. For a *provably trivial, eligible, sampled* **fresh** chunk, the driver synthesizes a deterministic `PlannerHandoff` from the already-approved triage instead of calling the planner LLM. Nothing else moves: triage, the coder, the reviewer (on every chunk), `scope_guard`, preflight, baseline verification, all gates, and commit/rollback are unchanged. The profile is **never an authority channel** — it cannot change scope, approval, which memory is injected, reviewer independence, or Git/merge behavior.
 
+Profiled completion summaries and final-approval text include: `Plan synthesized from approved triage for trivial-task profile.`
+
 > **Item 17b (provider prompt caching) is implemented but off by default.** `PROMPT_CACHE_ENABLED = False` keeps provider behavior unchanged unless deliberately enabled; it is separate from this 17a soak.
 
 ## `stage_profile` values (`chunk_attempts.stage_profile`)
@@ -128,4 +130,5 @@ With `0`, the orchestrator returns before reading any repo state, every fresh ch
 - Both columns are additive and nullable; legacy `NULL` rows are expected and never perturb resume / `get_latest_completed_attempt_head`.
 - Ineligible standard chunks must not be included in the eligible control cohort. Filter on `entry_mode = 'fresh'`, `trivial_profile_eligible = true`, and `stage_profile = 'standard'`.
 - Auto-retry continuation rows may carry the original attempt's `stage_profile`; do not count them as fresh soak cohort rows unless the query intentionally studies continuation behavior.
+- Public release should make an explicit default decision for `MERGED_PROFILE_SAMPLE_PCT` (`50` for the maintainer soak vs. `0` for opt-in exposure); this document keeps the maintainer soak default unchanged.
 - These are operator queries against a live SQLite ledger — read-only; do not `UPDATE` `chunk_attempts`.

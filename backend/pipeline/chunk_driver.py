@@ -828,6 +828,7 @@ async def _drive_stages(
         plan,
         recovery_attempts=recovery_attempts,
         verification_disclosure=verification_disclosure,
+        stage_profile=ledger_stage_profile,
     )
     stage_outcomes.append(_gate_outcome(OutcomeClass.SUCCESS))
     _record_attempt(

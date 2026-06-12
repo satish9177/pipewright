@@ -3078,6 +3078,59 @@ async def test_baseline_harness_error_fails_before_planner_or_coder(
     assert result["status"] == "failed"
     assert result["verification_baseline_failed"] is True
     assert result["integrity"] == "command_not_found"
+    assert "harness did not produce an interpretable run" in result["error"]
+    assert "Fix the test environment or command" in result["error"]
+    assert "appears to have no tests" not in result["error"]
+    assert not any(c[0] == "commit" for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_baseline_no_tests_ran_uses_honest_copy_and_stays_fail_closed(
+    monkeypatch, tmp_repo, tracked_runs
+):
+    run_id, _project = create_run(tmp_repo, tracked_runs)
+    calls = []
+    patch_git_preflight(monkeypatch, calls)
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "run_baseline_tests",
+        lambda run_id_arg: PipelineTestResult(
+            run_id=run_id_arg,
+            passed=True,
+            exit_code=0,
+            timed_out=False,
+            output="collected 0 items\n\nno tests ran in 0.01s",
+            total_tests=0,
+            passed_tests=0,
+            failed_tests=0,
+        ),
+    )
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "run_planner",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("planner should not run after no-tests baseline")
+        ),
+    )
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "run_coder",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("coder should not run after no-tests baseline")
+        ),
+    )
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result["status"] == "failed"
+    assert result["verification_baseline_failed"] is True
+    assert result["integrity"] == "no_tests_ran"
+    assert "appears to have no tests" in result["error"]
+    assert "configured test command ran zero tests" in result["error"]
+    assert "Pipewright needs a verification command" in result["error"]
+    assert "Configure a real test, build, or check command" in result["error"]
+    assert "weak validation command" in result["error"]
+    assert "Fix the test environment or command" not in result["error"]
     assert not any(c[0] == "commit" for c in calls)
 
 
