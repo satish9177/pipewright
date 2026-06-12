@@ -54,6 +54,14 @@ def tmp_repo():
     shutil.rmtree(folder, ignore_errors=True)
 
 
+def _set_target_repo(monkeypatch, tmp_repo):
+    from backend.config import keys
+    import backend.pipeline.patch_applier as patch_applier
+
+    monkeypatch.setattr(keys.settings, "target_repo_path", str(tmp_repo))
+    monkeypatch.setattr(patch_applier, "save_checkpoint", lambda **kwargs: None)
+
+
 def make_coder_output(run_id: str) -> CoderHandoff:
     return CoderHandoff(
         run_id=run_id,
@@ -222,6 +230,85 @@ def _edit_output(
         ],
         summary="Applied a targeted edit",
     )
+
+
+def test_edit_preserves_lf_line_endings(tmp_repo, monkeypatch):
+    _set_target_repo(monkeypatch, tmp_repo)
+    target = tmp_repo / "lf.py"
+    target.write_bytes(b"alpha = 1\nbeta = 2\n")
+
+    run_id = str(uuid.uuid4())
+    result = apply_patch(
+        _edit_output(run_id, "lf.py", "beta = 2", "beta = 3"),
+        run_id,
+    )
+
+    assert result.success is True
+    updated = target.read_bytes()
+    assert updated == b"alpha = 1\nbeta = 3\n"
+    assert b"\r\n" not in updated
+
+
+def test_edit_preserves_crlf_line_endings(tmp_repo, monkeypatch):
+    _set_target_repo(monkeypatch, tmp_repo)
+    target = tmp_repo / "crlf.py"
+    target.write_bytes(b"alpha = 1\r\nbeta = 2\r\ngamma = 3\r\n")
+
+    run_id = str(uuid.uuid4())
+    result = apply_patch(
+        _edit_output(
+            run_id,
+            "crlf.py",
+            "beta = 2\ngamma = 3",
+            "beta = 4\ngamma = 3",
+        ),
+        run_id,
+    )
+
+    assert result.success is True
+    updated = target.read_bytes()
+    assert updated == b"alpha = 1\r\nbeta = 4\r\ngamma = 3\r\n"
+    assert b"\n" not in updated.replace(b"\r\n", b"")
+
+
+def test_create_defaults_to_lf_line_endings(tmp_repo, monkeypatch):
+    _set_target_repo(monkeypatch, tmp_repo)
+    run_id = str(uuid.uuid4())
+    output = CoderHandoff(
+        run_id=run_id,
+        feature_description="Create LF file",
+        files_changed=[
+            FileChange(
+                path="created.py",
+                action="create",
+                content="alpha = 1\r\nbeta = 2\rgamma = 3\n",
+                reason="create",
+            )
+        ],
+        summary="Created file",
+    )
+
+    result = apply_patch(output, run_id)
+
+    assert result.success is True
+    assert (tmp_repo / "created.py").read_bytes() == (
+        b"alpha = 1\nbeta = 2\ngamma = 3\n"
+    )
+
+
+def test_edit_mixed_eol_file_does_not_normalize_whole_file(tmp_repo, monkeypatch):
+    _set_target_repo(monkeypatch, tmp_repo)
+    target = tmp_repo / "mixed.txt"
+    target.write_bytes(b"first\r\nold\nthird\r\n")
+
+    run_id = str(uuid.uuid4())
+    result = apply_patch(
+        _edit_output(run_id, "mixed.txt", "old\nthird", "new\nthird"),
+        run_id,
+    )
+
+    assert result.success is True
+    assert target.read_bytes() == b"first\r\nnew\nthird\r\n"
 
 
 def test_edit_large_readme_like_file_succeeds(tmp_repo, monkeypatch):

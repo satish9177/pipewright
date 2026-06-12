@@ -22,7 +22,9 @@ from backend.models.handoff import CoderHandoff, FileChange
 from backend.pipeline.patch_dry_run import (
     DryRunResult,
     EvaluatedChange,
+    LineEndingStyle,
     MatchStatus,
+    detect_line_ending_style,
     dry_run_changes,
     evaluate_file_change,
     find_unique_match,
@@ -56,6 +58,14 @@ def _output(run_id: str, *changes: FileChange) -> CoderHandoff:
     )
 
 
+def _set_target_repo(monkeypatch, tmp_repo):
+    from backend.config import keys
+    import backend.pipeline.patch_applier as patch_applier
+
+    monkeypatch.setattr(keys.settings, "target_repo_path", str(tmp_repo))
+    monkeypatch.setattr(patch_applier, "save_checkpoint", lambda **kwargs: None)
+
+
 # --------------------------------------------------------------------------- #
 # find_unique_match
 # --------------------------------------------------------------------------- #
@@ -82,13 +92,17 @@ def test_find_unique_match_non_unique():
     assert result.ok is False
 
 
+def test_detect_line_ending_style_classifies_mixed_eol():
+    assert detect_line_ending_style("a\r\nb\n") == LineEndingStyle.MIXED
+
+
 # --------------------------------------------------------------------------- #
 # evaluate_file_change — message-string contract preserved
 # --------------------------------------------------------------------------- #
 
 
 def test_evaluate_valid_edit_returns_new_content(tmp_repo):
-    (tmp_repo / "f.py").write_text("value = 1\n", encoding="utf-8")
+    (tmp_repo / "f.py").write_bytes(b"value = 1\n")
     change = FileChange(
         path="f.py", action="edit",
         old_string="value = 1", new_string="value = 2", reason="r",
@@ -181,7 +195,7 @@ def test_evaluate_invalid_action_message(tmp_repo):
 def test_evaluate_noop_edit_is_appliable(tmp_repo):
     # new_string identical to old_string: appliable at the evaluator layer.
     # NO_CHANGES is decided later, outside the evaluator.
-    (tmp_repo / "f.py").write_text("value = 1\n", encoding="utf-8")
+    (tmp_repo / "f.py").write_bytes(b"value = 1\n")
     change = FileChange(
         path="f.py", action="edit",
         old_string="value = 1", new_string="value = 1", reason="r",
@@ -291,6 +305,33 @@ def test_dry_run_ok_for_valid_prewrite_changes_only(tmp_repo):
     assert result.ok is True
     assert result.error_message is None
     assert len(result.evaluated) == 1
+
+
+def test_dry_run_predicted_eol_bytes_match_real_apply(tmp_repo, monkeypatch):
+    _set_target_repo(monkeypatch, tmp_repo)
+    target = tmp_repo / "crlf.py"
+    target.write_bytes(b"alpha = 1\r\nbeta = 2\r\n")
+    run_id = str(uuid.uuid4())
+    output = _output(
+        run_id,
+        FileChange(
+            path="crlf.py",
+            action="edit",
+            old_string="alpha = 1\nbeta = 2",
+            new_string="alpha = 1\nbeta = 3",
+            reason="r",
+        ),
+    )
+
+    dry = dry_run_changes(output, str(tmp_repo))
+
+    assert dry.ok is True
+    predicted = dry.evaluated[0].new_content.encode("utf-8")
+    assert predicted == b"alpha = 1\r\nbeta = 3\r\n"
+
+    apply_patch(output, run_id)
+
+    assert target.read_bytes() == predicted
 
 
 # --------------------------------------------------------------------------- #

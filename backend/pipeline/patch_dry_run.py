@@ -17,7 +17,9 @@ Strictly read-only. This module:
   - never creates backups or manifests,
   - never checkpoints,
   - never calls git,
-  - never normalizes CRLF/whitespace and never does fuzzy matching.
+  - preserves a target file's detected line-ending style for edit/modify,
+  - defaults new files to LF,
+  - never normalizes mixed-EOL files or does fuzzy matching.
 
 It may read file contents/existence (a read is not a mutation) and use the
 shared safe-path helpers.
@@ -63,6 +65,15 @@ class MatchStatus(str, Enum):
     NON_UNIQUE = "non_unique"
 
 
+class LineEndingStyle(str, Enum):
+    """Detected line-ending style for an existing file."""
+
+    NONE = "none"
+    LF = "lf"
+    CRLF = "crlf"
+    MIXED = "mixed"
+
+
 @dataclass(frozen=True)
 class MatchResult:
     """Outcome of find_unique_match: a status plus the raw occurrence count."""
@@ -93,11 +104,53 @@ def find_unique_match(content: str, old_string: str) -> MatchResult:
     return MatchResult(MatchStatus.OK, 1)
 
 
+def detect_line_ending_style(content: str) -> LineEndingStyle:
+    """
+    Detect whether a file has one clear line-ending style.
+
+    Mixed files intentionally have no inferred style: edits preserve untouched
+    bytes and use the replacement exactly as supplied rather than normalizing
+    the whole file.
+    """
+    crlf_count = content.count("\r\n")
+    without_crlf = content.replace("\r\n", "")
+    lf_count = without_crlf.count("\n")
+    cr_count = without_crlf.count("\r")
+
+    styles_present = sum(1 for count in (crlf_count, lf_count, cr_count) if count)
+    if styles_present == 0:
+        return LineEndingStyle.NONE
+    if styles_present > 1 or cr_count:
+        return LineEndingStyle.MIXED
+    if crlf_count:
+        return LineEndingStyle.CRLF
+    return LineEndingStyle.LF
+
+
+def _to_lf(content: str) -> str:
+    return content.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def normalize_new_file_content(content: str) -> str:
+    """New files have no existing style, so default their text to LF."""
+    return _to_lf(content)
+
+
+def convert_line_endings(content: str, style: LineEndingStyle) -> str:
+    """Convert content to a single detected style; leave mixed/none unchanged."""
+    if style == LineEndingStyle.LF:
+        return _to_lf(content)
+    if style == LineEndingStyle.CRLF:
+        return _to_lf(content).replace("\n", "\r\n")
+    return content
+
+
 def compute_edited_content(
     relative_path: str,
     content: str,
     old_string: str | None,
     new_string: str | None,
+    line_ending_style: LineEndingStyle = LineEndingStyle.NONE,
 ) -> str:
     """
     Validate a targeted edit (old_string must match exactly once) and return the
@@ -111,6 +164,9 @@ def compute_edited_content(
             f"patch_applier.py: edit requires old_string and new_string: "
             f"{relative_path}"
         )
+
+    old_string = convert_line_endings(old_string, line_ending_style)
+    new_string = convert_line_endings(new_string, line_ending_style)
 
     match = find_unique_match(content, old_string)
     if match.status == MatchStatus.ABSENT:
@@ -158,7 +214,7 @@ def read_existing_content(full_path: Path) -> str:
     try:
         if not full_path.exists() or not full_path.is_file():
             return ""
-        return full_path.read_text(encoding="utf-8")
+        return full_path.read_bytes().decode("utf-8")
     except Exception as error:
         raise RuntimeError(
             f"patch_applier.py: failed to read existing content: {error}"
@@ -192,13 +248,13 @@ def evaluate_file_change(change: FileChange, target_repo: str) -> EvaluatedChang
     its resulting content WITHOUT writing anything. Shared by the real apply
     (pass 1) and the dry-run.
 
-    Order and behavior mirror the previous apply_patch pass-1 loop exactly:
+    Order and precondition behavior mirror the previous apply_patch pass-1 loop:
       1. path validation (forbidden + safe relative path),
       2. valid action whitelist,
       3. create target must not exist; edit/modify/delete target must exist,
       4. large-file wholesale-modify guard,
       5. compute new content (delete -> '', edit -> exact-once replace,
-         create/modify -> provided content).
+         create -> LF content, modify -> existing file EOL style when clear).
 
     Raises RuntimeError with the existing message strings on any precondition
     failure. A no-op edit (new_string == old_string) is appliable here; the
@@ -223,6 +279,7 @@ def evaluate_file_change(change: FileChange, target_repo: str) -> EvaluatedChang
         )
 
     original_content = read_existing_content(full_path)
+    line_ending_style = detect_line_ending_style(original_content)
 
     if change.action == "modify":
         original_line_count = len(original_content.splitlines())
@@ -242,6 +299,14 @@ def evaluate_file_change(change: FileChange, target_repo: str) -> EvaluatedChang
             original_content,
             change.old_string,
             change.new_string,
+            line_ending_style,
+        )
+    elif change.action == "create":
+        new_content = normalize_new_file_content(change.content or "")
+    elif change.action == "modify":
+        new_content = convert_line_endings(
+            change.content or "",
+            line_ending_style,
         )
     else:
         new_content = change.content or ""

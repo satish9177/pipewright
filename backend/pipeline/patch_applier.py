@@ -13,7 +13,6 @@ NOT wired into the orchestrator or tester yet — that is #18D. The original
 apply_patch / rollback_patch behavior is unchanged.
 """
 
-import os
 import json
 import shutil
 import difflib
@@ -35,7 +34,6 @@ from backend.utils.path_safety import (
 )
 from backend.pipeline.patch_dry_run import (
     EvaluatedChange,
-    compute_edited_content,
     evaluate_file_change,
 )
 
@@ -112,20 +110,6 @@ def _backup_file(
         )
 
 
-def _apply_edit_to_text(
-    relative_path: str,
-    content: str,
-    old_string: str | None,
-    new_string: str | None,
-) -> str:
-    """
-    Thin wrapper over the shared exact-match helper so pass-2 edit application
-    uses the same matching semantics and the same RuntimeError message strings
-    as pass-1 evaluation (#26B). No fuzzy matching; exact substring matching.
-    """
-    return compute_edited_content(relative_path, content, old_string, new_string)
-
-
 def _generate_file_diff(
     relative_path: str,
     original_content: str,
@@ -175,7 +159,15 @@ def _load_manifest(run_id: str, chunk_number: int = 0) -> list[dict] | None:
         )
 
 
-def _apply_file_change(change: FileChange, full_path: Path) -> None:
+def _write_utf8_bytes(full_path: Path, content: str) -> None:
+    full_path.write_bytes(content.encode("utf-8"))
+
+
+def _apply_file_change(
+    change: FileChange,
+    full_path: Path,
+    new_content: str,
+) -> None:
     try:
         if change.action == "create":
             print(f"[PATCH] Applying create: {change.path}")
@@ -184,7 +176,7 @@ def _apply_file_change(change: FileChange, full_path: Path) -> None:
                     f"patch_applier.py: create requires content: {change.path}"
                 )
             full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_text(change.content, encoding="utf-8")
+            _write_utf8_bytes(full_path, new_content)
             return
 
         if change.action == "modify":
@@ -193,19 +185,12 @@ def _apply_file_change(change: FileChange, full_path: Path) -> None:
                 raise RuntimeError(
                     f"patch_applier.py: modify requires content: {change.path}"
                 )
-            full_path.write_text(change.content, encoding="utf-8")
+            _write_utf8_bytes(full_path, new_content)
             return
 
         if change.action == "edit":
             print(f"[PATCH] Applying edit: {change.path}")
-            current_content = full_path.read_text(encoding="utf-8")
-            updated_content = _apply_edit_to_text(
-                change.path,
-                current_content,
-                change.old_string,
-                change.new_string,
-            )
-            full_path.write_text(updated_content, encoding="utf-8")
+            _write_utf8_bytes(full_path, new_content)
             return
 
         if change.action == "delete":
@@ -301,10 +286,9 @@ def apply_patch(
                 evaluate_file_change(change, target_repo)
             )
 
-        # Pass 2: write, backing up and recording a manifest per touched file.
-        # Unchanged: edits are still re-applied during the write (via
-        # _apply_file_change), and backup/manifest/rollback semantics are
-        # identical to before.
+        # Pass 2: write the exact content computed by pass 1, backing up and
+        # recording a manifest per touched file. This keeps dry-run and real
+        # apply in lockstep, including newline preservation.
         for evaluated in validated_changes:
             change = evaluated.change
             if change.action in ["modify", "delete", "edit"]:
@@ -317,7 +301,11 @@ def apply_patch(
                 "action": change.action
             })
             _write_manifest(run_id, manifest, chunk_number)
-            _apply_file_change(change, evaluated.full_path)
+            _apply_file_change(
+                change,
+                evaluated.full_path,
+                evaluated.new_content,
+            )
 
         diffs = []
         for evaluated in validated_changes:
