@@ -1,6 +1,6 @@
 # Item 17 — Design doc (trivial-task stage profile + provider prompt caching)
 
-**Date:** 2026-06-12 · **Status:** Approved 2026-06-12. **PR 17a (trivial-task stage profile) IMPLEMENTED + merged via PR #288 into `develop`** (commits `221cc9c` / `24e24b8`); pre-merge working-tree review found no must-fix; full backend unit green (2981 passed). **PR 17b (provider prompt caching) is NOT yet implemented** — §7–8 below remain the spec.
+**Date:** 2026-06-12 · **Status:** COMPLETE (both PRs landed 2026-06-12). **PR 17a (trivial-task stage profile) merged via PR #288** (commits `221cc9c` / `24e24b8`). **PR 17b (provider prompt caching) merged via PR #290** (commit `e2b7cc9`). Both had a pre-merge working-tree review with no must-fix; 17b cache flags ship OFF (byte-identical on merge). This completes Phase 4 and Area A (Pipeline) Pass 1. The §1–8 spec below is the as-built record.
 **Brief:** `PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md` (item-17 section). **Proposal source:** §4.7, §5.6, §6 item 17, §18.2, §18.3.
 **Rulings applied:** E0–E5 as approved 2026-06-12 (two PRs; conservative deterministic eligibility + denylist; synthesize-from-triage; sample 50% stable; Anthropic-active/OpenAI-DeepSeek-passive/Gemini-seam caching; typed cache marker).
 
@@ -146,7 +146,7 @@ Additive, nullable, metadata-only — same pattern as the item-12/13/14 column a
 
 ---
 
-# PR 17b — provider prompt caching  ⏳ NOT YET IMPLEMENTED
+# PR 17b — provider prompt caching  ✅ MERGED (PR #290, 2026-06-12)
 
 ## 7. Cache marker + provider translation plan (E4/E5)
 
