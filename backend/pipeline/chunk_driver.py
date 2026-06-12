@@ -119,6 +119,33 @@ class ChunkDriveResult:
     skipped: bool = False
 
 
+@dataclass(frozen=True)
+class RefinementContext:
+    """
+    Marks a STEERED pass as a post-success refinement of a *completed* chunk
+    (item 14), and carries what restore needs if the refinement fails/is rejected.
+
+    Its presence inverts exactly two driver behaviors versus an item-13 steer of
+    a failed chunk: a failed attempt is finalized as *restore-to-completed* (the
+    §0 invariant — the committed chunk and its commit survive) instead of
+    mark-failed, and the success pause stores the refinement marker (which carries
+    no failure report) instead of the recovered-patch marker. Everything else —
+    the same approved plan, scope, preflight, apply, rollback-on-failed-verify,
+    verdict persistence, and gates — is shared with the item-13 path unchanged.
+
+    head_before is the branch tip captured at steer start; the §0 finalizer
+    asserts the tree is restored to it. The remaining fields are threaded onto the
+    pause marker so the orchestrator's approve/reject paths can restore run state.
+    """
+
+    chunk_commit_sha: str | None
+    head_before: str
+    prior_run_status: str
+    prior_run_step: str | None
+    final_gate_superseded: bool
+    prior_completion_summary: dict | None
+
+
 def run_tests_with_rollback(
     patch_result,
     run_id: str,
@@ -313,6 +340,8 @@ def _finalize_failed_attempt(
     *,
     mode: EntryMode,
     prior_attempts: list | None = None,
+    refinement: RefinementContext | None = None,
+    target_repo_path: str | None = None,
 ) -> dict:
     """
     Persist a failed attempt and mark the chunk failed.
@@ -320,8 +349,22 @@ def _finalize_failed_attempt(
     On the auto-retry attempt the report is first folded into the carried
     attempt history (recovery_mode="auto"), exactly as the deleted inline
     retry did at each of its failure sites.
+
+    Item 14: when ``refinement`` is set this is a post-success steer of a
+    *completed* chunk, so marking the chunk failed would destroy a committed,
+    human-approved chunk (the §0 invariant). The attempt has already been
+    recorded in the ledger by the caller; here we hand off to the orchestrator's
+    restore-to-completed finalizer instead of any mark-failed path.
     """
     orch = _orch()
+    if refinement is not None:
+        return orch._finalize_failed_refinement(
+            run_id,
+            chunk_number,
+            refinement=refinement,
+            target_repo_path=target_repo_path,
+            message=report.message,
+        )
     if mode in _HUMAN_ATTEMPT_MODES:
         return orch._persist_retry_patch_failure(
             run_id,
@@ -359,11 +402,17 @@ async def _drive_stages(
     prior_attempts: list | None = None,
     run_step: str | None = None,
     continuation_context: str | None = None,
+    refinement: RefinementContext | None = None,
 ) -> dict | None:
     """
     Drive one chunk attempt. human_retry and steered start after planning
     (same approved plan, never the planner); fresh/resume start at planning.
     The public return remains the old pause-or-None shape.
+
+    When ``refinement`` is set (item 14) the pass is a post-success steer of a
+    completed chunk: same machinery as a steered attempt, but every failure path
+    restores the chunk to completed (the §0 invariant) and the success pause uses
+    the refinement marker. See RefinementContext.
     """
     orch = _orch()
     chunk_number = chunk.chunk_number
@@ -385,11 +434,21 @@ async def _drive_stages(
             final_status="failed",
             target_repo_path=target_repo_path,
         )
-        return orch._fail_chunk(
-            run_id,
-            chunk_number,
-            orch._dependency_not_met_message(chunk_number, unmet, status_by_number),
+        message = orch._dependency_not_met_message(
+            chunk_number, unmet, status_by_number
         )
+        # A completed chunk's dependencies are by definition already completed, so
+        # this is unreachable for a refinement — but a completed chunk must never
+        # be markable failed from ANY driver path (§0).
+        if refinement is not None:
+            return orch._finalize_failed_refinement(
+                run_id,
+                chunk_number,
+                refinement=refinement,
+                target_repo_path=target_repo_path,
+                message=message,
+            )
+        return orch._fail_chunk(run_id, chunk_number, message)
 
     orch.update_chunk_status(run_id, chunk_number, "running")
     orch._update_run_status(
@@ -422,14 +481,26 @@ async def _drive_stages(
             final_status="failed",
             target_repo_path=target_repo_path,
         )
+        # Eligibility verified a clean tree under the same lock moments ago, so a
+        # refinement cannot reach here in practice; if it ever did, restore the
+        # completed chunk rather than fail it (§0).
+        if refinement is not None:
+            return orch._finalize_failed_refinement(
+                run_id,
+                chunk_number,
+                refinement=refinement,
+                target_repo_path=target_repo_path,
+                message=report.message,
+            )
         return orch._fail_chunk_with_report(run_id, chunk_number, report)
 
     base_stage_outcomes: list[StageOutcome] = []
     if mode in _HUMAN_ATTEMPT_MODES:
-        if retry_report is None:
+        if retry_report is None and refinement is None:
             raise ValueError(
                 f"chunk_driver.py: {mode.value} mode requires the current "
-                "PatchFailureReport."
+                "PatchFailureReport (or a RefinementContext for a post-success "
+                "steer)."
             )
         plan = orch._retry_plan_for_chunk(run_id, chunk)
     else:
@@ -487,6 +558,8 @@ async def _drive_stages(
                 auto_retry_base,
                 mode=mode,
                 prior_attempts=prior_attempts,
+                refinement=refinement,
+                target_repo_path=target_repo_path,
             )
 
         preflight_outcome = preflight_stage(
@@ -516,6 +589,8 @@ async def _drive_stages(
                 auto_retry_base,
                 mode=mode,
                 prior_attempts=prior_attempts,
+                refinement=refinement,
+                target_repo_path=target_repo_path,
             )
 
         apply_outcome = await asyncio.to_thread(
@@ -546,6 +621,8 @@ async def _drive_stages(
                 auto_retry_base,
                 mode=mode,
                 prior_attempts=prior_attempts,
+                refinement=refinement,
+                target_repo_path=target_repo_path,
             )
         patch = apply_outcome.payload.patch_result
 
@@ -613,6 +690,8 @@ async def _drive_stages(
                 auto_retry_base,
                 mode=mode,
                 prior_attempts=prior_attempts,
+                refinement=refinement,
+                target_repo_path=target_repo_path,
             )
 
         if auto_retry_base is not None:
@@ -641,15 +720,29 @@ async def _drive_stages(
     stage_outcomes.append(review_outcome)
 
     if mode in _HUMAN_ATTEMPT_MODES:
-        pause = orch._pause_recovered_chunk(
-            run_id,
-            chunk,
-            code,
-            branch_name,
-            retry_report,
-            verification_disclosure=verification_disclosure,
-            recovery_mode=_RECOVERY_MODE_BY_ENTRY_MODE[mode],
-        )
+        if refinement is not None:
+            # Post-success refinement (item 14): there is no failure report to
+            # carry, and the pause marker must record restore context, so this
+            # uses the sibling pause that re-opens the chunk gate over an already
+            # approved one. The new commit lands only on chunk re-approval (D1).
+            pause = orch._pause_refined_chunk(
+                run_id,
+                chunk,
+                code,
+                branch_name,
+                refinement,
+                verification_disclosure=verification_disclosure,
+            )
+        else:
+            pause = orch._pause_recovered_chunk(
+                run_id,
+                chunk,
+                code,
+                branch_name,
+                retry_report,
+                verification_disclosure=verification_disclosure,
+                recovery_mode=_RECOVERY_MODE_BY_ENTRY_MODE[mode],
+            )
         stage_outcomes.append(_gate_outcome(OutcomeClass.NEEDS_HUMAN))
         _record_attempt(
             run_id=run_id,
@@ -728,6 +821,7 @@ async def drive_chunk(
     project_runtime=None,
     run_step: str | None = None,
     continuation_context: str | None = None,
+    refinement: RefinementContext | None = None,
 ) -> ChunkDriveResult:
     """
     Execute one driver pass over one chunk in the given entry mode.
@@ -739,20 +833,31 @@ async def drive_chunk(
              plan + prior handoff + prior diff as text + failure evidence +
              the steer), threaded into the code stage as advisory prompt
              context only. Same gates, rollback, and budget as human_retry.
+             With ``refinement`` set it is a post-success steer of a COMPLETED
+             chunk (item 14): same machinery, but failures restore-to-completed
+             (§0) and the pause uses the refinement marker.
 
     Any exception from the stage sequence is converted to the standard failed
-    chunk result, exactly as the orchestrator's per-chunk guard did. The
-    resume checkpoint phase is deliberately OUTSIDE that guard: an unsafe
-    resume recovery must keep raising out of the resume call, not soften into
-    a per-chunk failure.
+    chunk result, exactly as the orchestrator's per-chunk guard did — EXCEPT for
+    a refinement, where it restores the completed chunk (§0). The resume
+    checkpoint phase is deliberately OUTSIDE that guard: an unsafe resume
+    recovery must keep raising out of the resume call, not soften into a
+    per-chunk failure.
     """
     if mode is EntryMode.AUTO_RETRY:
         raise ValueError(
             "chunk_driver.py: auto_retry is internal to the driver loop; "
             "enter via fresh or resume."
         )
+    if refinement is not None and mode is not EntryMode.STEERED:
+        raise ValueError(
+            "chunk_driver.py: a refinement context is only valid for a steered "
+            "pass (post-success refinement)."
+        )
     if mode in _HUMAN_ATTEMPT_MODES:
-        if retry_report is None:
+        # A refinement carries no failure report (a completed chunk has none);
+        # the RefinementContext is its reason to exist instead.
+        if retry_report is None and refinement is None:
             raise ValueError(
                 f"chunk_driver.py: {mode.value} mode requires retry_report."
             )
@@ -814,6 +919,7 @@ async def drive_chunk(
                 prior_attempts=prior_attempts,
                 run_step=run_step,
                 continuation_context=continuation_context,
+                refinement=refinement,
             )
         except Exception as error:
             _record_attempt(
@@ -827,6 +933,19 @@ async def drive_chunk(
                 target_repo_path=target_repo_path,
                 evidence_refs=[f"exception={type(error).__name__}"],
             )
+            # §0: an unexpected error during a refinement must not mark the
+            # completed chunk failed — restore it instead. Every other mode keeps
+            # the standard failed-chunk conversion.
+            if refinement is not None:
+                return ChunkDriveResult(
+                    pause=_orch()._finalize_failed_refinement(
+                        run_id,
+                        chunk.chunk_number,
+                        refinement=refinement,
+                        target_repo_path=target_repo_path,
+                        message=str(error),
+                    )
+                )
             return ChunkDriveResult(
                 pause=_orch()._fail_chunk(run_id, chunk.chunk_number, error)
             )

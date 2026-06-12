@@ -62,3 +62,10 @@ LARGE_FILE_CONTEXT_LINE_CAP = 1500
 # Diff prompt cap (head-preserving) so a large diff never bloats the prompt
 # or becomes an egress vector.
 REVIEWER_MAX_DIFF_CHARS = 6000
+
+# --- Final-approval summary (chunked_orchestrator.py, item 14) --------------
+# Display-only cap for the cumulative branch diff (base..HEAD) shown in the
+# final-approval summary. Head+tail preserving, mirroring the reviewer's diff-cap
+# discipline: a large diff is truncated, never dropped. The diff is summary/audit
+# display only — it is never persisted to the turn log or memory.
+FINAL_DIFF_MAX_CHARS = 20000

@@ -469,3 +469,35 @@ def commit_message_exists(repo_path: str, message_prefix: str) -> bool:
 
     prefix = message_prefix.strip()
     return any(prefix in line for line in result.stdout.splitlines())
+
+
+def diff_range(base_ref: str, repo_path: str, head_ref: str = "HEAD") -> str:
+    """
+    Return the textual diff of head_ref against base_ref (``git diff base..head``).
+
+    Read-only: never mutates the worktree, index, or refs. Used by the
+    final-approval summary (item 14) to show the cumulative branch diff. Raises
+    on a git error so the caller can fall back to a clear "diff unavailable" note
+    rather than silently showing an empty diff.
+    """
+    if not base_ref or not base_ref.strip():
+        raise RuntimeError("[GIT] diff_range requires a base ref")
+    result = run_git(["diff", f"{base_ref.strip()}..{head_ref}"], repo_path)
+    if result.returncode != 0:
+        raise RuntimeError(f"[GIT] git diff range failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def show_commit(commit_ref: str, repo_path: str) -> str:
+    """
+    Return ``git show`` (patch form) for a single commit. Read-only.
+
+    Used by item 14 to carry a completed chunk's committed diff into the
+    refinement continuation context as text. Raises on a git error.
+    """
+    if not commit_ref or not commit_ref.strip():
+        raise RuntimeError("[GIT] show_commit requires a commit ref")
+    result = run_git(["show", commit_ref.strip()], repo_path)
+    if result.returncode != 0:
+        raise RuntimeError(f"[GIT] git show failed: {result.stderr.strip()}")
+    return result.stdout

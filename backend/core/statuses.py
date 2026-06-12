@@ -64,6 +64,12 @@ class GateStatus:
     APPROVED = "approved"
     REJECTED = "rejected"
     TIMEOUT = "timeout"
+    # A pending final-approval gate that a post-success refinement (item 14)
+    # invalidated: the run returned to chunk execution, so the gate's cumulative
+    # diff is stale. Distinct from a decided gate — it carries decided_at + a
+    # reason, so it is never an orphan, and a new final gate may be created after
+    # it (a decided gate still blocks re-creation).
+    SUPERSEDED = "superseded"
 
 
 class ProjectStatus:

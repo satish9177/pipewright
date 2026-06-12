@@ -63,7 +63,7 @@ from backend.pipeline.chunked_orchestrator import (
     retry_failed_chunk,
     resume_chunked_pipeline,
     settle_run_after_scope_expansion_reject,
-    steer_failed_chunk,
+    steer_chunk,
 )
 from backend.pipeline.scope_expansion import ScopeExpansionValidationError
 from backend.pipeline.scope_expansion_store import (
@@ -962,19 +962,27 @@ class RetryChunkRequest(BaseModel):
 
 
 class SteerChunkRequest(BaseModel):
-    # The steered-attempt request (item 13): the retry_with_instruction action.
-    # steer_text length is enforced against the policy cap in the orchestrator
-    # (rejected, never truncated). confirm_in_scope is the explicit §5.3
-    # re-confirm: the human asserts the steer should proceed strictly inside
-    # the approved scope even though it mentions an outside path. It grants no
-    # scope; scope_guard still enforces at apply.
-    failure_report_id: str = Field(min_length=1)
+    # The steered-attempt request: the retry_with_instruction action (item 13)
+    # for a failed chunk, and the post-success refinement (item 14) for a
+    # completed chunk. steer_text length is enforced against the policy cap in
+    # the orchestrator (rejected, never truncated). confirm_in_scope is the
+    # explicit §5.3 re-confirm: the human asserts the steer should proceed
+    # strictly inside the approved scope even though it mentions an outside path.
+    # It grants no scope; scope_guard still enforces at apply.
+    #
+    # failure_report_id is OPTIONAL (item 14): a completed chunk has no failure
+    # report. It stays required-in-practice for failed-chunk steering — when a
+    # failed chunk is steered without it, the eligibility evaluator returns the
+    # missing-report 409 exactly as before. The UI sends it for failed chunks.
+    failure_report_id: str | None = None
     steer_text: str = Field(min_length=1)
     confirm_in_scope: bool = False
 
     @field_validator("failure_report_id")
     @classmethod
-    def failure_report_id_must_not_be_blank(cls, value: str) -> str:
+    def failure_report_id_must_not_be_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         if _is_blank(value):
             raise ValueError("Field must not be blank")
         return value.strip()
@@ -2662,23 +2670,27 @@ async def steer_chunk_route(
     request: SteerChunkRequest,
 ):
     """
-    Steer a failed chunk with a human instruction (item 13) — the execution
-    path for the retry_with_instruction action the failure reports advertise.
+    Steer a chunk with a human instruction — one surface, dispatched on the
+    chunk's status. A FAILED chunk runs the item-13 retry_with_instruction path;
+    a COMPLETED chunk runs the item-14 post-success refinement (re-pauses at the
+    chunk gate, new commit on re-approval, final approval re-required).
 
     Runs the same already-approved plan from the code stage with the steer as
-    advisory continuation context. Same gates as retry: a successful steered
-    attempt pauses at awaiting_chunk_approval and commits only through the
-    unchanged approval path; this route never commits and never expands scope.
+    advisory continuation context. Same gates: a successful steered attempt
+    pauses at awaiting_chunk_approval and commits only through the unchanged
+    approval path; this route never commits and never expands scope. A failed
+    refinement leaves the completed chunk and its commit intact (§0).
 
     Error mapping (a refused steer mutates nothing):
       - blank/over-cap steer text                      -> 422
-      - ineligible (stale report, cap exhausted, ...)  -> the decision's code
+      - ineligible (stale report, cap exhausted, run
+        not refinable, chunk not steerable, ...)       -> the decision's code
       - steer mentions a path outside effective scope  -> 409 with the §5.3
         re-confirm / scope-expansion offer (nothing was run)
     """
     try:
         _ensure_mutating_run(run_id)
-        result = await steer_failed_chunk(
+        result = await steer_chunk(
             run_id,
             chunk_number,
             request.failure_report_id,

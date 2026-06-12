@@ -35,6 +35,7 @@ from backend.pipeline.approval_gate import (
     create_final_approval_gate_and_mark_run,
     create_memory_conflict_gate_and_mark_run,
     get_approved_memory_conflict_gate,
+    supersede_pending_final_gate_and_mark_run,
 )
 from backend.pipeline.chunk_store import (
     get_chunk_plan_status,
@@ -61,15 +62,21 @@ from backend.pipeline.patch_dry_run import dry_run_changes  # noqa: F401
 from backend.pipeline.patch_failures import (
     PatchFailureReport,
     PatchFailureType,
+    PatchRecoveryAttempt,
     RECOVERED_PATCH_REVIEW_KIND,
     RETRY_INELIGIBLE_WRONG_BRANCH,
+    STEER_INELIGIBLE_CHUNK_STATE,
     RecoveredPatchReviewSummary,
+    RefinementReviewContext,
+    count_human_attempt_ledger_rows,
+    evaluate_completed_chunk_steer_eligibility,
     evaluate_patch_retry_eligibility,
     evaluate_patch_steer_eligibility,
     patch_failure_report_from_completion_summary,
     patch_failure_report_to_completion_summary,
     record_initial_attempt,
     record_retry_attempt,
+    recovered_patch_review_from_completion_summary,
     recovered_patch_review_to_completion_summary,
 )
 # run_planner (and run_tests below) have no direct caller left in this module:
@@ -101,6 +108,7 @@ from backend.pipeline.scope_expansion_store import (
 )
 from backend.pipeline.policy import (
     AUTO_RETRY_INFRA_BUDGET,
+    FINAL_DIFF_MAX_CHARS,
     MAX_STEER_TEXT_CHARS,
     STEER_CONTINUATION_DIFF_MAX_CHARS,
 )
@@ -707,6 +715,7 @@ def _pause_for_chunk_approval(
     coder_output: CoderHandoff,
     branch_name: str,
     verification_disclosure: dict | None = None,
+    allow_after_approved: bool = False,
 ) -> dict:
     summary = _chunk_approval_summary(
         run_id,
@@ -718,6 +727,7 @@ def _pause_for_chunk_approval(
         run_id,
         chunk.chunk_number,
         summary,
+        allow_after_approved=allow_after_approved,
     )
     _publish_chunk_status_changed(
         run_id,
@@ -896,10 +906,30 @@ def _record_approval_completion_attempt(
         )
 
 
+def _cumulative_branch_diff(run_id: str, target_repo_path: str) -> str:
+    """
+    The cumulative diff of the run branch (HEAD) against the run's recorded base
+    (start_head_sha), head+tail capped by policy.FINAL_DIFF_MAX_CHARS (item 14, D3).
+
+    Display/audit only — this text goes into the final-approval gate summary and
+    is NEVER persisted to the turn log or memory. Deterministic: a plain git
+    range diff. Raises on any git/lookup error so the caller can show a clear
+    "unavailable" note rather than an empty/misleading diff.
+    """
+    base_sha = _load_start_context(run_id).get("start_head_sha")
+    if not base_sha:
+        raise RuntimeError("run has no recorded base commit (start_head_sha)")
+    diff = local_git.diff_range(base_sha, target_repo_path)
+    if not diff.strip():
+        return "(no differences from the run's base commit)"
+    return _truncate_head_tail(diff, FINAL_DIFF_MAX_CHARS)
+
+
 def _build_final_approval_summary(
     run_id: str,
     plan_status: ChunkPlanResponse,
     branch_name: str,
+    target_repo_path: str | None = None,
 ) -> str:
     lines = [
         f"Final approval required for chunked run {run_id}",
@@ -913,6 +943,16 @@ def _build_final_approval_summary(
         lines.append(f"{chunk.chunk_number}. {chunk.title} - {chunk.status}")
         if chunk.completion_summary:
             lines.append(f"   Summary: {chunk.completion_summary}")
+    # Cumulative diff (item 14, D3): the whole branch vs. its base, so the human
+    # approving the run sees what they are approving (final approval showed no
+    # diff at all before). Display-only and best-effort — a diff failure must
+    # never block the gate, so it degrades to a clear note.
+    if target_repo_path:
+        lines.extend(["", "Cumulative diff (branch vs. base):"])
+        try:
+            lines.append(_cumulative_branch_diff(run_id, target_repo_path))
+        except Exception as error:
+            lines.append(f"[cumulative diff unavailable: {error}]")
     lines.extend([
         "",
         "This approval allows the run to proceed to PR creation in a later phase.",
@@ -961,7 +1001,9 @@ def _mark_awaiting_final_approval(
     _require_all_chunks_completed(latest_status)
     if target_repo_path:
         local_git.ensure_clean_worktree(target_repo_path)
-    summary = _build_final_approval_summary(run_id, latest_status, branch_name)
+    summary = _build_final_approval_summary(
+        run_id, latest_status, branch_name, target_repo_path
+    )
     create_final_approval_gate_and_mark_run(
         run_id,
         summary,
@@ -2098,6 +2140,48 @@ def _approve_chunk_and_commit_locked(
     _validate_target_repo(target_repo_path, require_clean=False)
 
     code = _load_code_from_checkpoint(run_id, chunk_number)
+
+    # Item 14: a post-success refinement pause carries a refinement block on its
+    # recovered_patch_review marker. If the regeneration changed nothing (no
+    # touched files, or the patch was byte-identical so the tree is clean),
+    # committing would either fail loudly or — via _commit_and_complete_chunk's
+    # :790/:800 guards — mark this GOOD chunk failed (traps a+b). Intercept here:
+    # no commit, the chunk stays completed with its original committed summary,
+    # the run settles, and the original commit stands.
+    refinement_marker = recovered_patch_review_from_completion_summary(
+        _parse_completion_summary(chunk_status.completion_summary)
+    )
+    refinement_block = (
+        refinement_marker.refinement if refinement_marker is not None else None
+    )
+    if refinement_block is not None and (
+        not _files_touched(code)
+        or local_git.is_working_tree_clean(target_repo_path)
+    ):
+        _decide_pending_chunk_gate(run_id, chunk_number, "approved")
+        if refinement_block.prior_completion_summary is not None:
+            save_chunk_completion_summary(
+                run_id, chunk_number, refinement_block.prior_completion_summary
+            )
+        update_chunk_status(run_id, chunk_number, "completed")
+        narrative = _settle_run_after_refinement_resolution(
+            run_id, chunk_number, refinement_block, target_repo_path
+        )
+        print(
+            f"[CHUNKED] Refinement no-op, original commit stands | "
+            f"run_id={run_id} | chunk={chunk_number}"
+        )
+        return {
+            "status": "refinement_no_op",
+            "run_id": run_id,
+            "chunk_number": chunk_number,
+            "chunk_status": "completed",
+            "detail": (
+                "The refinement produced no change; the original commit stands. "
+                + narrative
+            ),
+        }
+
     test_result = _load_test_result_from_checkpoint(run_id, chunk_number)
     verification_baseline = _load_verification_baseline(run_id)
     verification_disclosure = (
@@ -2220,6 +2304,55 @@ def _reject_chunk_and_rollback_locked(
         "rejected",
         reason or "Chunk approval rejected",
     )
+
+    # Item 14: rejecting a post-success REFINEMENT must not destroy the good
+    # committed chunk (§0's spirit on the reject leg, contract §9: never a
+    # dead-end of a completed chunk). The refinement's patch has been rolled back
+    # above; restore the chunk to completed with its original committed summary
+    # and settle the run, instead of marking it rejected and failing the run.
+    refinement_marker = recovered_patch_review_from_completion_summary(
+        _parse_completion_summary(chunk_status.completion_summary)
+    )
+    refinement_block = (
+        refinement_marker.refinement if refinement_marker is not None else None
+    )
+    if refinement_block is not None:
+        if refinement_block.prior_completion_summary is not None:
+            save_chunk_completion_summary(
+                run_id, chunk_number, refinement_block.prior_completion_summary
+            )
+        else:
+            # Never restore the marker itself (it would nest on a later
+            # refinement); fall back to a minimal honest success-shaped note.
+            save_chunk_completion_summary(
+                run_id,
+                chunk_number,
+                {
+                    "summary": (
+                        "Chunk completed; a later refinement was rejected and the "
+                        "original commit was retained."
+                    )
+                },
+            )
+        update_chunk_status(run_id, chunk_number, "completed")
+        narrative = _settle_run_after_refinement_resolution(
+            run_id, chunk_number, refinement_block, target_repo_path
+        )
+        print(
+            f"[CHUNKED] Refinement rejected, original commit retained | "
+            f"run_id={run_id} | chunk={chunk_number}"
+        )
+        return {
+            "status": "refinement_rejected",
+            "run_id": run_id,
+            "chunk_number": chunk_number,
+            "chunk_status": "completed",
+            "detail": (
+                "The refinement was rejected; the original commit stands. "
+                + narrative
+            ),
+        }
+
     update_chunk_status(
         run_id,
         chunk_number,
@@ -2262,6 +2395,23 @@ def reject_chunk_and_rollback(
 # never re-triages, never runs the planner, never mutates files_expected, and
 # never weakens scope_guard.
 # --------------------------------------------------------------------------- #
+
+
+def _parse_completion_summary(raw) -> dict | None:
+    """
+    Parse a chunk's stored completion_summary (str JSON or dict) into a dict.
+
+    Returns None for a missing/blank/malformed value. Pure read; never raises.
+    Used by item 14 to capture a completed chunk's committed success summary so
+    it can be restored verbatim if the refinement fails or is rejected.
+    """
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def _load_chunk_failure_report(
@@ -2730,6 +2880,22 @@ def _truncate_head(value: str, cap: int) -> str:
     return value[:cap] + "\n[truncated]"
 
 
+def _truncate_head_tail(value: str, cap: int) -> str:
+    """
+    Head+tail truncation: keep the first and last halves of ``value`` when it is
+    over ``cap``, with a marker between (item 14: a large cumulative diff is
+    truncated, never dropped — the start and end both carry signal). Used for the
+    final-approval cumulative diff (a refinement's change tends to live at the
+    tail of a long diff, so head-only would hide it).
+    """
+    if len(value) <= cap:
+        return value
+    half = cap // 2
+    head = value[:half]
+    tail = value[-(cap - half):]
+    return f"{head}\n[... truncated {len(value) - cap} characters ...]\n{tail}"
+
+
 def _build_steer_continuation_context(
     run_id: str,
     chunk: ChunkDefinition,
@@ -2839,7 +3005,7 @@ def _record_steer_turn(
 async def _retry_failed_chunk_locked(
     run_id: str,
     chunk_number: int,
-    failure_report_id: str,
+    failure_report_id: str | None,
     plan_status: ChunkPlanResponse,
     *,
     steer_text: str | None = None,
@@ -3035,6 +3201,547 @@ async def steer_failed_chunk(
             steer_text=validated_steer,
             confirm_in_scope=confirm_in_scope,
         )
+
+
+# ---------------------------------------------------------------------------
+# Post-success refinement: steer a COMPLETED chunk (Phase 3 item 14)
+# ---------------------------------------------------------------------------
+
+
+def _load_run_state(run_id: str) -> dict[str, str | None]:
+    """Read a run's current status + step (item 14 refinement restore context)."""
+    init_db()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT status, current_step FROM pipeline_runs WHERE id = :run_id"),
+            {"run_id": run_id},
+        ).fetchone()
+    if row is None:
+        raise ValueError(f"chunked_orchestrator.py: run not found: {run_id}")
+    data = dict(row._mapping)
+    return {"status": data.get("status"), "current_step": data.get("current_step")}
+
+
+def _chunk_commit_sha(
+    run_id: str,
+    chunk_number: int,
+    target_repo_path: str,
+) -> str | None:
+    """
+    Best-effort: the commit a completed chunk produced (item 14 continuation
+    context + restore audit). Prefer the newest completed attempt-ledger row's
+    recorded HEAD; fall back to a git-log grep of the chunk's commit message.
+    Returns None when neither yields a sha — the continuation diff then degrades
+    to an explicit "unavailable" note, never a block.
+    """
+    try:
+        for attempt in reversed(list_chunk_attempts(run_id, chunk_number)):
+            if attempt.get("final_status") != "completed":
+                continue
+            head_sha = (attempt.get("head_sha") or "").strip()
+            if head_sha:
+                return head_sha
+    except Exception as error:
+        logger.warning(
+            "refinement: ledger sha lookup failed | run_id=%s | chunk=%s | error=%s",
+            run_id, chunk_number, error,
+        )
+    try:
+        result = local_git.run_git(
+            ["log", "--grep", f"chunk {chunk_number}:", "-n", "1", "--format=%H"],
+            target_repo_path,
+        )
+        sha = result.stdout.strip() if result.returncode == 0 else ""
+        return sha or None
+    except Exception:
+        return None
+
+
+def _build_refinement_continuation_context(
+    run_id: str,
+    chunk: ChunkDefinition,
+    chunk_commit_sha: str | None,
+    prior_completion_summary: dict | None,
+    steer_text: str,
+    target_repo_path: str,
+) -> str:
+    """
+    Assemble the continuation context for a post-success refinement (item 14).
+
+    Unlike the item-13 failed-chunk continuation there is NO failure-evidence
+    section — the chunk succeeded. The committed diff is read with ``git show``
+    (the committed truth: the newest code/patch checkpoints describe the latest
+    attempt, which after any prior failed refinement is NOT the commit). Context
+    only; the working tree is never the prior diff. Diff capped head+tail by
+    policy.STEER_CONTINUATION_DIFF_MAX_CHARS.
+    """
+    parts: list[str] = []
+
+    summary_text = None
+    if isinstance(prior_completion_summary, dict):
+        summary_text = (
+            prior_completion_summary.get("summary")
+            or prior_completion_summary.get("chunk_description")
+        )
+    if summary_text:
+        parts.append(f"[Committed chunk summary]\n{summary_text}")
+
+    committed_diff = ""
+    if chunk_commit_sha:
+        try:
+            committed_diff = local_git.show_commit(chunk_commit_sha, target_repo_path)
+        except Exception:
+            committed_diff = ""
+    if committed_diff.strip():
+        parts.append(
+            "[Committed diff for this chunk (already on the run branch)]\n"
+            + _truncate_head_tail(committed_diff, STEER_CONTINUATION_DIFF_MAX_CHARS)
+        )
+    else:
+        parts.append(
+            "[Committed diff for this chunk]\n(committed diff unavailable)"
+        )
+
+    parts.append(
+        "[Human steer for this refinement]\n"
+        f"{steer_text}\n"
+        "Refine the already-committed change for this chunk to satisfy this "
+        "steer, within the approved plan and approved files. It does not expand "
+        "which files you may change."
+    )
+    return "\n\n".join(parts)
+
+
+def _pause_refined_chunk(
+    run_id: str,
+    chunk: ChunkDefinition,
+    code: CoderHandoff,
+    branch_name: str,
+    refinement: "chunk_driver.RefinementContext",
+    verification_disclosure: dict | None = None,
+) -> dict:
+    """
+    Success pause for a post-success refinement (item 14, D1): store the
+    recovered_patch_review marker carrying the refinement restore block, then
+    pause at the chunk gate. The regenerated patch is on disk but UNCOMMITTED;
+    the new commit lands only on chunk re-approval through the existing approval
+    path. No commit happens here. ``allow_after_approved`` lets the gate re-open
+    over the chunk's already-approved gate (the only place that is permitted).
+    """
+    recovery_attempt_id = str(uuid.uuid4())
+    touched = _files_touched(code)
+    attempt = PatchRecoveryAttempt(
+        attempt_id=recovery_attempt_id,
+        attempt_number=1,
+        started_at=_utc_now(),
+        recovery_mode="human_with_instruction",
+        failure_type=None,
+        failed_step=None,
+        changed_files_attempted=touched,
+        changed_files_actual=touched,
+        scope_ok=True,
+        test_outcome="passed",
+        outcome="recovered",
+        human_decision="retry_with_instruction",
+        # Regenerated patch applied but not yet committed: tree intentionally
+        # not clean at the pause point.
+        working_tree_clean=False,
+        rollback_performed=False,
+    )
+    summary = RecoveredPatchReviewSummary(
+        failure_report_id=str(uuid.uuid4()),
+        recovery_attempt_id=recovery_attempt_id,
+        attempts=[attempt],
+        refinement=RefinementReviewContext(
+            chunk_commit_sha=refinement.chunk_commit_sha,
+            head_before=refinement.head_before,
+            prior_run_status=refinement.prior_run_status,
+            prior_run_step=refinement.prior_run_step,
+            final_gate_superseded=refinement.final_gate_superseded,
+            prior_completion_summary=refinement.prior_completion_summary,
+        ),
+    )
+    save_chunk_completion_summary(
+        run_id,
+        chunk.chunk_number,
+        recovered_patch_review_to_completion_summary(summary),
+    )
+    return _pause_for_chunk_approval(
+        run_id,
+        chunk,
+        code,
+        branch_name,
+        verification_disclosure=verification_disclosure,
+        allow_after_approved=True,
+    )
+
+
+def _settle_run_after_refinement_resolution(
+    run_id: str,
+    chunk_number: int,
+    refinement_block,
+    target_repo_path: str | None,
+) -> str:
+    """
+    Restore run state after a refinement is rejected, fails, or is a no-op (item
+    14). The chunk itself is already restored to ``completed`` by the caller; this
+    only moves the RUN back to where it was. Shared by the §0 finalizer and the
+    approve/reject refinement legs so the restore rule lives in one place.
+
+    final_gate_superseded ⇒ re-create the (superseded) final gate via the
+    existing path (all chunks completed + clean tree both hold by construction).
+    Otherwise restore the captured prior run status/step (only ever
+    ``chunk_approved`` given the narrowed refinable window). Returns a short
+    human narrative describing the settled state.
+    """
+    final_gate_superseded = bool(getattr(refinement_block, "final_gate_superseded", False))
+    prior_status = getattr(refinement_block, "prior_run_status", None)
+    prior_step = getattr(refinement_block, "prior_run_step", None)
+    branch_name = f"pipewright/{run_id[:8]}"
+    if final_gate_superseded:
+        _mark_awaiting_final_approval(
+            run_id,
+            get_chunk_plan_status(run_id),
+            branch_name,
+            target_repo_path,
+        )
+        return (
+            "The completed chunk and its commit are intact; final approval has "
+            "been re-opened for the run."
+        )
+    if prior_status:
+        _update_run_status(
+            run_id,
+            prior_status,
+            prior_step or prior_status,
+            chunk_number,
+        )
+    return "The completed chunk and its commit are intact."
+
+
+def _finalize_failed_refinement(
+    run_id: str,
+    chunk_number: int,
+    *,
+    refinement: "chunk_driver.RefinementContext",
+    target_repo_path: str | None,
+    message: str,
+) -> dict:
+    """
+    The §0 invariant: finalize a FAILED post-success refinement WITHOUT degrading
+    the completed chunk. Called by the driver in place of every mark-failed path.
+
+    Rolls the working tree back to the chunk's existing commit (stage rollback
+    already ran on a failed verify; this re-checks and rolls back once more
+    defensively), asserts HEAD is unchanged, leaves the chunk ``completed`` with
+    its committed completion summary UNTOUCHED, settles the run, and returns a
+    clear narrative. The failed attempt is already in the ledger (driver-written);
+    the turn row is written by the caller. The good commit always survives.
+    """
+    tree_recovered = True
+    if target_repo_path:
+        try:
+            if not local_git.is_working_tree_clean(target_repo_path):
+                try:
+                    rollback_patch(run_id, chunk_number)
+                except Exception as rollback_error:
+                    logger.warning(
+                        "refinement restore: rollback failed | run_id=%s | "
+                        "chunk=%s | error=%s",
+                        run_id, chunk_number, rollback_error,
+                    )
+                tree_recovered = local_git.is_working_tree_clean(target_repo_path)
+        except Exception as error:
+            logger.warning(
+                "refinement restore: clean-tree check failed | run_id=%s | "
+                "chunk=%s | error=%s",
+                run_id, chunk_number, error,
+            )
+            tree_recovered = False
+        if tree_recovered and refinement.head_before:
+            try:
+                current_head = local_git.get_current_hash(target_repo_path)
+                if current_head != refinement.head_before:
+                    logger.error(
+                        "refinement restore: HEAD drift after failed refinement | "
+                        "run_id=%s | chunk=%s | expected=%s | actual=%s",
+                        run_id, chunk_number,
+                        refinement.head_before, current_head,
+                    )
+            except Exception as error:
+                logger.warning(
+                    "refinement restore: HEAD read failed | run_id=%s | "
+                    "chunk=%s | error=%s",
+                    run_id, chunk_number, error,
+                )
+
+    # The completed chunk survives untouched (status + committed summary).
+    update_chunk_status(run_id, chunk_number, "completed")
+
+    if not tree_recovered:
+        _update_run_status(
+            run_id,
+            "failed",
+            f"chunk_{chunk_number}_refinement_recovery_failed",
+            chunk_number,
+        )
+        narrative = (
+            "The refinement failed and the working tree could not be restored "
+            "cleanly. The committed chunk is intact, but manual cleanup is "
+            "required before resuming."
+        )
+    else:
+        try:
+            narrative = _settle_run_after_refinement_resolution(
+                run_id, chunk_number, refinement, target_repo_path
+            )
+        except Exception as error:
+            logger.warning(
+                "refinement restore: run settle failed | run_id=%s | chunk=%s | "
+                "error=%s",
+                run_id, chunk_number, error,
+            )
+            narrative = "The completed chunk and its commit are intact."
+
+    print(
+        f"[CHUNKED] Refinement failed, chunk preserved | run_id={run_id} | "
+        f"chunk={chunk_number}"
+    )
+    return {
+        "status": "refinement_failed",
+        "run_id": run_id,
+        "chunk_number": chunk_number,
+        "chunk_status": "completed",
+        "error": message,
+        "detail": narrative,
+    }
+
+
+async def _refine_completed_chunk_locked(
+    run_id: str,
+    chunk_number: int,
+    plan_status: ChunkPlanResponse,
+    *,
+    steer_text: str,
+    confirm_in_scope: bool = False,
+) -> dict:
+    """
+    Steer a COMPLETED, already-committed chunk (item 14, the "wrong sentence"
+    case). Assumes the project repo lock is already held.
+
+    Re-runs from the code stage with the SAME approved plan and files_expected,
+    threading a RefinementContext so the driver restores-to-completed on failure
+    (§0) and re-pauses at the chunk gate on success (D1). No failure report is
+    required or consulted (a completed chunk has none); the shared per-chunk
+    HUMAN_ATTEMPT_BUDGET is counted from the attempt ledger (D2). Never re-plans,
+    never mutates files_expected, never weakens scope_guard, never commits here.
+    """
+    if plan_status.chunk_plan_status != "approved":
+        raise RuntimeError(
+            f"chunked_orchestrator.py: chunk plan is not approved. "
+            f"run_id={run_id} | status={plan_status.chunk_plan_status}"
+        )
+
+    definitions = _definition_by_number(plan_status)
+    chunk = definitions.get(chunk_number)
+    chunk_status = next(
+        (item for item in plan_status.chunks if item.chunk_number == chunk_number),
+        None,
+    )
+    if chunk is None or chunk_status is None:
+        raise RuntimeError(
+            f"chunked_orchestrator.py: chunk not found for refinement. "
+            f"run_id={run_id} | chunk={chunk_number}"
+        )
+
+    project, project_runtime = _project_runtime_for_plan(plan_status)
+    target_repo_path = project["repo_path"]
+    _validate_target_repo(target_repo_path, require_clean=False)
+
+    # Branch guard (#26D3a, reused): refinement runs against the working tree, so
+    # HEAD must already be on this run's branch. Read-only, side-effect-free 409.
+    branch_block = _retry_branch_precheck(run_id, chunk_number, target_repo_path)
+    if branch_block is not None:
+        return branch_block
+
+    run_state = _load_run_state(run_id)
+    prior_run_status = run_state["status"]
+    prior_run_step = run_state["current_step"]
+
+    # Eligibility (item 14 sibling): NO failure report consulted. Shared per-chunk
+    # human-attempt budget from the ledger (D2).
+    status_by_number = _status_by_number(plan_status)
+    dependencies_met = not _unmet_dependencies(chunk, status_by_number)
+    working_tree_clean = local_git.is_working_tree_clean(target_repo_path)
+    human_attempts_used = count_human_attempt_ledger_rows(
+        list_chunk_attempts(run_id, chunk_number)
+    )
+    decision = evaluate_completed_chunk_steer_eligibility(
+        chunk_status=chunk_status.status,
+        run_status=prior_run_status,
+        dependencies_met=dependencies_met,
+        working_tree_clean=working_tree_clean,
+        human_attempts_used=human_attempts_used,
+    )
+    if not decision.eligible:
+        return _retry_ineligible_result(run_id, chunk_number, decision)
+
+    # Conservative §5.3 pre-check (reused verbatim, DECIDED 2026-06-12): a steer
+    # mentioning a path outside EFFECTIVE approved scope does not run until the
+    # human re-confirms or routes through #27. files_expected here is effective
+    # scope. scope_guard remains the hard backstop at apply.
+    if not confirm_in_scope:
+        outside = _steer_mentions_outside_scope(steer_text, chunk.files_expected)
+        if outside:
+            return _steer_scope_confirmation_result(run_id, chunk_number, outside)
+
+    branch_name = f"pipewright/{run_id[:8]}"
+    head_before = local_git.get_current_hash(target_repo_path)
+    chunk_commit_sha = _chunk_commit_sha(run_id, chunk_number, target_repo_path)
+    prior_completion_summary = _parse_completion_summary(chunk_status.completion_summary)
+
+    continuation_context = _build_refinement_continuation_context(
+        run_id,
+        chunk,
+        chunk_commit_sha,
+        prior_completion_summary,
+        steer_text,
+        target_repo_path,
+    )
+
+    # Re-open final approval (the #281 generalization): if the run is awaiting
+    # final approval, that gate's cumulative diff is now stale. Supersede it
+    # atomically and move the run back to chunk execution BEFORE the drive. A lost
+    # race (final gate just decided) is a clean, side-effect-free 409.
+    final_gate_superseded = False
+    if prior_run_status == "awaiting_final_approval":
+        try:
+            supersede_pending_final_gate_and_mark_run(run_id, chunk_number)
+        except RuntimeError:
+            return {
+                "status": "retry_ineligible",
+                "run_id": run_id,
+                "chunk_number": chunk_number,
+                "eligible": False,
+                "reason": "final_gate_decided",
+                "status_code": 409,
+                "detail": (
+                    "The final-approval gate was just decided; refresh the run "
+                    "and try again. Nothing was changed."
+                ),
+            }
+        final_gate_superseded = True
+
+    refinement = chunk_driver.RefinementContext(
+        chunk_commit_sha=chunk_commit_sha,
+        head_before=head_before,
+        prior_run_status=prior_run_status,
+        prior_run_step=prior_run_step,
+        final_gate_superseded=final_gate_superseded,
+        prior_completion_summary=prior_completion_summary,
+    )
+
+    try:
+        drive = await chunk_driver.drive_chunk(
+            chunk_driver.EntryMode.STEERED,
+            run_id=run_id,
+            project_id=plan_status.project_id,
+            chunk=chunk,
+            target_repo_path=target_repo_path,
+            branch_name=branch_name,
+            status_by_number=status_by_number,
+            verification_baseline=_load_verification_baseline(run_id),
+            retry_report=None,
+            prior_attempts=None,
+            project_runtime=project_runtime,
+            run_step=f"chunk_{chunk_number}_refine",
+            continuation_context=continuation_context,
+            refinement=refinement,
+        )
+    except Exception:
+        # The driver converts stage failures to _finalize_failed_refinement
+        # internally, so reaching here is a truly unexpected raise. If we already
+        # superseded the final gate, restore it so the run is never left without
+        # one before propagating.
+        if final_gate_superseded:
+            try:
+                _mark_awaiting_final_approval(
+                    run_id,
+                    get_chunk_plan_status(run_id),
+                    branch_name,
+                    target_repo_path,
+                )
+            except Exception as restore_error:
+                logger.warning(
+                    "refinement: final-gate restore after unexpected error "
+                    "failed | run_id=%s | chunk=%s | error=%s",
+                    run_id, chunk_number, restore_error,
+                )
+        raise
+
+    result = drive.pause
+    _record_steer_turn(
+        run_id,
+        plan_status.project_id,
+        chunk_number,
+        steer_text,
+        outcome=(result or {}).get("status"),
+    )
+    return result
+
+
+async def steer_chunk(
+    run_id: str,
+    chunk_number: int,
+    failure_report_id: str | None,
+    steer_text: str,
+    *,
+    confirm_in_scope: bool = False,
+) -> dict:
+    """
+    Unified steer entry (item 14): dispatch on the chunk's fresh in-lock status.
+
+    A ``completed`` chunk routes to the post-success refinement path; a ``failed``
+    chunk routes to item 13's failed-chunk steer (unchanged — a missing
+    failure_report_id flows into its evaluator and 409s as today); any other
+    status is a side-effect-free 422. Validates steer text before the lock and
+    loads all eligibility-relevant state fresh inside the lock (TOCTOU), exactly
+    like steer_failed_chunk.
+    """
+    validated_steer = _validate_steer_text(steer_text)
+    project_id = get_chunk_plan_status(run_id).project_id
+    async with project_repo_lock(project_id):
+        plan_status = get_chunk_plan_status(run_id)
+        chunk_status = next(
+            (item for item in plan_status.chunks if item.chunk_number == chunk_number),
+            None,
+        )
+        status = chunk_status.status if chunk_status is not None else None
+        if status == "completed":
+            return await _refine_completed_chunk_locked(
+                run_id,
+                chunk_number,
+                plan_status,
+                steer_text=validated_steer,
+                confirm_in_scope=confirm_in_scope,
+            )
+        if status == "failed":
+            return await _retry_failed_chunk_locked(
+                run_id,
+                chunk_number,
+                failure_report_id,
+                plan_status,
+                steer_text=validated_steer,
+                confirm_in_scope=confirm_in_scope,
+            )
+        return {
+            "status": "retry_ineligible",
+            "run_id": run_id,
+            "chunk_number": chunk_number,
+            "eligible": False,
+            "reason": STEER_INELIGIBLE_CHUNK_STATE,
+            "status_code": 422,
+        }
 
 
 # ---------------------------------------------------------------------------

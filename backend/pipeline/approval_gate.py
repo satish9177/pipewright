@@ -9,6 +9,7 @@ import json
 import asyncio
 from datetime import datetime, timezone
 from sqlalchemy import text
+from backend.core.statuses import GateStatus
 from backend.db.database import engine
 from backend.models.handoff import PipelineTestResult, ApprovalRequest
 from backend.checkpoint.checkpoint_store import save_checkpoint
@@ -166,6 +167,7 @@ def _create_chunk_approval_gate_for_conn(
     chunk_number: int,
     summary: str | None = None,
     allow_new_attempt: bool = False,
+    allow_after_approved: bool = False,
 ) -> dict:
     existing = _get_chunk_gate_for_conn(conn, run_id, chunk_number)
     if existing:
@@ -177,7 +179,16 @@ def _create_chunk_approval_gate_for_conn(
                 f"gate_id={existing['id']}"
             )
             return existing
-        if not allow_new_attempt or status != "rejected":
+        # A new attempt over a decided chunk gate is allowed only on an explicit
+        # opt-in: after a rejected gate (allow_new_attempt — the #26 recovery
+        # re-pause) or after an approved gate (allow_after_approved — item 14's
+        # post-success refinement re-pause; pre-item-14 a failed/recovered chunk
+        # could never have an approved latest gate, so this path was unreachable).
+        allowed_reattempt = (
+            (status == "rejected" and allow_new_attempt)
+            or (status == "approved" and allow_after_approved)
+        )
+        if not allowed_reattempt:
             raise RuntimeError(
                 f"approval_gate.py: chunk approval gate already decided. "
                 f"run_id={run_id} | chunk={chunk_number} | status={status}"
@@ -235,10 +246,15 @@ def _create_final_approval_gate_for_conn(
                 f"run_id={run_id} | gate_id={existing['id']}"
             )
             return existing
-        raise RuntimeError(
-            f"approval_gate.py: final approval gate already decided. "
-            f"run_id={run_id} | status={status}"
-        )
+        # A superseded final gate (item 14) is a decided gate that a post-success
+        # refinement invalidated; the run went back to chunk execution, so a fresh
+        # final gate must be creatable once the refinement re-completes. Any other
+        # decided status (approved/rejected/timeout) still blocks re-creation.
+        if status != GateStatus.SUPERSEDED:
+            raise RuntimeError(
+                f"approval_gate.py: final approval gate already decided. "
+                f"run_id={run_id} | status={status}"
+            )
 
     gate_id = str(uuid.uuid4())
     final_summary = summary or (
@@ -317,9 +333,15 @@ def create_chunk_approval_gate_and_mark_chunk(
     run_id: str,
     chunk_number: int,
     summary: str,
+    allow_after_approved: bool = False,
 ) -> dict:
     """
     Transactionally create/reuse a chunk gate and mark the run as paused.
+
+    ``allow_after_approved`` is set only by item 14's post-success refinement
+    re-pause, which legitimately opens a NEW chunk gate over the chunk's already
+    *approved* gate. Every other caller leaves it False, so the existing
+    "already decided" guard is unchanged for them.
     """
     try:
         with engine.begin() as conn:
@@ -329,6 +351,7 @@ def create_chunk_approval_gate_and_mark_chunk(
                 chunk_number,
                 summary,
                 allow_new_attempt=True,
+                allow_after_approved=allow_after_approved,
             )
             chunk_result = conn.execute(text("""
                 UPDATE chunks
@@ -399,6 +422,82 @@ def create_final_approval_gate_and_mark_run(
         raise RuntimeError(
             f"approval_gate.py: failed to create final gate and mark run. "
             f"run_id={run_id} | error={error}"
+        )
+
+
+def supersede_pending_final_gate_and_mark_run(
+    run_id: str,
+    chunk_number: int,
+) -> dict:
+    """
+    Supersede the pending final-approval gate and return the run to chunk
+    execution, atomically (item 14).
+
+    When a human steers a completed chunk while the run is awaiting final
+    approval, the pending final gate's cumulative diff is now stale. This flips
+    that gate to ``superseded`` (a decided state — it keeps decided_at + a
+    reason, so it is never an orphan and a fresh final gate may later be created
+    over it) and moves the run back to ``running_chunks`` for the refinement.
+
+    Both updates run in one transaction and BOTH rowcounts are checked. The race
+    this closes: final-approval approve/reject (routes/chunks.py:_decide_final_gate)
+    holds no repo lock, so it can interleave with the steer. The two transactions
+    serialize on the DB; if approve-final already decided the gate (or the run
+    already left awaiting_final_approval), a rowcount of 0 raises here and the
+    route surfaces a 409 telling the human to refresh — nothing is half-applied.
+    """
+    try:
+        with engine.begin() as conn:
+            gate_result = conn.execute(text("""
+                UPDATE approval_gates
+                SET status = :superseded,
+                    rejection_reason = :reason,
+                    decided_at = :decided_at
+                WHERE run_id = :run_id
+                  AND approval_type = 'final'
+                  AND chunk_number = 0
+                  AND status = 'pending'
+            """), {
+                "superseded": GateStatus.SUPERSEDED,
+                "reason": (
+                    f"Superseded by post-success refinement of chunk {chunk_number}"
+                ),
+                "decided_at": _utc_now(),
+                "run_id": run_id,
+            })
+            if gate_result.rowcount == 0:
+                raise RuntimeError(
+                    f"approval_gate.py: no pending final gate to supersede. "
+                    f"run_id={run_id} | chunk={chunk_number}"
+                )
+            run_result = conn.execute(text("""
+                UPDATE pipeline_runs
+                SET status = 'running_chunks',
+                    current_step = :current_step,
+                    current_chunk_number = :chunk_number
+                WHERE id = :run_id
+                  AND status = 'awaiting_final_approval'
+            """), {
+                "current_step": f"chunk_{chunk_number}_refine",
+                "chunk_number": chunk_number,
+                "run_id": run_id,
+            })
+            if run_result.rowcount == 0:
+                raise RuntimeError(
+                    f"approval_gate.py: run not awaiting final approval; cannot "
+                    f"supersede. run_id={run_id} | chunk={chunk_number}"
+                )
+            print(
+                f"[APPROVAL] Final gate superseded for refinement | "
+                f"run_id={run_id} | chunk={chunk_number}"
+            )
+            return {"superseded": True, "run_id": run_id, "chunk_number": chunk_number}
+    except RuntimeError:
+        raise
+    except Exception as error:
+        raise RuntimeError(
+            f"approval_gate.py: failed to supersede final gate. "
+            f"run_id={run_id} | chunk={chunk_number} | error={error}"
         )
 
 

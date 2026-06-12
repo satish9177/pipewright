@@ -69,6 +69,28 @@ RETRY_INELIGIBLE_CAP_EXHAUSTED = "human_retry_cap_exhausted"
 # branch (verify-only; retry never checks out or switches branches).
 RETRY_INELIGIBLE_WRONG_BRANCH = "wrong_branch"
 
+# Post-success refinement eligibility reasons (item 14). A refinement steers a
+# *completed*, already-committed chunk — it requires NO failure report (a
+# completed chunk has none). These are produced by
+# evaluate_completed_chunk_steer_eligibility; the steerable-chunk-state reason is
+# produced by the orchestrator's steer dispatcher when a chunk is neither failed
+# nor completed.
+REFINE_INELIGIBLE_CHUNK_NOT_COMPLETED = "chunk_not_completed"
+REFINE_INELIGIBLE_RUN_STATE = "run_not_refinable"
+STEER_INELIGIBLE_CHUNK_STATE = "chunk_not_steerable"
+
+# Run statuses in which a completed chunk may be refined (item 14): the window
+# strictly BEFORE PR creation. `failed` is deliberately EXCLUDED — when a run is
+# failed on a later chunk M, refining a completed chunk N would, on the
+# approve/no-op leg, flow through the approval tail and silently clear M's
+# failed-run blocker. The failed chunk must be addressed first (item 13). With
+# `failed` gone, the only "between chunks" refinable state is `chunk_approved`,
+# and the failure/reject run-restore leg can only ever restore that state — no
+# exit path can lose run state.
+REFINABLE_RUN_STATUSES: frozenset[str] = frozenset(
+    {"awaiting_final_approval", "chunk_approved"}
+)
+
 # Plain-language copy for each stable retry-ineligible reason (#40C). The raw
 # identifiers above stay machine-stable for branching/audit, but they must never
 # be the primary user-facing explanation (docs/design/failure-state-ux-cleanup.md
@@ -100,6 +122,16 @@ _RETRY_INELIGIBLE_HUMAN_MESSAGES: dict[str, str] = {
     ),
     RETRY_INELIGIBLE_WRONG_BRANCH: (
         "Switch to the run's branch before retrying."
+    ),
+    REFINE_INELIGIBLE_CHUNK_NOT_COMPLETED: (
+        "Refinement is only available for a completed chunk."
+    ),
+    REFINE_INELIGIBLE_RUN_STATE: (
+        "This run cannot be refined right now. Resolve any failed chunk or "
+        "finish the run before refining a completed chunk."
+    ),
+    STEER_INELIGIBLE_CHUNK_STATE: (
+        "This chunk cannot be steered in its current state."
     ),
 }
 
@@ -370,14 +402,39 @@ class PatchRetryEligibilityDecision(BaseModel):
     max_human_retries: int
 
 
+class RefinementReviewContext(BaseModel):
+    """
+    Restore context carried on a post-success refinement's pause marker (item 14).
+
+    A refinement re-pauses a *completed* chunk at the chunk gate (D1). If the
+    human rejects the refinement, or it produces no effective change, the chunk
+    and its run must be restored to exactly what they were before the steer —
+    this block holds what restore needs. Pure metadata: a git sha, a HEAD sha,
+    the prior run status/step, whether a pending final gate was superseded, and
+    the chunk's prior (committed) completion summary to put back. Never carries a
+    diff, file contents, or secrets.
+    """
+
+    chunk_commit_sha: str | None = None
+    head_before: str | None = None
+    prior_run_status: str | None = None
+    prior_run_step: str | None = None
+    final_gate_superseded: bool = False
+    prior_completion_summary: dict[str, Any] | None = None
+
+
 class RecoveredPatchReviewSummary(BaseModel):
     """
     Marker stored in chunks.completion_summary when a retried patch applied
     successfully and is paused awaiting human review (#26D1).
 
     Pure data only. Tagged with its own ``kind`` so the existing patch-failure
-    parser ignores it (kind != PATCH_FAILURE_KIND). Not wired into the
-    orchestrator yet — execution/pause behavior lands in #26D2+.
+    parser ignores it (kind != PATCH_FAILURE_KIND).
+
+    ``refinement`` (item 14) is present only for a post-success refinement pause;
+    it is optional and defaulted so every pre-item-14 marker still parses and the
+    failed-chunk steer path (which never sets it) is unchanged. Its presence is
+    how the approve/reject paths recognise a refinement pause.
     """
 
     kind: Literal["recovered_patch_review"] = RECOVERED_PATCH_REVIEW_KIND
@@ -385,6 +442,7 @@ class RecoveredPatchReviewSummary(BaseModel):
     recovery_attempt_id: str
     attempts: list[PatchRecoveryAttempt] = Field(default_factory=list)
     weak_test_warning: bool | None = None
+    refinement: RefinementReviewContext | None = None
 
 
 def default_message_for_failure_type(failure_type: PatchFailureType) -> str:
@@ -679,6 +737,96 @@ def evaluate_patch_steer_eligibility(
     )
 
 
+def count_human_attempt_ledger_rows(rows: Sequence[Any]) -> int:
+    """
+    Count human-triggered chunk attempts recorded in the chunk_attempts ledger
+    (item 14, the D2 shared budget for a completed chunk).
+
+    A completed chunk carries no failure report, so its human-attempt budget
+    cannot be counted from report history the way the failed-chunk paths do.
+    The append-only ledger is the only durable per-chunk record of every human
+    attempt. An attempt counts when its entry_mode is a human-triggered mode
+    (``human_retry`` / ``steered``) AND its final_status is not ``completed`` —
+    the latter excludes the approval-completion rows
+    (_record_approval_completion_attempt), which reuse ``human_retry`` for audit
+    but are gate decisions, not attempts. Auto attempts and fresh/resume passes
+    never match. Pure: counts already-loaded rows, no I/O.
+    """
+    human_modes = {"human_retry", "steered"}
+    count = 0
+    for row in rows:
+        entry_mode = row.get("entry_mode") if isinstance(row, dict) else None
+        final_status = row.get("final_status") if isinstance(row, dict) else None
+        if entry_mode in human_modes and final_status != "completed":
+            count += 1
+    return count
+
+
+def evaluate_completed_chunk_steer_eligibility(
+    *,
+    chunk_status: str,
+    run_status: str | None,
+    dependencies_met: bool,
+    working_tree_clean: bool,
+    human_attempts_used: int,
+    max_human_retries: int = MAX_HUMAN_RETRIES,
+) -> PatchRetryEligibilityDecision:
+    """
+    Decide whether a human may refine (post-success steer) a COMPLETED chunk
+    (item 14).
+
+    Pure and deterministic. Unlike the failed-chunk evaluators this takes NO
+    failure report — a completed chunk has none, so there is nothing to read or
+    require (trap (h) is dead by construction). The gate ORDER mirrors
+    _evaluate_human_attempt_eligibility, dropping the report/failure-type/
+    chunk_status=="failed" checks that do not apply and adding the
+    completed-chunk and run-state checks:
+
+      - chunk not in "completed" status   -> 422
+      - run not in REFINABLE_RUN_STATUSES  -> 409
+      - dependencies not met               -> 422
+      - dirty worktree                     -> 409
+      - shared human-attempt cap exhausted -> 422
+
+    ``human_attempts_used`` is the shared per-chunk count from the ledger
+    (count_human_attempt_ledger_rows), so refinements and failed-chunk
+    retries/steers draw the one HUMAN_ATTEMPT_BUDGET (D2).
+    """
+    def _ineligible(reason: str, status_code: int) -> PatchRetryEligibilityDecision:
+        return PatchRetryEligibilityDecision(
+            eligible=False,
+            reason=reason,
+            status_code=status_code,
+            failure_type=None,
+            human_retry_attempts_used=human_attempts_used,
+            max_human_retries=max_human_retries,
+        )
+
+    if chunk_status != "completed":
+        return _ineligible(REFINE_INELIGIBLE_CHUNK_NOT_COMPLETED, 422)
+
+    if run_status not in REFINABLE_RUN_STATUSES:
+        return _ineligible(REFINE_INELIGIBLE_RUN_STATE, 409)
+
+    if not dependencies_met:
+        return _ineligible(RETRY_INELIGIBLE_DEPENDENCIES_NOT_MET, 422)
+
+    if not working_tree_clean:
+        return _ineligible(RETRY_INELIGIBLE_DIRTY_WORKTREE, 409)
+
+    if human_attempts_used >= max_human_retries:
+        return _ineligible(RETRY_INELIGIBLE_CAP_EXHAUSTED, 422)
+
+    return PatchRetryEligibilityDecision(
+        eligible=True,
+        reason=None,
+        status_code=None,
+        failure_type=None,
+        human_retry_attempts_used=human_attempts_used,
+        max_human_retries=max_human_retries,
+    )
+
+
 def _evaluate_human_attempt_eligibility(
     report: PatchFailureReport | None,
     *,
@@ -820,6 +968,27 @@ def recovered_patch_review_to_completion_summary(
     patch_failure_report_from_completion_summary.
     """
     return summary.model_dump(mode="json")
+
+
+def recovered_patch_review_from_completion_summary(
+    value: Any,
+) -> RecoveredPatchReviewSummary | None:
+    """
+    Parse a stored completion_summary back into a RecoveredPatchReviewSummary
+    (item 14: the approve/reject paths read the ``refinement`` block off it).
+
+    Defensive by design: returns None (never raises) for anything that is not a
+    well-formed recovered-patch-review payload — None, non-dict, a dict with a
+    different/missing ``kind``, or malformed fields from storage.
+    """
+    if not isinstance(value, dict):
+        return None
+    if value.get("kind") != RECOVERED_PATCH_REVIEW_KIND:
+        return None
+    try:
+        return RecoveredPatchReviewSummary.model_validate(value)
+    except Exception:
+        return None
 
 
 def patch_failure_report_to_completion_summary(

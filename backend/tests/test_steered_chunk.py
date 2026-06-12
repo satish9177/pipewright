@@ -744,7 +744,10 @@ def test_turn_store_redacts_secret_like_steer_text(tracked_runs):
 # --- Route -------------------------------------------------------------------- #
 
 
-def test_steer_route_calls_steer_failed_chunk(monkeypatch):
+def test_steer_route_calls_steer_chunk(monkeypatch):
+    # The route dispatches through the unified steer_chunk entry (item 14), which
+    # routes a failed chunk to the item-13 path and a completed chunk to the
+    # refinement path. The route's job is the same: pass args through, map result.
     called = {}
 
     async def fake_steer(run_id, chunk_number, failure_report_id, steer_text, *, confirm_in_scope=False):
@@ -757,7 +760,7 @@ def test_steer_route_calls_steer_failed_chunk(monkeypatch):
         )
         return {"status": "awaiting_chunk_approval", "run_id": run_id}
 
-    monkeypatch.setattr("backend.routes.chunks.steer_failed_chunk", fake_steer)
+    monkeypatch.setattr("backend.routes.chunks.steer_chunk", fake_steer)
     client = TestClient(app)
 
     response = client.post(
@@ -792,7 +795,7 @@ def test_steer_route_maps_refusals_to_their_status_codes(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "backend.routes.chunks.steer_failed_chunk", fake_scope_refusal
+        "backend.routes.chunks.steer_chunk", fake_scope_refusal
     )
     client = TestClient(app)
     response = client.post(
@@ -806,7 +809,7 @@ def test_steer_route_maps_refusals_to_their_status_codes(monkeypatch):
         raise chunked_orchestrator.SteerValidationError("too long")
 
     monkeypatch.setattr(
-        "backend.routes.chunks.steer_failed_chunk", fake_validation_error
+        "backend.routes.chunks.steer_chunk", fake_validation_error
     )
     response = client.post(
         "/runs/run-123/chunks/1/steer",

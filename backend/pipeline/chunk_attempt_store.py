@@ -145,6 +145,14 @@ def get_latest_completed_attempt_head(run_id: str) -> dict[str, Any] | None:
 
     Resume uses this as a drift guard. A missing row means a pre-ledger or
     partially recorded run and intentionally degrades to the legacy behavior.
+
+    Ordered by created_at first (item 14): a post-success refinement commits a
+    *lower*-numbered chunk after higher ones already completed, so the actual
+    branch HEAD is the most RECENTLY recorded completed attempt, not the one on
+    the highest chunk number. Ordering by chunk_number first would return a stale
+    head and brick resume on a perfectly healthy refined run. For monotonic
+    (non-refined) runs created_at order equals the old chunk-number order, so the
+    retained tiebreakers preserve the prior behavior exactly.
     """
     with engine.connect() as conn:
         row = conn.execute(
@@ -155,7 +163,7 @@ def get_latest_completed_attempt_head(run_id: str) -> dict[str, Any] | None:
                   AND final_status = 'completed'
                   AND head_sha IS NOT NULL
                   AND TRIM(head_sha) != ''
-                ORDER BY chunk_number DESC, attempt_number DESC, created_at DESC
+                ORDER BY created_at DESC, chunk_number DESC, attempt_number DESC
                 LIMIT 1
             """),
             {"run_id": run_id},
