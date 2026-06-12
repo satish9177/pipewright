@@ -267,7 +267,7 @@ Return only the JSON response.
 def _build_llm_request(user_prompt: str) -> LLMRequest:
     return LLMRequest(
         messages=[
-            Message(role="system", content=CODER_SYSTEM_PROMPT),
+            Message(role="system", content=CODER_SYSTEM_PROMPT, cache=True),
             Message(role="user", content=user_prompt),
         ],
         model="",  # resolved per role by complete_for_role
@@ -293,7 +293,7 @@ def _build_correction_request(
     )
     return LLMRequest(
         messages=[
-            Message(role="system", content=CODER_SYSTEM_PROMPT),
+            Message(role="system", content=CODER_SYSTEM_PROMPT, cache=True),
             Message(role="user", content=user_prompt),
             Message(role="assistant", content=raw_text),
             Message(role="user", content=correction_prompt),
