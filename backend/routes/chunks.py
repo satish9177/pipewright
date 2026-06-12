@@ -41,8 +41,14 @@ from backend.pipeline.test_validation_ack_store import (
     acknowledgement_state,
     chunks_requiring_acknowledgement,
     compute_chunk_diff_hash,
-    create_acknowledgement,
+    create_acknowledgement as create_test_validation_acknowledgement,
     evaluate_final_approval_ack_eligibility,
+)
+from backend.pipeline import review_finding_ack_store
+from backend.pipeline.review_finding_ack_store import (
+    ReviewAckRequirement,
+    ReviewFindingAckConflictError,
+    evaluate_review_ack_eligibility,
 )
 from backend.pipeline.operator_state import (
     OperatorStateContext,
@@ -996,6 +1002,13 @@ class AcknowledgeTestValidationRequest(BaseModel):
     # Optional human reason for committing despite weak/no-test validation
     # ("small change, manually verified"). Stored as audited context only; it
     # never relaxes any check.
+    reason: str | None = Field(default=None, max_length=REJECTION_REASON_MAX_LENGTH)
+
+
+class AcknowledgeReviewFindingsRequest(BaseModel):
+    # Optional human reason for proceeding despite current high-severity reviewer
+    # findings. Stored as audited context only; it never approves code or changes
+    # reviewer output.
     reason: str | None = Field(default=None, max_length=REJECTION_REASON_MAX_LENGTH)
 
 
@@ -2108,6 +2121,23 @@ def _ack_decision_from_plan(plan: ChunkPlanResponse):
     return evaluate_final_approval_ack_eligibility(blocking)
 
 
+def _review_ack_decision_from_plan(plan: ChunkPlanResponse):
+    blocking: list[ReviewAckRequirement] = []
+    for chunk in plan.chunks:
+        review = chunk.review
+        if review is None or review.requires_acknowledgement is not True:
+            continue
+        if review.acknowledgement_status != "current":
+            blocking.append(ReviewAckRequirement(
+                chunk_number=chunk.chunk_number,
+                state=review.acknowledgement_status,
+                current_diff_hash=None,
+                finding_count=review.acknowledgement_required_finding_count,
+                categories=tuple(review.acknowledgement_required_categories),
+            ))
+    return evaluate_review_ack_eligibility(blocking)
+
+
 def _representative_test_verdict(plan: ChunkPlanResponse) -> str | None:
     verdicts = [
         chunk.test_validation.verdict
@@ -2134,6 +2164,36 @@ def _representative_ack_state(plan: ChunkPlanResponse) -> str | None:
     if "current" in states:
         return "current"
     return None
+
+
+def _representative_review_ack_state(plan: ChunkPlanResponse) -> str | None:
+    states = [
+        chunk.review.acknowledgement_status
+        for chunk in plan.chunks
+        if chunk.review is not None
+        and chunk.review.requires_acknowledgement is True
+    ]
+    if "stale" in states:
+        return "stale"
+    if "missing" in states:
+        return "missing"
+    if "current" in states:
+        return "current"
+    return None
+
+
+def _final_approval_blocked_reason(
+    test_ack_decision,
+    review_ack_decision,
+) -> str:
+    reasons: list[str] = []
+    if not test_ack_decision.eligible:
+        reasons.append("weak/no-test validation acknowledgement is not current")
+    if not review_ack_decision.eligible:
+        reasons.append("reviewer finding acknowledgement is not current")
+    if not reasons:
+        return "Final approval is blocked."
+    return "Final approval is blocked because " + " and ".join(reasons) + "."
 
 
 def _has_recovered_review(plan: ChunkPlanResponse) -> bool:
@@ -2164,6 +2224,7 @@ def _augment_plan_with_operator_state(plan: ChunkPlanResponse) -> ChunkPlanRespo
             }
             pending_final_gate = _has_pending_final_gate(plan.run_id)
             ack_decision = _ack_decision_from_plan(plan)
+            review_ack_decision = _review_ack_decision_from_plan(plan)
             pr_mode = None
             try:
                 project = get_project(plan.project_id)
@@ -2222,19 +2283,34 @@ def _augment_plan_with_operator_state(plan: ChunkPlanResponse) -> ChunkPlanRespo
                 test_verdict=_representative_test_verdict(plan),
                 test_ack_state=_representative_ack_state(plan),
                 final_ack_decision=ack_decision,
+                review_ack_state=_representative_review_ack_state(plan),
+                final_review_ack_decision=review_ack_decision,
                 chunk_awaiting_approval=chunk_awaiting_approval,
                 recovered_scope_retry_awaiting_chunk_approval=(
                     chunk_awaiting_approval and _has_recovered_review(plan)
                 ),
                 final_approval_available=(
-                    pending_final_gate and ack_decision.eligible
+                    pending_final_gate
+                    and ack_decision.eligible
+                    and review_ack_decision.eligible
                 ),
                 final_approval_blocked=(
-                    pending_final_gate and not ack_decision.eligible
+                    pending_final_gate
+                    and (
+                        not ack_decision.eligible
+                        or not review_ack_decision.eligible
+                    )
                 ),
                 final_approval_blocked_reason=(
-                    "Weak/no-test validation acknowledgement is not current."
-                    if pending_final_gate and not ack_decision.eligible
+                    _final_approval_blocked_reason(
+                        ack_decision,
+                        review_ack_decision,
+                    )
+                    if pending_final_gate
+                    and (
+                        not ack_decision.eligible
+                        or not review_ack_decision.eligible
+                    )
                     else None
                 ),
                 pr_created=bool(run.get("pr_url")),
@@ -2276,12 +2352,12 @@ def _augment_plan_with_reviews(plan: ChunkPlanResponse) -> ChunkPlanResponse:
     """
     Attach the read-only ADVISORY reviewer overlay to each chunk.
 
-    Additive, display-only, and fail-closed: it performs NO LLM call, exposes no
-    actions, and any failure leaves the plan unchanged (review stays None). It is
-    applied LAST — after ack and operator_state — so advisory review data can never
-    influence operator_state eligibility, the acknowledgement gate, chunk approval,
-    or final approval. Staleness (current/stale/missing) is computed on read against
-    the existing diff/test-checkpoint identity.
+    Additive, display-only, and fail-closed: it performs NO LLM call and any
+    failure leaves the plan unchanged (review stays None). Item 15 uses this
+    overlay as display input for the reviewer acknowledgement gate; if loading
+    it fails, the route falls back to no reviewer acknowledgement requirement.
+    Staleness (current/stale/missing) is computed on read against the existing
+    diff/test-checkpoint identity.
     """
     try:
         updated_chunks = []
@@ -2435,9 +2511,10 @@ def get_pr_status_route(run_id: str):
 def get_chunk_plan_route(run_id: str):
     try:
         plan = _augment_plan_with_ack_read_model(get_chunk_plan_status(run_id))
+        plan = _augment_plan_with_reviews(plan)
         plan = _augment_plan_with_operator_state(plan)
         plan = _augment_plan_with_pr_status(plan)
-        return _augment_plan_with_reviews(plan)
+        return plan
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:
@@ -2503,7 +2580,10 @@ async def resume_chunks_route(run_id: str):
 def approve_chunk_route(run_id: str, chunk_number: int):
     try:
         _ensure_mutating_run(run_id)
+        _require_review_findings_acknowledged(run_id, chunk_number)
         return approve_chunk_and_commit(run_id, chunk_number)
+    except HTTPException:
+        raise
     except ProjectRepoLockError as error:
         raise HTTPException(status_code=409, detail=str(error))
     except ValueError as error:
@@ -2759,6 +2839,71 @@ def _require_test_validation_acknowledged(run_id: str) -> None:
         )
 
 
+def _build_review_ack_required_message(blocking) -> str:
+    """Human-facing 409 message for the reviewer acknowledgement gate."""
+    parts = []
+    for item in blocking:
+        state = "stale" if item.state == "stale" else "missing"
+        categories = (
+            ", ".join(item.categories)
+            if item.categories
+            else "ack-required reviewer findings"
+        )
+        parts.append(
+            f"chunk {item.chunk_number} ({item.finding_count} finding(s), "
+            f"{categories}, acknowledgement {state})"
+        )
+    detail = "; ".join(parts)
+    return (
+        "Current high-severity reviewer findings require acknowledgement before "
+        f"approval: {detail}. Acknowledge each via "
+        "POST /runs/{run_id}/chunks/{chunk_number}/review/acknowledge "
+        "against the current diff, then approve. Nothing was committed."
+    )
+
+
+def _require_review_findings_acknowledged(
+    run_id: str,
+    chunk_number: int | None = None,
+) -> None:
+    """
+    Phase 4 item 15 review-ack precondition.
+
+    Fail-open by design: any exception or indeterminate lookup in the enforcement
+    selector yields no blocking requirements. Only a successfully loaded current
+    high x A1 finding may raise 409, and a human acknowledgement clears it.
+    """
+    try:
+        if chunk_number is None:
+            if _get_pending_final_gate(run_id) is None:
+                return
+            blocking = review_finding_ack_store.chunks_requiring_review_ack(run_id)
+        else:
+            requirement = review_finding_ack_store.safe_chunk_requiring_review_ack(
+                run_id,
+                chunk_number,
+            )
+            blocking = [requirement] if requirement is not None else []
+        decision = evaluate_review_ack_eligibility(blocking)
+    except Exception as error:
+        logger.warning(
+            "[REVIEW_ACK] enforcement selector failed open | run_id=%s | "
+            "chunk=%s | error=%s",
+            run_id,
+            chunk_number,
+            error,
+        )
+        return
+
+    if not decision.eligible:
+        raise HTTPException(
+            status_code=decision.status_code or 409,
+            detail=_build_review_ack_required_message(
+                decision.blocked_requirements
+            ),
+        )
+
+
 @router.post(
     "/runs/{run_id}/chunks/{chunk_number}/test-validation/acknowledge"
 )
@@ -2808,7 +2953,7 @@ def acknowledge_test_validation_route(
                 ),
             )
 
-        ack = create_acknowledgement(
+        ack = create_test_validation_acknowledgement(
             run_id,
             chunk_number,
             verdict,
@@ -2833,6 +2978,65 @@ def acknowledge_test_validation_route(
         raise HTTPException(status_code=400, detail=str(error))
 
 
+@router.post(
+    "/runs/{run_id}/chunks/{chunk_number}/review/acknowledge"
+)
+def acknowledge_review_findings_route(
+    run_id: str,
+    chunk_number: int,
+    request: AcknowledgeReviewFindingsRequest,
+):
+    """
+    Record a human acknowledgement of current A1 reviewer findings for a chunk.
+
+    This is NOT code approval and does NOT replace chunk or final approval. It is
+    only a diff-bound soft precondition those routes check. It commits nothing,
+    pushes nothing, creates no PR, and stores no finding bodies or diffs.
+
+    Error mapping (mutates nothing on failure):
+      - unknown run/chunk                          -> 404
+      - no current high x A1 finding to ack        -> 409
+      - current diff identity cannot be determined -> 409
+      - re-acknowledging the same diff             -> 200 (idempotent)
+    """
+    try:
+        _ensure_mutating_run(run_id)
+        # 404 if the chunk does not exist under this run.
+        get_chunk(run_id, chunk_number)
+
+        diff_hash, findings = review_finding_ack_store.current_review_requires_ack(
+            run_id,
+            chunk_number,
+        )
+        ack = review_finding_ack_store.create_acknowledgement(
+            run_id,
+            chunk_number,
+            diff_hash,
+            reason=request.reason,
+        )
+        categories = sorted({
+            getattr(finding.category, "value", str(finding.category))
+            for finding in findings
+        })
+        return {
+            "status": "review_findings_acknowledged",
+            "run_id": run_id,
+            "chunk_number": chunk_number,
+            "acknowledged_diff_hash": ack["acknowledged_diff_hash"],
+            "acknowledged_at": ack.get("acknowledged_at"),
+            "finding_count": len(findings),
+            "categories": categories,
+        }
+    except HTTPException:
+        raise
+    except ReviewFindingAckConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error))
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
 @router.post("/runs/{run_id}/final-approval/approve")
 def approve_final_approval_route(run_id: str):
     try:
@@ -2841,6 +3045,10 @@ def approve_final_approval_route(run_id: str):
         # verdict is not acknowledged against the current diff. Runs BEFORE the
         # final-approved mutation; raises 409 and mutates nothing if missing/stale.
         _require_test_validation_acknowledged(run_id)
+        # Phase 4 item 15: same route-level shape for current high-severity
+        # reviewer findings. It is fail-open on reviewer/read lookup errors and
+        # always satisfiable by a human acknowledgement.
+        _require_review_findings_acknowledged(run_id)
         return _decide_final_gate(
             run_id,
             ApprovalStatus.APPROVED,

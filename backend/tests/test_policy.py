@@ -28,6 +28,11 @@ def test_policy_values_are_unchanged_by_relocation():
     assert policy.MAX_FILE_LINES == 200
     assert policy.LARGE_FILE_CONTEXT_LINE_CAP == 1500
     assert policy.REVIEWER_MAX_DIFF_CHARS == 6000
+    assert policy.REVIEW_ACK_REQUIRED_SEVERITY == "high"
+    assert policy.REVIEW_ACK_REQUIRED_CATEGORIES == frozenset({
+        "requirement_mismatch",
+        "security",
+    })
 
 
 def test_stages_read_constants_from_policy():

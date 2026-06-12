@@ -32,6 +32,11 @@ from backend.pipeline.reviewer_models import (
     ReviewStalenessStatus,
     classify_review_staleness,
 )
+from backend.pipeline.review_finding_ack_store import (
+    REVIEW_ACK_NOT_REQUIRED,
+    finding_to_steer_text,
+    review_ack_display_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +101,10 @@ def to_read_model(
     *,
     coder_provider: str | None = None,
     coder_model: str | None = None,
+    requires_acknowledgement: bool = False,
+    acknowledgement_status: str = REVIEW_ACK_NOT_REQUIRED,
+    acknowledgement_required_finding_count: int = 0,
+    acknowledgement_required_categories: tuple[str, ...] = (),
 ) -> ChunkReviewReadModel:
     """Pure mapping from a stored review + staleness to the display overlay."""
     findings = [
@@ -107,6 +116,7 @@ def to_read_model(
             affected_files=list(finding.affected_files),
             suggested_human_check=finding.suggested_human_check,
             confidence=finding.confidence,
+            steer_text=finding_to_steer_text(finding),
         )
         for finding in record.findings
     ]
@@ -132,6 +142,10 @@ def to_read_model(
             coder_provider=coder_provider,
             coder_model=coder_model,
         ),
+        requires_acknowledgement=requires_acknowledgement,
+        acknowledgement_status=acknowledgement_status,
+        acknowledgement_required_finding_count=acknowledgement_required_finding_count,
+        acknowledgement_required_categories=list(acknowledgement_required_categories),
     )
 
 
@@ -156,12 +170,33 @@ def load_chunk_review_read_model(
             # staleness maps a None current_hash to STALE.
             current_hash = None
         staleness = classify_review_staleness(record, current_hash)
+        try:
+            (
+                requires_ack,
+                ack_state,
+                ack_finding_count,
+                ack_categories,
+            ) = review_ack_display_state(
+                run_id,
+                chunk_number,
+                record,
+                current_hash,
+            )
+        except Exception:
+            requires_ack = False
+            ack_state = REVIEW_ACK_NOT_REQUIRED
+            ack_finding_count = 0
+            ack_categories = ()
         coder_provider, coder_model = _latest_coder_provenance(run_id, chunk_number)
         return to_read_model(
             record,
             staleness,
             coder_provider=coder_provider,
             coder_model=coder_model,
+            requires_acknowledgement=requires_ack,
+            acknowledgement_status=ack_state,
+            acknowledgement_required_finding_count=ack_finding_count,
+            acknowledgement_required_categories=ack_categories,
         )
     except Exception as error:
         logger.warning(

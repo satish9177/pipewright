@@ -25,6 +25,10 @@ interface FinalApprovalPanelProps {
   // truth and will 409; this only pre-disables the Approve button and explains
   // the required action so the user isn't sent into an avoidable error.
   acknowledgementBlocking?: boolean
+  // Phase 4 item 15 reviewer-finding acknowledgement. Separate from weak-test
+  // acknowledgement: either one can pre-disable Approve Final, and neither is
+  // final approval.
+  reviewAcknowledgementBlocking?: boolean
   onApprove: () => void
   onReject: (reason: string) => void
 }
@@ -43,6 +47,7 @@ export default function FinalApprovalPanel({
   message,
   error,
   acknowledgementBlocking = false,
+  reviewAcknowledgementBlocking = false,
   onApprove,
   onReject,
 }: FinalApprovalPanelProps) {
@@ -50,7 +55,8 @@ export default function FinalApprovalPanel({
   const actionPending =
     isApproving || isRejecting || isCheckingFinalGate || !hasPendingFinalGate
   // Reject is always allowed; only Approve is gated by the acknowledgement.
-  const approveDisabled = actionPending || acknowledgementBlocking
+  const approveDisabled =
+    actionPending || acknowledgementBlocking || reviewAcknowledgementBlocking
   const finalApprovalRequired = getBooleanExtra(run, 'final_approval_required')
   const statusDisplay = getStatusDisplay(run.status)
 
@@ -104,6 +110,13 @@ export default function FinalApprovalPanel({
           <p className="text-sm font-medium text-amber-700">
             Final approval is blocked until you acknowledge the weak/no-test
             validation above. Acknowledge each affected chunk, then approve.
+          </p>
+        )}
+        {reviewAcknowledgementBlocking && (
+          <p className="text-sm font-medium text-red-700">
+            Final approval is blocked until you acknowledge the current
+            high-severity reviewer findings above. Acknowledge each affected
+            chunk, then approve.
           </p>
         )}
         {message && (

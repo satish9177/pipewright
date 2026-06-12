@@ -155,6 +155,10 @@ class ChunkReviewFindingReadModel(BaseModel):
     affected_files: list[str] = Field(default_factory=list)
     suggested_human_check: str = ""
     confidence: float | None = None
+    # Deterministic text the frontend may send to the existing steer route when
+    # the chunk status is already failed/completed. This is not an action id, not
+    # a new endpoint, and not a scope grant.
+    steer_text: str | None = None
 
 
 class ReviewerIndependenceReadModel(BaseModel):
@@ -223,6 +227,15 @@ class ChunkReviewReadModel(BaseModel):
     # Display-only reviewer-independence disclosure (#33C). Additive: derived on
     # read from persisted coder/reviewer provenance; never gates or authorizes.
     reviewer_independence: ReviewerIndependenceReadModel | None = None
+    # Display-only acknowledgement state for Phase 4 item 15. The route
+    # preconditions remain the source of truth; this lets the UI render the soft
+    # acknowledgement requirement before the backend would return 409.
+    requires_acknowledgement: bool = False
+    acknowledgement_status: Literal[
+        "not_required", "missing", "current", "stale"
+    ] = "not_required"
+    acknowledgement_required_finding_count: int = 0
+    acknowledgement_required_categories: list[str] = Field(default_factory=list)
 
 
 class ChunkStatus(BaseModel):
