@@ -668,7 +668,7 @@ _SUGGESTION_COLUMNS = """
     rejected_at, rejection_reason, content_hash,
     edited_content, approved_fact_id,
     source_run_id, source_chunk_number, source_type, source_ref,
-    rationale, suggested_by, risk_level
+    rationale, suggested_by, risk_level, quality_score
 """
 
 
@@ -737,6 +737,7 @@ def insert_pending_suggestion(
     rationale: str | None = None,
     suggested_by: str | None = None,
     risk_level: str | None = None,
+    quality_score: int | None = None,
     evidence_path: str | None = None,
     evidence_excerpt: str | None = None,
 ) -> dict | None:
@@ -773,13 +774,13 @@ def insert_pending_suggestion(
                 (id, project_id, content, category, scope, priority, source,
                  evidence_path, evidence_excerpt, status, created_at, updated_at,
                  content_hash, source_type, source_run_id, source_chunk_number,
-                 source_ref, rationale, suggested_by, risk_level)
+                 source_ref, rationale, suggested_by, risk_level, quality_score)
                 VALUES
                 (:id, :project_id, :content, :category, :scope, :priority,
                  :source, :evidence_path, :evidence_excerpt, 'pending', :now,
                  :now, :content_hash, :source_type, :source_run_id,
                  :source_chunk_number, :source_ref, :rationale, :suggested_by,
-                 :risk_level)
+                 :risk_level, :quality_score)
             """), {
                 "id": suggestion_id,
                 "project_id": project_id,
@@ -799,6 +800,7 @@ def insert_pending_suggestion(
                 "rationale": rationale,
                 "suggested_by": suggested_by,
                 "risk_level": risk_level,
+                "quality_score": quality_score,
             })
     except IntegrityError:
         # Lost a race against the partial pending-dedupe unique index.

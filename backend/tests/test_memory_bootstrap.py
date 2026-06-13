@@ -15,7 +15,11 @@ from sqlalchemy import text
 from backend.db.database import engine
 from backend.main import app
 from backend.memory import bootstrap
-from backend.memory.bootstrap import CandidateSuggestion, generate_bootstrap_suggestions
+from backend.memory.bootstrap import (
+    CandidateSuggestion,
+    generate_bootstrap_suggestions,
+    insert_pending_suggestion,
+)
 from backend.memory.memory_store import add_fact, compute_content_hash
 
 pytestmark = pytest.mark.unit
@@ -238,6 +242,97 @@ def test_list_suggestions_api(client, project_factory, project_repo):
         suggestion["status"] == "pending"
         for suggestion in response.json()["suggestions"]
     )
+
+
+def test_insert_pending_suggestion_accepts_optional_quality_score(
+    project_factory,
+    project_repo,
+):
+    project_id = project_factory(project_repo)
+
+    scored = insert_pending_suggestion(
+        project_id,
+        "Project memory is advisory and source code wins.",
+        quality_score=72,
+    )
+    unscored = insert_pending_suggestion(
+        project_id,
+        "Repo indexer uses project-scoped rows.",
+    )
+
+    assert scored is not None
+    assert scored["quality_score"] == 72
+    assert unscored is not None
+    assert unscored["quality_score"] is None
+
+
+def test_suggestion_list_order_remains_created_at_desc_with_quality_scores(
+    client,
+    project_factory,
+    project_repo,
+):
+    project_id = project_factory(project_repo)
+    ids = {
+        "legacy-null": str(uuid.uuid4()),
+        "scored-handoff": str(uuid.uuid4()),
+        "newer-rejection": str(uuid.uuid4()),
+    }
+    rows = [
+        (
+            ids["legacy-null"],
+            "Legacy NULL-scored suggestion remains visible.",
+            "run_outcome",
+            None,
+            "2026-01-01T00:00:00+00:00",
+        ),
+        (
+            ids["scored-handoff"],
+            "Run tests with pytest -q.",
+            "run_handoff",
+            90,
+            "2026-01-02T00:00:00+00:00",
+        ),
+        (
+            ids["newer-rejection"],
+            "Rejected approach in run abc12345: prefer reuse.",
+            "run_outcome",
+            None,
+            "2026-01-03T00:00:00+00:00",
+        ),
+    ]
+    with engine.begin() as conn:
+        for row_id, content, source_type, quality_score, created_at in rows:
+            conn.execute(text("""
+                INSERT INTO memory_suggestions
+                (id, project_id, content, category, scope, priority, source,
+                 status, created_at, updated_at, content_hash, source_type,
+                 quality_score)
+                VALUES
+                (:id, :project_id, :content, 'other', 'global', 100,
+                 'run_outcome', 'pending', :created_at, :created_at,
+                 :content_hash, :source_type, :quality_score)
+            """), {
+                "id": row_id,
+                "project_id": project_id,
+                "content": content,
+                "created_at": created_at,
+                "content_hash": compute_content_hash(content),
+                "source_type": source_type,
+                "quality_score": quality_score,
+            })
+
+    response = _list_suggestions(client, project_id, status="pending")
+
+    assert response.status_code == 200
+    suggestions = response.json()["suggestions"]
+    assert [suggestion["id"] for suggestion in suggestions] == [
+        ids["newer-rejection"],
+        ids["scored-handoff"],
+        ids["legacy-null"],
+    ]
+    assert suggestions[0]["quality_score"] is None
+    assert suggestions[1]["quality_score"] == 90
+    assert suggestions[2]["quality_score"] is None
 
 
 def test_approve_suggestion_creates_active_memory_fact(

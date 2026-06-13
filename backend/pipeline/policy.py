@@ -148,6 +148,13 @@ REVIEW_ACK_REQUIRED_CATEGORIES = frozenset({
     "security",
 })
 
+# --- Memory suggestion quality gate (run_outcome_suggestions.py, M5 7-alpha) -
+# Handoff passthrough suggestions are ranked deterministically before insertion.
+# These caps apply only to non-floored handoff candidates; deterministic/template
+# run-outcome channels are preserved regardless of the total cap.
+HANDOFF_SUGGESTION_CAP = 5
+RUN_SUGGESTION_TOTAL_CAP = 8
+
 # --- Final-approval summary (chunked_orchestrator.py, item 14) --------------
 # Display-only cap for the cumulative branch diff (base..HEAD) shown in the
 # final-approval summary. Head+tail preserving, mirroring the reviewer's diff-cap
