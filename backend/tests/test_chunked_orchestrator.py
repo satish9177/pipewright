@@ -1516,8 +1516,46 @@ def test_completion_summary_classifies_edit_as_modified():
     assert summary["files_deleted"] == ["gone.py"]
 
 
+def test_completion_summary_serializes_structured_memory_entries_as_json():
+    run_id = "completion-summary-structured-memory"
+    chunk = ChunkDefinition(
+        chunk_number=1,
+        title="Structured memory",
+        description="Persist structured memory metadata",
+        token_estimate=10,
+    )
+    plan = make_planner_result(run_id)
+    coder_output = CoderHandoff(
+        run_id=run_id,
+        feature_description="enriched",
+        files_changed=[],
+        summary="No file changes.",
+        suggested_memory_entries=[
+            {
+                "content": "Scope guard remains authoritative for approved files.",
+                "category": "security",
+                "scope": "backend",
+                "rationale": "sk-aaaaaaaaaaaaaaaaaaaa should not be persisted",
+            }
+        ],
+    )
+
+    summary = chunked_orchestrator._build_completion_summary(
+        chunk, plan, coder_output
+    )
+
+    json.dumps(summary)
+    assert summary["suggested_memory_entries"] == [
+        {
+            "content": "Scope guard remains authoritative for approved files.",
+            "category": "security",
+            "scope": "backend",
+        }
+    ]
+
+
 # --- PR #15A: AI memory suggestions must never auto-promote to long-term memory ---
-# make_coder_result() emits suggested_memory_entries=["remember chunk"]. A run
+# make_coder_result() emits one suggested_memory_entries value. A run
 # (failed, unapproved, or even fully successful) may surface these as advisory
 # suggestions, but it must never insert them into memory_facts. Only an explicit
 # human create/approve through the Memory API writes long-term memory.
@@ -1586,7 +1624,13 @@ async def test_successful_chunk_run_does_not_auto_promote_memory(
             WHERE run_id = :run_id AND chunk_number = 1
         """), {"run_id": run_id}).fetchone()
     summary = json.loads(row[0])
-    assert summary["suggested_memory_entries"] == ["remember chunk"]
+    assert summary["suggested_memory_entries"] == [
+        {
+            "content": "remember chunk",
+            "category": "other",
+            "scope": "global",
+        }
+    ]
 
 
 @pytest.mark.asyncio

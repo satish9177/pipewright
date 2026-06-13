@@ -24,6 +24,7 @@ from backend.llm import complete_for_role, log_token_usage
 from backend.llm.base import LLMRequest, LLMResponse, Message
 from backend.llm.retry import ProviderRetryExhaustedError, call_with_rate_limit_retry
 from backend.llm.role_config import Role
+from backend.memory.memory_store import ALLOWED_CATEGORIES, ALLOWED_SCOPES
 from backend.models.handoff import PlannerHandoff, CoderHandoff
 from backend.memory.injection_store import capture_memory_injection
 from backend.memory.prompt_builder import build_project_memory_block_detailed
@@ -39,6 +40,9 @@ CODER_MAX_TOKENS = 8000
 CODER_TIMEOUT_SECONDS = 120
 
 logger = logging.getLogger(__name__)
+
+_ALLOWED_MEMORY_CATEGORIES = ", ".join(sorted(ALLOWED_CATEGORIES))
+_ALLOWED_MEMORY_SCOPES = ", ".join(sorted(ALLOWED_SCOPES))
 
 CODER_SYSTEM_PROMPT = """You are a senior software engineer.
 Your job is to implement a precise plan by writing
@@ -70,11 +74,22 @@ The JSON must match this exact schema:
     }
   ],
   "summary": "one paragraph describing what was implemented",
-  "suggested_memory_entries": ["fact worth storing"]
+  "suggested_memory_entries": [
+    {
+      "content": "durable fact worth storing",
+      "category": "other",
+      "scope": "global",
+      "rationale": "why this may help future runs"
+    }
+  ]
 }
 
 Action must be one of: create / modify / delete / edit
 All file paths must be relative to the project root.
+suggested_memory_entries must be durable project facts only, not run trivia,
+code blocks, logs, stack traces, secrets, credentials, or personal data.
+Allowed suggested_memory_entries.category values: """ + _ALLOWED_MEMORY_CATEGORIES + """.
+Allowed suggested_memory_entries.scope values: """ + _ALLOWED_MEMORY_SCOPES + """.
 
 Choosing the action:
 - create: a brand new file. Provide complete "content".
@@ -329,6 +344,12 @@ def _parse_handoff(raw_text: str, run_id: str) -> CoderHandoff:
     return CoderHandoff.model_validate(data)
 
 
+def _checkpoint_payload(handoff: CoderHandoff) -> dict:
+    return handoff.model_dump(
+        exclude={"suggested_memory_entries": {"__all__": {"rationale"}}}
+    )
+
+
 async def run_coder(
     plan: PlannerHandoff,
     run_id: str,
@@ -432,11 +453,12 @@ async def run_coder(
         )
 
     try:
+        checkpoint_payload = _checkpoint_payload(handoff)
         save_checkpoint(
             run_id=run_id,
             step="code",
-            output=handoff.model_dump(),
-            handoff_contract=handoff.model_dump(),
+            output=checkpoint_payload,
+            handoff_contract=checkpoint_payload,
             git_hash="pre-patch",
             tests_passed=False,
             step_completed=True,

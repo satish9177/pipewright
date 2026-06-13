@@ -19,7 +19,11 @@ from backend.memory.memory_store import list_facts
 from backend.memory.suggestion_quality import (
     SuggestionQuality,
     SuggestionQualityResult,
+    score_suggestion,
 )
+from backend.models.chunk import ChunkDefinition
+from backend.models.handoff import CoderHandoff, PlannerHandoff
+from backend.pipeline import chunked_orchestrator
 from backend.memory.run_outcome_suggestions import generate_run_memory_suggestions
 from backend.pipeline.patch_failures import (
     PatchFailureType,
@@ -131,12 +135,37 @@ def run_env(client):
             conn.execute(text("DELETE FROM memory_facts WHERE project_id = :p"), {"p": project_id})
 
 
-def _success_summary(entries: list[str]) -> dict:
+def _success_summary(entries: list[object]) -> dict:
     return {
         "chunk_title": "Chunk",
         "summary": "Goal: x\nCoder summary: y",
         "suggested_memory_entries": entries,
     }
+
+
+def _writer_success_summary(run_id: str, entries: list[object]) -> dict:
+    chunk = ChunkDefinition(
+        chunk_number=1,
+        title="Chunk",
+        description="chunk description",
+        token_estimate=10,
+    )
+    plan = PlannerHandoff(
+        run_id=run_id,
+        feature_description="test feature",
+        goal="Test structured memory",
+        steps=["Implement the change"],
+    )
+    coder_output = CoderHandoff(
+        run_id=run_id,
+        feature_description="test feature",
+        files_changed=[],
+        summary="Implemented the change.",
+        suggested_memory_entries=entries,
+    )
+    return chunked_orchestrator._build_completion_summary(
+        chunk, plan, coder_output
+    )
 
 
 def _failure_summary(failure_type: PatchFailureType, technical_details: str | None = None) -> dict:
@@ -379,6 +408,231 @@ def test_low_scoring_non_junk_handoff_fact_is_still_inserted(run_env):
     assert result.capped_count == 0
     assert [s["content"] for s in result.generated] == ["Concise notes help."]
     assert result.generated[0]["quality_score"] < 40
+
+
+def test_historical_string_handoff_summary_defaults_other_global(run_env):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary(["Run tests with pytest -q."]),
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    assert len(result.generated) == 1
+    suggestion = result.generated[0]
+    assert suggestion["content"] == "Run tests with pytest -q."
+    assert suggestion["category"] == "other"
+    assert suggestion["scope"] == "global"
+    assert suggestion["quality_score"] is not None
+
+
+def test_structured_handoff_entry_preserves_category_scope_and_score(run_env):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    content = "Project prefers concise review notes."
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary([
+            {
+                "content": content,
+                "category": "security",
+                "scope": "backend",
+            }
+        ]),
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    assert len(result.generated) == 1
+    suggestion = result.generated[0]
+    assert suggestion["content"] == content
+    assert suggestion["category"] == "security"
+    assert suggestion["scope"] == "backend"
+    assert suggestion["quality_score"] == score_suggestion(
+        content, category="security"
+    ).score
+    assert suggestion["quality_score"] > score_suggestion(
+        content, category="other"
+    ).score
+
+
+def test_completion_summary_writer_to_reader_preserves_category_scope(run_env):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    content = "Scope guard must remain authoritative for approved files."
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_writer_success_summary(run_id, [
+            {
+                "content": content,
+                "category": "security",
+                "scope": "backend",
+                "rationale": "model rationale is writer metadata only",
+            }
+        ]),
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    assert len(result.generated) == 1
+    suggestion = result.generated[0]
+    assert suggestion["content"] == content
+    assert suggestion["category"] == "security"
+    assert suggestion["scope"] == "backend"
+
+
+def test_structured_handoff_model_rationale_is_not_persisted(run_env):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    secret_rationale = "sk-aaaaaaaaaaaaaaaaaaaa"
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary([
+            {
+                "content": "Project prefers concise review notes.",
+                "category": "other",
+                "scope": "global",
+                "rationale": secret_rationale,
+            }
+        ]),
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    assert len(result.generated) == 1
+    suggestion = result.generated[0]
+    assert secret_rationale not in suggestion["content"]
+    assert secret_rationale not in suggestion["rationale"]
+    assert "Suggested by the planner/coder handoff" in suggestion["rationale"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "\n".join(f"def helper_{index}():" for index in range(9)),
+        "```python\n" + "\n".join(f"line_{index}" for index in range(9)) + "\n```",
+    ],
+)
+def test_structured_multiline_code_handoff_entry_is_blocked_not_stored(
+    run_env,
+    content,
+):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary([
+            {
+                "content": content,
+                "category": "architecture",
+                "scope": "backend",
+            }
+        ]),
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    assert result.generated == []
+    assert result.blocked_count == 1
+    assert result.floored_count == 0
+    assert result.capped_count == 0
+    assert list_suggestions(project_id, status="pending") == []
+
+
+def test_overlong_structured_handoff_content_is_skipped(run_env):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary([
+            {
+                "content": "x" * (
+                    run_outcome_suggestions.MAX_HANDOFF_ENTRY_CHARS + 1
+                ),
+                "category": "architecture",
+                "scope": "backend",
+            }
+        ]),
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    assert result.generated == []
+    assert result.skipped_count == 0
+    assert result.blocked_count == 0
+    assert result.floored_count == 0
+    assert result.capped_count == 0
+    assert list_suggestions(project_id, status="pending") == []
+
+
+def test_structured_handoff_invalid_category_scope_coerce_to_defaults(run_env):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary([
+            {
+                "content": "Project prefers concise review notes.",
+                "category": "made-up",
+                "scope": "desktop",
+            }
+        ]),
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    assert len(result.generated) == 1
+    assert result.generated[0]["category"] == "other"
+    assert result.generated[0]["scope"] == "global"
+
+
+def test_structured_handoff_missing_non_string_and_blank_content_are_safe(run_env):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary([
+            {},
+            {"content": 123, "category": "security"},
+            {"content": "   ", "category": "security"},
+            {
+                "content": "Project prefers concise review notes.",
+                "category": "style",
+            },
+        ]),
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    assert [s["content"] for s in result.generated] == [
+        "Project prefers concise review notes."
+    ]
+    assert result.floored_count == 1
+    assert result.blocked_count == 0
+
+
+def test_structured_handoff_objective_junk_floors_by_content(run_env):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary([
+            {
+                "content": "uses Python",
+                "category": "security",
+                "scope": "backend",
+            }
+        ]),
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    assert result.generated == []
+    assert result.floored_count == 1
+    assert result.blocked_count == 0
+    assert list_suggestions(project_id, status="pending") == []
 
 
 def test_handoff_cap_keeps_highest_scores_and_counts_capped(run_env):

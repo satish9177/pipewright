@@ -31,6 +31,10 @@ from backend.db.database import engine
 from backend.memory.bootstrap import insert_pending_suggestion
 from backend.memory.memory_store import DEFAULT_PRIORITY
 from backend.memory.suggestion_quality import score_suggestion
+from backend.models.handoff import (
+    normalize_suggested_memory_category,
+    normalize_suggested_memory_scope,
+)
 from backend.pipeline.patch_failures import (
     PATCH_FAILURE_KIND,
     PatchFailureType,
@@ -238,6 +242,22 @@ def _normalize_handoff_entry(entry: str) -> str:
     return entry.strip()
 
 
+def _parse_handoff_entry(entry) -> tuple[str, str, str] | None:
+    if isinstance(entry, str):
+        return _normalize_handoff_entry(entry), "other", "global"
+    if not isinstance(entry, dict):
+        return None
+
+    content = entry.get("content")
+    if not isinstance(content, str):
+        return None
+    return (
+        _normalize_handoff_entry(content),
+        normalize_suggested_memory_category(entry.get("category")),
+        normalize_suggested_memory_scope(entry.get("scope")),
+    )
+
+
 def _handoff_candidates(
     run_id: str,
     chunks: list[dict],
@@ -255,23 +275,25 @@ def _handoff_candidates(
         if not isinstance(entries, list):
             continue
         for entry in entries:
-            if not isinstance(entry, str):
+            parsed_entry = _parse_handoff_entry(entry)
+            if parsed_entry is None:
                 continue
-            value = _normalize_handoff_entry(entry)
+            value, category, scope = parsed_entry
             # Conservative: skip long entries rather than truncating a
             # model-suggested fact into something it did not mean. Empty entries
             # go through the objective-junk floor so they are counted distinctly.
             if len(value) > MAX_HANDOFF_ENTRY_CHARS:
                 continue
-            quality = score_suggestion(value, category="other")
+            quality = score_suggestion(value, category=category)
             if quality.floored:
                 floored_count += 1
                 continue
             candidates.append((original_order, _Candidate(
                 content=value,
-                category="other",
+                category=category,
                 source_type=RUN_HANDOFF_SOURCE_TYPE,
                 source_chunk_number=chunk["chunk_number"],
+                scope=scope,
                 rationale=(
                     f"Suggested by the planner/coder handoff in run {run_id} "
                     f"chunk {chunk['chunk_number']}; review before approving."

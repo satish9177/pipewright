@@ -7,7 +7,7 @@ Never use raw dicts between pipeline modules.
 """
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from backend.projects.pr_modes import (
     DEFAULT_PR_MODE,
@@ -29,6 +29,24 @@ REJECTION_REASON_MAX_LENGTH = 2000
 
 def _is_blank(value: str) -> bool:
     return not value.strip()
+
+
+def normalize_suggested_memory_category(value: Any) -> str:
+    from backend.memory.memory_store import ALLOWED_CATEGORIES
+
+    if not isinstance(value, str):
+        return "other"
+    normalized = value.strip().lower()
+    return normalized if normalized in ALLOWED_CATEGORIES else "other"
+
+
+def normalize_suggested_memory_scope(value: Any) -> str:
+    from backend.memory.memory_store import ALLOWED_SCOPES
+
+    if not isinstance(value, str):
+        return "global"
+    normalized = value.strip().lower()
+    return normalized if normalized in ALLOWED_SCOPES else "global"
 
 
 class PlannerHandoff(BaseModel):
@@ -67,6 +85,50 @@ class FileChange(BaseModel):
         return self
 
 
+class SuggestedMemoryEntry(BaseModel):
+    content: str
+    category: str = "other"
+    scope: str = "global"
+    rationale: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def legacy_string_to_object(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return {"content": value}
+        return value
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def content_must_be_string(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("content must be a string")
+        normalized = value.strip()
+        if _is_blank(normalized):
+            raise ValueError("content must not be blank")
+        return normalized
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def category_must_be_allowed(cls, value: Any) -> str:
+        return normalize_suggested_memory_category(value)
+
+    @field_validator("scope", mode="before")
+    @classmethod
+    def scope_must_be_allowed(cls, value: Any) -> str:
+        return normalize_suggested_memory_scope(value)
+
+    @field_validator("rationale", mode="before")
+    @classmethod
+    def rationale_is_optional_metadata(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
 class CoderHandoff(BaseModel):
     handoff_from: str = "coder"
     handoff_to: str = "patch_applier"
@@ -74,7 +136,9 @@ class CoderHandoff(BaseModel):
     feature_description: str
     files_changed: List[FileChange]
     summary: str
-    suggested_memory_entries: List[str] = Field(default_factory=list)
+    suggested_memory_entries: List[SuggestedMemoryEntry] = Field(
+        default_factory=list
+    )
 
 
 class PatchResult(BaseModel):

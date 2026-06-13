@@ -608,6 +608,17 @@ def _files_touched(coder_output: CoderHandoff) -> list[str]:
     return [change.path.replace("\\", "/") for change in coder_output.files_changed]
 
 
+def _serialize_suggested_memory_entries(coder_output: CoderHandoff) -> list[dict]:
+    return [
+        entry.model_dump(
+            mode="json",
+            exclude_none=True,
+            exclude={"rationale"},
+        )
+        for entry in coder_output.suggested_memory_entries
+    ]
+
+
 def _build_completion_summary(
     chunk: ChunkDefinition,
     plan: PlannerHandoff,
@@ -649,7 +660,9 @@ def _build_completion_summary(
             f"Goal: {plan.goal}\n"
             f"Coder summary: {coder_output.summary}"
         ),
-        "suggested_memory_entries": coder_output.suggested_memory_entries,
+        "suggested_memory_entries": _serialize_suggested_memory_entries(
+            coder_output
+        ),
     }
     if recovery_attempts:
         summary["attempts"] = [

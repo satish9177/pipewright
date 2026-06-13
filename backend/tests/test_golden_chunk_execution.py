@@ -161,7 +161,13 @@ def _success_summary(attempts: list[dict] | None = None) -> dict:
         "tests_added_or_updated": [],
         "tests_added": [],
         "summary": "Goal: Implement the chunk.\nCoder summary: Chunk 1 coded",
-        "suggested_memory_entries": ["remember chunk"],
+        "suggested_memory_entries": [
+            {
+                "content": "remember chunk",
+                "category": "other",
+                "scope": "global",
+            }
+        ],
     }
     if attempts:
         expected["attempts"] = attempts

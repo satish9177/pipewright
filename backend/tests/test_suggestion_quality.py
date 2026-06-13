@@ -97,6 +97,17 @@ def test_low_scoring_non_junk_remains_weak_not_floored():
     assert result.quality is SuggestionQuality.WEAK
 
 
+def test_valid_category_increases_non_junk_score_without_flooring():
+    content = "Project prefers concise review notes."
+
+    other = score_suggestion(content, category="other")
+    security = score_suggestion(content, category="security")
+
+    assert other.floored is False
+    assert security.floored is False
+    assert security.score > other.score
+
+
 def test_scoring_is_deterministic():
     first = score_suggestion("Run tests with pytest -q.")
     second = score_suggestion("Run tests with pytest -q.")

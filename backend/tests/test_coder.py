@@ -7,6 +7,7 @@ The target repo is ai-workflow-platform.
 Coder reads files from there but never writes.
 """
 
+import json
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,9 @@ from backend.memory.memory_store import add_fact
 from backend.memory.prompt_builder import (
     build_project_memory_block_detailed as real_build_memory_block_detailed,
 )
+from backend.models.handoff import PlannerHandoff
+from backend.pipeline import coder
+from backend.pipeline.coder import run_coder
 
 
 def _empty_memory_result(**kwargs):
@@ -36,9 +40,6 @@ def _empty_memory_result(**kwargs):
         included_entries=(),
         excluded_entries=(),
     )
-from backend.models.handoff import PlannerHandoff
-from backend.pipeline import coder
-from backend.pipeline.coder import run_coder
 
 
 def make_test_plan(run_id: str) -> PlannerHandoff:
@@ -167,6 +168,60 @@ async def test_coder_429_during_correction_retried_with_bounded_backoff(
     assert checkpoint_calls[0]["step"] == "code"
     assert checkpoint_calls[0]["tests_passed"] is False
     assert checkpoint_calls[0]["step_completed"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_coder_checkpoint_omits_suggested_memory_rationale(
+    monkeypatch,
+    tmp_repo,
+):
+    run_id = str(uuid.uuid4())
+    secret_rationale = "sk-aaaaaaaaaaaaaaaaaaaa"
+    plan = make_test_plan(run_id)
+    llm = _CoderLLM([
+        json.dumps({
+            "handoff_from": "coder",
+            "handoff_to": "patch_applier",
+            "run_id": run_id,
+            "feature_description": "Add a ping endpoint",
+            "files_changed": [
+                {
+                    "path": "backend/routes/ping.py",
+                    "action": "create",
+                    "content": "def ping():\n    return {'status': 'ok'}\n",
+                    "reason": "Add ping route",
+                }
+            ],
+            "summary": "Added a ping route.",
+            "suggested_memory_entries": [
+                {
+                    "content": "Scope guard remains authoritative.",
+                    "category": "security",
+                    "scope": "backend",
+                    "rationale": secret_rationale,
+                }
+            ],
+        })
+    ])
+
+    _patch_coder_dependencies(monkeypatch, llm, tmp_repo)
+    checkpoint_calls = []
+    monkeypatch.setattr(
+        coder,
+        "save_checkpoint",
+        lambda **kwargs: checkpoint_calls.append(kwargs),
+    )
+
+    result = await run_coder(plan=plan, run_id=run_id)
+
+    assert result.suggested_memory_entries[0].rationale == secret_rationale
+    for payload_key in ("output", "handoff_contract"):
+        persisted_entry = checkpoint_calls[0][payload_key][
+            "suggested_memory_entries"
+        ][0]
+        assert persisted_entry["content"] == "Scope guard remains authoritative."
+        assert "rationale" not in persisted_entry
 
 
 @pytest.mark.unit
