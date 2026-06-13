@@ -7,6 +7,20 @@
 
 ---
 
+## ⚠️ Superseded 2026-06-14 — read this first
+
+This note predates the **Pipewright redesign**, and its "demo / README / devex
+first" recommendation is **no longer current**. The authoritative roadmap is
+`PIPEWRIGHT_REDESIGN_WORKPLAN.md` (sequence: proposal §23; decisions: §24; cycle
+window: Appendix E). Current status: **Area A (Pipeline) Pass 1 is COMPLETE**
+(including the reviewer informed-approval soft gate — now **LIVE**, advisory, human
+decides), and **Area B (Memory) Pass 2 has begun** — the M5 suggestion-quality gate
+shipped (PR #292), and the **next slice is §23 order-row 11 — detection
+rules-as-data (PR-A first)**. The "reviewer stage: designed, not implemented"
+section below is also stale. This page is kept for history only.
+
+---
+
 ## Immediate recommendation
 
 **Do demo / README / devex readiness before starting another large product

@@ -2,9 +2,30 @@
 
 **Date:** 2026-06-13
 **Slice:** §23 order-row **7** — "M5 quality gate (structured handoff schema + scorer + floor + inbox ranking)" (Area B / Pass 2 §11.3).
-**Status:** Design for human review. **No code in this document.** First slice of Area B (Pass 2 — Memory).
+**Status:** ✅ **COMPLETE — shipped as PR #292 (2026-06-14).** This was the design-first brief; it is retained below as the historical record. First slice of Area B (Pass 2 — Memory).
 
 > **Numbering hazard.** This is the **§23 order-row 7 / Pass 2 §11.3 M5 gate**, *not* the workplan/Pass 1 §6 engine "item 7" (the Signal C classifier, already done). See Appendix E's reconciliation note. The file is named `ITEM7_M5` to keep the two apart.
+
+---
+
+## 0. Closeout (2026-06-14)
+
+**Shipped as PR #292** (commit `65911b3` "Add memory suggestion quality gate"; design commit `23b6c02`). Recommendation §4's **7-α** (deterministic gate) shipped in full, and **7-β** (structured channel) shipped **on the coder side**:
+
+- `backend/memory/suggestion_quality.py` — pure, string-only `score_suggestion` + `is_objective_junk` floor (the only flooring decision).
+- `_handoff_candidates` (`run_outcome_suggestions.py`) — floor (`floored_count`), score-rank, and cap (`HANDOFF_SUGGESTION_CAP = 5` / `RUN_SUGGESTION_TOTAL_CAP = 8`, `capped_count`). The three deterministic/template channels were left untouched, as designed.
+- `coder.py` emits `{content, category, scope, rationale}`; `CoderHandoff.suggested_memory_entries: List[SuggestedMemoryEntry]` with a `legacy_string_to_object` tolerant validator (legacy bare strings → `category="other"`, `scope="global"`).
+- Additive `quality_score INTEGER` on `memory_suggestions`, threaded NULL-safe through `insert_pending_suggestion`.
+- Pending-only throughout; the #21B content gate is never bypassed (`blocked_count` distinct from `floored_count`).
+
+**Two non-blocking loose ends (do NOT block Row 11):**
+
+1. **Planner channel still bare strings.** `planner.py` still solicits `["fact …"]` and `PlannerHandoff.suggested_memory_entries` is `List[str]`. This **does not feed the handoff-candidate path** — `_build_completion_summary` serializes only the coder output (`_serialize_suggested_memory_entries(coder_output)`), so planner entries never reach `_handoff_candidates`. Harmless; a cosmetic cleanup (stop soliciting a discarded field) for a later slice.
+2. **Inbox ranking / near-dup grouping** (open-decision #4 below) — `quality_score` is persisted and surfaced on the suggestions response model; **verify** the inbox read path orders by it and annotates near-dups via `find_duplicate_candidates` (advisory only), or track as a small display-only follow-up.
+
+**Smoke / closeout doc:** `docs/testing/memory-m5-suggestion-quality-smoke.md`. **Next slice:** §23 order-row 11 (detection rules-as-data), PR-A first — see `PIPEWRIGHT_REDESIGN_WORKPLAN.md` and Appendix E.1/E.2 (reconciled 2026-06-14).
+
+The original design brief follows unchanged.
 
 ---
 

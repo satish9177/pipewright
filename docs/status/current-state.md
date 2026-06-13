@@ -8,6 +8,43 @@
 
 ---
 
+## ⚠️ Reconciled 2026-06-14 — read this first
+
+This page was written **before** the Pipewright redesign
+(`PIPEWRIGHT_REDESIGN_PROPOSAL.md`), and several sections below are **stale**. For
+the authoritative current roadmap and status, **`PIPEWRIGHT_REDESIGN_WORKPLAN.md`
+is canonical** (sequence: proposal §23; decisions: §24; cycle window: Appendix E).
+
+Current truth:
+
+- **Area A (Pipeline) Pass 1 is COMPLETE.** The engine redesign landed on
+  `develop`: the stage driver + append-only attempt ledger, baseline-aware
+  verification, bounded `INFRA_ERROR` auto-retry, steered attempts + post-success
+  refinement, the **reviewer informed-approval soft gate (now LIVE)**, the
+  phase/narrative read-model, the trivial-task stage profile, and provider prompt
+  caching.
+- **Area B (Pass 2 — Memory) has begun.** §23 **order-row 7 — the M5
+  suggestion-quality gate — is COMPLETE** (PR #292): a deterministic scorer, an
+  objective-junk floor, per-run caps, the structured coder handoff channel, and an
+  additive `quality_score` column — all **pending-only, human-approved**, with the
+  content gate intact. Closeout:
+  [`../testing/memory-m5-suggestion-quality-smoke.md`](../testing/memory-m5-suggestion-quality-smoke.md).
+- **Next memory slice: §23 order-row 11 — detection rules-as-data**, opened as the
+  active cycle, **PR-A only first** (extract the `bootstrap.py` detection chain
+  into a declarative ruleset + prove characterization parity; **no new behavior**).
+  PR-B (advisory repo reality signals) and PR-C (test-command-detection backfill)
+  come later.
+- **Not next:** request-aware memory selection (row 12), retriever/FTS (row 19),
+  post-run hygiene / auto-generation (row 16), vector/embedding memory (row 23),
+  and the thread/run UI (rows 22b–22e).
+
+The redesign preserves every safety invariant in this doc: human approval gates,
+scope guard, branch/PR safety, no empty commits, no auto-merge, pending-only
+human-approved memory, and "memory is advisory." Sections below tagged **[STALE
+2026-06-14]** predate the redesign and are kept only for history.
+
+---
+
 ## What Pipewright is (one paragraph)
 
 Pipewright is a **human-controlled AI engineering pipeline orchestrator** for
@@ -88,7 +125,15 @@ for the guarantee-to-test mapping.
 It is additive and display-only: the existing controls remain authoritative and
 routes revalidate every mutating action.
 
-### Adversarial Reviewer Stage v1 — **design only**
+### Adversarial Reviewer Stage v1 — **design only** — **[STALE 2026-06-14]**
+
+> **[STALE 2026-06-14]** Superseded by the redesign. The **reviewer
+> informed-approval soft gate (Pass 1 §4.5 / Phase 4 item 15) shipped** (PR #287):
+> a delivered `high` × {`requirement_mismatch`, `security`} finding now requires a
+> human acknowledgement before approval. The reviewer still **gates nothing on its
+> own, commits nothing, mutates nothing, and writes no memory** — it is advisory
+> and the human decides. The "no AI review runs in the pipeline today" bullet
+> below is out of date. See `PIPEWRIGHT_REDESIGN_WORKPLAN.md` (Phase 4 item 15).
 
 - Design doc merged: [`../design/adversarial-reviewer-stage.md`](../design/adversarial-reviewer-stage.md).
 - **Implementation intentionally deferred** pending a priority decision.
@@ -109,7 +154,10 @@ routes revalidate every mutating action.
 - **Memory writes from reviewer findings**, **PR comments**, **durable audit
   system**, **multi-model routing UI** — all out of the reviewer stage.
 - **Memory M3** (conflict lifecycle, categories, usage tracking, constrained
-  LLM-assisted memory, pgvector at scale).
+  LLM-assisted memory, pgvector at scale). **[STALE 2026-06-14]** The redesign
+  reframes Area B (memory) as the §23 row series: M5 (row 7) shipped, **row 11
+  (detection rules-as-data) is next**, and vector/embedding memory (row 23) stays
+  deferred behind a soak + decision D6. See the workplan.
 - **Production hardening** (Postgres/Alembic, durable events, DB locks at scale,
   deployment).
 - **Deployment / Ollama / Provider Settings UI / BYOK DB storage / execution
@@ -167,15 +215,22 @@ no scope/path-safety weakening, and no retry eligibility or budget change.
 
 ## What is safe to start next
 
-The recommended immediate focus is **demo / README / devex readiness** before any
-new product feature. The detailed options and the recommendation are in
-[`../roadmap/next-phase.md`](../roadmap/next-phase.md). In short:
+**[Updated 2026-06-14]** The active redesign slice is **§23 order-row 11 —
+detection rules-as-data** (Area B / Pass 2 memory), opened as the next memory
+implementation slice — **PR-A only first**: extract the `bootstrap.py` detection
+chain into a declarative ruleset and prove characterization parity, with **no new
+behavior**. It is deterministic, decision-free, pending-only, and touches no
+schema, injection path, gate, scope, or Git/PR behavior. See
+`PIPEWRIGHT_REDESIGN_WORKPLAN.md` and the proposal's Appendix E.1/E.2 (reconciled
+2026-06-14) for the cycle window.
 
-- **Safe now:** documentation, demo polish, public README, smoke-checklist upkeep,
-  small honest stabilization fixes.
-- **Needs an explicit decision first:** Adversarial Reviewer implementation
-  (new feature), GitHub/PR robustness, production hardening, multi-LLM/provider
-  modes, Memory M3.
+- **Safe now (no decision needed):** Row 11 PR-A; documentation / smoke-checklist
+  upkeep; small honest stabilization fixes.
+- **Not next (explicitly deferred):** Row 11 PR-B (advisory reality signals) and
+  PR-C (test-command backfill); request-aware selection (row 12, D5); post-run
+  hygiene (row 16, D7); retriever/FTS (row 19); vector/embedding memory (row 23,
+  D6); the thread/run UI (rows 22b–22e). Demo / README / devex polish remains fine
+  opportunistically, but is no longer the recommended next step.
 
 ---
 
@@ -204,18 +259,30 @@ COMPLETED SAFETY SYSTEMS:
 - Operator State / Attention Panel: read-only, display-only overlay; complete and
   smoke-validated.
 
-DESIGN-ONLY (NOT IMPLEMENTED): Adversarial Reviewer Stage v1. Advisory/display-only
-by design. No AI review runs today. Implementation deferred pending prioritization.
+REDESIGN STATUS (2026-06-14): Area A (Pipeline) Pass 1 COMPLETE — stage driver +
+attempt ledger; baseline-aware verification; bounded INFRA_ERROR auto-retry; steered
++ post-success refinement; reviewer informed-approval SOFT GATE (LIVE, advisory,
+human decides); phase/narrative read-model; trivial-task profile; prompt caching.
+Area B (Memory) Pass 2 STARTED: M5 suggestion-quality gate COMPLETE (PR #292) —
+deterministic scorer + junk floor + per-run caps + structured coder channel +
+quality_score column, all pending-only/human-approved. CANONICAL roadmap:
+PIPEWRIGHT_REDESIGN_WORKPLAN.md (sequence proposal §23; decisions §24; cycle window
+Appendix E). This current-state page is a snapshot; the workplan wins on conflict.
 
-CURRENT NEXT RECOMMENDED TASK: demo / README / devex readiness BEFORE starting the
-reviewer or any new product feature.
+CURRENT NEXT RECOMMENDED TASK: §23 order-row 11 — detection rules-as-data, PR-A only
+(extract bootstrap detection into rules-as-data; prove characterization parity; no
+new behavior). NOT NEXT: request-aware selection (row 12), retriever/FTS (row 19),
+post-run hygiene (row 16), vector/embedding (row 23), thread UI (22b–22e).
 
 INVARIANTS (do not violate):
 - Never bypass chunk plan approval or final approval. Final approval is NOT
   automatic.
 - Never auto-expand scope or weaken scope_guard. Never auto-merge.
 - Never claim Pipewright proves code correctness.
-- The Adversarial Reviewer is design-only; do not claim it is live.
+- The reviewer is an advisory informed-approval SOFT GATE (LIVE as of Area A Pass
+  1): it can require human acknowledgement of a delivered high×{requirement_mismatch,
+  security} finding, but it gates/commits/writes nothing itself and can never reject
+  or auto-act — the human always decides.
 - Routes revalidate server-side; the Attention Panel is display-only.
 - Docs-only changes must not alter runtime behavior, schema, routes, or packages.
 ```
