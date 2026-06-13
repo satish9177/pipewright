@@ -1042,23 +1042,27 @@ This appendix does not replace the redesign. It is the implementation guardrail 
 
 The redesign remains the north-star architecture. §23 remains the sequencing source of truth. §24 remains the decision roster. This appendix only defines what the next implementation cycle may touch, where it must stop, and what wording/checklist every PR must use.
 
+> **Reconciled 2026-06-13.** The original E.1/E.2 below were written before execution and are now factually wrong: the team executed Area A (Pipeline) **engine-first** — a legitimate brief §10 two-pass choice — and that pass overran this appendix's stated "1 through 7b" window and its hard-stop list. The stage driver, execution-time steering, post-success refinement, the reviewer ack gate, the narrative read-model, and the trivial-task profile + prompt caching are **already merged to `develop`** (see `PIPEWRIGHT_REDESIGN_WORKPLAN.md`). E.1/E.2 are rewritten here to describe the *true* next window. E.3–E.5 are unchanged and still binding.
+>
+> **Numbering hazard (read this).** There are two "item 7"s. The workplan / Pass 1 §6 engine numbering uses **item 7 = the Signal C execution-integrity classifier** (DONE, Phase 1). The §23 unified table's **order-row 7 = the M5 suggestion-quality gate** (NOT done, Memory). They are different work with the same label. This appendix and the next build cycle mean the **§23 order-row 7 / Pass 2 §11.3 M5 suggestion-quality gate** wherever "item 7" appears below.
+
 ## E.1 Allowed implementation window
 
-For the next build cycle, implementation is limited to §23 items **1 through 7b**, each as a separate PR.
+**Built and merged to `develop` (do not re-open):** §23 order-rows **1** (test-command detection), **2–6** (Phase 0), **8–10** (Signal C, failure-type split + INFRA_ERROR auto-retry, baseline-aware verification), the Phase-2/3/4 engine rows **13–15 / 17–18 / 20–22** (stage extraction + driver + attempt ledger; steered attempts + post-success refinement; reviewer ack gate + narrative read-model + trivial-task profile + prompt caching), and the Phase-2 golden/characterization coverage that stands in for **12b**. Plus the post-Pass-1 red-team hardening (F1–F3, F5).
 
-Do not combine these items into one large PR. Do not start later §23 items until this batch is complete and self-use smoke has passed.
+**Skipped by the engine-first pass — still open in the early §23 band (the backfill set):** order-rows **6b** (chunk-sizing advisory), **6c** (chunk-isolation advisory, D14 = advisory-only), **7a-`plan_versions`** (the `chunk_attempts` + `run_turns` tables landed in Phase 2/3; the `plan_versions` table did not), **7b** (plan-gate turns, D10), **9b** (flaky confirmation + quarantine, D9). These are **not** in this cycle's window; they are recorded so they are not lost.
 
-Hard stop after §23 item 7b:
+**This build cycle is limited to exactly one slice: §23 order-row 7 — the M5 suggestion-quality gate (Pass 2 §11.3).** Maintainer decision 2026-06-13: begin Area B at its mandated first slice (the proposal is emphatic — §8.3 deficit 2, §11.3 — that entry-quality must precede any retrieval work, or the store just indexes junk). Design-first per the established discipline: a human-reviewed design brief in `PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md` precedes any code. Ship as one PR (or a small ordered set), not combined with the backfill set.
 
-After test-command detection, Phase 0 deterministic fixes, chunk sizing/isolation advisories, memory suggestion quality gate, turn/attempt/plan-version schema, and plan-gate turns are merged, stop and run a real self-use smoke before starting the stage driver, execution steering, full thread UI, or vector memory.
+**Hard stop after the M5 gate.** Stop and run a real self-use smoke before starting any of: the backfill set above; the deeper Area B memory rows **11** (detection rules-as-data), **12** (request-aware selection + mandatory tier), **16** (post-run hygiene), **19** (retriever + FTS rung 1), **23** (vector rung 2); or the §21 thread UI rows (**22b–22e**). The obsolete original hard-stop language ("before starting the stage driver, execution steering, full thread UI, or vector memory") is void for the first three — they shipped — and survives only as "before vector memory / thread UI."
 
 ## E.2 Accepted defaults for this cycle
 
-For this cycle, §24's recommended defaults are accepted as written and are **not** restated here — §24 remains their single source (this honors E.5). This covers D5, D9, D10, D11, D12, and D14 (chunk isolation stays advisory-only; the hard gate remains rejected).
+The M5 suggestion-quality gate is **decision-free** — §23 marks order-row 7 independent, and no D-point in §24 gates it. No new default needs accepting to start this cycle.
 
-§24 leaves exactly one open numeric range: **D2**, the infra auto-retry budget (1–2). For this cycle, use **1** automatic retry, INFRA_ERROR only.
+Recorded for continuity (unchanged): §24's recommended defaults were accepted as written (single-sourced in §24 per E.5) — D5, D9, D10, D11, D12, D14 (chunk isolation advisory-only; hard gate rejected) — and **D2 = 1** (one INFRA_ERROR auto-retry) is already shipped in Phase 1. Those defaults gate the *backfill set* and the deeper memory rows, **not** this cycle.
 
-Vector memory, full thread UI, execution-time steering, post-success refinement, and the stage-driver replacement remain outside this implementation window unless a later maintainer decision explicitly opens them.
+Vector memory (row 23), the retriever/FTS rung (row 19), request-aware selection (row 12), detection rules-as-data (row 11), post-run hygiene (row 16), and the thread UI (rows 22b–22e) remain outside this window unless a later maintainer decision explicitly opens them.
 
 ## E.3 Required UI wording
 
