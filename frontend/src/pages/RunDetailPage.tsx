@@ -1289,6 +1289,10 @@ export default function RunDetailPage() {
   // the backend route stays the enforcing gate.
   const retryEligible =
     chunkPlan?.operator_state?.primary_action?.id === 'retry_patch'
+  const retryBlockedReason =
+    chunkPlan?.operator_state?.blocked_actions?.find(
+      action => action.id === 'retry_patch',
+    )?.blocked_reason ?? null
   // #39A: hide a lower legacy PRIMARY button only when the SAME action is wired and
   // clickable in the top OperatorAttentionPanel. We reuse resolvePrimaryAction (the
   // single source of truth for which primary_action ids are clickable up top) so the
@@ -1339,6 +1343,7 @@ export default function RunDetailPage() {
           : null
       }
       retryEligible={retryEligible}
+      retryBlockedReason={retryBlockedReason}
       hideLegacyPlanApprove={hideLegacyPlanApprove}
       hideLegacyExecute={hideLegacyExecute}
       onApprove={() => approveChunkPlanMutation.mutate()}

@@ -36,12 +36,22 @@ interface PatchFailureBannerProps {
   // and the route gate. False/omitted keeps retry as a disabled placeholder even
   // when a recovery action is suggested. Display-only; wires no new behavior.
   retryEligible?: boolean
+  retryBlockedReason?: string | null
   isRetrying?: boolean
+  onRetryWithInstruction?: (
+    chunkNumber: number,
+    steerText: string,
+    failureReportId: string,
+  ) => void
+  isRetryingWithInstruction?: boolean
 }
 
 const VIEW_DETAILS = 'view_details'
 const REINDEX = 'reindex'
 const RETRY = 'retry'
+const RETRY_WITH_INSTRUCTION = 'retry_with_instruction'
+const CREATE_TARGET_EXISTS_INSTRUCTION =
+  'The file already exists. Modify the existing file instead of creating it.'
 
 function formatFiles(values: string[]) {
   return values.join(', ')
@@ -70,7 +80,10 @@ export default function PatchFailureBanner({
   validation,
   onRetry,
   retryEligible = false,
+  retryBlockedReason = null,
   isRetrying = false,
+  onRetryWithInstruction,
+  isRetryingWithInstruction = false,
 }: PatchFailureBannerProps) {
   const [showDetails, setShowDetails] = useState(false)
   const [reindexing, setReindexing] = useState(false)
@@ -81,6 +94,15 @@ export default function PatchFailureBanner({
   const actual = report.changed_files_actual ?? []
   const suggestedActions = report.suggested_actions ?? []
   const technicalDetails = report.technical_details ?? ''
+  const normalizedMessage = (report.message ?? '').toLowerCase()
+  const normalizedTechnicalDetails = technicalDetails.toLowerCase()
+  const retryActionSuggested = suggestedActions.includes(RETRY)
+  const retryWithInstructionSuggested = suggestedActions.includes(
+    RETRY_WITH_INSTRUCTION,
+  )
+  const createTargetExistsFailure =
+    normalizedMessage.includes('create a file that already exists') ||
+    normalizedTechnicalDetails.includes('create target already exists')
 
   // The reindex action is only actionable when we know which project to scan.
   const reindexEnabled =
@@ -98,10 +120,18 @@ export default function PatchFailureBanner({
   const canRetry =
     chunkStatus === 'failed' &&
     Boolean(report.failure_report_id) &&
-    suggestedActions.includes(RETRY) &&
+    retryActionSuggested &&
     retryEligible === true &&
     typeof onRetry === 'function' &&
     typeof chunkNumber === 'number'
+  const canRetryWithInstruction =
+    createTargetExistsFailure &&
+    chunkStatus === 'failed' &&
+    Boolean(report.failure_report_id) &&
+    retryWithInstructionSuggested &&
+    typeof onRetryWithInstruction === 'function' &&
+    typeof chunkNumber === 'number'
+  const showRetryButton = retryActionSuggested || Boolean(retryBlockedReason)
 
   const handleReindex = async () => {
     if (!projectId) return
@@ -215,23 +245,54 @@ export default function PatchFailureBanner({
         </div>
       )}
 
-      {suggestedActions.length > 0 && (
+      {(suggestedActions.length > 0 || showRetryButton) && (
         <div className="grid gap-2">
           <div className="flex flex-wrap gap-2">
+            {canRetryWithInstruction && (
+              <Button
+                size="sm"
+                onClick={() =>
+                  onRetryWithInstruction!(
+                    chunkNumber!,
+                    CREATE_TARGET_EXISTS_INSTRUCTION,
+                    report.failure_report_id!,
+                  )
+                }
+                disabled={isRetryingWithInstruction}
+              >
+                {isRetryingWithInstruction
+                  ? 'Retrying...'
+                  : 'Retry with instruction'}
+              </Button>
+            )}
             {canRetry && (
               <Button
                 size="sm"
+                variant={canRetryWithInstruction ? 'outline' : 'default'}
                 onClick={() => onRetry!(chunkNumber!, report.failure_report_id!)}
                 disabled={isRetrying}
               >
                 {isRetrying ? 'Retrying…' : 'Retry code change'}
               </Button>
             )}
+            {!canRetry && showRetryButton && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled
+                title={retryBlockedReason ?? undefined}
+              >
+                Retry code change
+              </Button>
+            )}
             {suggestedActions.map(action => {
               // The dedicated Retry button above replaces the placeholder when
               // retry is actually wired; otherwise fall through to the disabled
               // placeholder (unchanged behavior).
-              if (action === RETRY && canRetry) {
+              if (action === RETRY && showRetryButton) {
+                return null
+              }
+              if (action === RETRY_WITH_INSTRUCTION && canRetryWithInstruction) {
                 return null
               }
               if (action === VIEW_DETAILS) {
@@ -276,6 +337,16 @@ export default function PatchFailureBanner({
           )}
           {reindexError && (
             <p className="text-xs font-medium text-red-500">{reindexError}</p>
+          )}
+          {canRetryWithInstruction && (
+            <p className="text-xs font-medium text-foreground">
+              Suggested instruction: {CREATE_TARGET_EXISTS_INSTRUCTION}
+            </p>
+          )}
+          {!canRetry && retryBlockedReason && (
+            <p className="text-xs font-medium text-muted-foreground">
+              Retry unavailable: {retryBlockedReason}
+            </p>
           )}
           <p className="text-xs text-muted-foreground">
             {canRetry

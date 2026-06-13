@@ -22,6 +22,11 @@ from backend.main import app
 from backend.models.chunk import ChunkDefinition, TriageResult
 from backend.pipeline.approval_gate import create_final_approval_gate
 from backend.pipeline.chunk_store import create_chunked_run
+from backend.pipeline.patch_failures import (
+    PatchFailureType,
+    build_patch_failure_report,
+    patch_failure_report_to_completion_summary,
+)
 from backend.pipeline.run_locks import (
     PROJECT_LOCK_CONFLICT_MESSAGE,
     ProjectRepoLockError,
@@ -1172,6 +1177,61 @@ def test_get_chunks_route_returns_plan(tmp_repo, tracked_runs):
 
     assert response.status_code == 200
     assert response.json()["run_id"] == run_id
+
+
+def test_get_chunks_route_includes_retry_blocked_reason(tmp_repo, tracked_runs):
+    project = make_project(tmp_repo)
+    run_id = str(uuid.uuid4())
+    tracked_runs.append(run_id)
+    create_chunked_run(
+        run_id,
+        project["id"],
+        "Add route chunks",
+        make_triage(run_id, project["id"]),
+    )
+    report = build_patch_failure_report(
+        PatchFailureType.PATCH_DOES_NOT_APPLY,
+        technical_details=(
+            "patch_applier.py: edit old_string not found in backend/routes/chunks.py."
+        ),
+        changed_files_attempted=["backend/routes/chunks.py"],
+        allowed_files=["backend/routes/chunks.py"],
+        rollback_performed=True,
+        working_tree_clean=False,
+        max_attempts=2,
+        chunk_number=1,
+    ).model_copy(update={"failure_report_id": "failure-report-1"})
+    summary = json.dumps(patch_failure_report_to_completion_summary(report))
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE pipeline_runs
+            SET status = 'failed',
+                current_step = 'failed',
+                chunk_plan_status = 'approved'
+            WHERE id = :run_id
+        """), {"run_id": run_id})
+        conn.execute(text("""
+            UPDATE chunks
+            SET status = 'failed',
+                completion_summary = :summary
+            WHERE run_id = :run_id
+              AND chunk_number = 1
+        """), {"run_id": run_id, "summary": summary})
+    client = TestClient(app)
+
+    response = client.get(f"/runs/{run_id}/chunks")
+
+    assert response.status_code == 200
+    operator_state = response.json()["operator_state"]
+    assert operator_state["primary_action"] is None
+    retry_action = next(
+        action
+        for action in operator_state["blocked_actions"]
+        if action["id"] == "retry_patch"
+    )
+    assert retry_action["blocked_reason"] == (
+        "Commit or stash your uncommitted changes before retrying."
+    )
 
 
 def test_approve_endpoint_approves_only_and_does_not_execute(tmp_repo, tracked_runs):

@@ -61,6 +61,7 @@ interface ChunkPlanPanelProps {
   // PatchFailureBanner so the enabled "Retry code change" button matches
   // operator_state / the route gate. Display-only; changes no behavior.
   retryEligible?: boolean
+  retryBlockedReason?: string | null
   // #27F: called after a successful scope expansion approve/reject so the parent
   // refreshes run/chunks/gates query data via the existing invalidation pattern.
   onScopeActionComplete?: () => void
@@ -781,6 +782,7 @@ interface ChunkCardProps {
   retryingChunkNumber: number | null
   steeringChunkNumber: number | null
   retryEligible?: boolean
+  retryBlockedReason?: string | null
   hiddenApprovalChunkNumbers: number[]
   rejectReason: string
   onRejectReasonChange: (value: string) => void
@@ -811,6 +813,7 @@ function ChunkCard({
   retryingChunkNumber,
   steeringChunkNumber,
   retryEligible = false,
+  retryBlockedReason = null,
   hiddenApprovalChunkNumbers,
   rejectReason,
   onRejectReasonChange,
@@ -1049,7 +1052,21 @@ function ChunkCard({
               validation={chunk.test_validation}
               onRetry={pendingScope ? undefined : onRetryChunk}
               retryEligible={pendingScope ? false : retryEligible}
+              retryBlockedReason={pendingScope ? null : retryBlockedReason}
               isRetrying={retryingChunkNumber === chunk.chunk_number}
+              onRetryWithInstruction={
+                pendingScope || !onSteerReviewFinding
+                  ? undefined
+                  : (chunkNumber, steerText, failureReportId) =>
+                      onSteerReviewFinding(
+                        chunkNumber,
+                        steerText,
+                        failureReportId,
+                      )
+              }
+              isRetryingWithInstruction={
+                steeringChunkNumber === chunk.chunk_number
+              }
             />
           </PatchRecoveryContext>
         ) : recoveredReview ? (
@@ -1424,6 +1441,7 @@ export default function ChunkPlanPanel({
   retryingChunkNumber = null,
   steeringChunkNumber = null,
   retryEligible = false,
+  retryBlockedReason = null,
   onScopeActionComplete,
   onReviewActionComplete,
   hideLegacyPlanApprove = false,
@@ -1552,6 +1570,7 @@ export default function ChunkPlanPanel({
               retryingChunkNumber,
               steeringChunkNumber,
               retryEligible,
+              retryBlockedReason,
               hiddenApprovalChunkNumbers,
               rejectReason: chunkRejectReasons[chunk.chunk_number] ?? '',
               onRejectReasonChange: value =>
