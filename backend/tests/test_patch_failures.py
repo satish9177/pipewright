@@ -47,6 +47,7 @@ from backend.pipeline.patch_failures import (
     stale_index_hint_for,
     suggested_actions_for,
 )
+from backend.pipeline.patch_applier import classify_patch_failure
 
 pytestmark = pytest.mark.unit
 
@@ -260,6 +261,90 @@ def test_report_factory_fills_fields():
     assert ACTION_RETRY in report.suggested_actions
     assert report.retry.attempts == 0
     assert report.retry.max_attempts == 2
+    assert report.retry.retryable is True
+
+
+def test_create_target_exists_maps_to_patch_does_not_apply():
+    error = RuntimeError(
+        "patch_applier.py: create target already exists: "
+        "docs/testing/m5-7beta-smoke.md"
+    )
+
+    assert classify_patch_failure(error, phase="apply") == (
+        PatchFailureType.PATCH_DOES_NOT_APPLY
+    )
+
+
+def test_create_target_exists_report_uses_honest_message_without_stale_guidance():
+    detail = (
+        "patch_applier.py: create target already exists: "
+        "docs/testing/m5-7beta-smoke.md"
+    )
+
+    report = build_patch_failure_report(
+        PatchFailureType.PATCH_DOES_NOT_APPLY,
+        technical_details=detail,
+        changed_files_attempted=["docs/testing/m5-7beta-smoke.md"],
+        attempts=0,
+        max_attempts=2,
+    )
+
+    assert report.failure_type == PatchFailureType.PATCH_DOES_NOT_APPLY
+    assert report.message == (
+        "The change tried to create a file that already exists. The file "
+        "should be edited, not created."
+    )
+    lowered = report.message.lower()
+    assert "stale" not in lowered
+    assert "re-index" not in lowered
+    assert "out-of-date" not in lowered
+    assert report.stale_index_hint is False
+    assert ACTION_REINDEX not in report.suggested_actions
+    assert ACTION_RETRY in report.suggested_actions
+    assert report.retry.retryable is True
+    assert report.technical_details == detail
+
+
+def test_create_target_exists_retry_eligibility_is_unchanged():
+    report = build_patch_failure_report(
+        PatchFailureType.PATCH_DOES_NOT_APPLY,
+        technical_details=(
+            "patch_applier.py: create target already exists: "
+            "docs/testing/m5-7beta-smoke.md"
+        ),
+        attempts=0,
+        max_attempts=2,
+    ).model_copy(update={"failure_report_id": "frid-1"})
+
+    decision = evaluate_patch_retry_eligibility(
+        report,
+        requested_failure_report_id="frid-1",
+        dependencies_met=True,
+        working_tree_clean=True,
+        chunk_status="failed",
+    )
+
+    assert decision.eligible is True
+    assert decision.failure_type == PatchFailureType.PATCH_DOES_NOT_APPLY
+
+
+def test_normal_patch_does_not_apply_keeps_stale_guidance():
+    report = build_patch_failure_report(
+        PatchFailureType.PATCH_DOES_NOT_APPLY,
+        technical_details=(
+            "patch_applier.py: edit old_string not found in src/app.py."
+        ),
+        attempts=0,
+        max_attempts=2,
+    )
+
+    assert report.message == default_message_for_failure_type(
+        PatchFailureType.PATCH_DOES_NOT_APPLY
+    )
+    assert "out-of-date" in report.message
+    assert report.stale_index_hint is True
+    assert ACTION_REINDEX in report.suggested_actions
+    assert ACTION_RETRY in report.suggested_actions
     assert report.retry.retryable is True
 
 

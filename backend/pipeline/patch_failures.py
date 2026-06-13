@@ -315,6 +315,12 @@ _DEFAULT_MESSAGES: dict[PatchFailureType, str] = {
     ),
 }
 
+_CREATE_TARGET_EXISTS_SIGNATURE = "create target already exists"
+_CREATE_TARGET_EXISTS_MESSAGE = (
+    "The change tried to create a file that already exists. The file should "
+    "be edited, not created."
+)
+
 
 class PatchFailureRetryInfo(BaseModel):
     """Retry budget snapshot for a single patch failure (#18A section 5)."""
@@ -453,8 +459,32 @@ def default_message_for_failure_type(failure_type: PatchFailureType) -> str:
     )
 
 
-def stale_index_hint_for(failure_type: PatchFailureType) -> bool:
+def _is_create_target_exists_failure(
+    failure_type: PatchFailureType,
+    technical_details: str | None,
+) -> bool:
+    if failure_type != PatchFailureType.PATCH_DOES_NOT_APPLY:
+        return False
+    return _CREATE_TARGET_EXISTS_SIGNATURE in (technical_details or "").lower()
+
+
+def _message_for_failure(
+    failure_type: PatchFailureType,
+    technical_details: str | None,
+) -> str:
+    if _is_create_target_exists_failure(failure_type, technical_details):
+        return _CREATE_TARGET_EXISTS_MESSAGE
+    return default_message_for_failure_type(failure_type)
+
+
+def stale_index_hint_for(
+    failure_type: PatchFailureType,
+    *,
+    technical_details: str | None = None,
+) -> bool:
     """True if the failure should surface the stale-repo-index hint."""
+    if _is_create_target_exists_failure(failure_type, technical_details):
+        return False
     return failure_type in _STALE_INDEX_HINT_TYPES
 
 
@@ -470,6 +500,7 @@ def suggested_actions_for(
     *,
     attempts: int = 0,
     max_attempts: int | None = None,
+    technical_details: str | None = None,
 ) -> list[str]:
     """
     Deterministic, bounded recovery action set for a failure (#18A section 5).
@@ -481,7 +512,8 @@ def suggested_actions_for(
         tree, never auto-retried and not gated by the patch retry budget).
       - retry_with_instruction is offered for transient categories plus
         SCOPE_VIOLATION and NO_CHANGES.
-      - reindex is offered for apply/target/stale categories.
+      - reindex is offered for apply/target/stale categories, except when the
+        apply failure is a create-file collision.
       - Deterministic failures (SCOPE_VIOLATION, FORBIDDEN_FILE) never offer
         plain `retry`.
     """
@@ -498,7 +530,10 @@ def suggested_actions_for(
     if failure_type in _RETRY_WITH_INSTRUCTION_TYPES:
         actions.add(ACTION_RETRY_WITH_INSTRUCTION)
 
-    if failure_type in _REINDEX_TYPES:
+    if failure_type in _REINDEX_TYPES and not _is_create_target_exists_failure(
+        failure_type,
+        technical_details,
+    ):
         actions.add(ACTION_REINDEX)
 
     # Always available: reject the chunk, escalate to a human, or inspect.
@@ -544,6 +579,7 @@ def build_patch_failure_report(
         failure_type,
         attempts=attempts,
         max_attempts=max_attempts,
+        technical_details=technical_details,
     )
     retry_available = ACTION_RETRY in actions
 
@@ -565,7 +601,7 @@ def build_patch_failure_report(
 
     return PatchFailureReport(
         failure_type=failure_type,
-        message=default_message_for_failure_type(failure_type),
+        message=_message_for_failure(failure_type, technical_details),
         technical_details=_sanitize_technical_details(technical_details),
         changed_files_attempted=list(changed_files_attempted),
         changed_files_actual=list(changed_files_actual),
@@ -578,7 +614,10 @@ def build_patch_failure_report(
             max_attempts=max_attempts or 0,
             retryable=retry_available,
         ),
-        stale_index_hint=stale_index_hint_for(failure_type),
+        stale_index_hint=stale_index_hint_for(
+            failure_type,
+            technical_details=technical_details,
+        ),
         chunk_number=chunk_number,
         failed_step=failed_step,
         manual_intervention_needed=manual_intervention_needed,
