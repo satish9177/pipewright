@@ -479,18 +479,34 @@ async def test_coder_prompt_injection_is_project_scoped(monkeypatch, tmp_repo):
 async def test_coder_prompt_still_contains_file_contents(monkeypatch, tmp_repo):
     run_id = str(uuid.uuid4())
     plan = make_test_plan(run_id)
+    plan.files_to_create = [
+        "docs/testing/m5-7beta-smoke.md",
+        "backend/routes/health.py",
+    ]
     file_path = tmp_repo / "backend" / "main.py"
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text("def existing():\n    return 'ok'\n", encoding="utf-8")
+    empty_file_path = tmp_repo / "docs" / "testing" / "m5-7beta-smoke.md"
+    empty_file_path.parent.mkdir(parents=True, exist_ok=True)
+    empty_file_path.write_text("", encoding="utf-8")
     llm = _CoderLLM([_coder_response(run_id)])
     _patch_coder_dependencies(monkeypatch, llm, tmp_repo)
 
     await run_coder(plan=plan, run_id=run_id)
 
     prompt = llm.requests[0].messages[1].content
+    system_prompt = llm.requests[0].messages[0].content
+    assert "Target file status:" in prompt
+    assert "- backend/main.py [EXISTS, 2 lines]" in prompt
+    assert "- docs/testing/m5-7beta-smoke.md [EXISTS, 0 lines]" in prompt
+    assert "- backend/routes/health.py [NEW]" in prompt
     assert "--- FILE: backend/main.py ---" in prompt
     assert "def existing():" in prompt
     assert "--- END FILE ---" in prompt
+    assert "Files to create:" in prompt
+    assert "Files to modify:" in prompt
+    assert "Out of scope:" in prompt
+    assert "All file paths must be relative to the project root." in system_prompt
 
 
 @pytest.mark.unit

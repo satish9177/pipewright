@@ -232,11 +232,55 @@ def _build_file_contents_block(
         )
 
 
+def _build_target_file_status_block(
+    files_to_create: list[str],
+    files_to_modify: list[str],
+    target_repo: str,
+) -> str:
+    """
+    Build compact, filesystem-derived existence facts for writable chunk targets.
+
+    This is prompt context only. It does not grant scope and deliberately
+    prefers actual filesystem state over planner intent when they disagree.
+    """
+    try:
+        root = Path(target_repo).resolve()
+        seen = set()
+        ordered_paths = []
+
+        for path in [*files_to_create, *files_to_modify]:
+            normalized = normalize_relative_path(path)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered_paths.append(normalized)
+
+        if not ordered_paths:
+            return "No target files declared for this chunk."
+
+        lines = ["Target file status:"]
+        for path in ordered_paths:
+            file_path = validate_safe_relative_path(path, root)
+            if file_path.exists() and file_path.is_file():
+                line_count = len(file_path.read_text(encoding="utf-8").splitlines())
+                lines.append(f"- {path} [EXISTS, {line_count} lines]")
+            else:
+                lines.append(f"- {path} [NEW]")
+        return "\n".join(lines)
+    except RuntimeError:
+        raise
+    except Exception as error:
+        raise RuntimeError(
+            f"coder.py: failed to build target file status block: {error}"
+        )
+
+
 def _build_user_prompt(
     plan: PlannerHandoff,
     run_id: str,
     project_memory_block: str,
     file_contents_block: str,
+    target_file_status_block: str,
     continuation_context: str | None = None,
 ) -> str:
     memory_section = (
@@ -268,6 +312,8 @@ Files to create: {plan.files_to_create}
 Files to modify: {plan.files_to_modify}
 Out of scope: {plan.out_of_scope}
 Risks to watch: {plan.risks}
+
+{target_file_status_block}
 
 {continuation_section}EXISTING FILE CONTENTS:
 {file_contents_block}
@@ -404,12 +450,18 @@ async def run_coder(
             plan.files_to_modify,
             target_repo
         )
+        target_file_status_block = _build_target_file_status_block(
+            plan.files_to_create,
+            plan.files_to_modify,
+            target_repo,
+        )
 
         user_prompt = _build_user_prompt(
             plan,
             run_id,
             project_memory_block,
             file_contents_block,
+            target_file_status_block,
             continuation_context=continuation_context,
         )
         request = _build_llm_request(user_prompt)
