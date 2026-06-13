@@ -1,190 +1,348 @@
 # Pipewright Redesign — Implementation Handoff Brief (rolling, per-phase)
 
 **Date:** 2026-06-14
-**What this file is:** the **rolling** implementation handoff brief for the redesign. Each slice's active spec lives here; when a slice lands, this file is repurposed for the next one. **ACTIVE OCCUPANT as of 2026-06-14: §23 order-row 11 — detection rules-as-data, PR-A only (the behavior-preserving extraction).** The previous occupant (Phase-4 item 17 — trivial-task stage profile + provider prompt caching) landed via PR #288 / PR #290 and completed Area A (Pipeline) Pass 1; its design is preserved in `PIPEWRIGHT_ITEM17_DESIGN.md`. The M5 suggestion-quality gate (§23 order-row 7, the first Area B slice) landed via PR #292; its closeout lives in `docs/testing/memory-m5-suggestion-quality-smoke.md`. This brief now describes the **next** Area B slice.
-**For:** the engineer (Fable or human) who will design, then — after human design review — implement **Row 11 PR-A only**.
-**Source of record:** `PIPEWRIGHT_REDESIGN_PROPOSAL.md` (§11.4 detection-rules-as-data / T15; §14 the §8b policy-spine table that names this refactor; Appendix E.1 the Row-11 sub-PR split and the hard stop after Row 11; §11.6 "what stays as-is"). The workplan (`PIPEWRIGHT_REDESIGN_WORKPLAN.md`) carries the sequence (= proposal §23) and the decision roster (= §24). If this brief and the proposal disagree, **the proposal wins and you flag the drift.**
-**Mode:** **design-first.** This document is a **design brief, not a prescribed mechanism.** It fixes the *what* (scope, the headline invariant, the safety check, the acceptance/parity tests) and points at the real code so you do not re-discover the repo — but **you own the *how*** (the exact shape of the ruleset, how heterogeneous detection kinds are represented, where the new module sits, how the evaluator is wired back into `_collect_candidates`). Because you also write the tests, **your design is reviewed by a human before you implement, and the PR is reviewed.** This slice is **Row 11 PR-A only.** Do not emit reality signals (PR-B), do not backfill test-command detection (PR-C), and do not touch any deeper Area B row (12/16/19/23) or the thread UI.
+**What this file is:** the **rolling** implementation handoff brief for the redesign. Each slice's active spec lives here; when a slice lands, this file is repurposed for the next one. **ACTIVE OCCUPANT as of 2026-06-14: §23 order-row 11 — detection rules-as-data, PR-B only (advisory repo reality signal producer).** The previous occupant — **Row 11 PR-A (the behavior-preserving extraction)** — has **landed**: detection now lives in `backend/memory/detection_rules.py`, `bootstrap._collect_candidates` is a thin adapter, and ordered six-field parity is pinned by `backend/tests/test_memory_detection_rules.py` against committed goldens (`backend/tests/goldens/memory_detection_rules*.json`). The PR-A as-built record lives in `PIPEWRIGHT_REDESIGN_WORKPLAN.md` (Row-11 line) and `docs/status/current-state.md`; this brief no longer describes PR-A. Earlier Area B / Pass-1 occupants: M5 suggestion-quality gate (row 7) shipped via PR #292 (closeout `docs/testing/memory-m5-suggestion-quality-smoke.md`); item 17 design preserved in `PIPEWRIGHT_ITEM17_DESIGN.md`. This brief now describes the **next** Area B slice.
+**For:** the engineer (Fable or human) who will implement **Row 11 PR-B only**, after this design brief is reviewed.
+**Source of record:** `PIPEWRIGHT_REDESIGN_PROPOSAL.md` (Appendix E.1 the Row-11 sub-PR split — PR-B is "emit repo reality signals advisorily"; §11.4 detection-rules-as-data / T15; §14 the §8b policy-spine table; §11.5–11.6 reality/staleness as-built). The workplan (`PIPEWRIGHT_REDESIGN_WORKPLAN.md`) carries the sequence (= proposal §23) and the decision roster (= §24). If this brief and the proposal disagree, **the proposal wins and you flag the drift.**
+**Mode:** **design ratified, implementation pending.** Unlike the PR-A occupant, the maintainer has **already ratified** the design decisions for PR-B (see §11B.0). This brief fixes the *what* and the *how-constraints* and points at the real code so you do not re-discover the repo. You still **read the real code first, re-verify every `file:line`, and flag drift.** The PR is reviewed.
 
-> **Status: DESIGN — not yet implemented.** No code has been written for Row 11. This brief is the input to the design review; ratify §11A.0 (the design decisions) with the maintainer before writing code.
+> **Status: DESIGN RATIFIED — not yet implemented.** No code has been written for Row 11 PR-B. The §11B.0 decisions are settled; implement against them. This slice is **Row 11 PR-B only.** Do **not** backfill test-command detection (PR-C), and do **not** touch any deeper Area B row (12/16/19/23) or the thread UI.
 
 ---
 
 ## 0. The headline invariant (read before anything else)
 
-Row 11 PR-A is a **pure structural refactor with ZERO behavior change.** Its entire justification is "one source of truth for detection knowledge, so PR-B (reality signals) and PR-C (test-command detection) can reuse the same ruleset instead of re-deriving it" (proposal §11.4 / §14). PR-A itself buys *nothing observable* — it is the enabling extraction. So the bar is not "the rules are now data"; it is "the rules are now data **and** an auditor cannot find a single emitted bootstrap candidate, in any order, that changed." The single non-negotiable invariant:
+**The consumer already exists. PR-B is a *producer* plus one wiring line — and it stays advisory-only by construction, because everything downstream of the signal map already shipped as advisory-only.**
 
-> For **every** repository, `generate_bootstrap_suggestions` and the underlying `_collect_candidates` produce the **identical ordered list of candidates** — same `content`, `category`, `scope`, `priority`, `evidence_path`, `evidence_excerpt`, **in the same order** — before and after the refactor. The refactor moves *where the detection knowledge lives* (an if/elif chain → a declarative ruleset + a pure evaluator); it changes **no detection, no template, no priority, no scope derivation, and no ordering.**
+The end-to-end reality-check path was built in M3F3 and is fully test-locked **for all six dimensions** — it is starved only of *values* for five of them:
 
-Two structural guarantees your design must prove:
+- `check_fact_against_signal` / `extract_dimension_values` / `_canonical_repo_value` (`memory_trust.py:331-440`) already classify a memory fact against a repo value for every dimension in `SUPPORTED_REALITY_DIMENSIONS` (`memory_trust.py:130`, derived from `_DIMENSION_VALUE_TOKENS` `:76-128`).
+- `analyze_injection_events(events, repo_signals={dim: value})` already loops **every** dimension in the map and emits advisory `RealityWarning`s **for mismatches only** (`injection_analysis.py:294-319`); `match` / `unknown` / `unsupported` are silent by design.
+- The `/api/v1/runs/{run_id}/memory-injections/analysis` endpoint already calls a producer — `_repo_reality_signals(project_id)` — and threads the map through (`routes/memory.py:1059-1060`).
+- **The gap:** `_repo_reality_signals` (`routes/memory.py:1002-1028`) only ever populates `db_engine`, because `build_repo_fingerprint` is the "M1.5 db-only" slice. The other five dimensions are wired end-to-end on the *consumer* side and have no *producer*.
 
-- **Order is behaviorally significant — pin it, don't just pin the set.** `generate_bootstrap_suggestions` (`bootstrap.py:824-845`) dedupes candidates by `content_hash` in **first-seen order** (`seen_hashes`). Several candidates carry **identical content from different evidence**: e.g. "Project uses MongoDB." is emitted both from the `DB_MONGODB_MARKERS` manifest scan and from a `package.json` `mongoose` dependency; "Run backend unit tests with pytest." is emitted from both a `requirements.txt`/`pyproject` pytest marker and from `pytest.ini`; "Current local database is SQLite." has a single first-evidence selection. For each such collision the **first** candidate in list order wins the surviving `evidence_path`/`evidence_excerpt`/`priority`. A refactor that reorders candidates would silently change which evidence the user sees on an approved fact — a real, if subtle, behavior change. **Parity asserts the full ordered candidate list, not a set.**
+So the single non-negotiable framing:
 
-- **Heterogeneous rule kinds must survive intact.** `_collect_candidates` is **not** one uniform table; it is six distinct detection *kinds* (see §11A.2). A faithful PR-A preserves each kind's exact semantics. It is explicitly **allowed** to leave the irreducibly-procedural kinds as small evaluator primitives rather than forcing everything into one flat table — over-flattening that changes semantics to "look more declarative" is the failure mode, not the goal. Data-fy the large uniform block; represent the rest honestly; prove parity regardless of how much became data.
+> PR-B adds a **pure, deterministic, conservative producer** that computes **at most one confident canonical value per dimension** for `backend_framework`, `frontend_framework`, `test_runner`, `migration_tool`, `package_manager`, and wires it into `_repo_reality_signals`. `db_engine` stays sourced from the existing DB fingerprint path. The producer **mutates nothing**, **persists nothing**, **scans only capped/traversal-safe manifest files**, and emits **only canonical values the consumer can recognize**. Per-dimension ambiguity or weak signal ⇒ **omit that dimension** (a missing dimension is silent; a wrong dimension is a false warning — we always prefer the silence).
 
-This is a refactor sitting on a **suggestion-only, advisory** path: every bootstrap candidate is a *pending* suggestion that a human must approve before it becomes memory (`bootstrap.py` module docstring; `generate_bootstrap_suggestions` only ever inserts `status='pending'`). PR-A does not touch approval, injection, scope, gates, or Git. The real risk is **not** a safety-contract regression — it is a **silent parity break**: a dropped rule, a reordered candidate, a priority typo, a marker-set that no longer matches the same substrings. The whole test strategy (§11A.6) exists to make that impossible to ship unnoticed.
-
----
-
-## 11A.0 Design decisions for the maintainer (ratify BEFORE any code)
-
-These are the substance of the design review. Bring a recommendation for each; the maintainer rules. **Code starts only after these are settled.**
-
-- **A0 — Ruleset representation.** How is a rule expressed as data? Options: (a) a list of frozen dataclass rule objects (`ManifestContentRule`, `PackageJsonRule`, `FirstEvidenceRule`, …) evaluated in declaration order; (b) plain dict/tuple records with a kind tag dispatched by the evaluator; (c) a hybrid — a uniform table for the large per-file/content kind (K1, §11A.2), with the procedural kinds (K3 package.json, the K5 filesystem probes, the K2 python-3.11 corpus regex) kept as typed evaluator steps interleaved at their current positions. **Recommendation: (c) typed dataclass rules in one ordered module, evaluator dispatches on rule kind.** It maximizes "data" for the part that *is* uniform without distorting the parts that are not, and the declaration order in the module *is* the candidate order (one source of truth for ordering). Whatever you choose, the ruleset is **pure data + a pure evaluator**: no DB, no network, no LLM, deterministic.
-
-- **A1 — Where the module lives.** A new `backend/memory/detection_rules.py` (rules table + pure evaluator) is the natural home; `bootstrap._collect_candidates` becomes a thin adapter that loads the repo files (its existing `_discover_manifest_files` / `_load_repo_file` / `_lower_files` path) and calls the evaluator. **Confirm** the module name and that `CandidateSuggestion` either stays in `bootstrap.py` and is imported by the rules module, or moves to a shared spot both import (avoid a circular import). **Recommendation:** keep `CandidateSuggestion` where it is; the rules module imports it. Re-export nothing new from `bootstrap` beyond what tests already touch (`CandidateSuggestion`, `_collect_candidates`).
-
-- **A2 — How much of the filesystem-probe and corpus-aggregate logic becomes data vs. stays code.** Three kinds resist a flat table: the `_python_311_detected` regex-over-joined-content with separate first-match evidence selection (K2); the first-evidence-across-corpus rules (SQLite/Docker/Prisma-schema/Alembic, K4); and the **filesystem probes** that read outside the manifest-files dict (`(root / "alembic").is_dir()`, `(root / "backend" / "pipeline" / "patch_applier.py").is_file()`, K5). **Decide** for each: keep as an evaluator primitive invoked by a typed rule, or express as data with a small predicate vocabulary. **Recommendation:** model them as **typed rules with a named predicate kind** (e.g. `kind="first_evidence"`, `kind="path_exists"`), so they still live *in the ordered ruleset* (preserving position) but the evaluator runs the right primitive. Do **not** drop the filesystem probes or change what they read — Alembic's `is_dir()` fallback and the patch-applier `is_file()` rule are part of current behavior.
-
-- **A3 — Single-source-of-truth boundary for PR-A.** The proposal's end-state is "one ruleset → three consumers (bootstrap, reality signals, test-command)." **PR-A builds the ruleset and rewires bootstrap onto it — and stops.** **Confirm** that PR-A adds **no** dimension/value metadata that only PR-B/PR-C would consume *unless* it is free and inert (e.g. a rule may carry an optional `dimension`/`signal_value` field that PR-A leaves unused and untested, purely to shape the table for the next PR). **Recommendation:** allow inert optional fields **only** if they are documented as PR-B/PR-C seams and have zero effect on PR-A's emitted candidates; otherwise leave them out and let PR-B add them. Smallest reviewable change wins. The maintainer rules on whether the seam is worth the forward-reference now.
-
-- **A4 — Parity baseline capture.** "Behavior-preserving" is only provable against a pre-refactor baseline. **Confirm** the approach: capture golden snapshots of the **full ordered candidate list** (all six `CandidateSuggestion` fields) from the *current* `_collect_candidates` across a fixture matrix (§11A.6) **and** against the Pipewright repo itself (dogfood), commit them, then assert the refactored evaluator reproduces them byte-for-byte. **Recommendation: golden snapshots committed in the test tree**, generated from `develop` before the refactor lands, asserted in the same PR. This is the Phase-2 golden/characterization discipline the proposal's Appendix E.1 names for exactly this slice.
+The real risk here is **not** a safety-contract breach (the path is advisory and mutation-free end to end). It is **(a) false-positive warnings** from over-broad markers, and **(b) namespace drift** — emitting a value the consumer can't canonicalize, which silently degrades a real mismatch to `unknown`. The whole §11B.7–§11B.9 + test strategy exist to make both impossible to ship unnoticed. The one *intended* observable change is that genuine, advisory mismatch warnings can now appear for five more dimensions; nothing is mutated, ever.
 
 ---
 
-## 11A.1 Non-negotiable safety contract (from `CLAUDE.md`)
+## 11B.0 Ratified maintainer decisions (settled — implement against these)
 
-No change may weaken these. Row 11 PR-A framing in **bold**:
+These were brought to the maintainer as a design review and **ratified**. They are not open. Implement to them; if implementation reveals one is wrong, **stop and re-raise** — do not silently deviate.
 
-1. No implementation without an approved chunk plan; never bypass a gate. **Untouched — PR-A is a refactor of a suggestion *generator*; it never touches the chunk plan, the approval gates, or the orchestrator.**
+- **D1 — Producer home & shape.** Add the new per-dimension detectors **and** the aggregator in `backend/repo/repo_fingerprint.py` (it already owns safe discovery/loading/caps and the db detector). Keep them **separate from `RepoFingerprint`** so `build_repo_fingerprint` and the DB conflict-gate path stay **byte-identical**.
+- **D2 — `db_engine` sourcing.** `db_engine` continues to come from the existing `detect_db_signals` / `build_repo_fingerprint` behavior. **Do not change** `evaluate_db_memory_conflicts` or `repo_reality.py`. The producer computes only the **five new** dimensions; the route merges db from the fingerprint as it does today.
+- **D3 — Defer T15 physical unification.** Do **not** physically unify the vocabularies of `detection_rules.py`, `repo_fingerprint.py`, and `memory_trust.py` in PR-B. PR-B may use a **separate, conservative marker table**, but every emitted value **must be compatible with `memory_trust._DIMENSION_VALUE_TOKENS`** (§11B.9).
+- **D4 — Active-dimension kill switch.** Add a single policy constant naming the active repo-reality signal dimensions. **Default enables** db_engine + the five PR-B dimensions. Rolling back to **db_engine only** must be a one-line policy edit, no code change (§11B.6).
+- **D5 — `package_manager` is lockfile/section-only.** Emit `package_manager` only from **high-confidence lockfile/section** evidence (e.g. `yarn.lock`, `pnpm-lock.yaml`, `poetry.lock` / `[tool.poetry]`, `Pipfile`, `Cargo.toml`, `go.mod`) where a canonical value exists. **Never** emit bare `pip` from arbitrary content. Ambiguous or weak ⇒ omit (§11B.7).
+- **D6 — Data shape.** A small new **frozen `RealitySignal` dataclass** (`dimension`, `value`, `evidence_path`, `evidence_excerpt`). Aggregator returns `dict[str, RealitySignal]`; the route flattens to `dict[str, str]` for `analyze_injection_events` (§11B.4).
+- **D7 — Display.** **No new frontend / UI / thread work.** Surface only through the existing memory-injections analysis `reality_warnings`. If the existing frontend renders those warnings generically, smoke it; otherwise note display polish as **deferred** (§11B.10, §11B.14).
+
+---
+
+## 11B.1 Non-negotiable safety contract (from `CLAUDE.md`)
+
+No change may weaken these. Row 11 PR-B framing in **bold**:
+
+1. No implementation without an approved chunk plan; never bypass a gate. **Untouched — PR-B adds a read-only signal producer feeding an advisory *analysis* endpoint; no chunk plan, gate, or orchestrator path is involved.**
 2. Never edit outside approved `files_expected`; `scope_guard` is the authority. **Untouched — no execution/scope path is involved.**
-3. Never create empty / no-effective-change commits. **Untouched — no commit path is involved.**
-4. Never open PRs against `main`/`master`/`develop`; never auto-merge. **Untouched — no Git path is involved.**
-5. Never write forbidden paths. **Untouched — the detector only *reads* manifest files (it already refuses `.env` values, see `test_bootstrap_does_not_read_dotenv_values`); the refactor preserves exactly which files are read and how.**
-6. Never expose or persist secrets/tokens/PII; sanitize errors. **Untouched — the existing content gate (`validate_memory_content`) and the dotenv-value safety still run on every candidate in `generate_bootstrap_suggestions`; PR-A does not move the gate. No new logging of file contents.**
-7. Memory is advisory; source code, user instruction, tests, safety rules win. **Reinforced — bootstrap candidates remain *pending suggestions* requiring human approval. PR-A is purely about *where the detection logic lives*, never about promotion, injection, or authority.**
-8. AI-suggested memory stays pending until a human approves. **Untouched — `generate_bootstrap_suggestions` still inserts only `status='pending'`; PR-A adds no auto-approval, no active-fact creation.**
-9. Prefer failing safely with a clear, specific error over guessing. **Preserved — the evaluator is total and deterministic; a malformed `package.json` still falls back exactly as today (`_package_uses`/`_package_has_script` swallow `JSONDecodeError` identically). No new failure mode is introduced.**
+3. Never create empty / no-effective-change commits. **Untouched — no commit path.**
+4. Never open PRs against `main`/`master`/`develop`; never auto-merge. **Untouched — no Git path.**
+5. Never write forbidden paths. **Untouched — the producer only *reads* capped manifest files + a small set of lockfile existence probes through `repo_fingerprint`'s traversal-safe loader (`load_repo_file` rejects `.env`/traversal); it writes nothing.**
+6. Never expose or persist secrets/tokens/PII; sanitize errors. **Preserved — evidence is fixed human-written excerpts, never raw file content; the producer never reads `.env` values; on any error the route returns `{}` (no leak). Nothing is persisted.**
+7. Memory is advisory; source code, user instruction, tests, safety rules win. **Reinforced — the producer feeds *advisory mismatch candidates* only; it makes no decision, changes no fact, and never asserts "the repo is right and memory is wrong" beyond a human-read warning.**
+8. AI-suggested memory stays pending until a human approves. **Untouched — PR-B creates no suggestion and no fact; it does not touch the bootstrap/approval path at all.**
+9. Prefer failing safely with a clear, specific error over guessing. **Preserved — ambiguity/unknown/weak signal ⇒ omit the dimension (no guess); any exception ⇒ `{}`. Conservative-by-omission is the whole producer.**
 
-This slice is **low-risk** (advisory suggestion generator, no execution/scope/Git/secret-egress contact). The risk is **silent parity drift**, not a contract breach. Carry the §11A.7 check anyway and prove it.
+Additionally — two **PR-B-specific invariants** that are the substance of the risk (testable in §11B.12):
 
-## 11A.2 Current-state verification (the ground you're designing on)
+- **DB-gate isolation.** The DB conflict gate's input (`evaluate_db_memory_conflicts` → `build_repo_fingerprint`) is **byte-identical** before and after PR-B. The five new dimensions never reach the gate; the gate stays db-only.
+- **Value-namespace compatibility.** Every value the producer can emit is a canonical key in `_DIMENSION_VALUE_TOKENS[dimension]` (so the consumer canonicalizes it and a real mismatch is never silently downgraded to `unknown`).
+
+This slice is **low-risk** (read-only advisory producer, no execution/scope/Git/secret-egress/mutation). The risk is **false positives and namespace drift**, not a contract breach.
+
+## 11B.2 Current-state verification (the ground you're designing on)
 
 Read the real code first; re-verify every `file:line`; **correct this brief's pointers if the live code drifted, and say so.**
 
-- **`backend/memory/bootstrap.py` — `_collect_candidates` is `:191-601`** (one function, returns `list[CandidateSuggestion]`). **Pointer-drift correction:** the proposal §14 table (`:540`) and the workplan both cite `bootstrap.py:191-492`; the live function actually ends at **line 601** (the `:492` figure predates later additions — JVM/go/rust/sqlite/docker/prisma/alembic/default/patch-applier rules). Use `:191-601`. Flag this drift in your PR description; do **not** silently fix the proposal in the same PR (docs-only edits to the proposal are a separate, maintainer-requested change).
-- **`CandidateSuggestion`** is the frozen dataclass at `bootstrap.py:63-70`: `content, category, scope, priority(=DEFAULT_PRIORITY), evidence_path, evidence_excerpt`. The parity snapshot is the ordered tuple of these six fields per candidate.
-- **`generate_bootstrap_suggestions` (`:811-845`)** is the only consumer of `_collect_candidates`. It iterates candidates **in order**, runs `validate_memory_content` (the content gate), computes `content_hash`, and **dedupes by first-seen `content_hash`** (`seen_hashes`, `:832-834`), then by active-fact and pending-suggestion existence. **This is why candidate order is behavior** (§0): the first candidate with a given content wins; later duplicates are dropped. PR-A must not perturb order.
-- **The six rule *kinds* inside `_collect_candidates`** (your ruleset must preserve each, in this position order):
-  - **K1 — per-file content-marker rules (`:200-281`):** for paths ending `requirements.txt`/`pyproject.toml`/`Pipfile`/`setup.py`, substring/marker checks on **lowered** content (`fastapi`/`uvicorn`→FastAPI; `django`; `flask`; `sqlalchemy`; `pytest`; and `_content_has_any` against `DB_POSTGRES_MARKERS`/`DB_MYSQL_MARKERS`/`DB_MONGODB_MARKERS`) → fixed candidate templates with fixed priorities. **This is the large uniform block** — the prime "rules-as-data" target. Note FastAPI fires on `fastapi` **or** `uvicorn` (one candidate).
-  - **K2 — corpus-aggregate with separate evidence selection (`:283-299`):** `_python_311_detected` runs a regex set over the **joined lowered content of all files**, then evidence is the **first** file whose content contains `"3.11"`. Not per-file; preserve the join + the first-match evidence pick.
-  - **K3 — parsed-manifest rules for `package.json` (`:301-439`):** JSON parse + boolean composition (`_package_uses` for react/vite/typescript/next/express/nest/fastify/prisma/mongoose), then an **ordered if/elif** for the frontend-stack candidate (react+vite+ts → one; **elif** react+vite → another; **elif** next → another — mutual exclusion matters), independent `if`s for express/nest/fastify/prisma/mongoose, **script-based** rules (`_package_has_script`/`_package_script_contains` for build; `test` script with scope `frontend if react/vite/next else backend`), and raw-substring checks (`jest`/`vitest`). Prisma scope is `_scope_from_path(path)`. **The elif mutual-exclusion and the derived scopes are load-bearing parity details.**
-  - **K4 — first-evidence-across-corpus rules (`:441-578`):** `pytest.ini` (filename); JVM build files (`pom.xml`/`build.gradle*`/`settings.gradle` with content substrings `spring-boot`/`maven`/`junit`, plus the `pom.xml and "maven"` sub-condition); `go.mod`/`Cargo.toml` (filenames; Cargo scope via `_scope_from_path`); and the `next(...)`-first-match evidence rules for **SQLite** (marker `_content_has_any(DB_SQLITE_MARKERS)` **or** `schema.sql` suffix), **Docker** (`Dockerfile`/`docker-compose.{yml,yaml}`), **Prisma schema** (`prisma/schema.prisma`).
-  - **K5 — filesystem probes outside the files dict (`:568-599`):** **Alembic** = `alembic.ini` filename **or** `(root / "alembic").is_dir()`; **patch-applier architecture rule** = `(root / "backend" / "pipeline" / "patch_applier.py").is_file()`. These read the filesystem directly, **not** the discovered-manifest dict. Preserve exactly what they probe.
-  - **K6 — unconditional default candidate (`:580-588`):** the "Never log secrets, API keys, tokens, or .env values." security rule is **always** appended (priority 0). It must remain unconditional and in its current position.
-- **Shared detection constants already extracted** to `backend/repo/repo_fingerprint.py` (single source of truth): `DB_POSTGRES_MARKERS` (`:112`), `DB_MYSQL_MARKERS` (`:113`), `DB_MONGODB_MARKERS` (`:114`), `DB_SQLITE_MARKERS` (`:115`), `IGNORED_DIRS` (`:44`), `MAX_DEPTH` (`:40`), `MAX_MANIFEST_FILES` (`:41`), `discover_manifest_files`, `load_repo_file`, `content_has_any`. **bootstrap re-exports the caps under `BOOTSTRAP_*` names because existing tests monkeypatch `bootstrap.BOOTSTRAP_MAX_MANIFEST_FILES` (`:51-56`, `:103-111`).** Your refactor must keep that monkeypatch surface working — the discovery wrapper reads the module-level caps at call time; do not move discovery into the rules module in a way that bypasses it (`test_bootstrap_respects_max_manifest_files` will catch you).
-- **The helper predicates** (`_package_uses`, `_package_has_script`, `_package_script_contains`, `_scope_from_path`, `_python_311_detected`, `_content_has_any`, `_add_candidate`) are the evaluator's primitive vocabulary. The cleanest PR-A reuses them verbatim from the evaluator; if you move any into the rules module, prove byte-identical behavior.
-- **Existing test coverage to build on** — `backend/tests/test_memory_bootstrap.py` already pins much of the behavior (`test_bootstrap_detects_frontend_stack`, `..._backend_requirements_in_backend_folder`, `..._backend_from_arbitrary_folder_name`, `..._node_backend_from_nested_package_json`, `test_folder_name_does_not_override_dependency_content`, `test_bootstrap_ignores_node_modules_and_dist`, `..._examples_templates`, `..._respects_max_manifest_files`, `..._evidence_path_is_nested_path`, `..._does_not_read_dotenv_values`). These stay green **unmodified** — they are part of the parity proof. PR-A **adds** the ordered-list golden characterization (§11A.6); it does not rewrite these.
+**The consumer side (already built — do NOT modify, just feed it):**
 
----
+- **`memory_trust.py:76-128` `_DIMENSION_VALUE_TOKENS`** — the canonical value vocabulary per dimension. The keyspace your producer must emit into:
+  - `db_engine`: postgresql, mysql, mongodb, sqlite *(already produced — D2)*
+  - `backend_framework`: fastapi, django, flask, express, nestjs, fastify, spring_boot, rails
+  - `frontend_framework`: react, vue, angular, svelte, nextjs
+  - `test_runner`: pytest, unittest, jest, vitest, mocha, junit, rspec, go_test
+  - `migration_tool`: alembic, prisma, flyway, liquibase, knex, django_migrations
+  - `package_manager`: npm, yarn, pnpm, pip, poetry, pipenv, cargo, go_modules
+- **`memory_trust.py:378-440` `check_fact_against_signal(dimension, content, repo_value)`** — pure classifier. `_canonical_repo_value` (`:356-373`) accepts either an exact canonical key **or** a recognizable token, returning the canonical key or `None`. **Emitting canonical keys directly is the robust contract** — do not rely on token-canonicalization for the new dims (e.g. `"nest"` is *not* in nestjs's tokens; emit `"nestjs"`).
+- **`injection_analysis.py:186-213, 294-319`** — `analyze_injection_events` filters falsy signal values (`:209-213`) and, per distinct injected fact, calls `check_fact_against_signal` for **each** dimension in the map, surfacing only `REALITY_MISMATCH` (`:300`). It needs **only `{dimension: canonical_value}`** — nothing richer.
+- **`routes/memory.py:1002-1028` `_repo_reality_signals(project_id)`** — the **producer gap**. Today: builds `build_repo_fingerprint(repo_path)` and sets `signals["db_engine"]` only when `fingerprint.db is not None and not fingerprint.db_ambiguous`. Best-effort: missing project/repo/any exception ⇒ `{}`. **This is the one function you wire into (§11B.10).**
+- **`routes/memory.py:1031-1061`** — the analysis endpoint. Calls `_repo_reality_signals` (`:1059`) → `analyze_injection_events(..., repo_signals=...)` (`:1060`). No mutation, no LLM/git/GitHub. This is the only surface PR-B lights up.
 
-## 11A.3 Exact PR-A scope
+**The producer side (extend here — D1/D2):**
 
-**PR-A = extract `bootstrap.py` detection into rules-as-data, behavior-preserving. Nothing else.**
+- **`repo_fingerprint.py`** — "deterministic, zero-AI extraction of repo reality signals from capped manifest/config files." Already owns: caps (`MAX_DEPTH:40`, `MAX_MANIFEST_FILES:41`, `MAX_FILE_SIZE_BYTES:42`), `IGNORED_DIRS:44`, `MANIFEST_FILENAMES:70-96`, `load_manifest_files:277-292`, `load_repo_file:203-225` (traversal/`.env`-safe), `RepoSignal:155-162`, `detect_db_signals:339-379`, `build_repo_fingerprint:382-407`. **`detect_db_signals` returns ≤1 signal per engine, attributed to the first evidencing file, in `DB_ENGINE_ORDER`**, and `build_repo_fingerprint` decides ambiguity (`len(signals) > 1` ⇒ `db=None, db_ambiguous=True`). Mirror that collapse per new dimension.
+- **Architectural direction:** `repo_fingerprint.py` currently imports **nothing from `backend.memory`**. **Keep it that way** — the repo layer must not depend on the memory layer. The value-namespace alignment to `_DIMENSION_VALUE_TOKENS` is enforced by a **test** (§11B.9), not by a runtime import.
+- **`MANIFEST_FILENAMES` does NOT include lockfiles** (`yarn.lock`, `pnpm-lock.yaml`, `package-lock.json`, `poetry.lock`, `Cargo.lock`). **Do not add them** — that would change `discover_manifest_files` output, the `MAX_MANIFEST_FILES` cap interaction, and ordering, with knock-on parity risk for bootstrap. Detect lockfiles via **targeted existence probes on the repo root** (like bootstrap's K5 `is_dir()`/`is_file()` probes), independent of the manifest dict (§11B.7). `Pipfile`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `package.json`, `pom.xml`, `build.gradle*` **are** already in the manifest set and loaded.
+
+**The do-NOT-touch DB path (D2):**
+
+- **`backend/memory/repo_reality.py`** — `evaluate_db_memory_conflicts:108-194` (read-only) and `verify_project_db_memory_against_repo:197-271` (the *only* db mutation, behind `/memory/verify-repo`). **Untouched.**
+- **`backend/pipeline/chunked_orchestrator.py:55`** imports `evaluate_db_memory_conflicts`; the gate decision is `_db_conflict_block_decision:242-262`. **Untouched** — PR-B feeds nothing into this path.
+
+**The parity guard (do-NOT-touch candidate emission):**
+
+- **`backend/memory/detection_rules.py:672-695` `collect_detection_candidates`** and all its rule tuples — **untouched.** PR-B adds a *sibling* producer in a different module (`repo_fingerprint.py`); it never edits the candidate path. **`backend/tests/test_memory_detection_rules.py` must stay green with NO golden edits** — that is PR-B's parity guard (§11B.13). The `CandidateTemplate` dataclass carries **no** `dimension`/`signal_value` field (PR-A left no inert seam); PR-B does not add one to it.
+
+## 11B.3 Exact PR-B scope
+
+**PR-B = a conservative, advisory repo-reality-signal producer for five new dimensions, wired into the existing analysis read-path. Nothing else.**
 
 In scope:
-1. A new declarative **detection ruleset** (data) + a **pure evaluator** (`detection_rules.py` per A1), representing the six rule kinds of §11A.2 in their current declaration/position order.
-2. Rewire `_collect_candidates` to be a thin adapter: discover/load/lower the manifest files exactly as today (preserving the `BOOTSTRAP_*` monkeypatch caps), call the evaluator, return the candidate list.
-3. **Ordered-candidate golden characterization tests** (§11A.6) proving byte-for-byte parity across a fixture matrix and the dogfood repo, plus keeping every existing `test_memory_bootstrap.py` assertion green unmodified.
-4. A short docs note (proposal §11.4 / §14 already describe the end-state; PR-A adds an as-built pointer that the bootstrap detector now reads from the shared ruleset, and that PR-B/PR-C are the remaining consumers). Update the workplan's Row-11 line and the `bootstrap.py:191-492` pointer drift **only if the maintainer asks to commit doc changes** — otherwise just flag the drift in the PR description.
+1. A small **`RealitySignal`** frozen dataclass in `repo_fingerprint.py` (D6, §11B.4).
+2. **Per-dimension detectors** in `repo_fingerprint.py` for `backend_framework`, `frontend_framework`, `test_runner`, `migration_tool`, `package_manager` — conservative markers, canonical-key values (§11B.7).
+3. An **aggregator** `collect_repo_reality_signals(repo_path, *, dimensions=...) -> dict[str, RealitySignal]` that loads manifest files once + runs the lockfile probes, applies per-dimension ambiguity collapse, and returns ≤1 confident signal per active non-db dimension (§11B.5).
+4. A **policy kill-switch** constant for active dimensions (D4, §11B.6).
+5. **Wiring** `_repo_reality_signals` to merge db (from the existing fingerprint) + the aggregator's five dims, filtered by the policy set, flattened to `{dim: value}` (§11B.10).
+6. **Targeted tests** (§11B.13): producer units, the value-namespace compatibility test, endpoint wiring tests, plus the parity + db-gate guards run unchanged.
+7. A short docs note (extend `docs/architecture/memory-repo-reality-conflicts.md` or proposal §11.5 as-built) that reality signals now cover six dimensions advisorily; PR-C remains the last Row-11 consumer.
 
-Outcomes the design must deliver (the *what* is fixed; the *how* is yours):
-- A **pure, deterministic, total evaluator** over a declarative ruleset, no DB/network/LLM.
-- `_collect_candidates` produces the **identical ordered candidate list** as before — proven against committed pre-refactor goldens **and** the dogfood repo.
-- Every existing `test_memory_bootstrap.py` assertion green, unmodified.
-- The `BOOTSTRAP_MAX_MANIFEST_FILES` monkeypatch surface and the dotenv/secret safety preserved.
-- `ruff check` clean on changed files. No frontend change (backend-only slice).
+Outcomes the design must deliver:
+- A **pure, deterministic, total** producer (no DB/network/LLM/clock), capped via the existing `repo_fingerprint` loader.
+- The existing analysis endpoint emits advisory mismatch warnings for the five new dimensions **when, and only when**, a single injected memory fact asserts one recognizable value that differs from an unambiguous repo value.
+- **`db_engine` behavior and the DB conflict gate are byte-identical** to today.
+- **`test_memory_detection_rules.py` green, no golden edits**; the DB-gate tests green, unchanged.
+- `ruff check` clean on changed files. No frontend change.
 
-## 11A.4 Non-goals (name these in your PR)
+## 11B.4 `RealitySignal` data shape (D6)
 
-- **PR-B — emitting repo reality signals** for the six dimensions `check_fact_against_signal` supports (`db_engine`, `backend_framework`, `frontend_framework`, `test_runner`, `migration_tool`, `package_manager`). **Later.** PR-A may shape the table to make PR-B cheap (A3) but emits **no** signal and adds **no** signal test.
-- **PR-C — backfilling §23 order-row 1's test-command detection** onto the shared ruleset. **Later.** `test_command_quality` stays the classifier; PR-A does not touch it.
-- **Any new behavior at all** — no new framework/runner detected, no template/priority/scope changed, no candidate added or removed, no ordering changed. PR-A is parity-only.
-- **No memory auto-approval, no active-fact creation** — candidates stay pending; the approval path is untouched.
-- **No request-aware selection (Row 12), no post-run hygiene (Row 16), no retriever/FTS (Row 19), no vector/embedding work (Row 23), no thread/chat UI (Rows 22b–22e).** These are behind the §E.1 hard stop and/or open §24 decisions.
-- **No schema change, no injection-path change, no gate/scope/Git contact.**
-- **No proposal/workplan content rewrite beyond flagging the `:191-492→:191-601` drift** (commit docs only if the maintainer asks).
-- **No collapsing of the heterogeneous rule kinds into a lossy uniform table** that changes semantics to look more "declarative."
+A small frozen dataclass in `repo_fingerprint.py`, beside `RepoSignal`:
 
-## 11A.5 Safety invariants (the parity contract, restated as testable claims)
+```python
+@dataclass(frozen=True)
+class RealitySignal:
+    dimension: str          # a key in memory_trust.SUPPORTED_REALITY_DIMENSIONS, e.g. "test_runner"
+    value: str              # a canonical key in _DIMENSION_VALUE_TOKENS[dimension], e.g. "pytest"
+    evidence_path: str | None
+    evidence_excerpt: str   # fixed, human-written string — NEVER raw file content
+```
 
-1. **Ordered-list identity.** `_collect_candidates(root)` returns a list equal — element-by-element, all six fields, **same order** — to the pre-refactor list, for every repo in the fixture matrix and for the dogfood repo. *(The §0 headline.)*
-2. **Dedupe-survivor identity.** Because dedupe is first-seen by content hash, the surviving `evidence_path`/`evidence_excerpt`/`priority` for every duplicated content (MongoDB, pytest, SQLite, etc.) is unchanged. *(Falls out of #1 but is asserted explicitly via `generate_bootstrap_suggestions` end-to-end on at least one repo that triggers a duplicate.)*
-3. **Read-surface identity.** The set of files read, the caps applied, and the monkeypatch behavior (`BOOTSTRAP_MAX_MANIFEST_FILES`) are unchanged. *(`test_bootstrap_respects_max_manifest_files` + the ignore-dirs tests.)*
-4. **Safety-gate identity.** The dotenv/secret refusal and `validate_memory_content` gate still run on every candidate, unmoved. *(`test_bootstrap_does_not_read_dotenv_values`, `test_bootstrap_validation_rejects_secret_like_suggestion`.)*
-5. **Pending-only identity.** No path creates an active fact or auto-approves; suggestions remain `status='pending'`. *(Existing approval tests stay green; no new write path.)*
-6. **Determinism/totality.** The evaluator has no DB/network/LLM/clock dependence; identical input repo → identical output, every run.
+- The aggregator returns `dict[str, RealitySignal]` (one confident signal per active non-db dimension; ambiguous/unknown dimensions absent).
+- The route flattens to `dict[str, str]` (`{signal.dimension: signal.value}`) before calling `analyze_injection_events`, because the consumer needs only `{dimension: canonical_value}` (D6).
+- `db_engine` is **not** re-modeled as `RealitySignal` — it stays a `RepoSignal` from `build_repo_fingerprint` (D2). The route reads `.value` from either type when flattening; the slight asymmetry is the deliberate price of keeping the db path byte-identical.
+- `evidence_path` / `evidence_excerpt` are carried for **audit and future display**, not consumed by PR-B's warning path (the consumer ignores them). Compute them anyway — they are cheap and the warning text the consumer builds already references value-level detail; richer per-signal evidence is a clean PR-C/display seam.
 
-## 11A.6 Characterization / parity test plan
+## 11B.5 Aggregator behavior
 
-**The test strategy is the whole point of PR-A.** It must make a silent parity break impossible to ship.
+`collect_repo_reality_signals(repo_path, *, dimensions: frozenset[str] = ...) -> dict[str, RealitySignal]`
 
-- **Golden ordered-candidate snapshots (the core).** Build a **fixture matrix** of synthetic repos (reuse the `project_repo` tmp-dir + the `_write_basic_python_repo` style already in `test_memory_bootstrap.py`) that, between them, trigger **every** rule kind and the known collisions:
-  - Python backend: `requirements.txt`/`pyproject.toml`/`Pipfile`/`setup.py` variants → FastAPI(+uvicorn), Django, Flask, SQLAlchemy, pytest, and each DB-marker (postgres/mysql/mongodb).
-  - Python 3.11 hint (K2) in a couple of manifest shapes → assert the **first-`3.11`-file** evidence pick.
-  - `package.json` variants (K3): react+vite+ts; react+vite (no ts); next; express; nest (all three nest spellings); fastify; prisma (+ `@prisma/client`); mongoose / `mongodb`; build script (vite and non-vite); jest; vitest; test script with frontend vs. backend scope. **Assert the elif mutual-exclusion** (react+vite+ts must yield exactly the combined candidate, not the react+vite one).
-  - K4: `pytest.ini`; `pom.xml`(+maven/spring-boot/junit); `build.gradle`/`.kts`/`settings.gradle`; `go.mod`; `Cargo.toml` (root and nested → scope); `schema.sql`-only SQLite; SQLite marker in a manifest; Docker (`Dockerfile`, both compose names); `prisma/schema.prisma`.
-  - K5: an `alembic.ini`; an `alembic/` **directory with no ini** (the `is_dir()` fallback); a repo with `backend/pipeline/patch_applier.py` present (the architecture rule) and one without.
-  - K6: assert the security default candidate is present, last-among-unconditionals, priority 0, in **every** fixture.
-  - **Collision fixtures:** a repo with both a `mongoose` package.json and a `DB_MONGODB_MARKERS` manifest (→ assert which "Project uses MongoDB." survives dedupe end-to-end via `generate_bootstrap_suggestions`); a repo with both `requirements.txt` pytest and `pytest.ini` (→ pytest candidate survivor).
-  - **Procedure:** on `develop` *before* the refactor, run the current `_collect_candidates` over each fixture, serialize the **ordered list of all six fields**, and commit it as a golden (JSON or an inline expected-list). After the refactor, assert equality. The fixtures are deterministic, so the goldens are stable.
-- **Dogfood snapshot.** Run `_collect_candidates` over the **Pipewright repo root itself** and snapshot the ordered list; assert parity post-refactor. This catches anything the synthetic matrix misses (real `requirements`/`schema.sql`/`alembic`/`patch_applier.py` interplay). If the snapshot is environment-sensitive (it should not be — discovery is capped and deterministic), pin the inputs.
-- **Existing suite unchanged.** Every test in `test_memory_bootstrap.py` passes **unmodified**. If any existing test needs a change to pass, that is a parity break — stop and investigate, do not edit the test to match new output.
-- **Evaluator unit tests (purity).** Direct tests of the evaluator over hand-built file dicts: it is pure (same input → same output), total (empty repo → just the unconditional K6 default; malformed `package.json` → same fallback as today), and order-stable.
-- **Run:** `python -m pytest backend/tests/test_memory_bootstrap.py -q` and the new rules test file; then the unit set `python -m pytest backend/tests -q -m unit`. `ruff check` on changed files. No `npm` build (backend-only).
+1. **Resolve + guard.** Resolve `repo_path`; missing/not-a-dir ⇒ return `{}` (mirror `build_repo_fingerprint`'s empty path handling). Wrap the body so any unexpected error degrades to `{}` (the route is best-effort; analysis never fails on this).
+2. **Load once.** Call `load_manifest_files(root)` **once** to get `{relative_posix: raw_text}` (capped, traversal-safe). Lowercase per-file as needed for marker checks (the existing detectors lowercase content internally; match that).
+3. **Lockfile probes.** For the package-manager dimension only, do a small fixed set of **root-level existence probes** (`(root / "yarn.lock").is_file()`, etc.) — see §11B.7. These do **not** go through manifest discovery (the lockfiles are not manifests, and must not be added to `MANIFEST_FILENAMES`).
+4. **Per-dimension detect + collapse.** For each requested non-db dimension, gather the set of distinct canonical values evidenced. Apply the **db-style collapse**:
+   - exactly **one** distinct value ⇒ emit a `RealitySignal` (value + first-evidencing path + fixed excerpt);
+   - **zero** or **more than one** distinct value ⇒ **omit** the dimension (no signal).
+5. **Determinism.** Iterate files/markers in a stable order so the first-evidencing path is deterministic (mirror `detect_db_signals`, which iterates `DB_ENGINE_ORDER` and the files dict). Identical repo ⇒ identical output.
+6. **Return** `dict[str, RealitySignal]` keyed by dimension, containing only the confident, active dimensions.
+7. **`db_engine` is not computed here** (D2) — the route adds it from the fingerprint. The aggregator only knows the five new dimensions, so a misconfiguration can never make it shadow or diverge from the gate's db signal.
 
-## 11A.7 Manual smoke plan
+The aggregator is **pure** (no policy lookup inside): it computes whatever `dimensions` it is asked for. The policy set is applied at the call site (§11B.6) so the producer stays trivially unit-testable with arbitrary subsets.
 
-A real, human-visible parity check beyond the asserted goldens:
+## 11B.6 Active-dimension policy kill switch (D4)
 
-1. On `develop` (pre-refactor), pick 2–3 real repos (Pipewright itself; a Node/React repo; optionally a JVM or Go repo), run `generate_bootstrap_suggestions` for a throwaway project pointed at each, and record the **ordered list of pending suggestions** (content + evidence_path + priority) from `list_suggestions(project_id, status="pending")`.
-2. On the PR branch (post-refactor), repeat against the **same** repos and a fresh throwaway project, and **diff** the recorded suggestion lists. They must be identical (same content, evidence, priority, order).
-3. Confirm the suggestions are all `status='pending'` (nothing auto-approved, no active fact created) — spot-check `memory_facts` is untouched for the throwaway project.
-4. Record the diff result in the PR description as the manual validation line. *(No external service is contacted; this is a local read-only smoke.)*
+Add a single constant to `backend/pipeline/policy.py` (the established §8b policy spine):
 
-## 11A.8 Rollback plan
+```python
+# Repo-reality advisory signal dimensions that are live on the analysis read-path.
+# Roll back to db-only by reducing this to frozenset({"db_engine"}) — no code change.
+REPO_REALITY_SIGNAL_DIMENSIONS: frozenset[str] = frozenset({
+    "db_engine",
+    "backend_framework",
+    "frontend_framework",
+    "test_runner",
+    "migration_tool",
+    "package_manager",
+})
+```
 
-- **PR-A adds a module and rewires one function; it has no flag and needs none** (there is no behavior to toggle — it is parity-only). The rollback lever is **`git revert` of the single PR**: because `_collect_candidates`'s public contract and the entire consuming path are unchanged, reverting the extraction restores the exact prior code with no data migration, no schema change, and no state to unwind.
-- The change is **schema-free and state-free**: no column, no migration, no persisted artifact changes. Existing pending suggestions, facts, and projects are unaffected by either applying or reverting.
-- Because parity is asserted by committed goldens, a future regression in this area is caught by the test suite, not discovered in production — but if one slips through, revert is clean and total.
+- **One enforcement point.** `_repo_reality_signals` reads this set once and: (a) includes `db_engine` (from the fingerprint) only if `"db_engine"` is in it; (b) passes the **non-db subset** to the aggregator as its `dimensions` argument; (c) the aggregator computes only those. No second copy of the set.
+- **Default = all six** (db + the five PR-B dims), i.e. PR-B's intended advisory behavior is on by default.
+- **Rollback = one line:** set it to `frozenset({"db_engine"})` to restore exactly today's behavior (db-only warnings), with no revert and no redeploy of code logic (§11B.15).
+- This also satisfies the "no buried magic numbers" principle: the live signal set is explicit, single-sourced policy, and auditable.
 
-## 11A.9 Risks / edge cases
+## 11B.7 Conservative marker strategy per dimension
 
-- **(a) Reordering candidates.** The top risk. Any change to declaration/evaluation order silently changes dedupe survivors (§0). *Mitigation:* the ruleset's declaration order **is** the candidate order (A0); golden tests assert the ordered list, not a set; a collision fixture asserts the survivor end-to-end.
-- **(b) Dropping or merging a rule kind.** Forcing K2/K3/K4/K5 into a flat table can lose the corpus-join (3.11), the elif mutual-exclusion (frontend stack), the first-evidence pick (SQLite/Docker), or the filesystem probes (Alembic dir, patch-applier). *Mitigation:* model them as typed rules (A2), not flattened; per-kind fixtures.
-- **(c) Marker/substring drift.** Re-typing a substring (`spring-boot`, `@nestjs/core`, `uvicorn`) or swapping a `_content_has_any(MARKERS)` for a single literal changes matches. *Mitigation:* reuse the `repo_fingerprint` marker frozensets and the existing helper predicates verbatim; do not re-spell literals.
-- **(d) Breaking the monkeypatch caps surface.** Moving discovery into the rules module could bypass `bootstrap.BOOTSTRAP_MAX_MANIFEST_FILES`. *Mitigation:* keep discovery in the bootstrap adapter (A1); `test_bootstrap_respects_max_manifest_files` guards it.
-- **(e) Filesystem-probe relocation.** The Alembic `is_dir()` and patch-applier `is_file()` rules read `root`, not the files dict. A rules module that only sees the files dict would silently drop them. *Mitigation:* pass `root` to the evaluator (or run those probes in the adapter at their current positions); fixtures for both with-dir and with-file cases.
-- **(f) Scope-derivation drift.** `_scope_from_path` (Prisma, Cargo) and the `test`-script frontend/backend scope are derived, not constant. *Mitigation:* reuse `_scope_from_path` verbatim; fixtures that exercise both branches.
-- **(g) Over-scoping into PR-B/PR-C.** Adding signal emission or test-command detection "while we're here" breaks the smallest-reviewable rule and the §E.1 sub-PR split. *Mitigation:* A3 keeps any forward-reference fields inert and untested; the PR description names PR-B/PR-C as out of scope.
-- **(h) Circular import / `CandidateSuggestion` ownership.** Moving the dataclass can create a `bootstrap ↔ detection_rules` cycle. *Mitigation:* A1 keeps `CandidateSuggestion` in `bootstrap`; rules module imports it (or both import from a leaf module).
-- **(i) Editing an existing test to make it pass.** If a `test_memory_bootstrap.py` assertion fails post-refactor, that is a real parity break, not a stale test. *Mitigation:* the existing suite is frozen during PR-A; investigate any failure as a bug in the refactor.
+**Guiding rule:** dependency-name / file-presence / config-section evidence only. **Never** match a bare single-word token (`npm`, `pip`, `nest`) against arbitrary file content — those are false-positive magnets. Emit **canonical keys** (§11B.9). Where a canonical value has no high-confidence file signal, **omit it** (omission is safe).
 
-## 11A.10 Explicit statement: PR-B and PR-C are later
+Recommended starting markers (the implementer owns the exact spelling; reuse existing helpers/markers verbatim where they exist, e.g. the package.json dep checks mirror `detection_rules._package_uses`):
 
-**Row 11 ships in three ordered sub-PRs; this cycle opens PR-A only.** PR-A is the behavior-preserving extraction of `bootstrap`'s detection into rules-as-data with proven parity — and it **stops there.**
+- **`backend_framework`** (python manifests + `package.json` deps + JVM build files):
+  - `fastapi` ← `fastapi` in a python manifest; `django` ← `django`; `flask` ← `flask`; `express` ← package.json dep `express`; `nestjs` ← dep `@nestjs/core`; `fastify` ← dep `fastify`; `spring_boot` ← `spring-boot` in `pom.xml`/gradle.
+  - **`rails` ⇒ omit** in PR-B (needs `Gemfile`, not in the manifest set; do not add it).
+- **`frontend_framework`** (`package.json` deps):
+  - `react` ← dep `react`; `vue` ← dep `vue`; `angular` ← dep `@angular/core`; `svelte` ← dep `svelte`; `nextjs` ← dep `next`.
+  - **Known ambiguity:** Next.js repos usually also depend on `react` ⇒ two distinct values ⇒ the collapse **omits** `frontend_framework`. Accepted as conservative for PR-B (a missing signal, not a wrong one). A "next implies react" refinement is explicitly out of scope (note it in §11B.16 as a future option).
+- **`test_runner`** (python manifests + `pytest.ini` + `package.json` deps + JVM):
+  - `pytest` ← `pytest` in a python manifest **or** `pytest.ini` present; `jest` ← dep `jest`; `vitest` ← dep `vitest`; `mocha` ← dep `mocha`; `junit` ← `junit` in `pom.xml`/gradle.
+  - **`unittest` ⇒ omit** (stdlib, not declared); **`rspec` ⇒ omit** (needs Gemfile); **`go_test` ⇒ omit** in PR-B (it is implied by any `go.mod`, too weak to be a meaningful "this runner not that one" signal).
+- **`migration_tool`**:
+  - `alembic` ← `alembic.ini` present (already a manifest) — optionally also the `(root / "alembic").is_dir()` probe to match bootstrap's K5; `prisma` ← `prisma/schema.prisma` present **or** package.json dep `prisma`/`@prisma/client`; `knex` ← dep `knex`.
+  - **`flyway` / `liquibase` / `django_migrations` ⇒ omit** (no high-confidence manifest marker; do not infer).
+- **`package_manager`** (D5 — lockfile/section-only, root existence probes + one section check):
+  - `yarn` ← `yarn.lock`; `pnpm` ← `pnpm-lock.yaml`; `npm` ← `package-lock.json`; `poetry` ← `poetry.lock` **or** `[tool.poetry]` section in `pyproject.toml` (loaded); `pipenv` ← `Pipfile` (loaded manifest); `cargo` ← `Cargo.toml` (loaded manifest); `go_modules` ← `go.mod` (loaded manifest).
+  - **`pip` ⇒ never emitted** from arbitrary content (D5). The presence of `requirements.txt` alone is too weak to distinguish pip from poetry/pipenv/etc.; treat pip as not-detected in PR-B.
+  - Polyglot repos (e.g. `go.mod` + `yarn.lock`) yield ≥2 distinct managers ⇒ collapse **omits** the dimension. Correct and conservative.
 
-- **PR-B (later) — emit repo reality signals advisorily.** Compute the repo signal *values* for the six dimensions `check_fact_against_signal` already supports (`db_engine`, `backend_framework`, `frontend_framework`, `test_runner`, `migration_tool`, `package_manager`; `memory_trust.SUPPORTED_REALITY_DIMENSIONS`), surfacing **advisory-only**. It mutates nothing — it never marks a fact stale, never archives, never auto-bumps `last_verified_at` (that is decision D8/B3, not this slice).
-- **PR-C (later) — backfill test-command detection** (§23 order-row 1's detector) onto the shared ruleset, so `test_command_quality`'s duplicated runner knowledge reads from the one source. `test_command_quality` stays the *classifier*; only the *detector* table becomes shared.
+Evidence excerpts are **fixed human strings** per (dimension, value), in the style of `repo_fingerprint._DB_EVIDENCE` (e.g. `"Detected pytest test runner."`), never raw file content.
 
-Neither PR-B nor PR-C is in this window. After Row 11, the **§E.1 hard stop** holds: run a real self-use smoke before opening any of the backfill set (6b/6c/7a-`plan_versions`/7b/9b) or the deeper Area B rows (12 request-aware selection, 16 post-run hygiene, 19 retriever/FTS, 23 vector/embedding) or the §21 thread UI rows (22b–22e). Those are gated on open §24 decisions (D5/D6/D7/D13) and are **not** opened by this brief.
+## 11B.8 Ambiguity / unknown behavior
+
+- **Per-dimension ambiguity collapse** (the core safety move): >1 distinct canonical value evidenced for a dimension ⇒ **omit** that dimension. Mirrors `build_repo_fingerprint`'s db ambiguity (`db=None, db_ambiguous=True`) but applied independently per dimension (one ambiguous dimension never suppresses a confident one).
+- **No signal** for a dimension ⇒ absent from the map ⇒ the consumer never warns for it.
+- **Weak/insufficient signal** (e.g. pip, go_test, rails) ⇒ intentionally not emitted ⇒ absent.
+- **Downstream tolerance is already correct:** `analyze_injection_events` drops falsy values (`:209-213`); `check_fact_against_signal` returns `UNKNOWN` when the memory fact has no single recognizable value or the repo value is unrecognizable, and `UNSUPPORTED` for a non-vocabulary dimension — **none of which produce a warning**. So even a stray/odd entry can only ever *fail to warn*, never falsely warn, as long as values are canonical (§11B.9).
+- **Missing project / repo_path / any exception** ⇒ `{}` (route best-effort, unchanged contract).
+
+## 11B.9 Value validation against `memory_trust._DIMENSION_VALUE_TOKENS` (D3)
+
+This is the anti-drift guarantee. Because the producer (repo layer) must not import the memory layer (§11B.2), alignment is enforced by a **test**, not a runtime import:
+
+- **Compatibility test (mandatory).** Enumerate every `(dimension, value)` the producer's marker table can emit (expose the table or a `producible_signal_values()` helper for the test to read). Assert, for each:
+  1. `dimension in memory_trust.SUPPORTED_REALITY_DIMENSIONS`;
+  2. `value in memory_trust._DIMENSION_VALUE_TOKENS[dimension]` (canonical key, not a token);
+  3. **round-trip:** `check_fact_against_signal(dimension, <a fact text asserting value>, value).status == REALITY_MATCH` — proving the consumer canonicalizes the emitted value and a real match is recognized (so a real mismatch can't silently downgrade to `unknown`).
+- This test fails loudly if anyone later adds a producer value the consumer can't recognize, or renames a vocabulary key — exactly the drift D3 is worried about while the vocabularies stay physically separate.
+- The producer itself stays free of any `backend.memory` import; the **direction `memory → repo` is preserved** (the consumer already depends on the repo signal shape; the repo never depends on memory).
+
+## 11B.10 `_repo_reality_signals` wiring
+
+Modify only `_repo_reality_signals` (`routes/memory.py:1002-1028`); the endpoint body (`:1031-1061`) and `analyze_injection_events` are unchanged.
+
+Shape (illustrative, not prescriptive):
+
+```python
+def _repo_reality_signals(project_id: str) -> dict[str, str]:
+    try:
+        project = get_project(project_id)
+        if not project:
+            return {}
+        repo_path = (project.get("repo_path") or "").strip()
+        if not repo_path:
+            return {}
+        active = policy.REPO_REALITY_SIGNAL_DIMENSIONS
+        signals: dict[str, str] = {}
+        # db_engine: unchanged source (D2) — the same fingerprint the gate uses.
+        if "db_engine" in active:
+            fingerprint = build_repo_fingerprint(repo_path)
+            if fingerprint.db is not None and not fingerprint.db_ambiguous:
+                signals["db_engine"] = fingerprint.db.value
+        # five new dimensions: conservative producer, policy-filtered.
+        for dim, sig in collect_repo_reality_signals(
+            repo_path, dimensions=active - {"db_engine"}
+        ).items():
+            signals[dim] = sig.value
+        return signals
+    except Exception:
+        return {}
+```
+
+- **db stays first and unchanged** — same `build_repo_fingerprint` call, same unambiguous guard. The gate is never touched.
+- The aggregator receives only the **non-db active dimensions**; with the default policy that's the five PR-B dims, with the rollback policy it's the empty set (aggregator returns `{}`).
+- Output is `dict[str, str]` exactly as the consumer expects; `reality_signal_available` (in the consumer) becomes true whenever any dimension is present.
+- **Frontend (D7):** the new warnings flow into the existing `reality_warnings` array (`routes/memory.py:980-997` shapes them generically over `analysis.reality_warnings`). Before claiming "lights up for free," **grep the frontend** for the warnings renderer (e.g. the M3F3 panel consuming `reality_warnings` / `reality_warning_count`) and confirm it renders the list dimension-agnostically. If it hardcodes db wording, that is **deferred display polish**, not PR-B — note it; do not add/alter frontend in this slice.
+
+## 11B.11 Non-goals (name these in your PR)
+
+- **No memory mutation** — no `mark_fact_stale`, no archive, no delete, no `verify_fact`, no `last_verified_at` bump (D8/B3 is a *later* decision, not this slice).
+- **No memory auto-approval, no suggestion/fact creation** — PR-B does not touch the bootstrap/approval path.
+- **No injection-eligibility or prompt-builder change** — the signal is computed on the *analysis read path* only, never in `prompt_builder`, never during injection (exactly like today's db M3F3 signal).
+- **No DB conflict-gate change** — `evaluate_db_memory_conflicts` / `repo_reality.py` / the orchestrator gate are untouched (D2).
+- **No change to `detection_rules.py` candidate emission or the PR-A goldens** — `test_memory_detection_rules.py` stays green, no golden edits.
+- **No schema change, no persistence** — the producer is compute-on-read; nothing is stored.
+- **No new endpoint.** **No frontend / UI / thread work** (D7).
+- **No T15 physical vocab unification** (D3) — separate marker table, value-compatible only.
+- **No PR-C test-command backfill** (§11B.17). **No request-aware selection (Row 12), post-run hygiene (Row 16), retriever/FTS (Row 19), vector/embedding (Row 23), thread UI (22b–22e).**
+
+## 11B.12 Safety invariants (restated as testable claims)
+
+1. **No mutation.** After hitting the analysis endpoint on a repo with new-dimension mismatches, every injected fact is unchanged (`status='active'`, `is_stale` falsy). *(Extend the existing `test_endpoint_surfaces_reality_mismatch_without_mutating_memory` to a new dimension.)*
+2. **DB-gate isolation.** `build_repo_fingerprint` output and `evaluate_db_memory_conflicts` behavior are byte-identical pre/post PR-B; the five new dims never enter the gate. *(DB-gate tests run unchanged and green.)*
+3. **Value-namespace compatibility.** Every producible value canonicalizes and round-trips to `REALITY_MATCH`. *(The §11B.9 compatibility test.)*
+4. **Conservative-by-omission.** Ambiguous/unknown/weak ⇒ dimension absent ⇒ no warning; the producer can never *falsely* warn for a dimension it is unsure about. *(Per-dimension ambiguity unit tests + an endpoint ambiguous-repo test.)*
+5. **Read-surface safety.** Only capped/traversal-safe manifest reads + a fixed set of root lockfile existence probes; no `.env` values read; evidence excerpts are fixed strings, never raw content. *(Producer unit tests + a no-dotenv-read assertion.)*
+6. **Best-effort isolation.** Any producer failure ⇒ `_repo_reality_signals` returns `{}`; the analysis endpoint still succeeds. *(A fault-injection unit test on the producer path.)*
+7. **Parity guard.** `collect_detection_candidates` and its goldens are untouched. *(`test_memory_detection_rules.py` green, no golden edits.)*
+8. **Kill-switch.** With `REPO_REALITY_SIGNAL_DIMENSIONS = frozenset({"db_engine"})`, `_repo_reality_signals` output equals today's db-only behavior. *(A policy-override test.)*
+
+## 11B.13 Targeted test plan (targeted only — no full suite unless high-risk found)
+
+- **Producer units** (`test_repo_fingerprint.py` style, temp dirs — or a new `test_repo_reality_signals.py`): each new dimension detects its canonical value from a representative manifest/lockfile; per-dimension ambiguity ⇒ omit; no signal ⇒ omit; weak signals (pip/go_test/rails) ⇒ omit; evidence path captured + excerpt is a fixed string; missing repo ⇒ `{}`; exception ⇒ `{}`; `MANIFEST_FILENAMES` unchanged (lockfiles detected via root probes, not discovery).
+- **Value-namespace compatibility test** (§11B.9) — the anti-drift guard. Pure.
+- **Endpoint wiring / reality-warning tests** (extend `test_memory_reality_warnings.py`): repo with pytest + memory "Tests use Jest" ⇒ `test_runner` mismatch warning, `advisory_only=true`, memory unmutated; repo with React + memory "Frontend uses Vue" ⇒ `frontend_framework` mismatch; ambiguous repo (jest+pytest, or react+next) ⇒ no warning for that dimension; matching repo ⇒ no warning; kill-switch reduced to db-only ⇒ new dims produce no warnings.
+- **Parity guard:** `python -m pytest backend/tests/test_memory_detection_rules.py -q` green, **no golden edits**.
+- **DB-gate guards (db path touched only indirectly):** `python -m pytest backend/tests/test_db_memory_conflict_gate.py backend/tests/test_memory_repo_reality.py backend/tests/test_repo_fingerprint.py -q` green, unchanged.
+- **Policy:** if the constant lands in `policy.py`, add a `test_policy.py` assertion (default contents + the documented rollback value).
+- **Lint/cleanliness:** `ruff check` on changed Python files; `git diff --check`; `git status --short`.
+- **Full backend suite is NOT required** — PR-B is additive, advisory, mutation-free, and does not touch gate/scope/Git/execution; the parity guard + db-gate guards + targeted units cover the blast radius. **Escalate to `python -m pytest backend/tests -q -m unit` only if implementation uncovers a high-risk change** (e.g. you find you must touch `build_repo_fingerprint`, the gate, or shared discovery) — and explain why in the PR.
+
+## 11B.14 Manual smoke plan
+
+1. Create a throwaway project pointed at a repo with a clear, unambiguous stack (e.g. FastAPI + pytest, single `package.json` with one frontend framework).
+2. Add an **approved** memory fact that contradicts it (e.g. "Backend uses Django.", "Tests use Jest.") via the memory API.
+3. Trigger a run (or insert a `pipeline_runs` row + record a memory injection event, as the existing `test_memory_reality_warnings.py` integration fixtures do) so provenance exists.
+4. `GET /api/v1/runs/{run_id}/memory-injections/analysis` and confirm: new `reality_warnings` for `backend_framework` / `test_runner` with `advisory_only: true`, sane `memory_value`/`repo_value`; `reality_signal_available: true`.
+5. Confirm **no mutation** — the contradicting fact is still `active`, not stale; `/memory/verify-repo` still affects db only.
+6. Point at an **ambiguous** repo (two test runners, or react+next) and confirm **no** warning for that dimension.
+7. Flip `REPO_REALITY_SIGNAL_DIMENSIONS` to `frozenset({"db_engine"})`, repeat step 4, confirm the new-dimension warnings disappear (db-only behavior restored).
+8. **Display check (D7):** load the run in the frontend; if the existing reality-warnings panel renders the new dimensions, record it as validated; if it is db-specific, record "frontend display polish deferred" (not a PR-B blocker).
+9. Record the results (warnings seen, no-mutation spot-check, kill-switch behavior) in the PR description. *(No external service contacted; local read-only smoke.)*
+
+## 11B.15 Rollback plan
+
+- **Kill-switch first (no revert):** set `policy.REPO_REALITY_SIGNAL_DIMENSIONS = frozenset({"db_engine"})`. The producer is no longer consulted (empty `dimensions`), and the analysis endpoint returns exactly today's db-only warnings. One-line, instant, auditable (D4).
+- **Full revert:** `git revert` of the single PR. PR-B is **schema-free and state-free** — no column, migration, or persisted artifact — so revert is clean and total; existing facts, suggestions, and runs are unaffected by applying or reverting.
+- Because the new behavior is gated by the policy constant and proven by committed targeted tests, a regression is caught by the suite, not in production; if one slips through, the kill-switch contains it without a deploy of code logic.
+
+## 11B.16 Risks / edge cases
+
+- **(a) False-positive warnings from over-broad markers** — the top risk. *Mitigation:* dependency-name / file-presence / section evidence only; never bare single-word tokens against content; emit canonical keys; per-dimension ambiguity ⇒ omit; the §11B.9 compatibility test + endpoint tests pin it.
+- **(b) Namespace drift** (producer emits a value the consumer can't canonicalize ⇒ a real mismatch silently degrades to `unknown`, no warning). *Mitigation:* the §11B.9 round-trip compatibility test; emit canonical keys, never tokens.
+- **(c) react + next ambiguity** suppressing `frontend_framework`. *Accepted* as conservative (missing, not wrong). A "next ⇒ react" precedence refinement is a **future option**, explicitly out of PR-B scope; note it.
+- **(d) Lockfiles aren't manifests.** Detecting package managers must not add lockfile names to `MANIFEST_FILENAMES` (would change discovery/cap/order and risk bootstrap parity). *Mitigation:* root existence probes, independent of discovery; assert `MANIFEST_FILENAMES` unchanged.
+- **(e) Accidentally perturbing the db path / gate.** *Mitigation:* D2 — db stays from `build_repo_fingerprint`; the aggregator never computes db; DB-gate tests run unchanged.
+- **(f) Double discovery cost.** The route calls `build_repo_fingerprint` (loads files) and the aggregator (loads again). *Acceptable* on a read-only advisory endpoint; if it matters, expose a lower-level `detect_*_signals(files)` taking pre-loaded files and load once — but keep db single-sourced. Do not optimize at parity's expense.
+- **(g) New warnings appearing on existing runs' analysis.** This is the **intended** advisory behavior, not a regression — call it out so reviewers expect it; it is still mutation-free.
+- **(h) Repo-global (not per-scope) signals**, same as db today (monorepo with backend+frontend). *Accepted* for advisory; ambiguity collapse already omits genuinely-mixed dimensions.
+- **(i) Over-scoping into PR-C / display.** Adding test-command detection or a new UI "while we're here" breaks the smallest-reviewable rule and D7. *Mitigation:* name PR-C and display as out of scope in the PR.
+
+## 11B.17 Explicit statement: PR-C remains later
+
+**Row 11 ships in three ordered sub-PRs. PR-A (extraction) has landed; this brief is PR-B (advisory reality signals); PR-C is NOT in this window.**
+
+- **PR-C (later) — backfill test-command detection** (§23 order-row 1's detector) onto the shared ruleset so `test_command_quality`'s duplicated runner knowledge reads from one source. `test_command_quality` stays the *classifier*; only the *detector* table becomes shared. **PR-B does not touch `test_command_quality`, `test_command_detection`, or any test-command path.**
+
+After Row 11, the **proposal §E.1 hard stop** holds: run a real self-use smoke before opening the backfill set (6b/6c/7a-`plan_versions`/7b/9b) or the deeper Area B rows (12 request-aware selection / D5, 16 post-run hygiene / D7, 19 retriever+FTS, 23 vector / D6) or the §21 thread UI (22b–22e / D13). Those are gated on open §24 decisions and are **not** opened by this brief.
 
 ---
 
-## 11A.11 Update these docs when you finish (part of "done")
+## 11B.18 Update these docs when you finish (part of "done")
 
-1. **`PIPEWRIGHT_REDESIGN_WORKPLAN.md`** — mark Row 11 PR-A done in the sequence/TL;DR; note PR-B/PR-C remain. *(Commit only if the maintainer asks.)*
-2. **The `bootstrap.py:191-492` pointer** in proposal §14 (`:540`) and the workplan — correct to `:191-601`, or at minimum flag the drift in the PR. *(Commit only if asked.)*
-3. **A short `docs/design/` as-built note** (or extend proposal §11.4) — the detection ruleset shape and that bootstrap now reads from it; PR-B/PR-C are the remaining consumers.
-4. **This file** — once PR-A lands and is reviewed, repurpose this rolling brief for Row 11 PR-B (reality signals), or mark it dormant until the next slice.
+1. **`PIPEWRIGHT_REDESIGN_WORKPLAN.md`** — mark Row 11 PR-B done in the TL;DR / sequence; note PR-C remains. *(Commit only if the maintainer asks.)*
+2. **`docs/status/current-state.md`** — flip the "PR-B remains later" line to done; PR-C remains the last Row-11 consumer. *(Commit only if asked.)*
+3. **A short as-built note** — extend `docs/architecture/memory-repo-reality-conflicts.md` (or proposal §11.5) that advisory reality signals now cover six dimensions on the analysis read-path, gated by `policy.REPO_REALITY_SIGNAL_DIMENSIONS`, mutation-free, db unchanged.
+4. **This file** — once PR-B lands and is reviewed, repurpose this rolling brief for **Row 11 PR-C** (test-command backfill), or mark it dormant until the next slice.
 5. These planning docs are **tracked**. Update content; **do not commit** doc or code changes unless the maintainer asks. If asked to commit: branch off `develop` first (never straight to `develop`/`main`), one purpose per commit, end with the repo's `Co-Authored-By` trailer.
 
-## 11A.12 Working discipline (this slice)
+## 11B.19 Working discipline (this slice)
 
-- **Design first, then get it reviewed, then implement.** Produce a short design answering **A0–A4** — the ruleset representation, the module home, how the procedural/probe kinds are modeled, the SoT boundary for PR-A, and the parity-baseline approach — and have the maintainer review it **before** writing code. You own the design; because you also write the tests, the design review is the homework check.
-- **Read the real code first; re-verify every `file:line`; correct this brief's pointers** if the live code drifted and say so (you already have one known drift to confirm: `:191-492 → :191-601`).
-- **Capture the parity goldens on `develop` before you touch anything** — "behavior-preserving" is only provable against a pre-change baseline.
-- **Smallest correct change; Row 11 PR-A only.** List what you deliberately did **not** change (reality signals, test-command detection, the approval/injection/scope/Git paths, the schema, the deeper memory rows, the thread UI).
-- Tests assert the **decided behavior** (ordered-candidate parity, preserved rule kinds, preserved read-surface and safety gates) **and the §0 invariant** (identical ordered candidate list) — not just that code runs.
-- Report on completion: changed files, tests run + results, manual validation (the §11A.7 diff), risks, and what was intentionally left untouched.
+- **Design is ratified (§11B.0); implement against it.** If implementation shows a ratified decision is wrong, **stop and re-raise** with the maintainer — do not silently deviate.
+- **Read the real code first; re-verify every `file:line`; correct this brief's pointers** if the live code drifted and say so.
+- **Smallest correct change; Row 11 PR-B only.** List what you deliberately did **not** change (the db path/gate, `detection_rules.py` + goldens, the approval/injection/prompt/scope/Git paths, the schema, the deeper memory rows, the thread UI, PR-C).
+- **Conservative-by-omission is the product here** — when unsure whether a marker is high-confidence, omit the value. A missing dimension is silent; a wrong dimension is a false warning.
+- Tests assert the **decided behavior** (per-dimension confident detection, ambiguity ⇒ omit, value-namespace compatibility, no mutation, db-gate isolation, kill-switch) **and the §0 framing** — not just that code runs.
+- **Validation gate before "done":** targeted `repo_fingerprint`/reality-signal tests; targeted memory reality-warning tests; the DB conflict-gate tests (db path touched indirectly); `test_memory_detection_rules.py` as the parity guard; `ruff check` on changed files; `git diff --check`; `git status --short`. Do **not** require the full backend suite unless a high-risk change is discovered (explain it if so).
+- Report on completion: changed files, tests run + results, manual validation (the §11B.14 smoke), risks, and what was intentionally left untouched.
 - A human reviews this PR.

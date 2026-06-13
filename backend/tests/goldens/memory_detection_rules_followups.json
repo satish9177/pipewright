@@ -1,0 +1,118 @@
+{
+  "alembic_ini_file_branch": [
+    {
+      "category": "db",
+      "content": "Project uses Alembic database migrations.",
+      "evidence_excerpt": "Detected Alembic configuration.",
+      "evidence_path": "alembic.ini",
+      "priority": 120,
+      "scope": "backend"
+    },
+    {
+      "category": "security",
+      "content": "Never log secrets, API keys, tokens, or .env values.",
+      "evidence_excerpt": "Default bootstrap safety rule.",
+      "evidence_path": "__bootstrap_default__",
+      "priority": 0,
+      "scope": "global"
+    }
+  ],
+  "bare_dockerfile": [
+    {
+      "category": "deploy",
+      "content": "Project includes Docker deployment configuration.",
+      "evidence_excerpt": "Detected Docker configuration.",
+      "evidence_path": "Dockerfile",
+      "priority": 130,
+      "scope": "infra"
+    },
+    {
+      "category": "security",
+      "content": "Never log secrets, API keys, tokens, or .env values.",
+      "evidence_excerpt": "Default bootstrap safety rule.",
+      "evidence_path": "__bootstrap_default__",
+      "priority": 0,
+      "scope": "global"
+    }
+  ],
+  "django_manifest_rule": [
+    {
+      "category": "stack",
+      "content": "Backend uses Django.",
+      "evidence_excerpt": "Detected Django dependency.",
+      "evidence_path": "requirements.txt",
+      "priority": 80,
+      "scope": "backend"
+    },
+    {
+      "category": "security",
+      "content": "Never log secrets, API keys, tokens, or .env values.",
+      "evidence_excerpt": "Default bootstrap safety rule.",
+      "evidence_path": "__bootstrap_default__",
+      "priority": 0,
+      "scope": "global"
+    }
+  ],
+  "next_peer_dependency": [
+    {
+      "category": "stack",
+      "content": "Frontend uses Next.js.",
+      "evidence_excerpt": "Detected Next.js dependency.",
+      "evidence_path": "package.json",
+      "priority": 80,
+      "scope": "frontend"
+    },
+    {
+      "category": "security",
+      "content": "Never log secrets, API keys, tokens, or .env values.",
+      "evidence_excerpt": "Default bootstrap safety rule.",
+      "evidence_path": "__bootstrap_default__",
+      "priority": 0,
+      "scope": "global"
+    }
+  ],
+  "python_311_caret_pattern": [
+    {
+      "category": "stack",
+      "content": "Backend uses Python 3.11.",
+      "evidence_excerpt": "Detected Python 3.11 runtime hint.",
+      "evidence_path": "pyproject.toml",
+      "priority": 90,
+      "scope": "backend"
+    },
+    {
+      "category": "security",
+      "content": "Never log secrets, API keys, tokens, or .env values.",
+      "evidence_excerpt": "Default bootstrap safety rule.",
+      "evidence_path": "__bootstrap_default__",
+      "priority": 0,
+      "scope": "global"
+    }
+  ],
+  "python_311_docker_pattern": [
+    {
+      "category": "stack",
+      "content": "Backend uses Python 3.11.",
+      "evidence_excerpt": "Detected Python 3.11 runtime hint.",
+      "evidence_path": "Dockerfile",
+      "priority": 90,
+      "scope": "backend"
+    },
+    {
+      "category": "deploy",
+      "content": "Project includes Docker deployment configuration.",
+      "evidence_excerpt": "Detected Docker configuration.",
+      "evidence_path": "Dockerfile",
+      "priority": 130,
+      "scope": "infra"
+    },
+    {
+      "category": "security",
+      "content": "Never log secrets, API keys, tokens, or .env values.",
+      "evidence_excerpt": "Default bootstrap safety rule.",
+      "evidence_path": "__bootstrap_default__",
+      "priority": 0,
+      "scope": "global"
+    }
+  ]
+}

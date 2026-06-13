@@ -43,6 +43,9 @@ FIELDS = (
     "evidence_excerpt",
 )
 GOLDEN_PATH = Path(__file__).parent / "goldens" / "memory_detection_rules.json"
+FOLLOWUP_GOLDEN_PATH = (
+    Path(__file__).parent / "goldens" / "memory_detection_rules_followups.json"
+)
 LOCAL_TMP = Path(__file__).parent.parent / ".pytest_tmp"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UPDATE_GOLDENS_ENV = "PIPEWRIGHT_UPDATE_DETECTION_RULE_GOLDENS"
@@ -80,9 +83,21 @@ def _python_manifest_order(root: Path) -> None:
     )
 
 
+def _django_manifest_rule(root: Path) -> None:
+    _write(root, "requirements.txt", "django\n")
+
+
 def _python_311_first_evidence(root: Path) -> None:
     _write(root, "pyproject.toml", "[project]\nrequires-python = '>=3.11'\n")
     _write(root, "requirements.txt", "python_version == '3.11'\n")
+
+
+def _python_311_caret_pattern(root: Path) -> None:
+    _write(root, "pyproject.toml", '[tool.poetry.dependencies]\npython = "^3.11"\n')
+
+
+def _python_311_docker_pattern(root: Path) -> None:
+    _write(root, "Dockerfile", "FROM python:3.11-slim\n")
 
 
 def _package_json_order_and_variants(root: Path) -> None:
@@ -117,6 +132,14 @@ def _package_json_order_and_variants(root: Path) -> None:
     )
 
 
+def _next_peer_dependency(root: Path) -> None:
+    _write(
+        root,
+        "package.json",
+        json.dumps({"peerDependencies": {"next": "latest"}}, indent=2),
+    )
+
+
 def _malformed_package_json(root: Path) -> None:
     _write(root, "package.json", "react vite nestjs mongodb @nestjs/core")
 
@@ -146,6 +169,14 @@ def _first_evidence_filesystem(root: Path) -> None:
     _write(root, "prisma/schema.prisma", "datasource db { provider = 'sqlite' }\n")
     (root / "alembic").mkdir(parents=True, exist_ok=True)
     _write(root, "backend/pipeline/patch_applier.py", "# patch applier marker\n")
+
+
+def _bare_dockerfile(root: Path) -> None:
+    _write(root, "Dockerfile", "FROM alpine:3.20\n")
+
+
+def _alembic_ini_file_branch(root: Path) -> None:
+    _write(root, "alembic.ini", "[alembic]\nscript_location = alembic\n")
 
 
 def _prisma_package_and_schema(root: Path) -> None:
@@ -186,6 +217,15 @@ FIXTURE_BUILDERS = {
     "first_evidence_filesystem": _first_evidence_filesystem,
     "prisma_package_and_schema": _prisma_package_and_schema,
     "scope_and_test_script_branches": _scope_and_test_script_branches,
+}
+
+FOLLOWUP_FIXTURE_BUILDERS = {
+    "alembic_ini_file_branch": _alembic_ini_file_branch,
+    "bare_dockerfile": _bare_dockerfile,
+    "django_manifest_rule": _django_manifest_rule,
+    "next_peer_dependency": _next_peer_dependency,
+    "python_311_caret_pattern": _python_311_caret_pattern,
+    "python_311_docker_pattern": _python_311_docker_pattern,
 }
 
 
@@ -246,6 +286,17 @@ def test_collect_candidates_matches_pre_refactor_goldens(tmp_path):
         GOLDEN_PATH.write_text(_serialize(actual), encoding="utf-8")
 
     assert _serialize(actual) == GOLDEN_PATH.read_text(encoding="utf-8")
+
+
+def test_followup_fixture_coverage_matches_goldens(tmp_path):
+    actual: dict[str, list[dict]] = {}
+    for name, builder in FOLLOWUP_FIXTURE_BUILDERS.items():
+        root = tmp_path / name
+        root.mkdir()
+        builder(root)
+        actual[name] = _snapshot(root)
+
+    assert _serialize(actual) == FOLLOWUP_GOLDEN_PATH.read_text(encoding="utf-8")
 
 
 def test_evaluator_is_pure_and_order_stable(tmp_path):
