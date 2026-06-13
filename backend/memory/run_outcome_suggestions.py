@@ -30,10 +30,15 @@ from backend.core.statuses import GateStatus, RunStatus
 from backend.db.database import engine
 from backend.memory.bootstrap import insert_pending_suggestion
 from backend.memory.memory_store import DEFAULT_PRIORITY
+from backend.memory.suggestion_quality import score_suggestion
 from backend.pipeline.patch_failures import (
     PATCH_FAILURE_KIND,
     PatchFailureType,
     patch_failure_report_from_completion_summary,
+)
+from backend.pipeline.policy import (
+    HANDOFF_SUGGESTION_CAP,
+    RUN_SUGGESTION_TOTAL_CAP,
 )
 from backend.projects.project_store import get_project
 
@@ -137,6 +142,7 @@ class _Candidate:
     source_chunk_number: int | None = None
     scope: str = "global"
     priority: int = DEFAULT_PRIORITY
+    quality_score: int | None = None
 
 
 @dataclass
@@ -146,6 +152,8 @@ class RunSuggestionResult:
     generated: list[dict] = field(default_factory=list)
     skipped_count: int = 0
     blocked_count: int = 0
+    floored_count: int = 0
+    capped_count: int = 0
 
     @property
     def generated_count(self) -> int:
@@ -226,8 +234,19 @@ def _completed_run_candidates(run: dict, project: dict | None) -> list[_Candidat
     )]
 
 
-def _handoff_candidates(run_id: str, chunks: list[dict]) -> list[_Candidate]:
-    candidates: list[_Candidate] = []
+def _normalize_handoff_entry(entry: str) -> str:
+    return entry.strip()
+
+
+def _handoff_candidates(
+    run_id: str,
+    chunks: list[dict],
+    *,
+    reserved_deterministic_count: int,
+) -> tuple[list[_Candidate], int, int]:
+    candidates: list[tuple[int, _Candidate]] = []
+    floored_count = 0
+    original_order = 0
     for chunk in chunks:
         summary = _parse_success_summary(chunk["completion_summary"])
         if summary is None:
@@ -238,12 +257,17 @@ def _handoff_candidates(run_id: str, chunks: list[dict]) -> list[_Candidate]:
         for entry in entries:
             if not isinstance(entry, str):
                 continue
-            value = entry.strip()
-            # Conservative: skip empty or long entries rather than truncating a
-            # model-suggested fact into something it did not mean.
-            if not value or len(value) > MAX_HANDOFF_ENTRY_CHARS:
+            value = _normalize_handoff_entry(entry)
+            # Conservative: skip long entries rather than truncating a
+            # model-suggested fact into something it did not mean. Empty entries
+            # go through the objective-junk floor so they are counted distinctly.
+            if len(value) > MAX_HANDOFF_ENTRY_CHARS:
                 continue
-            candidates.append(_Candidate(
+            quality = score_suggestion(value, category="other")
+            if quality.floored:
+                floored_count += 1
+                continue
+            candidates.append((original_order, _Candidate(
                 content=value,
                 category="other",
                 source_type=RUN_HANDOFF_SOURCE_TYPE,
@@ -252,8 +276,21 @@ def _handoff_candidates(run_id: str, chunks: list[dict]) -> list[_Candidate]:
                     f"Suggested by the planner/coder handoff in run {run_id} "
                     f"chunk {chunk['chunk_number']}; review before approving."
                 ),
-            ))
-    return candidates
+                quality_score=quality.score,
+            )))
+            original_order += 1
+
+    effective_handoff_budget = min(
+        HANDOFF_SUGGESTION_CAP,
+        max(0, RUN_SUGGESTION_TOTAL_CAP - reserved_deterministic_count),
+    )
+    ranked = sorted(
+        candidates,
+        key=lambda item: (-(item[1].quality_score or 0), item[0]),
+    )
+    selected = [candidate for _, candidate in ranked[:effective_handoff_budget]]
+    capped_count = max(0, len(candidates) - len(selected))
+    return selected, floored_count, capped_count
 
 
 def _patch_failure_candidates(run_id: str, chunks: list[dict]) -> list[_Candidate]:
@@ -332,13 +369,29 @@ def generate_run_memory_suggestions(
     chunks = _load_chunks(run_id)
     gates = _load_rejected_gates(run_id)
 
+    completed_candidates = _completed_run_candidates(run, project)
+    patch_failure_candidates = _patch_failure_candidates(run_id, chunks)
+    rejection_candidates = _rejection_candidates(run_id, gates)
+    reserved_deterministic_count = (
+        len(completed_candidates)
+        + len(patch_failure_candidates)
+        + len(rejection_candidates)
+    )
+    handoff_candidates, floored_count, capped_count = _handoff_candidates(
+        run_id,
+        chunks,
+        reserved_deterministic_count=reserved_deterministic_count,
+    )
+
     candidates: list[_Candidate] = []
-    candidates += _completed_run_candidates(run, project)
-    candidates += _handoff_candidates(run_id, chunks)
-    candidates += _patch_failure_candidates(run_id, chunks)
-    candidates += _rejection_candidates(run_id, gates)
+    candidates += completed_candidates
+    candidates += handoff_candidates
+    candidates += patch_failure_candidates
+    candidates += rejection_candidates
 
     result = RunSuggestionResult(run_id=run_id, project_id=project_id)
+    result.floored_count = floored_count
+    result.capped_count = capped_count
     for candidate in candidates:
         try:
             inserted = insert_pending_suggestion(
@@ -354,6 +407,7 @@ def generate_run_memory_suggestions(
                 rationale=candidate.rationale,
                 suggested_by=requested_by,
                 risk_level=candidate.risk_level,
+                quality_score=candidate.quality_score,
             )
         except ValueError:
             # Blocked by the #21B write-path gate (control-plane phrase, secret,

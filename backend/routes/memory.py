@@ -240,6 +240,7 @@ class MemorySuggestionResponse(BaseModel):
     rationale: str | None = None
     suggested_by: str | None = None
     risk_level: str | None = None
+    quality_score: int | None = None
 
 
 class MemorySuggestionListResponse(BaseModel):
@@ -720,6 +721,8 @@ class RunMemorySuggestionGenerateResponse(BaseModel):
     generated_count: int
     skipped_count: int
     blocked_count: int
+    floored_count: int
+    capped_count: int
     suggestions: list[MemorySuggestionResponse]
 
 
@@ -742,6 +745,8 @@ def generate_run_suggestions(
         "generated_count": result.generated_count,
         "skipped_count": result.skipped_count,
         "blocked_count": result.blocked_count,
+        "floored_count": result.floored_count,
+        "capped_count": result.capped_count,
         "suggestions": result.generated,
     }
 

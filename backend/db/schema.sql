@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS memory_suggestions (
     rationale TEXT,
     suggested_by TEXT,
     risk_level TEXT,
+    quality_score INTEGER,
     edited_content TEXT,
     approved_fact_id TEXT
 );

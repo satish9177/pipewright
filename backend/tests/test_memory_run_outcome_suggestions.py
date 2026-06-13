@@ -13,14 +13,20 @@ from sqlalchemy import text
 
 from backend.db.database import engine
 from backend.main import app
+from backend.memory import run_outcome_suggestions
 from backend.memory.bootstrap import list_suggestions, reject_suggestion
 from backend.memory.memory_store import list_facts
+from backend.memory.suggestion_quality import (
+    SuggestionQuality,
+    SuggestionQualityResult,
+)
 from backend.memory.run_outcome_suggestions import generate_run_memory_suggestions
 from backend.pipeline.patch_failures import (
     PatchFailureType,
     build_patch_failure_report,
     patch_failure_report_to_completion_summary,
 )
+from backend.pipeline.policy import HANDOFF_SUGGESTION_CAP, RUN_SUGGESTION_TOTAL_CAP
 
 pytestmark = pytest.mark.unit
 
@@ -159,6 +165,16 @@ def test_completed_run_generates_pending_suggestions(run_env):
     contents = [s["content"] for s in result.generated]
     assert "Project test command: python -m pytest backend/tests -q" in contents
     assert "Backend uses FastAPI for routing." in contents
+    completed = next(
+        s for s in result.generated
+        if s["content"].startswith("Project test command:")
+    )
+    handoff = next(
+        s for s in result.generated
+        if s["content"] == "Backend uses FastAPI for routing."
+    )
+    assert completed["quality_score"] is None
+    assert isinstance(handoff["quality_score"], int)
     assert all(s["status"] == "pending" for s in result.generated)
     assert all(s["source_run_id"] == run_id for s in result.generated)
     # Nothing was promoted to an active memory fact.
@@ -272,6 +288,7 @@ def test_unsafe_handoff_entries_are_blocked_not_stored(run_env):
     result = generate_run_memory_suggestions(run_id)
 
     assert result.blocked_count == 2
+    assert result.floored_count == 0
     all_text = " ".join(
         s["content"] for s in list_suggestions(project_id, status="pending")
     ).lower()
@@ -279,6 +296,287 @@ def test_unsafe_handoff_entries_are_blocked_not_stored(run_env):
     assert "auto-merge" not in all_text
     # The unsafe handoff entries never became active memory facts.
     assert list_facts(project_id, status="active") == []
+
+
+def test_multiline_code_like_handoff_entry_is_blocked_not_stored(run_env):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    code_like_entry = "\n".join(
+        f"def helper_{index}():"
+        for index in range(9)
+    )
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary([code_like_entry]),
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    assert result.generated == []
+    assert result.blocked_count == 1
+    assert result.floored_count == 0
+    assert result.capped_count == 0
+    assert list_suggestions(project_id, status="pending") == []
+    assert list_facts(project_id, status="active") == []
+
+
+def test_large_fenced_code_handoff_entry_is_blocked_not_stored(run_env):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    fenced_entry = "```python\n" + "\n".join(
+        f"line_{index}"
+        for index in range(9)
+    ) + "\n```"
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary([fenced_entry]),
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    assert result.generated == []
+    assert result.blocked_count == 1
+    assert result.floored_count == 0
+    assert result.capped_count == 0
+    assert list_suggestions(project_id, status="pending") == []
+    assert list_facts(project_id, status="active") == []
+
+
+def test_objective_junk_handoff_entries_are_floored_not_inserted(run_env):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary([
+            "",
+            "uses Python",
+            "run abc123 chunk 2",
+            "Run tests with pytest -q.",
+        ]),
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    contents = [s["content"] for s in result.generated]
+    assert result.floored_count == 3
+    assert result.blocked_count == 0
+    assert result.capped_count == 0
+    assert contents == ["Run tests with pytest -q."]
+    assert result.generated[0]["quality_score"] is not None
+
+
+def test_low_scoring_non_junk_handoff_fact_is_still_inserted(run_env):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary(["Concise notes help."]),
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    assert result.floored_count == 0
+    assert result.capped_count == 0
+    assert [s["content"] for s in result.generated] == ["Concise notes help."]
+    assert result.generated[0]["quality_score"] < 40
+
+
+def test_handoff_cap_keeps_highest_scores_and_counts_capped(run_env):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    weak = "Concise notes help."
+    entries = [
+        "Never commit secrets to .env.",
+        "Run tests with pytest -q.",
+        "Scope expansion helpers live in backend/pipeline.",
+        "Planner memory is advisory; source code wins on conflicts.",
+        "Scope guard must remain authoritative for approved files.",
+        weak,
+    ]
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary(entries),
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    contents = [s["content"] for s in result.generated]
+    assert len(contents) == HANDOFF_SUGGESTION_CAP
+    assert weak not in contents
+    assert result.capped_count == 1
+    assert result.floored_count == 0
+    assert all(s["quality_score"] is not None for s in result.generated)
+
+
+def test_handoff_cap_ties_preserve_original_order(run_env):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    entries = [
+        "Concise note alpha.",
+        "Concise note beta.",
+        "Concise note gamma.",
+        "Concise note delta.",
+        "Concise note epsilon.",
+        "Concise note zeta.",
+    ]
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary(entries),
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    assert [s["content"] for s in result.generated] == (
+        entries[:HANDOFF_SUGGESTION_CAP]
+    )
+    assert result.capped_count == 1
+
+
+def test_total_cap_trims_only_handoff_and_preserves_templates(run_env):
+    project_id = run_env.create_project(test_command="python -m pytest -q")
+    run_id = run_env.create_run(project_id, status="complete")
+    handoff_entries = [
+        "Never commit secrets to .env.",
+        "Run tests with pytest -q.",
+        "Scope guard must remain authoritative for approved files.",
+        "Scope expansion helpers live in backend/pipeline.",
+    ]
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary(handoff_entries),
+    )
+    for index, failure_type in enumerate(
+        [
+            PatchFailureType.DIRTY_WORKTREE,
+            PatchFailureType.TARGET_MISSING,
+            PatchFailureType.SCOPE_VIOLATION,
+        ],
+        start=2,
+    ):
+        run_env.add_chunk(
+            run_id,
+            project_id,
+            index,
+            completion_summary=_failure_summary(failure_type),
+            status="failed",
+        )
+    run_env.add_rejected_gate(run_id, "Prefer reuse over another helper.")
+    run_env.add_rejected_gate(run_id, "Keep the existing API shape.")
+
+    result = generate_run_memory_suggestions(run_id)
+
+    reserved = 1 + 3 + 2
+    expected_handoff_budget = min(
+        HANDOFF_SUGGESTION_CAP,
+        max(0, RUN_SUGGESTION_TOTAL_CAP - reserved),
+    )
+    generated_contents = [s["content"] for s in result.generated]
+    handoff_generated = [
+        s for s in result.generated
+        if s["source_type"] == "run_handoff"
+    ]
+    template_generated = [
+        s for s in result.generated
+        if s["source_type"] == "run_outcome"
+    ]
+
+    assert expected_handoff_budget == 2
+    assert len(handoff_generated) == expected_handoff_budget
+    assert result.capped_count == len(handoff_entries) - expected_handoff_budget
+    assert "Project test command: python -m pytest -q" in generated_contents
+    assert any("dirty worktree" in content for content in generated_contents)
+    assert any("targeted a file" in content for content in generated_contents)
+    assert any(
+        "outside the approved chunk scope" in content
+        for content in generated_contents
+    )
+    assert any("Prefer reuse" in content for content in generated_contents)
+    assert any(
+        "Keep the existing API shape" in content
+        for content in generated_contents
+    )
+    assert len(template_generated) == reserved
+    assert all(s["quality_score"] is None for s in template_generated)
+
+
+def test_total_cap_zero_budget_caps_all_handoff_and_preserves_templates(run_env):
+    project_id = run_env.create_project(test_command="python -m pytest -q")
+    run_id = run_env.create_run(project_id, status="complete")
+    handoff_entries = [
+        "Never commit secrets to .env.",
+        "Run tests with pytest -q.",
+    ]
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary(handoff_entries),
+    )
+    for index, failure_type in enumerate(
+        [
+            PatchFailureType.DIRTY_WORKTREE,
+            PatchFailureType.STALE_INDEX_OR_FILE_CHANGED,
+            PatchFailureType.TARGET_MISSING,
+            PatchFailureType.PATCH_DOES_NOT_APPLY,
+            PatchFailureType.SCOPE_VIOLATION,
+        ],
+        start=2,
+    ):
+        run_env.add_chunk(
+            run_id,
+            project_id,
+            index,
+            completion_summary=_failure_summary(failure_type),
+            status="failed",
+        )
+    run_env.add_rejected_gate(run_id, "Prefer reuse over another helper.")
+    run_env.add_rejected_gate(run_id, "Keep the existing API shape.")
+
+    result = generate_run_memory_suggestions(run_id)
+
+    reserved = 1 + 5 + 2
+    assert reserved >= RUN_SUGGESTION_TOTAL_CAP
+    handoff_generated = [
+        s for s in result.generated
+        if s["source_type"] == "run_handoff"
+    ]
+    template_generated = [
+        s for s in result.generated
+        if s["source_type"] == "run_outcome"
+    ]
+
+    assert handoff_generated == []
+    assert result.capped_count == len(handoff_entries)
+    assert result.floored_count == 0
+    assert len(template_generated) == reserved
+    assert all(s["quality_score"] is None for s in template_generated)
+
+
+def test_handoff_insertion_branches_on_floored_not_score_or_quality(
+    run_env,
+    monkeypatch,
+):
+    project_id = run_env.create_project()
+    run_id = run_env.create_run(project_id, status="failed")
+    run_env.add_chunk(
+        run_id, project_id, 1,
+        completion_summary=_success_summary(["uses Python"]),
+    )
+
+    monkeypatch.setattr(
+        run_outcome_suggestions,
+        "score_suggestion",
+        lambda _content, category="other": SuggestionQualityResult(
+            score=0,
+            quality=SuggestionQuality.JUNK,
+            reasons=["forced_non_floored"],
+            floored=False,
+        ),
+    )
+
+    result = generate_run_memory_suggestions(run_id)
+
+    assert result.floored_count == 0
+    assert [s["content"] for s in result.generated] == ["uses Python"]
+    assert result.generated[0]["quality_score"] == 0
 
 
 # D. Failed run patch failure suggestion --------------------------------------
@@ -300,6 +598,7 @@ def test_dirty_worktree_failure_generates_operational_note(run_env):
     assert note["source_run_id"] == run_id
     assert note["rationale"]
     assert note["risk_level"] == "low"
+    assert note["quality_score"] is None
     assert list_facts(project_id, status="active") == []
 
 
@@ -392,6 +691,7 @@ def test_rejected_approval_generates_rejected_approach_suggestion(run_env):
     assert suggestion["content"].startswith(f"Rejected approach in run {run_id[:8]}:")
     assert "prefer reuse" in suggestion["content"]
     assert suggestion["status"] == "pending"
+    assert suggestion["quality_score"] is None
     # Full run id is preserved in provenance, not in the validated content.
     assert suggestion["source_run_id"] == run_id
     assert list_facts(project_id, status="active") == []
@@ -413,6 +713,8 @@ def test_run_without_project_id_fails_closed(run_env):
     assert result.project_id == ""
     assert result.skipped_count == 0
     assert result.blocked_count == 0
+    assert result.floored_count == 0
+    assert result.capped_count == 0
 
 
 # I. API ----------------------------------------------------------------------
@@ -437,6 +739,8 @@ def test_generate_endpoint_creates_and_is_idempotent(client, run_env):
     assert body["run_id"] == run_id
     assert body["project_id"] == project_id
     assert body["generated_count"] >= 1
+    assert "floored_count" in body
+    assert "capped_count" in body
     assert all(s["status"] == "pending" for s in body["suggestions"])
     assert all(s["source_run_id"] == run_id for s in body["suggestions"])
 

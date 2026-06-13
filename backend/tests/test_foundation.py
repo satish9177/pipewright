@@ -294,3 +294,46 @@ def test_init_migration_adds_nullable_run_start_context_columns():
     assert "start_head_sha" in column_names
     assert row[0] is None
     assert row[1] is None
+
+
+def test_init_migration_adds_nullable_memory_suggestion_quality_score():
+    temp_engine = create_engine("sqlite:///:memory:")
+    with temp_engine.connect() as conn:
+        conn.execute(text("""
+            CREATE TABLE memory_suggestions (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                category TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                created_at DATETIME,
+                content_hash TEXT
+            )
+        """))
+        conn.execute(text("""
+            INSERT INTO memory_suggestions
+            (id, project_id, content, category, scope, status, content_hash)
+            VALUES
+            ('suggestion-1', 'project-1', 'Legacy suggestion.', 'other',
+             'global', 'pending', 'hash-1')
+        """))
+        conn.commit()
+
+        database._migrate_db(conn)
+        database._migrate_db(conn)
+        conn.commit()
+
+        rows = conn.execute(text(
+            "PRAGMA table_info(memory_suggestions)"
+        )).fetchall()
+        columns = {row._mapping["name"]: row._mapping for row in rows}
+        quality_score = conn.execute(text("""
+            SELECT quality_score
+            FROM memory_suggestions
+            WHERE id = 'suggestion-1'
+        """)).scalar()
+
+    assert "quality_score" in columns
+    assert columns["quality_score"]["notnull"] == 0
+    assert quality_score is None

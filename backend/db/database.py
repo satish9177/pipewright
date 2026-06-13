@@ -386,6 +386,11 @@ def _migrate_db(conn) -> None:
             ),
             (
                 "memory_suggestions",
+                "quality_score",
+                "ALTER TABLE memory_suggestions ADD COLUMN quality_score INTEGER",
+            ),
+            (
+                "memory_suggestions",
                 "edited_content",
                 "ALTER TABLE memory_suggestions ADD COLUMN edited_content TEXT",
             ),
