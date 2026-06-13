@@ -138,6 +138,31 @@ routes revalidate every mutating action.
 - **Not all edge cases are solved**; recovery paths cover the common failures
   surfaced during dogfooding, not every possible state.
 
+### Non-blocking self-use smoke follow-ups
+
+The self-use smoke friction cleanup is closed. These are follow-ups, not
+blockers, and they must preserve the existing safety invariants: no auto-retry,
+no silent create-to-edit patch rewriting, no approval or final-approval bypass,
+no scope/path-safety weakening, and no retry eligibility or budget change.
+
+- **Steer-button eligibility parity:** `Retry with instruction` should not appear
+  enabled when the server-side steer route would reject because the tree is
+  dirty, the attempt budget is exhausted, the branch/state is stale or wrong, or
+  a similar ineligible condition applies.
+- **Create-collision primary copy:** for create-target-existing
+  `PATCH_DOES_NOT_APPLY` failures, make the primary Run Detail headline/detail
+  say the file already exists and should be edited, instead of relying only on
+  diagnostic or suggested-instruction text.
+- **Test evidence confidence mismatch:** run `d3ba080a` showed the backend tester
+  ran the configured absolute-path pytest command successfully with `179 passed /
+  0 failed`, while Run Detail still displayed unknown/unverified evidence.
+  Investigate whether command classification, persisted test-run validation, the
+  chunk read model, or frontend display is losing the stronger evidence.
+- **Optional frontend tests:** add component coverage for `PatchFailureBanner`
+  retry/steer affordance rendering when the frontend test posture supports it.
+- **Minor classifier cleanup/extensions:** clean unreachable or overly narrow
+  command matchers, and extend wrappers only when real setups need them.
+
 ---
 
 ## What is safe to start next
