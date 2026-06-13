@@ -14,10 +14,15 @@ first" recommendation is **no longer current**. The authoritative roadmap is
 `PIPEWRIGHT_REDESIGN_WORKPLAN.md` (sequence: proposal §23; decisions: §24; cycle
 window: Appendix E). Current status: **Area A (Pipeline) Pass 1 is COMPLETE**
 (including the reviewer informed-approval soft gate — now **LIVE**, advisory, human
-decides), and **Area B (Memory) Pass 2 has begun** — the M5 suggestion-quality gate
-shipped (PR #292), and the **next slice is §23 order-row 11 — detection
-rules-as-data (PR-A first)**. The "reviewer stage: designed, not implemented"
-section below is also stale. This page is kept for history only.
+decides), and **Area B (Memory) Pass 2 is ACTIVE** — the M5 suggestion-quality gate
+shipped (PR #292), and **§23 order-row 11 PR-A — detection rules-as-data — is
+COMPLETE** (`_collect_candidates` thin adapter; detection logic in
+`backend/memory/detection_rules.py`; ordered six-field parity proven with synthetic
+goldens and tests). Optional fixture hardening (Django, Next.js, bare Dockerfile,
+alembic.ini, extra Python 3.11 patterns, peerDependencies) recommended before PR-B.
+PR-B (advisory repo reality signals) and PR-C (test-command backfill) remain later.
+The "reviewer stage: designed, not implemented" section below is also stale. This
+page is kept for history only.
 
 ---
 
