@@ -105,3 +105,60 @@ One small PR per finding group; safety invariants unchanged in all of them.
 - Land **one small PR per finding group** (the §5 ordering), each with its own tests, in the project's normal per-PR review gate. Prefer deterministic checks over LLM checks throughout.
 - Keep the **finding IDs (F1–F10) stable** when referencing this audit from PRs or follow-up notes, so the queue stays traceable.
 - Re-run this style of adversarial pass at the next major milestone (e.g. before Area B exposure), not as a one-off.
+
+---
+
+## 8. Post-hardening re-audit (2026-06-13)
+
+**Auditor:** Claude (adversarial re-review, code-first). **Status:** Record only — append-only changelog over §1–§7; the original findings and their IDs are unchanged. No code was implemented in this pass.
+
+This section records the result of working the §3 / §5 queue down. The five hardening commits on `develop` are: `be65361` (F1 EOL), `4ba3c19` (F2/F3 indexer), `a966397` (F5 soak eligibility), `5c7dcc8` (F4/F6/F7 trust signals), `25f0d1a` (F8 plan-gate constraints). The fixes were reviewed against code, and three new findings surfaced — IDs continue the original sequence as **F11–F13** so the queue stays traceable.
+
+### 8.1 Test evidence
+
+Full backend unit suite green after the fixes: **`3048 passed, 1 skipped, 4 deselected`, 0 failures** (`python -m pytest backend/tests -q -m unit`, ~11m32s). This is up from the audit-time 2989, consistent with the new tests the fixes added. The lone skip / 4 deselected are the pre-existing live-API exclusions. No regression was found.
+
+### 8.2 Status of F1–F10 + bonus
+
+| ID | Verdict | Notes |
+|----|---------|-------|
+| **F1** EOL rewrite | **Fixed, regression-free** | Per-file EOL detect/preserve in `patch_dry_run.py`; `read_bytes()/write_bytes()` remove universal-newline translation; edit search strings converted to the file's style before matching; apply writes the pass-1 `new_content` so dry-run and apply stay byte-aligned. New files default LF; mixed-EOL files are not normalized. Net improvement: CR-only files now fail safe instead of being silently rewritten. |
+| **F2** language reach | **Fixed (indexer/parser)**; verification still pytest-only (deferred → see **F12**) | `SUPPORTED_EXTENSIONS` extended (Rust/Go/Spring/web); `file_alias_grounding._KNOWN_EXTENSIONS` inherits it, so explicit non-Python paths (e.g. `src/main.rs`) are now detected as file mentions. |
+| **F3** substring de-index | **Fixed for filenames**; new adjacent bug **F11** | `should_skip_path` now exact-matches file names; legitimate `distance.py`/`build_tools.py`/`targets.py`/`coverage_report.py` index, generated dirs still skip. |
+| **F4** no-tests copy | **Fixed** | Dedicated honest `NO_TESTS_RAN` baseline narrative; still **fail-closed** (run fails, no commit). The weak-validation escape hatch is now named in the copy. |
+| **F5** soak cohort | **Fixed** | Nullable `trivial_profile_eligible` audit column separates eligible controls from ineligible standard chunks; soak doc refreshed; stale-17b and auto-retry-row notes corrected; non-authority test added. |
+| **F6** synthesized label | **Fixed (labeling)**; release default = open decision | Synthesized-plan label now surfaces in completion summary, prior-chunk context, and **final-approval summary** (human retains reject authority at that gate). `MERGED_PROFILE_SAMPLE_PCT` still ships at **50**; the public-release default decision is documented, not yet taken. |
+| **F7** denylist basenames | **Fixed** | Basename globs added (`auth*`, `*auth*`, `login*`, `session*`, `*password*`, `crypto*`, `jwt*`, `oauth*`, `*token*`, `security*`); matched against whole path, basename, and exact segment. Over-matching only forgoes the optimization — safe direction. |
+| **F8** constraints at gate | **Fixed** | `RequestFileConstraints` read-model persisted (key-scoped in `report_json`, coexists with the verification baseline), rendered **read-only** at the plan gate with an honest empty-state + concept-level note; proven non-authority by test. Path-shaped constraints detected; concept-level negatives stay out of deterministic scope by design. |
+| **F9** model allowlist | **Open — later** | `anthropic.py` `_SUPPORTED_MODELS` is still a hardcoded list that tops out below the newest Claude IDs; env-pointing a role at a newer ID raises `UnsupportedModelError`. Default provider is Gemini, so it only bites deliberate Claude users. |
+| **F10** ergonomics/onboarding | **Open — later (mostly by design)** | Global `TESTER_TIMEOUT_SECONDS=300` (no per-project override); all roles incl. coder/reviewer default to `gemini-2.5-flash-lite` (out-of-box quality rides on a lite model); activating 17b still needs a `policy.py` edit + restart (no env/UI surface). The lite default-model first impression is the OSS-relevant sub-point. |
+| **Bonus** `cache_dir` | **Open** | `backend/pytest.ini` still pins `cache_dir = C:\Users\Hp\pipewright\.pytest_cache`; the `WinError 5 Access is denied: 'C:\Users\Hp'` warning reproduced on every run this pass. One-line fix: `cache_dir = .pytest_cache`. |
+
+**Safety invariants re-verified intact:** no auto-merge, no hidden scope expansion (F8 constraints and F5 eligibility are both proven non-authority by tests; `scope_guard` untouched), no AI/reviewer/memory/narrative authority, no protected-base PR bypass, gates remain human authority, 17b prompt caching stays default-off and Anthropic-only.
+
+### 8.3 New findings (F11–F13)
+
+**F11 — Indexer skips the whole repo when an *ancestor* directory is a skip-name — should-fix.**
+`should_skip_path` checks `path.parts`, but `scan_repo` feeds it absolute paths, so directories *above* the repo root are tested against `SKIP_NAMES`. A repo cloned under any ancestor named `build`, `cache`, `.cache`, `target`, `dist`, `coverage`, `node_modules`, `venv`, etc. indexes **zero files** → empty `files_expected` → high risk → `scope_guard` dead-end, with the same misleading "verify the path or reindex" message reindexing cannot fix. Reproduced this pass (`<tmp>/build/myrepo` → 0 files; control `<tmp>/work/myrepo` → indexed). Same *class* as F3, different root cause F3 did not touch. **Smallest safe PR:** evaluate `SKIP_NAMES` against `path.relative_to(target_repo).parts`, keeping size/forbidden/stem checks on the real path. **Tests:** repo under a skip-named ancestor indexes normally; skip-named dir *inside* the repo still skips.
+
+**F12 — README verification matrix oversells non-pytest runner support — should-fix (doc only).**
+The verification-command matrix recommends `cargo test`, `go test ./...`, `mvn test`, `npm test` with no caveat, but baseline-aware tolerance of *pre-existing* failing tests is **pytest-only** (`_baseline_accepts_failed_result` returns false when either side's failing-IDs are non-parseable). A non-pytest repo that is green at baseline works end-to-end; one with a single pre-existing red test dead-ends every chunk (fail-safe and honest, but a dead-end). **Smallest safe PR:** one matrix note — baseline tolerance of pre-existing failures is currently pytest-only; on other runners start from a green suite or use a build/typecheck command (`cargo check`, `mvn -DskipTests package`, `npm run build`, `compileall`). No code.
+
+**F13 — Secret-file skip in the indexer is narrow — should-fix (small) / low.**
+`INDEX_FORBIDDEN_FILE_STEMS = {credentials, secrets}` skips `secrets.properties`/`credentials.xml`, but `application.properties` (Spring's usual secret-holder), `secret.yaml` (singular), `secrets.local.json`, and `application-secrets.properties` are indexed. **Low severity:** the index stores only path + line/size/token counts (and imports for py/js/ts/java) — never file contents — so secret *values* are not persisted; the human plan gate still backstops scope. **Smallest safe PR:** widen the stem skip to a substring check (`"secret"`/`"credential"` in stem). Deterministic.
+
+### 8.4 Updated local-first queue (next PRs)
+
+The §5 queue is largely worked off; the remaining order is:
+
+- **PR 1 — F11 indexer ancestor-skip fix** (repo-relative `SKIP_NAMES` evaluation) + tests. Unblocks a silent, total, invisible dead-end; same class as F3.
+- **PR 2 — `pytest.ini` `cache_dir` one-line fix** (`cache_dir = .pytest_cache`). Hits every contributor's first run; zero risk.
+- **PR 3 — F12 README verification honesty note** (doc only): disclose pytest-only baseline tolerance; steer non-pytest stacks to a green/build command.
+- **Later:** F13 secret-stem widening; F9 prefix-accept `claude-*`; F10 per-project timeout + lite-default-model onboarding guidance; an explicit public-release default decision for `MERGED_PROFILE_SAMPLE_PCT` (`50` maintainer soak vs. `0` opt-in).
+
+### 8.5 Verdicts (post-hardening)
+
+- **Self-use — strong.** On a pytest repo not located under a skip-named ancestor, the full loop is solid; F1 makes Windows + LF editing safe. F11 is the only caveat (avoid cloning under `build/cache/target/...`).
+- **Local-first OSS demo — yes, with conditions.** The audit's blocking condition (F1) has landed. Remaining conditions are cheap: fix `cache_dir`, demo on a pytest repo (or a green non-pytest repo), add the lite-model onboarding line, and ideally land F11 + the F12 note first. The safety core is demo-ready.
+- **External users — wait.** Land **F11** (the real bug) and **F12** (non-pytest honesty), add the **lite default-model** onboarding guidance, and take the **`MERGED_PROFILE_SAMPLE_PCT` → 0/opt-in** decision for public exposure first. The safety story is external-ready; the first-30-minutes story still has the F11/F12/onboarding edges.
+- **Before Area B:** F11 + `cache_dir` + the F12 note, and settle the sample-pct default. None *technically* block Area B, but F11 is a genuine bug and should not be carried forward.
