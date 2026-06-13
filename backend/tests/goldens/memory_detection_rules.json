@@ -1,0 +1,444 @@
+{
+  "empty_repo": [
+    {
+      "category": "security",
+      "content": "Never log secrets, API keys, tokens, or .env values.",
+      "evidence_excerpt": "Default bootstrap safety rule.",
+      "evidence_path": "__bootstrap_default__",
+      "priority": 0,
+      "scope": "global"
+    }
+  ],
+  "first_evidence_filesystem": [
+    {
+      "category": "db",
+      "content": "Current local database is SQLite.",
+      "evidence_excerpt": "Detected SQLite schema or SQLite reference.",
+      "evidence_path": "schema.sql",
+      "priority": 80,
+      "scope": "backend"
+    },
+    {
+      "category": "deploy",
+      "content": "Project includes Docker deployment configuration.",
+      "evidence_excerpt": "Detected Docker configuration.",
+      "evidence_path": "docker-compose.yaml",
+      "priority": 130,
+      "scope": "infra"
+    },
+    {
+      "category": "db",
+      "content": "Project uses Prisma schema configuration.",
+      "evidence_excerpt": "Detected Prisma schema.",
+      "evidence_path": "prisma/schema.prisma",
+      "priority": 120,
+      "scope": "backend"
+    },
+    {
+      "category": "db",
+      "content": "Project uses Alembic database migrations.",
+      "evidence_excerpt": "Detected Alembic configuration.",
+      "evidence_path": "alembic",
+      "priority": 120,
+      "scope": "backend"
+    },
+    {
+      "category": "security",
+      "content": "Never log secrets, API keys, tokens, or .env values.",
+      "evidence_excerpt": "Default bootstrap safety rule.",
+      "evidence_path": "__bootstrap_default__",
+      "priority": 0,
+      "scope": "global"
+    },
+    {
+      "category": "architecture",
+      "content": "Coder output is applied through the patch applier; models should not write directly to disk.",
+      "evidence_excerpt": "Detected Pipewright patch applier.",
+      "evidence_path": "backend/pipeline/patch_applier.py",
+      "priority": 70,
+      "scope": "backend"
+    }
+  ],
+  "jvm_go_rust_order": [
+    {
+      "category": "deploy",
+      "content": "Java build uses Gradle.",
+      "evidence_excerpt": "Detected Gradle build file.",
+      "evidence_path": "build.gradle",
+      "priority": 140,
+      "scope": "backend"
+    },
+    {
+      "category": "test",
+      "content": "Java tests use JUnit.",
+      "evidence_excerpt": "Detected JUnit dependency.",
+      "evidence_path": "build.gradle",
+      "priority": 130,
+      "scope": "tests"
+    },
+    {
+      "category": "stack",
+      "content": "Backend uses Spring Boot.",
+      "evidence_excerpt": "Detected Spring Boot dependency.",
+      "evidence_path": "pom.xml",
+      "priority": 80,
+      "scope": "backend"
+    },
+    {
+      "category": "test",
+      "content": "Java tests use JUnit.",
+      "evidence_excerpt": "Detected JUnit dependency.",
+      "evidence_path": "pom.xml",
+      "priority": 130,
+      "scope": "tests"
+    },
+    {
+      "category": "stack",
+      "content": "Backend uses Spring Boot.",
+      "evidence_excerpt": "Detected Spring Boot dependency.",
+      "evidence_path": "backend/pom.xml",
+      "priority": 80,
+      "scope": "backend"
+    },
+    {
+      "category": "deploy",
+      "content": "Java build uses Maven.",
+      "evidence_excerpt": "Detected Maven project file.",
+      "evidence_path": "backend/pom.xml",
+      "priority": 140,
+      "scope": "backend"
+    },
+    {
+      "category": "test",
+      "content": "Java tests use JUnit.",
+      "evidence_excerpt": "Detected JUnit dependency.",
+      "evidence_path": "backend/pom.xml",
+      "priority": 130,
+      "scope": "tests"
+    },
+    {
+      "category": "stack",
+      "content": "Backend includes a Go module.",
+      "evidence_excerpt": "Detected go.mod.",
+      "evidence_path": "go.mod",
+      "priority": 110,
+      "scope": "backend"
+    },
+    {
+      "category": "stack",
+      "content": "Project includes a Rust component.",
+      "evidence_excerpt": "Detected Cargo.toml.",
+      "evidence_path": "frontend/Cargo.toml",
+      "priority": 120,
+      "scope": "frontend"
+    },
+    {
+      "category": "security",
+      "content": "Never log secrets, API keys, tokens, or .env values.",
+      "evidence_excerpt": "Default bootstrap safety rule.",
+      "evidence_path": "__bootstrap_default__",
+      "priority": 0,
+      "scope": "global"
+    }
+  ],
+  "malformed_package_json": [
+    {
+      "category": "stack",
+      "content": "Frontend uses React and Vite.",
+      "evidence_excerpt": "Detected React and Vite dependencies.",
+      "evidence_path": "package.json",
+      "priority": 90,
+      "scope": "frontend"
+    },
+    {
+      "category": "stack",
+      "content": "Backend uses NestJS.",
+      "evidence_excerpt": "Detected NestJS dependency.",
+      "evidence_path": "package.json",
+      "priority": 80,
+      "scope": "backend"
+    },
+    {
+      "category": "db",
+      "content": "Project uses MongoDB.",
+      "evidence_excerpt": "Detected MongoDB dependency.",
+      "evidence_path": "package.json",
+      "priority": 100,
+      "scope": "backend"
+    },
+    {
+      "category": "security",
+      "content": "Never log secrets, API keys, tokens, or .env values.",
+      "evidence_excerpt": "Default bootstrap safety rule.",
+      "evidence_path": "__bootstrap_default__",
+      "priority": 0,
+      "scope": "global"
+    }
+  ],
+  "package_json_order_and_variants": [
+    {
+      "category": "stack",
+      "content": "Frontend uses React, Vite, and TypeScript.",
+      "evidence_excerpt": "Detected React, Vite, and TypeScript dependencies.",
+      "evidence_path": "package.json",
+      "priority": 80,
+      "scope": "frontend"
+    },
+    {
+      "category": "test",
+      "content": "Frontend build uses npm run build.",
+      "evidence_excerpt": "Detected package.json build script.",
+      "evidence_path": "package.json",
+      "priority": 100,
+      "scope": "frontend"
+    },
+    {
+      "category": "test",
+      "content": "Frontend tests use Jest.",
+      "evidence_excerpt": "Detected Jest dependency.",
+      "evidence_path": "package.json",
+      "priority": 120,
+      "scope": "frontend"
+    },
+    {
+      "category": "test",
+      "content": "Frontend tests use Vitest.",
+      "evidence_excerpt": "Detected Vitest dependency.",
+      "evidence_path": "package.json",
+      "priority": 120,
+      "scope": "frontend"
+    },
+    {
+      "category": "test",
+      "content": "Project defines npm test script.",
+      "evidence_excerpt": "Detected package.json test script.",
+      "evidence_path": "package.json",
+      "priority": 130,
+      "scope": "frontend"
+    },
+    {
+      "category": "stack",
+      "content": "Backend uses Express.",
+      "evidence_excerpt": "Detected Express dependency.",
+      "evidence_path": "services/api/package.json",
+      "priority": 80,
+      "scope": "backend"
+    },
+    {
+      "category": "stack",
+      "content": "Backend uses NestJS.",
+      "evidence_excerpt": "Detected NestJS dependency.",
+      "evidence_path": "services/api/package.json",
+      "priority": 80,
+      "scope": "backend"
+    },
+    {
+      "category": "stack",
+      "content": "Backend uses Fastify.",
+      "evidence_excerpt": "Detected Fastify dependency.",
+      "evidence_path": "services/api/package.json",
+      "priority": 80,
+      "scope": "backend"
+    },
+    {
+      "category": "db",
+      "content": "Project uses Prisma for database access.",
+      "evidence_excerpt": "Detected Prisma dependency.",
+      "evidence_path": "services/api/package.json",
+      "priority": 100,
+      "scope": "backend"
+    },
+    {
+      "category": "db",
+      "content": "Project uses MongoDB.",
+      "evidence_excerpt": "Detected MongoDB dependency.",
+      "evidence_path": "services/api/package.json",
+      "priority": 100,
+      "scope": "backend"
+    },
+    {
+      "category": "test",
+      "content": "Project defines npm test script.",
+      "evidence_excerpt": "Detected package.json test script.",
+      "evidence_path": "services/api/package.json",
+      "priority": 130,
+      "scope": "backend"
+    },
+    {
+      "category": "security",
+      "content": "Never log secrets, API keys, tokens, or .env values.",
+      "evidence_excerpt": "Default bootstrap safety rule.",
+      "evidence_path": "__bootstrap_default__",
+      "priority": 0,
+      "scope": "global"
+    }
+  ],
+  "prisma_package_and_schema": [
+    {
+      "category": "db",
+      "content": "Project uses Prisma for database access.",
+      "evidence_excerpt": "Detected Prisma dependency.",
+      "evidence_path": "frontend/package.json",
+      "priority": 100,
+      "scope": "frontend"
+    },
+    {
+      "category": "db",
+      "content": "Project uses Prisma schema configuration.",
+      "evidence_excerpt": "Detected Prisma schema.",
+      "evidence_path": "prisma/schema.prisma",
+      "priority": 120,
+      "scope": "backend"
+    },
+    {
+      "category": "security",
+      "content": "Never log secrets, API keys, tokens, or .env values.",
+      "evidence_excerpt": "Default bootstrap safety rule.",
+      "evidence_path": "__bootstrap_default__",
+      "priority": 0,
+      "scope": "global"
+    }
+  ],
+  "python_311_first_evidence": [
+    {
+      "category": "stack",
+      "content": "Backend uses Python 3.11.",
+      "evidence_excerpt": "Detected Python 3.11 runtime hint.",
+      "evidence_path": "pyproject.toml",
+      "priority": 90,
+      "scope": "backend"
+    },
+    {
+      "category": "security",
+      "content": "Never log secrets, API keys, tokens, or .env values.",
+      "evidence_excerpt": "Default bootstrap safety rule.",
+      "evidence_path": "__bootstrap_default__",
+      "priority": 0,
+      "scope": "global"
+    }
+  ],
+  "python_manifest_order": [
+    {
+      "category": "stack",
+      "content": "Backend uses Flask.",
+      "evidence_excerpt": "Detected Flask dependency.",
+      "evidence_path": "pyproject.toml",
+      "priority": 80,
+      "scope": "backend"
+    },
+    {
+      "category": "test",
+      "content": "Run backend unit tests with pytest.",
+      "evidence_excerpt": "Detected pytest dependency.",
+      "evidence_path": "pyproject.toml",
+      "priority": 90,
+      "scope": "tests"
+    },
+    {
+      "category": "stack",
+      "content": "Backend uses FastAPI.",
+      "evidence_excerpt": "Detected FastAPI dependency.",
+      "evidence_path": "requirements.txt",
+      "priority": 80,
+      "scope": "backend"
+    },
+    {
+      "category": "db",
+      "content": "Backend uses SQLAlchemy for database access.",
+      "evidence_excerpt": "Detected SQLAlchemy dependency.",
+      "evidence_path": "requirements.txt",
+      "priority": 80,
+      "scope": "backend"
+    },
+    {
+      "category": "db",
+      "content": "Project uses PostgreSQL.",
+      "evidence_excerpt": "Detected PostgreSQL dependency or reference.",
+      "evidence_path": "requirements.txt",
+      "priority": 100,
+      "scope": "backend"
+    },
+    {
+      "category": "db",
+      "content": "Project uses MySQL.",
+      "evidence_excerpt": "Detected MySQL dependency or reference.",
+      "evidence_path": "requirements.txt",
+      "priority": 100,
+      "scope": "backend"
+    },
+    {
+      "category": "db",
+      "content": "Project uses MongoDB.",
+      "evidence_excerpt": "Detected MongoDB dependency or reference.",
+      "evidence_path": "requirements.txt",
+      "priority": 100,
+      "scope": "backend"
+    },
+    {
+      "category": "security",
+      "content": "Never log secrets, API keys, tokens, or .env values.",
+      "evidence_excerpt": "Default bootstrap safety rule.",
+      "evidence_path": "__bootstrap_default__",
+      "priority": 0,
+      "scope": "global"
+    }
+  ],
+  "scope_and_test_script_branches": [
+    {
+      "category": "stack",
+      "content": "Frontend uses React and Vite.",
+      "evidence_excerpt": "Detected React and Vite dependencies.",
+      "evidence_path": "frontend/package.json",
+      "priority": 90,
+      "scope": "frontend"
+    },
+    {
+      "category": "test",
+      "content": "Frontend tests use Vitest.",
+      "evidence_excerpt": "Detected Vitest dependency.",
+      "evidence_path": "frontend/package.json",
+      "priority": 120,
+      "scope": "frontend"
+    },
+    {
+      "category": "test",
+      "content": "Project defines npm test script.",
+      "evidence_excerpt": "Detected package.json test script.",
+      "evidence_path": "frontend/package.json",
+      "priority": 130,
+      "scope": "frontend"
+    },
+    {
+      "category": "test",
+      "content": "Project defines npm test script.",
+      "evidence_excerpt": "Detected package.json test script.",
+      "evidence_path": "server/package.json",
+      "priority": 130,
+      "scope": "backend"
+    },
+    {
+      "category": "stack",
+      "content": "Project includes a Rust component.",
+      "evidence_excerpt": "Detected Cargo.toml.",
+      "evidence_path": "infra/Cargo.toml",
+      "priority": 120,
+      "scope": "infra"
+    },
+    {
+      "category": "stack",
+      "content": "Project includes a Rust component.",
+      "evidence_excerpt": "Detected Cargo.toml.",
+      "evidence_path": "tests/Cargo.toml",
+      "priority": 120,
+      "scope": "tests"
+    },
+    {
+      "category": "security",
+      "content": "Never log secrets, API keys, tokens, or .env values.",
+      "evidence_excerpt": "Default bootstrap safety rule.",
+      "evidence_path": "__bootstrap_default__",
+      "priority": 0,
+      "scope": "global"
+    }
+  ]
+}
