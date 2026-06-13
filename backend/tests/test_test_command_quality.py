@@ -79,27 +79,42 @@ def test_weak_commands_classify_weak(command):
 LIKELY_TEST_COMMANDS = [
     "pytest",
     "py.test",
+    r"C:\Users\satis\AppData\Local\Programs\Python\Python311\python.exe -m pytest backend/tests/test_handoff_models.py -q",
+    "/usr/bin/python3 -m pytest",
     "python -m pytest",
     "python3 -m pytest",
     "python -m unittest",
     "tox",
     "nox",
     "npm test",
+    "npm.cmd test",
     "npm run test",
     "npm run test:unit",
     "npm run test:ci",
     "pnpm test",
+    "pnpm.cmd test",
     "pnpm run test",
     "yarn test",
+    "yarn.cmd test",
     "vitest",
     "jest",
     "mocha",
     "mvn test",
+    "mvnw test",
+    "./mvnw test",
+    r".\mvnw.cmd test",
     "mvn verify",
     "gradle test",
     "./gradlew test",
+    "gradlew.bat test",
     "go test ./...",
     "cargo test",
+    "npx jest",
+    "npx vitest",
+    "poetry run pytest",
+    "pipenv run pytest",
+    "uv run pytest",
+    "pdm run pytest",
     "rspec",
     "rake test",
     "phpunit",
@@ -120,6 +135,32 @@ def test_likely_test_commands_classify_likely(command):
     result = classify_test_command(command)
     assert result.quality is TestCommandQuality.LIKELY_TEST
     assert result.reason
+
+
+@pytest.mark.parametrize("command", [
+    "pytest.exe -q",
+    "npm.cmd test",
+    "yarn.bat test",
+    r".\mvnw.cmd test",
+    r"C:\tools\gradle\bin\gradle.bat test",
+])
+def test_head_path_and_suffix_normalization_classifies_likely_tests(command):
+    assert _quality(command) is TestCommandQuality.LIKELY_TEST
+
+
+@pytest.mark.parametrize("command", [
+    "mvnw test",
+    "./mvnw test",
+    r".\mvnw.cmd test",
+    "npx jest",
+    "npx vitest",
+    "poetry run pytest",
+    "pipenv run pytest",
+    "uv run pytest",
+    "pdm run pytest",
+])
+def test_common_test_wrappers_classify_likely(command):
+    assert _quality(command) is TestCommandQuality.LIKELY_TEST
 
 
 # --------------------------------------------------------------------------
@@ -146,6 +187,16 @@ def test_unknown_commands_classify_unknown(command):
     assert result.quality is TestCommandQuality.UNKNOWN
     assert result.quality is not TestCommandQuality.WEAK
     assert result.reason
+
+
+@pytest.mark.parametrize("command", [
+    "python script.py",
+    r"C:\Users\satis\AppData\Local\Programs\Python\Python311\python.exe script.py",
+    "node server.js",
+    "echo hello",
+])
+def test_generic_commands_do_not_become_likely_tests(command):
+    assert _quality(command) is not TestCommandQuality.LIKELY_TEST
 
 
 # --------------------------------------------------------------------------

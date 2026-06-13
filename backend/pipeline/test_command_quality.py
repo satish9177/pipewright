@@ -78,6 +78,17 @@ _GIT_INSPECT_SUBCOMMANDS = {"status", "log", "diff", "branch"}
 _BARE_INTERPRETERS = {"python", "python3", "node"}
 
 
+def _normalize_head_token(token: str) -> str:
+    """Normalize an executable token without interpreting or executing it."""
+    value = token.strip("\"'")
+    value = value.replace("\\", "/")
+    value = value.rsplit("/", 1)[-1]
+    for suffix in (".exe", ".cmd", ".bat"):
+        if value.endswith(suffix):
+            return value[: -len(suffix)]
+    return value
+
+
 def _normalize_segment(segment: str) -> str:
     """Trim and collapse internal whitespace. Input is already lowercased."""
     return " ".join(segment.split())
@@ -107,13 +118,20 @@ def _is_likely_test_segment(head: str, rest: list[str]) -> bool:
             return True
         return False
 
+    if head in {"npx", "poetry", "pipenv", "uv", "pdm"}:
+        if head == "npx":
+            return second in {"jest", "vitest"}
+        if second == "run":
+            return third in _SIMPLE_TEST_RUNNERS or third in {"pytest", "unittest"}
+        return False
+
     if head in {"go", "cargo", "dotnet", "rake"}:
         return second == "test"  # go test ./..., cargo test, dotnet test, rake test
 
-    if head == "mvn":
+    if head in {"mvn", "mvnw"}:
         return second in {"test", "verify"}
 
-    if head in {"gradle", "gradlew", "./gradlew"}:
+    if head in {"gradle", "gradlew"}:
         return second == "test"
 
     if head == "make":
@@ -153,7 +171,7 @@ def _weak_reason(head: str, rest: list[str]) -> str | None:
 def _classify_segment(segment: str) -> tuple[TestCommandQuality, str]:
     """Classify a single normalized, non-empty segment."""
     tokens = segment.split()
-    head = tokens[0]
+    head = _normalize_head_token(tokens[0])
     rest = tokens[1:]
 
     # Likely-test is checked first: e.g. "python -m pytest" is a test runner
