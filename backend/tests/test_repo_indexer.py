@@ -33,6 +33,23 @@ def test_repo_indexer_blocks_real_env_and_allows_env_samples(tmp_repo):
 
 
 @pytest.mark.parametrize(
+    "ancestor",
+    ["build", "target", "dist", "coverage", ".cache", "node_modules", "venv"],
+)
+def test_repo_indexer_indexes_repo_under_skip_named_ancestor(tmp_path, ancestor):
+    repo = tmp_path / ancestor / "myrepo"
+    target = repo / "src" / "app.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("x = 1\n", encoding="utf-8")
+
+    files = scan_repo(str(repo))
+    paths = {file["path"] for file in files}
+
+    assert "src/app.py" in paths
+    assert should_skip_path(target, repo_root=repo) is False
+
+
+@pytest.mark.parametrize(
     "path",
     [
         "src/main.rs",
@@ -78,7 +95,10 @@ def test_repo_indexer_preserves_existing_supported_extensions(tmp_repo, path):
     assert path in paths
 
 
-@pytest.mark.parametrize("dirname", ["dist", "build", "target", "coverage"])
+@pytest.mark.parametrize(
+    "dirname",
+    ["dist", "build", "target", "coverage", ".cache", "node_modules", "venv"],
+)
 def test_repo_indexer_still_skips_generated_directory_names(tmp_repo, dirname):
     target = tmp_repo / dirname / "file.py"
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -89,6 +109,7 @@ def test_repo_indexer_still_skips_generated_directory_names(tmp_repo, dirname):
 
     assert f"{dirname}/file.py" not in paths
     assert should_skip_path(target) is True
+    assert should_skip_path(target, repo_root=tmp_repo) is True
 
 
 @pytest.mark.parametrize(

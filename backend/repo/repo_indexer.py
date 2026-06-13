@@ -87,13 +87,25 @@ def _normalize_relative_path(path: Path) -> str:
     return str(path).replace("\\", "/")
 
 
-def should_skip_path(path: Path) -> bool:
+def should_skip_path(path: Path, *, repo_root: Path | None = None) -> bool:
     """
     Return True when a path should not be scanned or indexed.
     Skips generated folders, dependency folders, cache folders, and files > 1MB.
     """
     try:
-        lower_parts = [part.lower() for part in path.parts]
+        parts_for_skip = path.parts
+        if repo_root is not None:
+            try:
+                parts_for_skip = path.resolve().relative_to(
+                    repo_root.resolve()
+                ).parts
+            except ValueError:
+                # A caller supplied a repo root, but this path is outside it.
+                # Fail closed instead of applying repo-local skip rules to an
+                # unrelated absolute path.
+                return True
+
+        lower_parts = [part.lower() for part in parts_for_skip]
         lower_name = path.name.lower()
 
         path_parts_to_check = lower_parts if path.is_dir() else lower_parts[:-1]
@@ -251,7 +263,7 @@ def scan_repo(target_repo_path: str) -> list[dict]:
         files: list[dict] = []
 
         for path in target_repo.rglob("*"):
-            if should_skip_path(path):
+            if should_skip_path(path, repo_root=target_repo):
                 if path.is_dir():
                     continue
                 continue
