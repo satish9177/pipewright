@@ -1,6 +1,7 @@
 const REASON_LABELS: Record<string, string> = {
   budget_dropped: 'Not enough room this run.',
   category_not_allowed_for_role: 'Not used by this role.',
+  not_relevant_to_request: 'Not relevant to this request.',
   advisory_only: 'Read-only observation.',
   outdated: 'Outdated.',
   otudated: 'Outdated.',

@@ -1,6 +1,7 @@
 # Memory Relevance Omission — Activation Design (Row 12 follow-up)
 
-**Status:** Docs-only design. No code, schema, route, policy, prompt, UI, or test change.
+**Status:** Stage 1 observability implemented. No backend, schema, route, policy, prompt-selection,
+runtime, package, or test-infrastructure change.
 The flag `MEMORY_RELEVANCE_OMISSION_ENABLED` stays `False`. **This document activates nothing.**
 **Mode:** Adversarial / evidence-based; behavioral claims cite a `file:line` or function.
 **Audience:** maintainer / Claude planning a future activation of request-aware memory omission.
@@ -90,10 +91,9 @@ The dominant risks, in priority order:
 1. **Hidden omission / silent context loss (top trust risk).** Omission removes a human-approved fact
    from the model prompt. Today the omitted fact *is* persisted with its reason
    (`injection_store.py:291` records `excluded_entries`) and rendered per-entry in the provenance panel
-   (`RunMemoryProvenancePanel.tsx`), but `not_relevant_to_request` has **no curated label** in
-   `REASON_LABELS` (`frontend/src/utils/memoryReasonHumanize.ts:1`) and **no prominent aggregate
-   surface** the way budget drops do (`RunMemoryProvenancePanel.tsx:232`). Activating before §4's
-   observability is built means omission is technically logged but practically hidden. This is the gate.
+   (`RunMemoryProvenancePanel.tsx`). Stage 1 added the curated `not_relevant_to_request` label,
+   curated summary copy, and a neutral aggregate surface so this reason is no longer raw/fallback UI.
+   Activation still waits on the tests and rollout checks in §4-§6. This remains the gate.
 2. **Memory poisoning × relevance scoring.** Omission keys off deterministic path-overlap + token-Jaccard
    signal. A correct-but-poorly-worded fact can score zero and be dropped, while a confidently-worded
    wrong fact scores high and is kept. Scoring is a *relevance* heuristic, not a *truth* signal — it must
@@ -122,26 +122,27 @@ The dominant risks, in priority order:
 ## 4. Required preconditions before activation
 
 All of the following must hold before `MEMORY_RELEVANCE_OMISSION_ENABLED` may move to `True` in any
-environment. None are implemented by this PR.
+environment. Stage 1 completed the checked observability items; unchecked items remain deferred.
 
 **Observability (closes risk 1):**
 
-- [ ] Curated `REASON_LABELS` entry for `not_relevant_to_request` in
+- [x] Curated `REASON_LABELS` entry for `not_relevant_to_request` in
       `frontend/src/utils/memoryReasonHumanize.ts` (no raw auto-prettified fallback string).
-- [ ] Curated `summarizeExclusions` copy for `not_relevant_to_request`
+- [x] Curated `summarizeExclusions` copy for `not_relevant_to_request`
       (`RunMemoryProvenancePanel.tsx:73`), distinct from the budget/category copy.
-- [ ] Neutral aggregate UI surface: **"N memories left out as not relevant to this request."** It must be
+- [x] Neutral aggregate UI surface: **"N memories left out as not relevant to this request."** It must be
       visually distinct from the budget-drop banner (`RunMemoryProvenancePanel.tsx:232`) and the safety
       banner (`:245`) — omission is **intended behavior, not a failure**, so it must not reuse the
       amber/red alarm styling.
-- [ ] Per-entry UI label: **"Left out — not relevant to this request."**
+- [x] Per-entry UI label: **"Not relevant to this request."**
 
 **Pin escape hatch (closes risks 2 & 4):**
 
-- [ ] Clear **"Pin to force-include"** affordance and help text, reachable from where a user sees an
-      omitted fact (so the recourse is in-context, not buried in a priority field).
+- [x] Priority/pin guidance text near the add/edit priority field: lower numbers are offered first;
+      priority 10 or below is the pinned band. This is guidance only and does not promise inclusion.
+- [ ] Interactive Pin button / force-include affordance remains deferred.
 - [ ] High-pin-count **warning or guard** before the mandatory tier can overflow and surprise users with
-      a 422 (closes risk 3). Decide guard vs. warning explicitly in Stage 1.
+      a 422 (closes risk 3) remains deferred.
 
 **Correctness / safety proof (re-proves the invariants under the flag on):**
 
@@ -166,16 +167,18 @@ environment. None are implemented by this PR.
 
 Each stage is a separate, independently-reviewable change. No stage auto-starts the next.
 
-**Stage 0 — this design doc only.** Docs-only. No code, no flag move. (This PR.)
+**Stage 0 — design doc only.** Complete. No code, no flag move.
 
-**Stage 1 — omission observability slice** (first implementation slice; **no flag activation**). Branch
-`feature/memory-omission-observability`. Builds the §4 observability items so omission is explainable
+**Stage 1 — omission observability slice** (implemented; **no flag activation**). Branch
+`feature/memory-omission-observability`. Built the §4 observability items so omission is explainable
 *before* it can ever happen:
 
 - Curated `REASON_LABELS` + `summarizeExclusions` copy for `not_relevant_to_request`.
 - Neutral aggregate surface ("N left out as not relevant to this request") + per-entry label.
-- Pin affordance / "Pin to force-include" help text.
-- Decide and implement the high-pin-count warning vs. hard guard.
+- Priority/pin guidance text near the priority field.
+- Interactive Pin button / force-include affordance remains deferred.
+- High-pin-count warning/guard remains deferred.
+- Automated frontend tests remain deferred; the frontend still has no test runner.
 - Flag stays `False` throughout. Because omission never fires with the flag off, this slice is read-only
   display work over an already-persisted field — no runtime selection behavior changes.
 
@@ -244,7 +247,7 @@ Required before Stage 3 flips the flag. (Restates §4's test items as an executa
 
 ## 7. Explicit non-goals
 
-This document and the Stage 0 PR do **not**:
+This document and the Stage 1 observability PR do **not**:
 
 - Activate `MEMORY_RELEVANCE_OMISSION_ENABLED` (stays `False`).
 - Modify any policy constant (`MEMORY_SMALL_STORE_GRACE_THRESHOLD`, `MEMORY_PIN_PRIORITY_THRESHOLD`, the
@@ -253,7 +256,7 @@ This document and the Stage 0 PR do **not**:
 - Build the thread UI (rows 22b–22e).
 - Add semantic / vector / embedding memory.
 - Change any runtime behavior (selection, ordering, omission, pinning, budgets).
-- Change any backend or frontend code, schema, route, test, or package.
+- Change backend code, schema, route, test infrastructure, or package files.
 - Change the prompt-preview 422 wording (deferred to Stage 3).
 
 ---

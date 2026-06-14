@@ -73,6 +73,8 @@ const ROLES: MemoryPreviewRole[] = [
   'reviewer',
   'summary',
 ]
+const PRIORITY_GUIDANCE =
+  'Lower priority numbers are offered to the AI first. The lowest band (10 or below) marks a memory as pinned — highest precedence.'
 
 const STATUS_ORDER: Record<string, number> = {
   active: 0,
@@ -1047,6 +1049,9 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                 value={form.priority}
                 onChange={updateForm('priority')}
               />
+              <p className="text-xs text-muted-foreground">
+                {PRIORITY_GUIDANCE}
+              </p>
             </div>
           </div>
           <Button
@@ -1171,13 +1176,18 @@ export default function ProjectMemoryPanel({ projectId }: ProjectMemoryPanelProp
                             options={SCOPES}
                             onChange={updateEditForm('scope')}
                           />
-                          <Input
-                            type="number"
-                            min={0}
-                            max={1000}
-                            value={editForm.priority}
-                            onChange={updateEditForm('priority')}
-                          />
+                          <div className="grid gap-2">
+                            <Input
+                              type="number"
+                              min={0}
+                              max={1000}
+                              value={editForm.priority}
+                              onChange={updateEditForm('priority')}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              {PRIORITY_GUIDANCE}
+                            </p>
+                          </div>
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <Button
