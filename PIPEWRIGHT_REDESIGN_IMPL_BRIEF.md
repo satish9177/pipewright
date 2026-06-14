@@ -1,26 +1,25 @@
 # Pipewright Redesign — Rolling Implementation Brief
 
 **Date:** 2026-06-14
-**Status:** **ACTIVE — Row 12 PR-A design opening (docs-only).** This is the
-design-first brief for the next active memory slice. **No code has been written
-and none may be written from this brief until a human reviews and approves it**
-(the established design-first discipline). The previous occupant — the Row 11
-closeout — is complete; its record lives in `PIPEWRIGHT_REDESIGN_WORKPLAN.md`.
+**Status:** **CLOSED — Row 12 PR-A complete.** This brief is now the closeout
+record for the no-op-by-default request-aware memory-selection scaffolding slice.
+Row 12 PR-B and PR-C remain deferred; the next step is a maintainer
+decision/review before opening PR-B. The previous occupant — the Row 11 closeout
+— is complete; its record lives in `PIPEWRIGHT_REDESIGN_WORKPLAN.md`.
 
 ---
 
 ## Maintainer decision (2026-06-14)
 
-Row 11 (detection rules-as-data) is complete and closed. The recommended and
-accepted next memory row is **§23 order-row 12 — request-aware selection +
-mandatory tier + adaptive guardrail (D5/B1; Pass 2 §11.1)**. Row 12 is opened
-**one sub-slice at a time**, safest first. **This brief opens Row 12 PR-A only.**
+Row 11 (detection rules-as-data) is complete and closed. Row 12 opened **one
+sub-slice at a time**, safest first. **Row 12 PR-A is now complete** as
+no-op-by-default scaffolding only. PR-B and PR-C remain deferred.
 
 ## Row 12 sub-slice split
 
-- **PR-A — scaffolding, no-op by default — NEXT ACTIVE SLICE (this brief).**
-  Decision-free. Introduces the structure and single-sources the policy numbers
-  without changing what memory is injected.
+- **PR-A — scaffolding, no-op by default — COMPLETE.** Decision-free. It
+  introduced the structure and single-sourced the policy numbers without changing
+  normal memory injection behavior.
 - **PR-B — relevance *ordering* only — DEFERRED.** When a `request_context` is
   supplied, order the relevance tier by a deterministic rung-0 signal (lexical
   overlap on chunk title / description / `files_expected`). Same set injected
@@ -30,36 +29,39 @@ mandatory tier + adaptive guardrail (D5/B1; Pass 2 §11.1)**. Row 12 is opened
   D5; it must not be implemented until D5 is explicitly confirmed (see the D5
   wording tension below). Not opened yet.
 
-## Row 12 PR-A scope (no-op-by-default scaffolding)
+## Row 12 PR-A closeout (no-op-by-default scaffolding)
 
-PR-A makes the structure exist and pays down the buried-magic-number debt
-(§14 / §8b) **without changing the injected memory block for current stores.**
+PR-A made the structure exist and paid down the buried-magic-number debt
+(§14 / §8b) **without changing normal injected memory behavior.**
 
-1. **`request_context` as a dormant, default-`None` concept.** Introduce (or, at
-   this docs stage, design) an optional `request_context` parameter on the memory
-   block builder (`backend/memory/prompt_builder.py:build_project_memory_block_detailed`).
-   **`request_context=None` must preserve today's injected block byte-for-byte**
-   (golden-locked). PR-A does not plumb a non-`None` value from anywhere — the
-   orchestrator call sites are untouched; threading a real `request_context` is
-   PR-B.
+1. **`request_context` as a dormant, default-`None` concept.** PR-A introduced an
+   optional `request_context` parameter on the memory block builder
+   (`backend/memory/prompt_builder.py:build_project_memory_block_detailed`).
+   `request_context` exists but remains dormant. **`request_context=None`
+   preserves today's injected behavior** (golden-locked). PR-A did not plumb a
+   non-`None` value from anywhere — orchestrator call sites are untouched;
+   threading a real `request_context` is PR-B.
 2. **Mandatory safety tier scaffolding — `security` and `forbidden_paths` only.**
    These two categories become structurally un-droppable: they live outside the
    token-budget loop and can never appear as a `budget_dropped` exclusion. Human
    pinning is **not** part of PR-A (pinning is a D5 concern, deferred to PR-C).
-   Loud-fail discipline: if the mandatory tier *alone* exceeds the cap, return a
-   `NEEDS_HUMAN`-style outcome rather than silently shedding a guardrail.
+   Loud-fail discipline: if the mandatory tier *alone* exceeds the cap, the
+   builder raises the typed `MandatoryMemoryBudgetExceeded` rather than silently
+   shedding a guardrail. The prompt-preview debug route catches that typed
+   overflow and returns HTTP 422.
 3. **Policy single-sourcing for memory injection.** Relocate the buried numbers
    in `prompt_builder.py` — `ROLE_TOKEN_BUDGETS` and the `(len + 3) // 4` token
    estimator — into the policy spine (`backend/pipeline/policy.py`), and express
    the **adaptive guardrail** there: cap = clamp(policy floor, role share ×
    resolved model context window, policy ceiling), with the model resolved from
    `backend/llm/role_config.py` (one source of truth) and the estimator's safety
-   margin stated in policy. PR-A must keep the *effective* cap for current roles
-   equal to today's so the block is unchanged.
+   margin stated in policy. The adaptive budget scaffolding exists but remains
+   disabled, so the effective cap for current roles remains unchanged.
 4. **Dormant `not_relevant_to_request` provenance reason.** The reason name may
    be **documented/defined** in the exclusion vocabulary alongside the existing
    `budget_dropped` and `category_not_allowed_for_role`, but **PR-A must never
-   emit it** (no fact is excluded for relevance in PR-A). It activates in PR-C.
+   emit it** (no fact is excluded for relevance in PR-A). It activates no earlier
+   than PR-C.
 
 ## Row 12 PR-A non-goals (explicit)
 
@@ -77,6 +79,8 @@ PR-A makes the structure exist and pays down the buried-magic-number debt
 - No gate / scope / Git / PR / model-selection behavior change.
 - No reviewer memory wiring (M8 stays off, per §11.5).
 
+All of the above held in PR-A.
+
 ## Row 12 PR-A safety invariants
 
 - **Never evict a safety fact.** `security` + `forbidden_paths` are structurally
@@ -92,18 +96,21 @@ PR-A makes the structure exist and pays down the buried-magic-number debt
 - **No buried magic numbers.** The guardrail/threshold/margin live in policy,
   single-sourced — do not trade one buried constant for three.
 
-## Likely files (when PR-A is implemented, after review of this brief)
+## Files changed by PR-A
 
 - `backend/memory/prompt_builder.py` — mandatory safety tier, adaptive guardrail,
   optional `request_context` (default `None`), dormant `not_relevant_to_request`.
 - `backend/pipeline/policy.py` — single-sourced budgets / estimator / guardrail.
 - `backend/llm/role_config.py` — **read-only** model → context-window resolution.
-- `backend/tests/test_prompt_builder*.py` (+ a new parity/golden test).
-- Docs: this brief; a smoke doc; the reconciled Appendix E.1/E.2.
-- **Untouched:** orchestrator call sites, schema, routes, gates, `scope_guard`,
+- `backend/routes/memory.py` — prompt-preview maps mandatory overflow to HTTP 422.
+- `backend/memory/memory_store.py` — token-estimator single-source cleanup.
+- `backend/tests/test_memory_selection_scaffolding.py`, prompt-builder tests, and
+  memory API tests.
+- Docs: this closeout plus status/workplan/Appendix E reconciliation.
+- **Untouched:** orchestrator call sites, schema, gates, `scope_guard`,
   Git/PR, `bootstrap.py`, `detection_rules.py`, `suggestion_quality.py`.
 
-## Suggested targeted tests + manual smoke (for the PR-A implementation step)
+## Tests / validation recorded for PR-A
 
 - **Parity/golden:** block byte-identical across representative stores with
   `request_context=None`.
@@ -114,8 +121,8 @@ PR-A makes the structure exist and pays down the buried-magic-number debt
   sourced from policy / `role_config`; assert no duplicated constant.
 - **Dormancy:** `not_relevant_to_request` is defined but never emitted in PR-A.
 - **Regression:** existing `injection_analysis` / provenance tests stay green.
-- **Manual smoke:** run triage/planner/coder on a real project; diff injected
-  block bytes vs. pre-change (expect identical); confirm provenance still renders.
+- **API guard:** prompt-preview with a tiny budget and safety memory returns 422,
+  not an unhandled server error.
 
 ## D5 wording tension (resolve before PR-C, not before PR-A)
 

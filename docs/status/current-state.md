@@ -51,19 +51,23 @@ Current truth:
   detector rules while preserving `suggested_test_command` behavior byte-for-byte.
   It included no PR-C2/new detector coverage, no classifier or runtime-validation
   change, and no frontend/schema/memory/gate/scope/Git/PR behavior change.
-- **Row 11 is COMPLETE; Row 12 PR-A is now the open, active memory slice**
-  (docs-only opening, 2026-06-14). Row 12 PR-A is no-op-by-default scaffolding: a
-  dormant `request_context` (default `None`, byte-identical injected block), a
-  `security`/`forbidden_paths`-only mandatory safety tier, policy single-sourcing
-  of the injection budgets / token estimator / adaptive guardrail, and a
-  defined-but-dormant `not_relevant_to_request` provenance reason that is never
-  emitted. It is decision-free (it never acts on D5); design-first via
-  `PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md`, with **no code until that brief is
-  reviewed**. No schema, no injection-behavior change, no memory mutation.
+- **Row 12 PR-A — request-aware memory-selection scaffolding — COMPLETE.** It
+  shipped no-op-by-default scaffolding only: `request_context` exists but remains
+  dormant, and `request_context=None` preserves existing memory injection
+  behavior. Memory budgets and the token estimator are single-sourced in policy;
+  adaptive budget scaffolding exists but remains disabled. `security` and
+  `forbidden_paths` are mandatory safety facts and cannot be `budget_dropped`;
+  mandatory safety overflow uses the typed `MandatoryMemoryBudgetExceeded`, with
+  prompt-preview translating that debug/observability overflow into HTTP 422.
+  `not_relevant_to_request` is defined but dormant and not emitted. PR-A added no
+  relevance ordering, no relevance omission, no D5 activation, no human-pinning,
+  no per-project off-switch, no orchestrator `request_context` plumbing, and no
+  schema/frontend/gate/scope/Git/PR/memory-mutation/vector/FTS/thread UI change.
 - **Deferred (not opened):** Row 12 **PR-B** (relevance ordering) and **PR-C**
   (relevance omission / human-pinning / off-switch — requires D5 confirmation),
   post-run hygiene / auto-generation (row 16), retriever/FTS (row 19),
-  vector/embedding memory (row 23), and the thread/run UI (rows 22b–22e).
+  vector/embedding memory (row 23), and the thread/run UI (rows 22b–22e). Next
+  memory step is a maintainer decision/review before opening PR-B.
 
 The redesign preserves every safety invariant in this doc: human approval gates,
 scope guard, branch/PR safety, no empty commits, no auto-merge, pending-only
@@ -187,10 +191,10 @@ routes revalidate every mutating action.
   COMPLETE; **PR-B (advisory repo reality signals) is COMPLETE**; **PR-C
   (behavior-preserving test-command detector rules refactor) is COMPLETE**; and
   **Row 11 is COMPLETE**. Request-aware selection **row 12 PR-A** (no-op
-  scaffolding) is now OPEN (docs-only, 2026-06-14); its **PR-B** (ordering) and
-  **PR-C** (omission / pinning, D5), plus post-run hygiene (row 16), retriever/FTS
-  (row 19), vector/embedding memory (row 23), and thread UI remain not-next until
-  explicitly opened. See the workplan.
+  scaffolding) is COMPLETE; its **PR-B** (ordering) and **PR-C** (omission /
+  pinning, D5), plus post-run hygiene (row 16), retriever/FTS (row 19),
+  vector/embedding memory (row 23), and thread UI remain not-next until explicitly
+  opened. See the workplan.
 - **Production hardening** (Postgres/Alembic, durable events, DB locks at scale,
   deployment).
 - **Deployment / Ollama / Provider Settings UI / BYOK DB storage / execution
@@ -258,21 +262,22 @@ is the db-only rollback kill switch. PR-B mutates no memory facts: no stale mark
 archiving, writes, `last_verified_at` bump, active memory creation, or auto-approval.
 PR-C refactored the test-command detector into ordered rules with no PR-C2/new
 coverage and no classifier/runtime-validation/frontend/schema/memory/gate/scope/Git/PR
-behavior change. **Row 11 is complete; the next active memory slice is now Row 12
-PR-A** — no-op-by-default request-aware-selection scaffolding (docs-only opening,
-design-first, no code until the brief is reviewed). See
+behavior change. **Row 11 is complete; Row 12 PR-A is also complete** — no-op by
+default request-aware-selection scaffolding only. `request_context` remains
+dormant; `request_context=None` preserves existing injection behavior; policy now
+owns memory budgets / token estimation; adaptive budgets remain disabled; safety
+facts are mandatory and prompt-preview maps mandatory overflow to 422. See
 `PIPEWRIGHT_REDESIGN_WORKPLAN.md`, `PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md`, and the
-proposal's Appendix E.1/E.2 (reconciled 2026-06-14, Row 12 PR-A opening) for the
-cycle window.
+proposal's Appendix E.1/E.2 for the current pause before Row 12 PR-B.
 
 - **Safe now (no decision needed):** documentation / smoke-checklist upkeep; small
   honest stabilization fixes; optional PR-B soak follow-ups such as an endpoint
   test for `db_engine` + non-DB warning coexistence, or tightening
   backend-framework manifest substring matching later only if false positives
   appear in soak.
-- **Next memory work (open):** Row 12 **PR-A** — request-aware selection
-  scaffolding, no-op by default; decision-free; design-first via
-  `PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md` (no code until reviewed).
+- **Next memory step:** pause for maintainer decision/review before opening Row
+  12 **PR-B**. Row 12 **PR-A** is complete and was no-op-by-default scaffolding
+  only.
 - **Deferred (explicitly):** Row 12 **PR-B** (relevance ordering) and **PR-C**
   (relevance omission / human-pinning / off-switch — requires **D5** confirmation
   before implementation); post-run hygiene (row 16, D7); retriever/FTS (row 19);
@@ -329,15 +334,17 @@ change. ROW 11 COMPLETE. CANONICAL roadmap: PIPEWRIGHT_REDESIGN_WORKPLAN.md (seq
 proposal §23; decisions §24; cycle window Appendix E). This current-state page is
 a snapshot; the workplan wins.
 
-CURRENT NEXT RECOMMENDED TASK: Row 12 PR-A is OPEN (docs-only opening 2026-06-14) —
-request-aware selection scaffolding, no-op by default: dormant request_context
-(default None / byte-identical block), security+forbidden_paths-only mandatory
-safety tier, policy single-sourcing of injection budgets/estimator/adaptive
-guardrail, dormant not_relevant_to_request reason (never emitted). Decision-free;
-design-first via PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md; no code until the brief is
-reviewed. DEFERRED: Row 12 PR-B (relevance ordering) and PR-C (relevance omission /
-human-pinning / off-switch, requires D5 confirmation); post-run hygiene (row 16);
-retriever/FTS (row 19); vector/embedding (row 23); thread UI (22b–22e).
+CURRENT NEXT RECOMMENDED TASK: pause for maintainer decision/review before opening
+Row 12 PR-B. Row 12 PR-A is COMPLETE: no-op-by-default request-aware selection
+scaffolding only. request_context exists but is dormant; request_context=None
+preserves existing injection behavior; budgets/estimator are single-sourced in
+policy; adaptive budget scaffolding remains disabled; security+forbidden_paths are
+mandatory safety facts and cannot be budget-dropped; MandatoryMemoryBudgetExceeded
+is the typed overflow; prompt-preview maps mandatory overflow to HTTP 422; dormant
+not_relevant_to_request is not emitted. DEFERRED: Row 12 PR-B (relevance ordering)
+and PR-C (relevance omission / human-pinning / off-switch, requires D5
+confirmation); post-run hygiene (row 16); retriever/FTS (row 19); vector/embedding
+(row 23); thread UI (22b–22e).
 
 INVARIANTS (do not violate):
 - Never bypass chunk plan approval or final approval. Final approval is NOT
