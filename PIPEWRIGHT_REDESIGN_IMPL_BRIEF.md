@@ -200,7 +200,8 @@ confirmation activates nothing by default.
     safety tier exceeds the requested token budget" to "Memory mandatory tier
     exceeds the requested token budget" and update its API test (the route string
     is intentionally left unchanged in PR-C to preserve flag-off parity).
-- **Row 16** — post-run hygiene (auto-analysis + generation, D7/B2).
+- **Row 16** — PR-A dormant default-off post-run hygiene trigger complete;
+  PR-B digest/observability and PR-C activation remain later (D7/B2).
 - **Row 19** — retriever interface + FTS rung 1.
 - **Row 23** — vector / embedding rung 2 (D6/B4).
 - **§21 thread UI** (rows 22b–22e, D13).

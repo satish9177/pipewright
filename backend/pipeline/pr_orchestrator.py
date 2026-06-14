@@ -6,6 +6,7 @@ This module only runs after final human approval. It does not merge PRs,
 delete branches, force push, poll CI, or create per-chunk PRs.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -18,6 +19,8 @@ from backend.git import gh_pr, local_git
 from backend.git.pr_preflight import ensure_remote_base_branch
 from backend.github.branch_safety import validate_base_branch
 from backend.llm.sanitize import sanitize_for_log
+from backend.memory.run_outcome_suggestions import generate_run_memory_suggestions
+from backend.pipeline import policy as pipeline_policy
 from backend.pipeline.chunk_store import get_chunk_plan_status
 from backend.pipeline.run_locks import project_repo_lock_sync
 from backend.projects.pr_modes import (
@@ -33,6 +36,8 @@ PUSH_PR_ELIGIBLE = "push_pr_ready"
 PUSH_PR_EXISTING_PR = "pr_already_recorded"
 PUSH_PR_LOCAL_ONLY_READY = "local_only_ready"
 PUSH_PR_INELIGIBLE_STATUS = "run_not_ready_for_push_pr"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -152,6 +157,32 @@ def _mark_push_failed(run_id: str, error: str, branch_name: str | None = None) -
             "push_error": safe_error,
             "status": RunStatus.PUSH_FAILED,
         })
+
+
+def _maybe_generate_postrun_memory_suggestions(
+    run_id: str,
+    project_id: str | None,
+    *,
+    requested_by: str = "postrun_auto",
+) -> None:
+    if not pipeline_policy.MEMORY_POSTRUN_HYGIENE_ENABLED:
+        return
+    if not project_id:
+        logger.debug(
+            "pr_orchestrator.py: skipping post-run memory hygiene; "
+            "run has no project_id. run_id=%s",
+            run_id,
+        )
+        return
+    try:
+        generate_run_memory_suggestions(run_id, requested_by=requested_by)
+    except Exception as error:
+        logger.warning(
+            "pr_orchestrator.py: post-run memory hygiene failed. run_id=%s | "
+            "error=%s",
+            run_id,
+            sanitize_for_log(str(error)),
+        )
 
 
 def _save_pushed(run_id: str, branch_name: str) -> str:
@@ -677,4 +708,7 @@ def push_and_create_pr(run_id: str) -> dict:
         # while we were waiting for the lock, the reload sees it and the locked
         # path short-circuits instead of re-pushing.
         run = _load_run(run_id)
-        return _push_and_create_pr_locked(run_id, run)
+        result = _push_and_create_pr_locked(run_id, run)
+    if result.get("status") == RunStatus.COMPLETE:
+        _maybe_generate_postrun_memory_suggestions(run_id, project_id)
+    return result

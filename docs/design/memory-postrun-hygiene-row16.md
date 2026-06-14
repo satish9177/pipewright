@@ -1,8 +1,8 @@
 # Row 16 — Memory Post-Run Hygiene (design brief)
 
-Status: **design only.** No code, no Codex prompt, no runtime behavior change, no
-trigger activation. This brief locks intent + safety + PR split + the attach-point
-decision (§5/§10): PR-A is scoped to a dormant, **success-terminal-only** trigger.
+Status: **PR-A implemented.** The dormant, default-off, success-terminal-only trigger
+is wired behind `MEMORY_POSTRUN_HYGIENE_ENABLED=False`; PR-B digest/observability and
+PR-C activation remain deferred. There is no active auto-generation by default.
 
 Scope owner: memory roadmap. Predecessor: Row 12 (relevance omission) shipped its
 scaffolding dormant behind a default-off flag and activated later only after proof.
@@ -87,13 +87,12 @@ Meaning:
 
 ## 4. Proposed PR split
 
-**PR-A — dormant trigger + flag.** Add `MEMORY_POSTRUN_HYGIENE_ENABLED = False`. Add one
-thin best-effort entry point (e.g. `maybe_generate_postrun_suggestions(run_id)` next to
-the generator) that returns immediately when the flag is off, else calls
-`generate_run_memory_suggestions` inside `try/except` (log + swallow). Attach it at the
-**success terminal only** (§5): a per-site call in `pr_orchestrator` after `complete` is
-committed and the repo lock is released. Never fails/stalls a run. No digest UI. No
-lifecycle mutation.
+**PR-A — dormant trigger + flag — implemented.** Added
+`MEMORY_POSTRUN_HYGIENE_ENABLED = False` and a thin best-effort `pr_orchestrator`
+helper that returns immediately while the flag is off; when monkeypatched on, it calls
+`generate_run_memory_suggestions(..., requested_by="postrun_auto")` inside `try/except`
+(log + swallow). It runs only after a successful `complete` result and after the repo
+lock releases. It never fails/stalls a run. No digest UI. No lifecycle mutation.
 
 **PR-B — housekeeping digest / observability.** A read-model (or compute-on-read) digest
 over the counts the generator already returns (`generated_count`, `skipped_count`,
@@ -199,15 +198,15 @@ prompt-injection changes; schema changes (unproven ⇒ excluded); enabling
 
 ---
 
-## 9. Files likely to change in PR-A (not implemented here)
+## 9. PR-A implementation files
 
-- `backend/pipeline/policy.py` — add `MEMORY_POSTRUN_HYGIENE_ENABLED = False`.
-- The thin best-effort entry point — likely a small addition in
-  `backend/memory/run_outcome_suggestions.py` (or a tiny new `postrun_hygiene.py`).
-- `backend/pipeline/pr_orchestrator.py` — the success-terminal attach site (§5): both
-  `_save_pr_metadata` and `_mark_local_only_complete`, post-commit + post-lock. (No edits
-  to `chunked_orchestrator.py` or `routes/chunks.py` — those terminals are out of PR-A.)
-- `backend/tests/test_memory_run_outcome_suggestions.py` (or a sibling) — trigger tests.
+- `backend/pipeline/policy.py` — adds
+  `MEMORY_POSTRUN_HYGIENE_ENABLED = False`.
+- `backend/pipeline/pr_orchestrator.py` — adds the success-terminal, post-lock,
+  best-effort trigger helper and calls it after successful PR/local-only completion.
+  No edits to `chunked_orchestrator.py` or `routes/chunks.py`.
+- `backend/tests/test_memory_postrun_hygiene_trigger.py` — trigger, flag-off,
+  best-effort, pending-only, idempotency, and no-`_update_run_status` coverage.
 - `docs/status/current-state.md` and this design doc — status updates.
 
 ---
@@ -224,19 +223,16 @@ prompt-injection changes; schema changes (unproven ⇒ excluded); enabling
 3. **Both success writers in scope.** `_save_pr_metadata` (remote PR) and
    `_mark_local_only_complete` (local-only) each get the post-commit, post-lock call.
 
-**Remaining detail (non-blocking; settle at implementation):**
-4. **`requested_by` provenance string.** The manual route uses `"api"`; the automatic
-   trigger should be distinguishable — recommended default `"postrun_auto"`. Confirm at
-   PR-A time.
+**Settled at implementation:**
+4. **`requested_by` provenance string.** The automatic trigger uses
+   `"postrun_auto"`; the manual route is unchanged.
 
 ---
 
 ## Final recommendation
 
-The brief is locked and the blocking decisions are ratified (§10: success-terminal only;
-per-site best-effort call in `pr_orchestrator` after `complete` commits + lock release;
-**not** `_update_run_status`; no shared terminal-settle refactor). PR-A is therefore a
-small, dormant, fully-invariant-preserving change that is **safe to prompt when the
-maintainer chooses** — only the minor provenance-string default (§10.4, recommended
-`"postrun_auto"`) remains to confirm at implementation. By request, no Codex prompt is
-generated yet and no runtime/flag change is made.
+PR-A is implemented and remains dormant by default. The blocking decisions are preserved
+(§10: success-terminal only; best-effort call in `pr_orchestrator` after `complete`
+commits + lock release; **not** `_update_run_status`; no shared terminal-settle
+refactor), and the provenance string is `"postrun_auto"`. Next work requires a
+maintainer decision before PR-B digest/observability or PR-C activation.

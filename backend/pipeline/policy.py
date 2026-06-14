@@ -155,6 +155,12 @@ REVIEW_ACK_REQUIRED_CATEGORIES = frozenset({
 HANDOFF_SUGGESTION_CAP = 5
 RUN_SUGGESTION_TOTAL_CAP = 8
 
+# --- Dormant post-run memory hygiene trigger (pr_orchestrator.py, Row 16 PR-A) -
+# Controls automatic run-outcome suggestion generation after successful complete
+# runs. False keeps the manual route as the only active path; tests may
+# monkeypatch this flag on in isolation.
+MEMORY_POSTRUN_HYGIENE_ENABLED = False
+
 # --- Memory injection budgets (prompt_builder.py, Row 12 PR-A) -------------
 # Current effective budgets, relocated without behavior change. The adaptive
 # guardrail seam below is dormant by default; while disabled, callers get these
