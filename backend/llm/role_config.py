@@ -11,6 +11,35 @@ from backend.config.keys import settings
 
 DEFAULT_PROVIDER = "gemini"
 DEFAULT_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_CONTEXT_WINDOW = 8192
+
+MODEL_CONTEXT_WINDOWS = {
+    "gemini-2.5-flash-lite": 1_000_000,
+    "gemini-2.5-flash": 1_000_000,
+    "gemini-2.5-pro": 1_000_000,
+    "gemini-1.5-flash": 1_000_000,
+    "gemini-1.5-pro": 1_000_000,
+    "claude-3-5-haiku-latest": 200_000,
+    "claude-3-5-sonnet-latest": 200_000,
+    "claude-3-5-sonnet-20241022": 200_000,
+    "claude-3-5-haiku-20241022": 200_000,
+    "claude-3-opus-20240229": 200_000,
+    "claude-sonnet-4-5": 200_000,
+    "claude-sonnet-4-6": 200_000,
+    "claude-opus-4-1": 200_000,
+    "claude-opus-4-7": 200_000,
+    "claude-haiku-4-5": 200_000,
+    "claude-haiku-4-5-20251001": 200_000,
+    "gpt-4o": 128_000,
+    "gpt-4o-mini": 128_000,
+    "gpt-4.1": 128_000,
+    "gpt-4.1-mini": 128_000,
+    "gpt-5": 128_000,
+    "gpt-5-mini": 128_000,
+    "o1": 128_000,
+    "o3": 128_000,
+    "o4-mini": 128_000,
+}
 
 
 class Role(StrEnum):
@@ -26,6 +55,11 @@ class Role(StrEnum):
 class RoleConfig:
     provider: str
     model: str
+
+
+def resolve_context_window(model: str | None) -> int:
+    model_key = (model or "").strip().lower()
+    return MODEL_CONTEXT_WINDOWS.get(model_key, DEFAULT_CONTEXT_WINDOW)
 
 
 def _env_or_setting(attr_name: str, env_name: str) -> str | None:

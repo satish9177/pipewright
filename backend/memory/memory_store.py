@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from backend.db.database import engine
+from backend.pipeline.policy import estimate_memory_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -350,7 +351,7 @@ def _validate_priority(priority: int | None) -> int:
 
 
 def _estimate_tokens(text_value: str) -> int:
-    return max(1, (len(text_value) + 3) // 4)
+    return estimate_memory_tokens(text_value)
 
 
 # Process-once guard for the pre-M1 migration (ARCH-M1). The archive sweep used

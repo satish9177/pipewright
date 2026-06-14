@@ -870,6 +870,27 @@ def test_prompt_preview_endpoint(client, project_factory):
     assert historical["content"] not in data["memory_block"]
 
 
+def test_prompt_preview_safety_overflow_returns_422(client, project_factory):
+    project_id = project_factory()
+    _create_memory(
+        client,
+        project_id,
+        "Never expose access tokens in prompt context.",
+        category="security",
+        scope="global",
+    )
+
+    response = client.get(
+        f"/api/v1/projects/{project_id}/memory/prompt-preview",
+        params={"role": "coder", "token_budget": 1},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Memory safety tier exceeds the requested token budget"
+    )
+
+
 def test_prompt_preview_is_role_specific(client, project_factory):
     project_id = project_factory()
     _create_memory(

@@ -25,6 +25,7 @@ from backend.memory.memory_store import (
     DEFAULT_PRIORITY,
     ALLOWED_SCOPES,
 )
+from backend.pipeline import policy as pipeline_policy
 
 logger = logging.getLogger(__name__)
 
@@ -35,18 +36,12 @@ logger = logging.getLogger(__name__)
 # widening the active-only query and is deferred to M3F2b.
 EXCLUSION_BUDGET_DROPPED = "budget_dropped"
 EXCLUSION_CATEGORY_NOT_ALLOWED = "category_not_allowed_for_role"
+EXCLUSION_NOT_RELEVANT_TO_REQUEST = "not_relevant_to_request"
 
-# Per-role token budgets. Deliberately conservative: a role should receive only
-# enough advisory memory to be useful, never a large block that competes with the
-# current request / source code.
-ROLE_TOKEN_BUDGETS = {
-    "triage": 400,
-    "planner": 1200,
-    "architect": 1200,
-    "coder": 1200,
-    "reviewer": 800,
-    "summary": 800,
-}
+MANDATORY_CATEGORIES = frozenset({"security", "forbidden_paths"})
+
+# Back-compat alias for callers/tests that inspect prompt_builder directly.
+ROLE_TOKEN_BUDGETS = pipeline_policy.MEMORY_ROLE_TOKEN_BUDGETS
 
 # Deterministic role -> allowed category policy (#21F).
 #
@@ -131,7 +126,7 @@ ROLE_CATEGORIES = {
 
 
 def _estimate_tokens(text_value: str) -> int:
-    return max(1, (len(text_value) + 3) // 4)
+    return pipeline_policy.estimate_memory_tokens(text_value)
 
 
 def _role_key(role: str | None) -> str:
@@ -188,6 +183,18 @@ def _load_active_memory_rows(
         else:
             out_of_policy.append(row)
     return in_policy, out_of_policy
+
+
+@dataclass(frozen=True)
+class RequestContext:
+    title: str | None = None
+    description: str | None = None
+    files_expected: tuple[str, ...] = ()
+    steer_text: str | None = None
+
+
+class MandatoryMemoryBudgetExceeded(RuntimeError):
+    """Raised when mandatory safety memory alone exceeds the resolved budget."""
 
 
 @dataclass(frozen=True)
@@ -267,6 +274,33 @@ def _excluded_sort_key(row: dict) -> tuple:
     )
 
 
+def _resolve_role_context_window(role_key: str) -> int:
+    from backend.llm.role_config import (
+        DEFAULT_MODEL,
+        Role,
+        resolve_context_window,
+        resolve_role_config,
+    )
+
+    try:
+        role = Role(role_key)
+    except ValueError:
+        return resolve_context_window(DEFAULT_MODEL)
+    return resolve_context_window(resolve_role_config(role).model)
+
+
+def _resolve_budget(role_key: str, token_budget: int | None) -> int:
+    if token_budget is not None:
+        return token_budget
+    context_window = None
+    if pipeline_policy.MEMORY_ADAPTIVE_BUDGET_ENABLED:
+        context_window = _resolve_role_context_window(role_key)
+    return pipeline_policy.resolve_memory_token_budget(
+        role_key,
+        context_window=context_window,
+    )
+
+
 def build_project_memory_block(
     project_id: str,
     role: str | None = None,
@@ -296,12 +330,16 @@ def build_project_memory_block_detailed(
     project_name: str | None = None,
     token_budget: int | None = None,
     scopes: list[str] | None = None,
+    request_context: RequestContext | None = None,
 ) -> MemoryBlockBuildResult:
     """
     Pure builder returning the block string AND the structured injection detail
     from one computation. Performs NO writes and NO repo/LLM access; it only
     reads already-approved active memory facts (exactly as before). The ``block``
     is identical to what build_project_memory_block returns.
+
+    ``request_context`` is PR-A scaffolding only: accepted for future
+    request-aware selection, intentionally ignored in this slice.
     """
     role_key = _role_key(role)
     categories = ROLE_CATEGORIES[role_key]
@@ -319,10 +357,7 @@ def build_project_memory_block_detailed(
         )
 
     project_id = str(project_id).strip()
-    budget = token_budget if token_budget is not None else ROLE_TOKEN_BUDGETS.get(
-        role_key,
-        1500,
-    )
+    budget = _resolve_budget(role_key, token_budget)
     preferred_scopes = {
         scope for scope in (scopes or [])
         if scope in ALLOWED_SCOPES and scope != "global"
@@ -361,7 +396,34 @@ def build_project_memory_block_detailed(
     included_entries: list[InjectedMemoryEntry] = []
     budget_excluded_entries: list[InjectedMemoryEntry] = []
     used_tokens = 0
-    for row in in_policy_rows:
+    mandatory_rows = [
+        row
+        for row in in_policy_rows
+        if (row.get("category") or "other") in MANDATORY_CATEGORIES
+    ]
+    relevance_rows = [
+        row
+        for row in in_policy_rows
+        if (row.get("category") or "other") not in MANDATORY_CATEGORIES
+    ]
+
+    for row in mandatory_rows:
+        category = row.get("category") or "other"
+        scope = row.get("scope") or "global"
+        line = f"[{category}/{scope}] {row['content']}"
+        line_tokens = _estimate_tokens(line)
+        separator_tokens = 1 if selected_lines else 0
+        selected_lines.append(line)
+        included_entries.append(_row_to_entry(row))
+        used_tokens += separator_tokens + line_tokens
+
+    if used_tokens > budget:
+        raise MandatoryMemoryBudgetExceeded(
+            "memory prompt mandatory safety tier exceeds token budget: "
+            f"{used_tokens} / {budget} tokens"
+        )
+
+    for row in relevance_rows:
         category = row.get("category") or "other"
         scope = row.get("scope") or "global"
         line = f"[{category}/{scope}] {row['content']}"

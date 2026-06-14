@@ -155,6 +155,56 @@ REVIEW_ACK_REQUIRED_CATEGORIES = frozenset({
 HANDOFF_SUGGESTION_CAP = 5
 RUN_SUGGESTION_TOTAL_CAP = 8
 
+# --- Memory injection budgets (prompt_builder.py, Row 12 PR-A) -------------
+# Current effective budgets, relocated without behavior change. The adaptive
+# guardrail seam below is dormant by default; while disabled, callers get these
+# exact static values.
+MEMORY_ROLE_TOKEN_BUDGETS = {
+    "triage": 400,
+    "planner": 1200,
+    "architect": 1200,
+    "coder": 1200,
+    "reviewer": 800,
+    "summary": 800,
+}
+MEMORY_DEFAULT_TOKEN_BUDGET = 1500
+
+
+def estimate_memory_tokens(text: str) -> int:
+    return max(1, (len(text) + 3) // 4)
+
+
+MEMORY_ADAPTIVE_BUDGET_ENABLED = False
+MEMORY_BUDGET_FLOOR = 400
+MEMORY_BUDGET_CEILING = 6000
+MEMORY_ROLE_BUDGET_SHARE = 0.08
+MEMORY_TOKEN_ESTIMATOR_MARGIN = 1.3
+
+
+def resolve_memory_token_budget(
+    role: str | None,
+    context_window: int | None = None,
+) -> int:
+    role_key = (role or "default").strip().lower()
+    static_budget = MEMORY_ROLE_TOKEN_BUDGETS.get(
+        role_key,
+        MEMORY_DEFAULT_TOKEN_BUDGET,
+    )
+    if not MEMORY_ADAPTIVE_BUDGET_ENABLED:
+        return static_budget
+    if context_window is None:
+        return static_budget
+
+    adaptive_budget = int(
+        MEMORY_ROLE_BUDGET_SHARE
+        * int(context_window)
+        / MEMORY_TOKEN_ESTIMATOR_MARGIN
+    )
+    return max(
+        MEMORY_BUDGET_FLOOR,
+        min(adaptive_budget, MEMORY_BUDGET_CEILING),
+    )
+
 # --- Memory repo-reality warnings (routes/memory.py, Row 11 PR-B) ----------
 # Active advisory repo-reality dimensions for memory-injection analysis. Roll
 # back PR-B behavior by setting this to frozenset({"db_engine"}).

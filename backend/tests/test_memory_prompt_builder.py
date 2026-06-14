@@ -76,7 +76,7 @@ def test_build_memory_block_excludes_archived_stale_historical(memory_project_id
     archived = add_fact(project_id, "Archived memory should not show", category="stack")
     stale = add_fact(project_id, "Stale memory should not show", category="stack")
     historical = add_fact(project_id, "Historical memory should not show", category="stack")
-    active = add_fact(project_id, "Active memory should show", category="stack")
+    add_fact(project_id, "Active memory should show", category="stack")
     archive_fact(project_id, archived["id"], "No longer true")
     with engine.begin() as conn:
         conn.execute(text("""
@@ -128,7 +128,7 @@ def test_security_and_forbidden_paths_prioritized_under_budget(memory_project_id
     add_fact(project_id, "Security rule: never expose API keys", category="security")
     add_fact(project_id, "Forbidden path rule: never modify .git", category="forbidden_paths")
 
-    block = build_project_memory_block(project_id, token_budget=18)
+    block = build_project_memory_block(project_id, token_budget=31)
 
     assert "never expose API keys" in block
     assert "concise labels" not in block

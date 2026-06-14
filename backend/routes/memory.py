@@ -36,6 +36,7 @@ from backend.memory.memory_store import (
     verify_fact,
 )
 from backend.memory.prompt_builder import (
+    MandatoryMemoryBudgetExceeded,
     ROLE_CATEGORIES,
     build_project_memory_block_detailed,
 )
@@ -486,12 +487,18 @@ def preview_memory_prompt(
     # computation that renders the block — there is no second exclusion pass and
     # nothing is persisted. memory_block is byte-identical to the legacy
     # build_project_memory_block output (which delegates to this same function).
-    result = build_project_memory_block_detailed(
-        project_id=project_id,
-        role=role,
-        project_name=project.get("name"),
-        token_budget=token_budget,
-    )
+    try:
+        result = build_project_memory_block_detailed(
+            project_id=project_id,
+            role=role,
+            project_name=project.get("name"),
+            token_budget=token_budget,
+        )
+    except MandatoryMemoryBudgetExceeded as error:
+        raise HTTPException(
+            status_code=422,
+            detail="Memory safety tier exceeds the requested token budget",
+        ) from error
     return {
         "project_id": project_id,
         "role": role,
