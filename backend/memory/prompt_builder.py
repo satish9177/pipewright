@@ -14,11 +14,13 @@ docs/design/memory-m3-trust-lifecycle.md §8 for the as-built injection map.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import text
 
+from backend.memory.memory_trust import _content_tokens, _jaccard
 from backend.db.database import engine
 from backend.memory.memory_store import (
     CATEGORY_ORDER,
@@ -39,6 +41,7 @@ EXCLUSION_CATEGORY_NOT_ALLOWED = "category_not_allowed_for_role"
 EXCLUSION_NOT_RELEVANT_TO_REQUEST = "not_relevant_to_request"
 
 MANDATORY_CATEGORIES = frozenset({"security", "forbidden_paths"})
+_PATH_TOKEN_RE = re.compile(r"[/._-]+")
 
 # Back-compat alias for callers/tests that inspect prompt_builder directly.
 ROLE_TOKEN_BUDGETS = pipeline_policy.MEMORY_ROLE_TOKEN_BUDGETS
@@ -149,6 +152,80 @@ def _scope_rank(scope: str, preferred_scopes: set[str]) -> int:
     if scope in preferred_scopes:
         return 1
     return 2
+
+
+def _memory_row_sort_key(
+    row: dict,
+    role_key: str,
+    preferred_scopes: set[str],
+) -> tuple[int, int, int, str]:
+    return (
+        _category_rank(row.get("category") or "other", role_key),
+        _scope_rank(row.get("scope") or "global", preferred_scopes),
+        int(row.get("priority") or DEFAULT_PRIORITY),
+        row.get("created_at") or "",
+    )
+
+
+def _path_tokens(paths: tuple[str, ...]) -> set[str]:
+    tokens: set[str] = set()
+    for path in paths:
+        for token in _PATH_TOKEN_RE.split(str(path).lower()):
+            if token:
+                tokens.add(token)
+    return tokens
+
+
+def _request_tokens(request_context: RequestContext) -> set[str]:
+    return _content_tokens(
+        " ".join(
+            part
+            for part in (
+                request_context.title,
+                request_context.description,
+                request_context.steer_text,
+            )
+            if part
+        )
+    )
+
+
+def _order_relevance_rows(
+    rows: list[dict],
+    request_context: RequestContext | None,
+    role_key: str,
+    preferred_scopes: set[str],
+) -> list[dict]:
+    if request_context is None or not rows:
+        return rows
+
+    path_tokens = _path_tokens(request_context.files_expected)
+    request_tokens = _request_tokens(request_context)
+    if not path_tokens and not request_tokens:
+        return rows
+
+    scored_rows: list[tuple[dict, int, float]] = []
+    has_relevance_signal = False
+    for row in rows:
+        fact_tokens = _content_tokens(row.get("content") or "")
+        path_overlap = len(fact_tokens & path_tokens)
+        token_overlap = _jaccard(fact_tokens, request_tokens)
+        if path_overlap or token_overlap:
+            has_relevance_signal = True
+        scored_rows.append((row, path_overlap, token_overlap))
+
+    if not has_relevance_signal:
+        return rows
+
+    def sort_key(item: tuple[dict, int, float]) -> tuple:
+        row, path_overlap, token_overlap = item
+        return (
+            -path_overlap,
+            -token_overlap,
+            *_memory_row_sort_key(row, role_key, preferred_scopes),
+        )
+
+    return [row for row, _, _ in sorted(scored_rows, key=sort_key)]
 
 
 def _load_active_memory_rows(
@@ -338,8 +415,9 @@ def build_project_memory_block_detailed(
     reads already-approved active memory facts (exactly as before). The ``block``
     is identical to what build_project_memory_block returns.
 
-    ``request_context`` is PR-A scaffolding only: accepted for future
-    request-aware selection, intentionally ignored in this slice.
+    ``request_context`` reorders only the non-mandatory relevance tier when it
+    has usable request signal. Mandatory safety facts are never scored,
+    reordered, or dropped to make room for relevance facts.
     """
     role_key = _role_key(role)
     categories = ROLE_CATEGORIES[role_key]
@@ -385,12 +463,9 @@ def build_project_memory_block_detailed(
             excluded_entries=tuple(category_excluded_entries),
         )
 
-    in_policy_rows.sort(key=lambda row: (
-        _category_rank(row.get("category") or "other", role_key),
-        _scope_rank(row.get("scope") or "global", preferred_scopes),
-        int(row.get("priority") or DEFAULT_PRIORITY),
-        row.get("created_at") or "",
-    ))
+    in_policy_rows.sort(
+        key=lambda row: _memory_row_sort_key(row, role_key, preferred_scopes)
+    )
 
     selected_lines: list[str] = []
     included_entries: list[InjectedMemoryEntry] = []
@@ -406,6 +481,12 @@ def build_project_memory_block_detailed(
         for row in in_policy_rows
         if (row.get("category") or "other") not in MANDATORY_CATEGORIES
     ]
+    relevance_rows = _order_relevance_rows(
+        relevance_rows,
+        request_context,
+        role_key,
+        preferred_scopes,
+    )
 
     for row in mandatory_rows:
         category = row.get("category") or "other"
