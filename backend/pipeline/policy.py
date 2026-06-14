@@ -205,6 +205,26 @@ def resolve_memory_token_budget(
         min(adaptive_budget, MEMORY_BUDGET_CEILING),
     )
 
+# --- Request-aware relevance omission + pinning (prompt_builder.py, Row 12 PR-C) --
+# Single global off switch (D5). False is the SHIPPED DEFAULT and preserves Row 12
+# PR-B behavior byte-for-byte: relevance *ordering* only, no omission, no pinning.
+# Flipping it True activates BOTH request-aware relevance omission AND priority-based
+# human-pinning together — the pin is the "always inject this" escape hatch that
+# makes omission safe, so one switch governs the whole D5 behavior set. Rollback =
+# set back to False (selection-time only; nothing persisted to unwind).
+MEMORY_RELEVANCE_OMISSION_ENABLED = False
+# Small-store grace (D5). Relevance *ordering* always applies, but relevance
+# *omission* engages only when the role's count of NON-mandatory in-policy relevance
+# facts exceeds this threshold. At or below it, every in-policy fact still injects,
+# so enabling the flag is a no-op for today's small stores. Security, forbidden_paths,
+# and pinned facts are mandatory and are NOT counted here.
+MEMORY_SMALL_STORE_GRACE_THRESHOLD = 12
+# Human-pinning (D5). A fact whose priority is at or below this threshold joins the
+# mandatory (un-droppable) tier when MEMORY_RELEVANCE_OMISSION_ENABLED is on. Pinning
+# rides the existing priority field (no schema change); the UI exposes it by setting
+# priority. Lower priority value = higher precedence (see prompt_builder's sort key).
+MEMORY_PIN_PRIORITY_THRESHOLD = 10
+
 # --- Memory repo-reality warnings (routes/memory.py, Row 11 PR-B) ----------
 # Active advisory repo-reality dimensions for memory-injection analysis. Roll
 # back PR-B behavior by setting this to frozenset({"db_engine"}).

@@ -913,6 +913,15 @@ Engine: **D1** verification semantics; **D2** infra auto-retry budget; **D3** st
 
 Gating map: 6c needs D14; items 8–10 need D1/D2; 9b needs D9; 7b needs D10; 12 needs D5; 16 needs D7; 17–18 need D3; 20–22 need D4/D12; 22b–22e need D13; 22d needs D11; 23 needs D6. Items 1–7a (except 6c), 11, 12b–16b proceed on no open decisions.
 
+**D5 confirmed (2026-06-14) — Row 12 PR-C unblocked; "12 needs D5" is now satisfied.** The relevance-omission + pinning decision is resolved with these defaults, single-sourced as policy constants in `backend/pipeline/policy.py`:
+
+1. **One global off switch** `MEMORY_RELEVANCE_OMISSION_ENABLED` (default **False**) gates both omission and pinning together. PR-C ships **dormant**, so default behavior is byte-identical to Row 12 PR-B (relevance ordering only). Rollback = leave/return it `False`.
+2. **Pin mechanism = priority-based** — pinned ≡ `priority ≤ MEMORY_PIN_PRIORITY_THRESHOLD` (default 10), reusing the existing `priority` field. No schema change, no frontend Pin button. This resolves the §12/B1 "priority-based vs. explicit flag" sub-question in favour of priority.
+3. **Small-store grace = `MEMORY_SMALL_STORE_GRACE_THRESHOLD` (default 12)**, counted over the role's non-mandatory in-policy relevance facts only — security, forbidden_paths, and pinned facts are excluded from the count.
+4. **Off-switch = that global flag** (no per-project setting this cycle; the `projects` table has no settings column).
+
+Omission emits the `not_relevant_to_request` exclusion reason for a zero-signal relevance fact (zero path-overlap **and** zero token-overlap) only when the flag is on, the request carries usable signal, the relevance-candidate count exceeds the grace threshold, **and** at least one relevance fact carries signal — if no relevance fact carries signal, nothing is omitted (the all-zero degeneracy guard). The mandatory tier (safety + pinned) is never scored, omitted, or budget-dropped.
+
 ---
 
 ## Appendix C — Verification ledger (Pass 3)
@@ -1072,6 +1081,21 @@ The redesign remains the north-star architecture. §23 remains the sequencing so
 > and no new policy threshold**. E.1/E.2 below now record PR-B complete and the
 > pause before Row 12 PR-C (gated on D5). E.3–E.5 remain binding.
 >
+> **Reconciled 2026-06-14 (Row 12 PR-C — D5 confirmed, implemented dormant-by-default).**
+> D5 was affirmatively confirmed by the maintainer: omission semantics + small-store
+> grace threshold (12, over non-mandatory in-policy relevance facts) + priority-based
+> pinning (`priority ≤ 10`) + a single global off-switch — full set single-sourced in
+> §24's "D5 confirmed" note. Row 12 PR-C landed behind one default-off policy flag
+> (`MEMORY_RELEVANCE_OMISSION_ENABLED=False`) that gates **both** relevance omission
+> (emits `not_relevant_to_request` for zero-signal relevance facts above the grace
+> threshold) and priority-based human-pinning (pinned facts join the mandatory tier).
+> The flag ships **False**, so default behavior is byte-identical to PR-B; the
+> all-zero degeneracy guard is preserved; the mandatory tier (safety + pinned) is
+> never scored, omitted, or budget-dropped. No schema, frontend, per-project setting,
+> planner/triage/prompt-preview plumbing, adaptive-budget activation, retriever/FTS/
+> vector, or memory mutation. E.1/E.2 now record PR-C complete; the next gate is the
+> operational flag-flip plus rows 16/19/23 + thread UI. E.3–E.5 remain binding.
+>
 > **Numbering hazard (read this).** There are two "item 7"s. The workplan / Pass 1 §6 engine numbering uses **item 7 = the Signal C execution-integrity classifier** (DONE, Phase 1). The §23 unified table's **order-row 7 = the M5 suggestion-quality gate** (NOT done, Memory). They are different work with the same label. This appendix and the next build cycle mean the **§23 order-row 7 / Pass 2 §11.3 M5 suggestion-quality gate** wherever "item 7" appears below.
 
 ## E.1 Allowed implementation window
@@ -1082,21 +1106,21 @@ The redesign remains the north-star architecture. §23 remains the sequencing so
 
 **The Row 12 PR-A build cycle is closed.** Maintainer decision 2026-06-14 opened Row 12 one sub-slice at a time, safest first; PR-A has now landed as decision-free scaffolding only. It introduced a dormant `request_context` (default `None`, existing injection behavior preserved), a `security`/`forbidden_paths`-only mandatory safety tier, policy single-sourcing of the injection budgets / token estimator / adaptive guardrail, the typed `MandatoryMemoryBudgetExceeded` overflow, prompt-preview's 422 guard, and a defined-but-dormant `not_relevant_to_request` reason — with **no relevance omission, no request-aware ordering, no orchestrator plumbing, and no D5 activation**. (§24's gating map lists Row 12 as needing D5; that gate governs the later **PR-C**, not PR-A, which never acts on D5.) **PR-B has since landed** as request-aware relevance *ordering* only (coder-only `request_context` plumbing; ordering, not omission) and likewise never acts on D5; the next gated slice is **PR-C**.
 
-**Row 12 ships in ordered sub-PRs; PR-A and PR-B are complete; PR-C remains deferred:**
+**Row 12 ships in ordered sub-PRs; PR-A and PR-B are complete; PR-C is implemented dormant-by-default (D5 confirmed):**
 
 - **PR-A (complete) — request-aware selection scaffolding, no-op by default.** In `backend/memory/prompt_builder.py`: an optional `request_context` parameter (default `None`; existing injection behavior preserved); a mandatory safety tier for `security` + `forbidden_paths` **only** (structurally un-droppable — never a `budget_dropped` exclusion; typed loud-fail if the tier alone exceeds the cap); policy single-sourcing of `ROLE_TOKEN_BUDGETS` + the token estimator + the adaptive guardrail into `policy.py` (model/window resolved via `role_config`, adaptive flag disabled); prompt-preview maps typed overflow to HTTP 422; and a **defined-but-dormant** `not_relevant_to_request` provenance reason that PR-A never emits. No relevance omission, no ordering change, no orchestrator plumbing, no schema, no D5 activation.
 - **PR-B (complete) — relevance *ordering* only.** When a non-`None` `request_context` is supplied, the non-mandatory relevance tier is ordered by a deterministic rung-0 signal (path-token overlap, then content-token Jaccard over chunk title / description / steer, reusing the `memory_trust` helpers), tie-broken by the existing `(category, scope, priority, created_at)` key; same set injected (no omission); `request_context` is plumbed from the **coder** only (`plan.goal` / `feature_description` / `files_to_modify`+`files_to_create` / `continuation_context`). `request_context=None` byte-identical; all-zero overlap preserves the legacy order; the mandatory safety tier is never scored/reordered/dropped; `not_relevant_to_request` stays dormant. No D5 activation, pinning, off-switch, grace threshold, or new policy constant.
-- **PR-C (later, deferred — gated on D5) — relevance *omission* + human-pinning + per-project off-switch.** The first slice that actually acts on D5: it emits `not_relevant_to_request`, activates omission above the small-store grace threshold, and adds human-pinned facts to the mandatory tier. **Requires explicit D5 confirmation (omission semantics + grace threshold + pin mechanism) before implementation.** Not opened this cycle.
+- **PR-C (D5 confirmed 2026-06-14 — implemented dormant-by-default) — relevance *omission* + priority-based human-pinning + global off-switch.** The first slice that acts on D5. Behind one default-off policy flag (`MEMORY_RELEVANCE_OMISSION_ENABLED`), it emits `not_relevant_to_request` for zero-signal relevance facts above the small-store grace threshold (`MEMORY_SMALL_STORE_GRACE_THRESHOLD`, default 12) and routes priority-pinned facts (`priority ≤ MEMORY_PIN_PRIORITY_THRESHOLD`, default 10) into the mandatory tier. The flag ships **False**, so default behavior is byte-identical to PR-B; the off-switch is the flag itself (no per-project setting, no schema, no frontend). Omission is coder-only in practice (only the coder passes `request_context`). See §24's D5 confirmation for the full default set.
 
-**Hard stop after Row 12 PR-B remains in force.** Pause for maintainer **D5** decision/review before starting Row 12 **PR-C** (relevance omission / pinning, D5); the early-band backfill set above; the deeper Area B memory rows **16** (post-run hygiene, D7), **19** (retriever + FTS rung 1), **23** (vector rung 2, D6); or the §21 thread UI rows (**22b–22e**, D13). The obsolete original hard-stop language ("before starting the stage driver, execution steering, full thread UI, or vector memory") is void for the engine rows — they shipped — and survives only as "before vector memory / thread UI."
+**Hard stop now sits after Row 12 PR-C.** D5 is confirmed (§24) and PR-C is implemented dormant-by-default; the next deliberate gate is **operational, not code** — flipping `MEMORY_RELEVANCE_OMISSION_ENABLED` on in any environment is a soak decision, since it activates omission + pinning behavior. Pause before: the early-band backfill set above; the deeper Area B memory rows **16** (post-run hygiene, D7), **19** (retriever + FTS rung 1), **23** (vector rung 2, D6); or the §21 thread UI rows (**22b–22e**, D13). The obsolete original hard-stop language ("before starting the stage driver, execution steering, full thread UI, or vector memory") is void for the engine rows — they shipped — and survives only as "before vector memory / thread UI."
 
 ## E.2 Accepted defaults for this cycle
 
-**Row 12 PR-A (request-aware selection scaffolding) was decision-free and is complete** — it never exercised D5 (no omission, no pinning, no ordering). §24's gating map lists Row 12 as needing **D5**, but that gate governs the later **PR-C**, not PR-A. **D5 must be confirmed before PR-C** (see the D5 wording tension recorded in `PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md`). PR-B (relevance ordering) has since landed and likewise never exercised D5; PR-C remains the first slice that does.
+**Row 12 PR-A (request-aware selection scaffolding) was decision-free and is complete** — it never exercised D5 (no omission, no pinning, no ordering). §24's gating map lists Row 12 as needing **D5**, but that gate governs the later **PR-C**, not PR-A. PR-B (relevance ordering) likewise never exercised D5. **D5 was affirmatively confirmed by the maintainer on 2026-06-14** (full default set + rationale single-sourced in §24's "D5 confirmed" note), so PR-C — the first slice that acts on D5 — is now in-window and has been implemented **dormant-by-default** (one global off switch `MEMORY_RELEVANCE_OMISSION_ENABLED`, shipped `False`).
 
 Recorded for continuity (unchanged): §24's recommended defaults were accepted as written (single-sourced in §24 per E.5) — D5, D9, D10, D11, D12, D14 (chunk isolation advisory-only; hard gate rejected) — and **D2 = 1** (one INFRA_ERROR auto-retry) is already shipped in Phase 1. Those defaults gate the deeper memory rows (Row 12 PR-C, 16, 23) and the backfill set, **not** this cycle's Row 12 PR-A scaffolding.
 
-Vector memory (row 23), the retriever/FTS rung (row 19), Row 12 **PR-C** (relevance omission / pinning), post-run hygiene (row 16), and the thread UI (rows 22b–22e) remain outside this window unless a later maintainer decision explicitly opens them. (Row 12 **PR-A** and **PR-B** are complete; Row 11 is complete.)
+Vector memory (row 23), the retriever/FTS rung (row 19), post-run hygiene (row 16), and the thread UI (rows 22b–22e) remain outside this window unless a later maintainer decision explicitly opens them. (Row 12 **PR-A**, **PR-B**, and **PR-C** are complete — PR-C dormant-by-default; Row 11 is complete.)
 
 ## E.3 Required UI wording
 

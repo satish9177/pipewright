@@ -154,6 +154,28 @@ def _scope_rank(scope: str, preferred_scopes: set[str]) -> int:
     return 2
 
 
+def _is_mandatory_row(row: dict) -> bool:
+    """
+    Whether a row belongs to the un-droppable mandatory tier.
+
+    Always true for safety facts (security / forbidden_paths). Additionally true
+    for human-pinned facts (priority at/below the pin threshold) — but ONLY while
+    ``MEMORY_RELEVANCE_OMISSION_ENABLED`` is on (Row 12 PR-C). With the flag off
+    this reduces to exactly the PR-B safety-only mandatory tier, so a low-priority
+    fact stays an ordinary, droppable relevance fact. Pinning rides the existing
+    priority field; it is request-context-independent, so it applies to every
+    caller. Mandatory rows are never scored, omitted, or budget-dropped.
+    """
+    if (row.get("category") or "other") in MANDATORY_CATEGORIES:
+        return True
+    if pipeline_policy.MEMORY_RELEVANCE_OMISSION_ENABLED and (
+        int(row.get("priority") or DEFAULT_PRIORITY)
+        <= pipeline_policy.MEMORY_PIN_PRIORITY_THRESHOLD
+    ):
+        return True
+    return False
+
+
 def _memory_row_sort_key(
     row: dict,
     role_key: str,
@@ -190,19 +212,36 @@ def _request_tokens(request_context: RequestContext) -> set[str]:
     )
 
 
-def _order_relevance_rows(
+def _partition_relevance_rows(
     rows: list[dict],
     request_context: RequestContext | None,
     role_key: str,
     preferred_scopes: set[str],
-) -> list[dict]:
+) -> tuple[list[dict], list[dict]]:
+    """
+    Order the non-mandatory relevance tier by request relevance and, when
+    request-aware omission is enabled, split off the zero-signal facts.
+
+    Returns ``(kept_rows, omitted_rows)`` with ``kept_rows`` in render order.
+    ``omitted_rows`` is always empty (Row 12 PR-B ordering-only behavior) unless
+    ALL of:
+      - ``MEMORY_RELEVANCE_OMISSION_ENABLED`` is on,
+      - ``request_context`` carries usable signal,
+      - at least one relevance fact carries signal — the all-zero degeneracy
+        guard: if none do, nothing is omitted (matching PR-B), and
+      - the relevance-candidate count exceeds the small-store grace threshold.
+    A kept fact may still be ``budget_dropped`` downstream; an omitted fact is
+    excluded for relevance (``not_relevant_to_request``) even with budget to
+    spare. Kept-row ordering is identical to PR-B; omission only removes
+    zero-signal rows, it never reorders within the kept set.
+    """
     if request_context is None or not rows:
-        return rows
+        return rows, []
 
     path_tokens = _path_tokens(request_context.files_expected)
     request_tokens = _request_tokens(request_context)
     if not path_tokens and not request_tokens:
-        return rows
+        return rows, []
 
     scored_rows: list[tuple[dict, int, float]] = []
     has_relevance_signal = False
@@ -215,7 +254,7 @@ def _order_relevance_rows(
         scored_rows.append((row, path_overlap, token_overlap))
 
     if not has_relevance_signal:
-        return rows
+        return rows, []
 
     def sort_key(item: tuple[dict, int, float]) -> tuple:
         row, path_overlap, token_overlap = item
@@ -225,7 +264,26 @@ def _order_relevance_rows(
             *_memory_row_sort_key(row, role_key, preferred_scopes),
         )
 
-    return [row for row, _, _ in sorted(scored_rows, key=sort_key)]
+    ordered = sorted(scored_rows, key=sort_key)
+
+    # Small-store grace (D5): omission engages only above the policy threshold,
+    # counted over these non-mandatory relevance candidates only. Below/at it we
+    # keep PR-B's "order, never omit" behavior.
+    omission_active = (
+        pipeline_policy.MEMORY_RELEVANCE_OMISSION_ENABLED
+        and len(rows) > pipeline_policy.MEMORY_SMALL_STORE_GRACE_THRESHOLD
+    )
+    if not omission_active:
+        return [row for row, _, _ in ordered], []
+
+    kept: list[dict] = []
+    omitted: list[dict] = []
+    for row, path_overlap, token_overlap in ordered:
+        if path_overlap or token_overlap:
+            kept.append(row)
+        else:
+            omitted.append(row)
+    return kept, omitted
 
 
 def _load_active_memory_rows(
@@ -271,7 +329,7 @@ class RequestContext:
 
 
 class MandatoryMemoryBudgetExceeded(RuntimeError):
-    """Raised when mandatory safety memory alone exceeds the resolved budget."""
+    """Raised when the mandatory tier (safety + pinned) alone exceeds the budget."""
 
 
 @dataclass(frozen=True)
@@ -415,9 +473,14 @@ def build_project_memory_block_detailed(
     reads already-approved active memory facts (exactly as before). The ``block``
     is identical to what build_project_memory_block returns.
 
-    ``request_context`` reorders only the non-mandatory relevance tier when it
-    has usable request signal. Mandatory safety facts are never scored,
-    reordered, or dropped to make room for relevance facts.
+    ``request_context`` reorders the non-mandatory relevance tier when it has
+    usable request signal. When ``MEMORY_RELEVANCE_OMISSION_ENABLED`` is on (Row
+    12 PR-C) it additionally (a) routes human-pinned facts (``priority`` at/below
+    ``MEMORY_PIN_PRIORITY_THRESHOLD``) into the mandatory tier, and (b) above the
+    small-store grace threshold, omits zero-signal relevance facts with the
+    ``not_relevant_to_request`` reason. With the flag off (the default) this is
+    byte-identical to PR-B. The mandatory tier (safety + pinned) is never scored,
+    reordered, omitted, or budget-dropped to make room for relevance facts.
     """
     role_key = _role_key(role)
     categories = ROLE_CATEGORIES[role_key]
@@ -471,22 +534,22 @@ def build_project_memory_block_detailed(
     included_entries: list[InjectedMemoryEntry] = []
     budget_excluded_entries: list[InjectedMemoryEntry] = []
     used_tokens = 0
-    mandatory_rows = [
-        row
-        for row in in_policy_rows
-        if (row.get("category") or "other") in MANDATORY_CATEGORIES
-    ]
-    relevance_rows = [
-        row
-        for row in in_policy_rows
-        if (row.get("category") or "other") not in MANDATORY_CATEGORIES
-    ]
-    relevance_rows = _order_relevance_rows(
+    # Mandatory tier = safety categories always, plus human-pinned facts when the
+    # Row 12 PR-C flag is on (see _is_mandatory_row). With the flag off this is
+    # exactly the PR-B safety-only tier. Mandatory rows are never scored, omitted,
+    # or budget-dropped.
+    mandatory_rows = [row for row in in_policy_rows if _is_mandatory_row(row)]
+    relevance_rows = [row for row in in_policy_rows if not _is_mandatory_row(row)]
+    relevance_rows, not_relevant_rows = _partition_relevance_rows(
         relevance_rows,
         request_context,
         role_key,
         preferred_scopes,
     )
+    not_relevant_entries = [
+        _row_to_entry(row, EXCLUSION_NOT_RELEVANT_TO_REQUEST)
+        for row in not_relevant_rows
+    ]
 
     for row in mandatory_rows:
         category = row.get("category") or "other"
@@ -500,8 +563,8 @@ def build_project_memory_block_detailed(
 
     if used_tokens > budget:
         raise MandatoryMemoryBudgetExceeded(
-            "memory prompt mandatory safety tier exceeds token budget: "
-            f"{used_tokens} / {budget} tokens"
+            "memory prompt mandatory tier (safety + pinned) exceeds token "
+            f"budget: {used_tokens} / {budget} tokens"
         )
 
     for row in relevance_rows:
@@ -519,9 +582,13 @@ def build_project_memory_block_detailed(
         included_entries.append(_row_to_entry(row))
         used_tokens += separator_tokens + line_tokens
 
-    # Budget drops first (the actionable "silently left out" signal), then the
-    # category-policy exclusions. Ordering is display/provenance only.
-    excluded_entries = budget_excluded_entries + category_excluded_entries
+    # Display/provenance ordering only — it never affects which facts were
+    # injected: budget drops first (the actionable "silently left out" signal),
+    # then relevance omissions (not_relevant_to_request), then the category-policy
+    # exclusions.
+    excluded_entries = (
+        budget_excluded_entries + not_relevant_entries + category_excluded_entries
+    )
 
     if not selected_lines:
         return MemoryBlockBuildResult(
