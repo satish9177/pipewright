@@ -36,3 +36,50 @@ Manual smoke checklist for Row 16 PR-B read-only digest / observability.
 - Do not approve or reject suggestions from Run Detail.
 - Do not expect generated/skipped/blocked/floored/capped counts in the digest;
   those transient counts are only returned by the manual generate response.
+
+## Activation Smoke Result — 2026-06-15
+
+This smoke used a throwaway SQLite database via `PIPEWRIGHT_DB_PATH` under
+`.pytest_tmp/row16_activation_smoke/`. The flag was enabled only in-process by
+setting `policy.MEMORY_POSTRUN_HYGIENE_ENABLED = True` in the smoke script; no
+source file was edited and no default activation was committed.
+
+Run mode: `local_only`, through the real `push_and_create_pr()` completion path.
+Local git probes were patched inside the smoke process to avoid push/GitHub
+activity while still exercising the post-lock success completion path.
+
+Observed:
+
+- Successful completion returned `status="complete"`.
+- Automatic post-run trigger created 2 pending suggestions with
+  `suggested_by="postrun_auto"`.
+- Before review, active memory facts remained 0.
+- Before review, approval gates remained 0.
+- `GET /api/v1/runs/{run_id}/memory-suggestions` returned 200 with
+  `pending_count=2`.
+- Repeating the digest read kept `pending_count=2` and did not create new rows.
+- The Project Memory suggestions endpoint returned the same 2 pending
+  suggestions for review.
+- Repeating the idempotent complete action returned `status="complete"` and did
+  not create duplicates; total suggestions remained 2.
+- Explicit Project Memory review worked: approving one suggestion and rejecting
+  one suggestion succeeded. After review, the run digest returned
+  `pending_count=0`; one active fact existed due to explicit approval, not
+  automatic promotion; approval gates remained 0.
+
+UI note: this smoke did not launch a browser. The Run Detail digest API returned
+the non-empty payload that `RunMemorySuggestionsDigest` renders, and the component
+copy/CTA were inspected in source. A browser smoke remains useful before any
+default-on activation.
+
+Rejected-content reappearance:
+
+- Tested in a separate throwaway DB.
+- A handoff suggestion rejected from run A reappeared as a pending suggestion
+  from run B when the later run proposed the same content.
+- This confirms the known behavior: rejection suppression is scoped to the same
+  `source_run_id`; it is not project-wide.
+
+Recommendation after smoke: keep the shipped default `False`. If the maintainer
+wants activation next, prefer an env/config override with default `False` for a
+controlled local/dev soak before considering default-on PR-C.
