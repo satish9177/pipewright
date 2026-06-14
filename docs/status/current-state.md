@@ -35,9 +35,18 @@ Current truth:
   goldens and tests (`test_memory_detection_rules.py` 5 pass; 42 bootstrap tests + full
   3153-unit suite green; ruff clean; dogfood parity at 9 ordered candidates). No
   schema/frontend/UI/gate/scope/Git/PR/memory-authority/vector/request-aware/post-run
-  hygiene changes. Optional fixture hardening (Django, Next.js, bare Dockerfile,
-  alembic.ini, extra Python 3.11 patterns, peerDependencies) recommended before PR-B.
-  PR-B (advisory repo reality signals) and PR-C (test-command backfill) remain later.
+  hygiene changes. Pre-PR-B fixture hardening (Django, Next.js, bare Dockerfile,
+  alembic.ini, extra Python 3.11 patterns, peerDependencies) is also complete.
+- **Row 11 PR-B â€” advisory repo reality signals â€” COMPLETE.** PR-B added
+  pure/read-only compute-on-read repo reality signals for non-DB memory dimensions.
+  They surface only through the existing memory injection analysis `reality_warnings`
+  path. `db_engine` remains sourced from the existing DB fingerprint path, and DB
+  conflict gate behavior is unchanged. The rollback / kill switch is
+  `policy.REPO_REALITY_SIGNAL_DIMENSIONS`; setting it back to
+  `frozenset({"db_engine"})` restores db-only advisory signal behavior. PR-B mutates
+  no memory facts: no stale marking, no archiving, no writes, no `last_verified_at`
+  bump, no active memory creation, and no auto-approval. PR-C (test-command detector
+  backfill) remains later.
 - **Not next:** request-aware memory selection (row 12), retriever/FTS (row 19),
   post-run hygiene / auto-generation (row 16), vector/embedding memory (row 23),
   and the thread/run UI (rows 22b–22e).
@@ -160,9 +169,11 @@ routes revalidate every mutating action.
 - **Memory M3** (conflict lifecycle, categories, usage tracking, constrained
   LLM-assisted memory, pgvector at scale). **[STALE 2026-06-14]** The redesign
   reframes Area B (memory) as the §23 row series: M5 (row 7) shipped; **row 11
-  PR-A (detection rules-as-data) is COMPLETE**; PR-B (advisory repo reality signals)
-  and PR-C (test-command backfill) remain later; vector/embedding memory (row 23)
-  stays deferred behind a soak + decision D6. See the workplan.
+  PR-A (detection rules-as-data) is COMPLETE**; pre-PR-B fixture hardening is
+  COMPLETE; **PR-B (advisory repo reality signals) is COMPLETE**; PR-C
+  (test-command detector backfill) remains later. Request-aware selection (row
+  12), post-run hygiene (row 16), retriever/FTS (row 19), vector/embedding memory
+  (row 23), and thread UI remain not-next. See the workplan.
 - **Production hardening** (Postgres/Alembic, durable events, DB locks at scale,
   deployment).
 - **Deployment / Ollama / Provider Settings UI / BYOK DB storage / execution
@@ -222,17 +233,21 @@ no scope/path-safety weakening, and no retry eligibility or budget change.
 
 **[Updated 2026-06-14]** §23 order-row 11 **PR-A is COMPLETE**: `_collect_candidates`
 is a thin adapter; detection rules live in `backend/memory/detection_rules.py`; parity
-proven with synthetic goldens and tests. The recommended next steps are optional fixture
-hardening (Django, Next.js, bare Dockerfile, alembic.ini, extra Python 3.11 patterns,
-peerDependencies — uncovered branches in PR-A's golden net; harden before PR-B mutates
-the rule data) and then **Row 11 PR-B** (advisory repo reality signals; mutates nothing,
-no auto-bump). PR-C (test-command backfill) follows PR-B. See
+proven with synthetic goldens and tests. Pre-PR-B fixture hardening is also complete;
+PR-B added pure/read-only advisory repo reality signals for non-DB dimensions, computed
+on read and surfaced only through existing memory injection analysis `reality_warnings`.
+`db_engine` and DB conflict gate behavior remain unchanged; `policy.REPO_REALITY_SIGNAL_DIMENSIONS`
+is the db-only rollback kill switch. PR-B mutates no memory facts: no stale marking,
+archiving, writes, `last_verified_at` bump, active memory creation, or auto-approval.
+PR-C (test-command detector backfill) remains later. See
 `PIPEWRIGHT_REDESIGN_WORKPLAN.md` and the proposal's Appendix E.1/E.2 (reconciled
 2026-06-14) for the cycle window.
 
-- **Safe now (no decision needed):** optional Row 11 fixture hardening (see above);
-  Row 11 PR-B (advisory repo reality signals); documentation / smoke-checklist
-  upkeep; small honest stabilization fixes.
+- **Safe now (no decision needed):** documentation / smoke-checklist upkeep; small
+  honest stabilization fixes; optional PR-B soak follow-ups such as an endpoint
+  test for `db_engine` + non-DB warning coexistence, or tightening
+  backend-framework manifest substring matching later only if false positives
+  appear in soak.
 - **Not next (explicitly deferred):** Row 11 PR-C (test-command backfill);
   request-aware selection (row 12, D5); post-run hygiene (row 16, D7);
   retriever/FTS (row 19); vector/embedding memory (row 23, D6); the thread/run UI
@@ -274,15 +289,23 @@ Area B (Memory) Pass 2 ACTIVE: M5 suggestion-quality gate COMPLETE (PR #292) —
 deterministic scorer + junk floor + per-run caps + structured coder channel +
 quality_score column, all pending-only/human-approved. §23 ROW 11 PR-A COMPLETE —
 detection rules extracted to backend/memory/detection_rules.py; _collect_candidates
-is thin adapter; six-field parity proven with synthetic goldens + tests. CANONICAL
-roadmap: PIPEWRIGHT_REDESIGN_WORKPLAN.md (sequence proposal §23; decisions §24;
-cycle window Appendix E). This current-state page is a snapshot; the workplan wins.
+is thin adapter; six-field parity proven with synthetic goldens + tests.
+Pre-PR-B fixture hardening COMPLETE. ROW 11 PR-B COMPLETE: pure/read-only
+compute-on-read advisory repo reality signals now cover non-DB dimensions and
+surface only through existing memory injection analysis reality_warnings. db_engine
+and DB conflict gate behavior are unchanged. policy.REPO_REALITY_SIGNAL_DIMENSIONS
+is the kill switch; db-only rollback is possible. PR-B mutates no memory facts:
+no stale marking, archiving, writes, last_verified_at bump, active memory creation,
+or auto-approval. CANONICAL roadmap: PIPEWRIGHT_REDESIGN_WORKPLAN.md (sequence
+proposal §23; decisions §24; cycle window Appendix E). This current-state page is
+a snapshot; the workplan wins.
 
-CURRENT NEXT RECOMMENDED TASK: optional Row 11 fixture hardening (Django, Next.js,
-bare Dockerfile, alembic.ini, extra Python 3.11 patterns, peerDependencies), then
-Row 11 PR-B (advisory repo reality signals; mutates nothing). NOT NEXT: Row 11
-PR-C (test-command backfill); request-aware selection (row 12); retriever/FTS (row
-19); post-run hygiene (row 16); vector/embedding (row 23); thread UI (22b–22e).
+CURRENT NEXT RECOMMENDED TASK: docs / smoke-checklist upkeep or small honest
+stabilization. Optional PR-B soak follow-ups: endpoint test for db_engine + non-DB
+warning coexistence; tighten backend-framework manifest substring matching later
+only if false positives appear. NOT NEXT: Row 11 PR-C (test-command backfill);
+request-aware selection (row 12); retriever/FTS (row 19); post-run hygiene (row
+16); vector/embedding (row 23); thread UI (22b–22e).
 
 INVARIANTS (do not violate):
 - Never bypass chunk plan approval or final approval. Final approval is NOT
