@@ -26,6 +26,8 @@ from backend.main import app
 from backend.memory.injection_analysis import analyze_injection_events
 from backend.memory.injection_store import record_memory_injection_event
 from backend.memory.memory_store import add_fact, list_facts
+from backend.pipeline import policy
+from backend.routes import memory as memory_routes
 
 pytestmark = pytest.mark.unit
 
@@ -212,6 +214,30 @@ def _insert_run(run_id: str, project_id: str) -> None:
         """), {"id": run_id, "project_id": project_id, "feature": "test feature"})
 
 
+def _record_injected_fact(
+    project_id: str,
+    content: str,
+    *,
+    category: str,
+    scope: str = "global",
+) -> tuple[str, str]:
+    fact = add_fact(project_id, content, category=category, scope=scope)
+    run_id = f"rw-{uuid.uuid4().hex}"
+    _insert_run(run_id, project_id)
+    record_memory_injection_event(
+        run_id=run_id,
+        project_id=project_id,
+        role="coder",
+        chunk_number=1,
+        token_budget=1200,
+        category_policy=[category],
+        included_entries=[
+            _entry(fact["id"], content, category=category, scope=scope),
+        ],
+    )
+    return run_id, fact["id"]
+
+
 def test_endpoint_surfaces_reality_mismatch_without_mutating_memory(
     repo, project_factory, client
 ):
@@ -295,3 +321,161 @@ def test_endpoint_ambiguous_repo_signal_does_not_warn(
     # And the fact is untouched.
     stored = next(f for f in list_facts(project_id) if f["id"] == fact["id"])
     assert stored["status"] == "active"
+
+
+def test_endpoint_surfaces_test_runner_mismatch_without_mutating_memory(
+    repo,
+    project_factory,
+    client,
+):
+    _write(repo, "requirements.txt", "pytest\n")
+    project_id = project_factory(repo)
+    run_id, fact_id = _record_injected_fact(
+        project_id,
+        "Tests use Jest.",
+        category="test",
+        scope="tests",
+    )
+    before = next(f for f in list_facts(project_id) if f["id"] == fact_id)
+
+    analysis = client.get(
+        f"/api/v1/runs/{run_id}/memory-injections/analysis"
+    ).json()["analysis"]
+
+    assert analysis["reality_signal_available"] is True
+    assert analysis["reality_warning_count"] == 1
+    warning = analysis["reality_warnings"][0]
+    assert warning["dimension"] == "test_runner"
+    assert warning["memory_value"] == "jest"
+    assert warning["repo_value"] == "pytest"
+    assert warning["advisory_only"] is True
+
+    after = next(f for f in list_facts(project_id) if f["id"] == fact_id)
+    assert after["status"] == before["status"] == "active"
+    assert after["is_stale"] == before["is_stale"]
+    assert after["last_verified_at"] == before["last_verified_at"]
+
+
+def test_endpoint_surfaces_frontend_framework_mismatch(repo, project_factory, client):
+    _write(repo, "package.json", '{"dependencies": {"react": "^18.0.0"}}')
+    project_id = project_factory(repo)
+    run_id, _fact_id = _record_injected_fact(
+        project_id,
+        "Frontend uses Vue.",
+        category="stack",
+        scope="frontend",
+    )
+
+    analysis = client.get(
+        f"/api/v1/runs/{run_id}/memory-injections/analysis"
+    ).json()["analysis"]
+
+    assert analysis["reality_warning_count"] == 1
+    warning = analysis["reality_warnings"][0]
+    assert warning["dimension"] == "frontend_framework"
+    assert warning["memory_value"] == "vue"
+    assert warning["repo_value"] == "react"
+    assert warning["advisory_only"] is True
+
+
+def test_endpoint_ambiguous_new_dimension_does_not_warn(repo, project_factory, client):
+    _write(repo, "requirements.txt", "pytest\n")
+    _write(repo, "package.json", '{"devDependencies": {"jest": "^29.0.0"}}')
+    project_id = project_factory(repo)
+    run_id, fact_id = _record_injected_fact(
+        project_id,
+        "Tests use Mocha.",
+        category="test",
+        scope="tests",
+    )
+
+    analysis = client.get(
+        f"/api/v1/runs/{run_id}/memory-injections/analysis"
+    ).json()["analysis"]
+
+    assert analysis["reality_signal_available"] is False
+    assert analysis["reality_warning_count"] == 0
+    assert analysis["reality_warnings"] == []
+    stored = next(f for f in list_facts(project_id) if f["id"] == fact_id)
+    assert stored["status"] == "active"
+    assert stored["is_stale"] in (0, False)
+
+
+def test_endpoint_matching_new_dimension_produces_no_warning(
+    repo,
+    project_factory,
+    client,
+):
+    _write(repo, "requirements.txt", "pytest\n")
+    project_id = project_factory(repo)
+    run_id, _fact_id = _record_injected_fact(
+        project_id,
+        "Tests use pytest.",
+        category="test",
+        scope="tests",
+    )
+
+    analysis = client.get(
+        f"/api/v1/runs/{run_id}/memory-injections/analysis"
+    ).json()["analysis"]
+
+    assert analysis["reality_signal_available"] is True
+    assert analysis["reality_warning_count"] == 0
+    assert analysis["reality_warnings"] == []
+
+
+def test_endpoint_repo_reality_policy_can_roll_back_to_db_only(
+    repo,
+    project_factory,
+    client,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        policy,
+        "REPO_REALITY_SIGNAL_DIMENSIONS",
+        frozenset({"db_engine"}),
+    )
+    _write(repo, "requirements.txt", "pytest\n")
+    project_id = project_factory(repo)
+    run_id, _fact_id = _record_injected_fact(
+        project_id,
+        "Tests use Jest.",
+        category="test",
+        scope="tests",
+    )
+
+    analysis = client.get(
+        f"/api/v1/runs/{run_id}/memory-injections/analysis"
+    ).json()["analysis"]
+
+    assert analysis["reality_signal_available"] is False
+    assert analysis["reality_warning_count"] == 0
+    assert analysis["reality_warnings"] == []
+
+
+def test_endpoint_repo_reality_producer_failure_is_best_effort_empty(
+    repo,
+    project_factory,
+    client,
+    monkeypatch,
+):
+    def fail_collect(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(memory_routes, "collect_repo_reality_signals", fail_collect)
+    _write(repo, "requirements.txt", "pytest\n")
+    project_id = project_factory(repo)
+    run_id, _fact_id = _record_injected_fact(
+        project_id,
+        "Tests use Jest.",
+        category="test",
+        scope="tests",
+    )
+
+    analysis = client.get(
+        f"/api/v1/runs/{run_id}/memory-injections/analysis"
+    ).json()["analysis"]
+
+    assert analysis["reality_signal_available"] is False
+    assert analysis["reality_warning_count"] == 0
+    assert analysis["reality_warnings"] == []

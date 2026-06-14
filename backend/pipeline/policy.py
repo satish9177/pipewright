@@ -155,6 +155,18 @@ REVIEW_ACK_REQUIRED_CATEGORIES = frozenset({
 HANDOFF_SUGGESTION_CAP = 5
 RUN_SUGGESTION_TOTAL_CAP = 8
 
+# --- Memory repo-reality warnings (routes/memory.py, Row 11 PR-B) ----------
+# Active advisory repo-reality dimensions for memory-injection analysis. Roll
+# back PR-B behavior by setting this to frozenset({"db_engine"}).
+REPO_REALITY_SIGNAL_DIMENSIONS = frozenset({
+    "db_engine",
+    "backend_framework",
+    "frontend_framework",
+    "test_runner",
+    "migration_tool",
+    "package_manager",
+})
+
 # --- Final-approval summary (chunked_orchestrator.py, item 14) --------------
 # Display-only cap for the cumulative branch diff (base..HEAD) shown in the
 # final-approval summary. Head+tail preserving, mirroring the reviewer's diff-cap

@@ -36,6 +36,14 @@ def test_policy_values_are_unchanged_by_relocation():
     assert policy.MERGED_PROFILE_SAMPLE_PCT == 50
     assert "schema.sql" in policy.TRIVIAL_PROFILE_DENYLIST_PATTERNS
     assert "requirements*.txt" in policy.TRIVIAL_PROFILE_DENYLIST_PATTERNS
+    assert policy.REPO_REALITY_SIGNAL_DIMENSIONS == frozenset({
+        "db_engine",
+        "backend_framework",
+        "frontend_framework",
+        "test_runner",
+        "migration_tool",
+        "package_manager",
+    })
 
 
 def test_stages_read_constants_from_policy():

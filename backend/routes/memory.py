@@ -41,8 +41,12 @@ from backend.memory.prompt_builder import (
 )
 from backend.memory.repo_reality import verify_project_db_memory_against_repo
 from backend.memory.run_outcome_suggestions import generate_run_memory_suggestions
+from backend.pipeline import policy
 from backend.projects.project_store import get_project
-from backend.repo.repo_fingerprint import build_repo_fingerprint
+from backend.repo.repo_fingerprint import (
+    build_repo_fingerprint,
+    collect_repo_reality_signals,
+)
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/memory")
 
@@ -1008,9 +1012,9 @@ def _repo_reality_signals(project_id: str) -> dict[str, str]:
     /memory/verify-repo uses). Returns ``{dimension: canonical_value}`` and is
     conservative by construction:
       - missing project / missing repo_path -> {}
-      - unknown or AMBIGUOUS repo signal    -> {} (ambiguity never warns)
+      - unknown or AMBIGUOUS repo signal    -> omitted (ambiguity never warns)
       - any failure                         -> {} (analysis never fails on this)
-    Only an unambiguous, present signal is returned.
+    Only unambiguous, present signals are returned.
     """
     try:
         project = get_project(project_id)
@@ -1019,10 +1023,21 @@ def _repo_reality_signals(project_id: str) -> dict[str, str]:
         repo_path = (project.get("repo_path") or "").strip()
         if not repo_path:
             return {}
-        fingerprint = build_repo_fingerprint(repo_path)
+        active_dimensions = policy.REPO_REALITY_SIGNAL_DIMENSIONS
         signals: dict[str, str] = {}
-        if fingerprint.db is not None and not fingerprint.db_ambiguous:
-            signals["db_engine"] = fingerprint.db.value
+
+        if "db_engine" in active_dimensions:
+            fingerprint = build_repo_fingerprint(repo_path)
+            if fingerprint.db is not None and not fingerprint.db_ambiguous:
+                signals["db_engine"] = fingerprint.db.value
+
+        non_db_dimensions = frozenset(active_dimensions) - {"db_engine"}
+        for dimension, signal in collect_repo_reality_signals(
+            repo_path,
+            dimensions=non_db_dimensions,
+        ).items():
+            signals[dimension] = signal.value
+
         return signals
     except Exception:
         return {}

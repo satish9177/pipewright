@@ -12,13 +12,21 @@ from pathlib import Path
 
 import pytest
 
+from backend.memory.memory_trust import (
+    REALITY_MATCH,
+    SUPPORTED_REALITY_DIMENSIONS,
+    _DIMENSION_VALUE_TOKENS,
+    check_fact_against_signal,
+)
 from backend.repo import repo_fingerprint
 from backend.repo.repo_fingerprint import (
     build_repo_fingerprint,
     collect_env_example_var_names,
+    collect_repo_reality_signals,
     detect_db_signals,
     discover_manifest_files,
     load_repo_file,
+    producible_repo_reality_signal_values,
 )
 
 pytestmark = pytest.mark.unit
@@ -234,3 +242,179 @@ def test_detect_db_signals_deterministic_order():
     signals = detect_db_signals(files)
     # DB_ENGINE_ORDER puts postgresql before mongodb regardless of dict order.
     assert [s.value for s in signals] == ["postgresql", "mongodb"]
+
+
+# --- advisory non-DB repo reality signals (Row 11 PR-B) --------------------
+
+@pytest.mark.parametrize(("rel", "content", "dimension", "value", "excerpt"), [
+    (
+        "requirements.txt",
+        "django\n",
+        "backend_framework",
+        "django",
+        "Detected Django dependency.",
+    ),
+    (
+        "package.json",
+        '{"peerDependencies": {"next": "^15.0.0"}}',
+        "frontend_framework",
+        "nextjs",
+        "Detected Next.js dependency.",
+    ),
+    (
+        "pytest.ini",
+        "[pytest]\nmarkers = unit\n",
+        "test_runner",
+        "pytest",
+        "Detected pytest test runner.",
+    ),
+    (
+        "alembic.ini",
+        "[alembic]\nscript_location = alembic\n",
+        "migration_tool",
+        "alembic",
+        "Detected Alembic migration tool.",
+    ),
+    (
+        "yarn.lock",
+        "# yarn lockfile\n",
+        "package_manager",
+        "yarn",
+        "Detected Yarn lockfile.",
+    ),
+])
+def test_repo_reality_signal_detects_each_new_dimension(
+    repo,
+    rel,
+    content,
+    dimension,
+    value,
+    excerpt,
+):
+    _write(repo, rel, content)
+
+    signals = collect_repo_reality_signals(repo)
+
+    assert signals[dimension].dimension == dimension
+    assert signals[dimension].value == value
+    assert signals[dimension].evidence_path == rel
+    assert signals[dimension].evidence_excerpt == excerpt
+
+
+def test_repo_reality_ambiguous_dimension_is_omitted_but_others_survive(repo):
+    _write(repo, "requirements.txt", "pytest\n")
+    _write(
+        repo,
+        "package.json",
+        '{"dependencies": {"react": "^18.0.0"}, "devDependencies": {"jest": "^29"}}',
+    )
+
+    signals = collect_repo_reality_signals(repo)
+
+    assert "test_runner" not in signals
+    assert signals["frontend_framework"].value == "react"
+
+
+def test_repo_reality_weak_pip_signal_is_omitted(repo):
+    _write(repo, "requirements.txt", "pip\nrequests\n")
+
+    signals = collect_repo_reality_signals(
+        repo,
+        dimensions=frozenset({"package_manager"}),
+    )
+
+    assert signals == {}
+
+
+def test_repo_reality_package_manager_ambiguity_is_omitted(repo):
+    _write(repo, "yarn.lock", "# yarn lockfile\n")
+    _write(repo, "go.mod", "module example.com/demo\n")
+
+    signals = collect_repo_reality_signals(
+        repo,
+        dimensions=frozenset({"package_manager"}),
+    )
+
+    assert signals == {}
+
+
+def test_repo_reality_missing_repo_and_exceptions_return_empty(repo, monkeypatch):
+    assert collect_repo_reality_signals(repo / "missing") == {}
+
+    _write(repo, "requirements.txt", "django\n")
+
+    def fail_load(_root):
+        raise OSError("boom")
+
+    monkeypatch.setattr(repo_fingerprint, "load_manifest_files", fail_load)
+
+    assert collect_repo_reality_signals(repo) == {}
+
+
+def test_repo_reality_evidence_excerpt_is_fixed_not_raw_content(repo):
+    secret = "sk-thisisaverylongsecretkeyvalue"
+    _write(repo, "package.json", f'{{"dependencies": {{"react": "{secret}"}}}}')
+
+    signal = collect_repo_reality_signals(repo)["frontend_framework"]
+
+    assert signal.evidence_path == "package.json"
+    assert signal.evidence_excerpt == "Detected React dependency."
+    assert secret not in str(signal)
+
+
+def test_package_manager_lockfiles_are_root_probes_not_manifest_files(repo):
+    for lockfile in ("package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock"):
+        assert lockfile not in repo_fingerprint.MANIFEST_FILENAMES
+
+    _write(repo, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
+
+    assert discover_manifest_files(repo) == []
+    signals = collect_repo_reality_signals(
+        repo,
+        dimensions=frozenset({"package_manager"}),
+    )
+    assert signals["package_manager"].value == "pnpm"
+    assert signals["package_manager"].evidence_path == "pnpm-lock.yaml"
+
+
+def test_producible_repo_reality_values_are_memory_trust_compatible():
+    fact_text = {
+        ("backend_framework", "fastapi"): "Backend uses FastAPI.",
+        ("backend_framework", "django"): "Backend uses Django.",
+        ("backend_framework", "flask"): "Backend uses Flask.",
+        ("backend_framework", "express"): "Backend uses Express.",
+        ("backend_framework", "nestjs"): "Backend uses NestJS.",
+        ("backend_framework", "fastify"): "Backend uses Fastify.",
+        ("backend_framework", "spring_boot"): "Backend uses Spring Boot.",
+        ("frontend_framework", "react"): "Frontend uses React.",
+        ("frontend_framework", "vue"): "Frontend uses Vue.",
+        ("frontend_framework", "angular"): "Frontend uses Angular.",
+        ("frontend_framework", "svelte"): "Frontend uses Svelte.",
+        ("frontend_framework", "nextjs"): "Frontend uses Next.js.",
+        ("test_runner", "pytest"): "Tests use pytest.",
+        ("test_runner", "jest"): "Tests use Jest.",
+        ("test_runner", "vitest"): "Tests use Vitest.",
+        ("test_runner", "mocha"): "Tests use Mocha.",
+        ("test_runner", "junit"): "Tests use JUnit.",
+        ("migration_tool", "alembic"): "Migrations use Alembic.",
+        ("migration_tool", "prisma"): "Migrations use Prisma.",
+        ("migration_tool", "knex"): "Migrations use Knex.",
+        ("package_manager", "npm"): "Package manager uses npm.",
+        ("package_manager", "yarn"): "Package manager uses Yarn.",
+        ("package_manager", "pnpm"): "Package manager uses pnpm.",
+        ("package_manager", "poetry"): "Package manager uses Poetry.",
+        ("package_manager", "pipenv"): "Package manager uses Pipenv.",
+        ("package_manager", "cargo"): "Package manager uses Cargo.",
+        ("package_manager", "go_modules"): "Package manager uses Go modules.",
+    }
+
+    for dimension, values in producible_repo_reality_signal_values().items():
+        assert dimension in SUPPORTED_REALITY_DIMENSIONS
+        for value in values:
+            assert value in _DIMENSION_VALUE_TOKENS[dimension]
+            result = check_fact_against_signal(
+                dimension,
+                fact_text[(dimension, value)],
+                value,
+            )
+            assert result.status == REALITY_MATCH

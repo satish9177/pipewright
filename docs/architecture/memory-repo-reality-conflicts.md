@@ -6,6 +6,16 @@ fingerprint" sketch in [`memory-architecture.md`](./memory-architecture.md) sect
 **Mode:** Adversarial. The goal is to find where stale memory silently poisons a run,
 not to celebrate that M1 shipped.
 
+> **As-built note (Row 11 PR-B, 2026-06-14):** The read-only memory injection
+> analysis path now computes advisory repo reality signals for six dimensions:
+> `db_engine`, `backend_framework`, `frontend_framework`, `test_runner`,
+> `migration_tool`, and `package_manager`. `db_engine` still comes from the
+> existing DB fingerprint path and DB gate behavior is unchanged. The five
+> non-DB dimensions come from a conservative producer in
+> `backend/repo/repo_fingerprint.py`, are gated by
+> `policy.REPO_REALITY_SIGNAL_DIMENSIONS`, and only surface advisory
+> `reality_warnings`; no memory fact is mutated.
+
 ---
 
 ## 0. Why this exists (the one failure M1 cannot detect)
