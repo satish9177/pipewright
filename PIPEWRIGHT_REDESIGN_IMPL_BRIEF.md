@@ -1,14 +1,43 @@
 # Pipewright Redesign — Rolling Implementation Brief
 
 **Date:** 2026-06-14
-**Status:** **CLOSED — Row 12 PR-B complete.** This brief is now the closeout
-record for the request-aware memory **relevance-ordering** slice (PR-B), which
-builds on the completed PR-A scaffolding. Row 12 **PR-C** remains deferred and is
-**gated on D5** — it must not be opened until D5 is explicitly confirmed (see the
-D5 wording tension below). Rows 16 / 19 / 23 and the §21 thread UI remain
-deferred. The previous occupant — the Row 12 PR-A closeout — is complete; its
-full record lives in `PIPEWRIGHT_REDESIGN_WORKPLAN.md` and the proposal's
-Appendix E.1/E.2.
+**Status:** **D5 CONFIRMED — Row 12 PR-C implemented dormant-by-default.** D5 was
+affirmatively confirmed by the maintainer on 2026-06-14 (the D5 wording tension
+below is now **RESOLVED**), and Row 12 **PR-C** — relevance *omission* +
+priority-based human-pinning + a single global off-switch — has been implemented
+behind one default-off policy flag (`MEMORY_RELEVANCE_OMISSION_ENABLED=False`).
+The flag ships `False`, so default behavior is byte-identical to PR-B; flipping it
+on is an operational soak decision, not a code change. This brief retains the PR-B
+closeout record below (still accurate history) and adds the PR-C summary. Rows 16
+/ 19 / 23 and the §21 thread UI remain deferred. Full records live in
+`PIPEWRIGHT_REDESIGN_WORKPLAN.md` and the proposal's §24 + Appendix E.1/E.2.
+
+## Row 12 PR-C summary (request-aware omission + pinning, dormant-by-default)
+
+D5 confirmed defaults, single-sourced in `backend/pipeline/policy.py`:
+`MEMORY_RELEVANCE_OMISSION_ENABLED = False` (one global switch gating BOTH omission
+and pinning), `MEMORY_SMALL_STORE_GRACE_THRESHOLD = 12`, `MEMORY_PIN_PRIORITY_THRESHOLD = 10`.
+
+- **Flag off (shipped default) ⇒ PR-B byte-for-byte.** No omission, no pinning;
+  the relevance tier is ordered exactly as PR-B and exclusions keep their existing
+  reasons (`budget_dropped` / `category_not_allowed_for_role`).
+- **Pinning (flag on).** A fact with `priority ≤ 10` joins the mandatory tier
+  (never scored, omitted, or budget-dropped). Request-context-independent, so it
+  applies to every caller; the mandatory-overflow error message generalizes to
+  "mandatory tier (safety + pinned)". Rides the existing `priority` field — no
+  schema, no Pin button.
+- **Omission (flag on).** A zero-signal relevance fact (zero path-overlap **and**
+  zero token-overlap) is excluded with `not_relevant_to_request` — but only when
+  the request carries signal, the relevance-candidate count exceeds the grace
+  threshold, and at least one relevance fact carries signal. If no relevance fact
+  carries signal, nothing is omitted (all-zero degeneracy guard preserved). A
+  kept fact may still be `budget_dropped`. Omission is coder-only in practice.
+- **Files:** `backend/pipeline/policy.py` (3 constants), `backend/memory/prompt_builder.py`
+  (pinning into the mandatory tier + omission in the relevance tier, both flag-gated),
+  `backend/tests/test_memory_selection_scaffolding.py` (coverage). `coder.py` needed
+  no change — omission rides the `request_context` it already passes.
+- **Rollback:** set `MEMORY_RELEVANCE_OMISSION_ENABLED = False` (the shipped value);
+  selection-time only, nothing persisted to unwind.
 
 ---
 
@@ -136,28 +165,33 @@ PR-B turned the dormant PR-A scaffolding into observable, auditable request-awar
   tests** that need a configured target repo and fail identically without this
   change.
 
-## D5 wording tension (resolve before PR-C — the next gated slice)
+## D5 wording tension — RESOLVED (2026-06-14)
 
-There is a soft contradiction in the planning docs that must be settled before
-**PR-C** (the omission/pinning slice), and PR-C must not be opened until it is:
+The soft contradiction in the planning docs (Appendix E.2 "accepted as written"
+vs. §12/B1 "confirm pin mechanism" vs. §24's gating map "12 needs D5") is now
+settled by an **affirmative maintainer confirmation**, recorded as the
+single-source "D5 confirmed" note in **§24**:
 
-- **Appendix E.2** records §24's recommended defaults as "accepted as written,"
-  including **D5**.
-- **§12 / B1** still flags an open sub-question — "confirm pin mechanism
-  (priority-based vs. explicit flag)" — and **§24's gating map** still lists
-  "12 needs D5."
-- **§11.1** recommends the pin mechanism as priority-based (pinned = `priority ≤
-  pin_threshold`, policy default 10, no schema change).
+- **Relevance-omission semantics + grace threshold:** confirmed — omit zero-signal
+  relevance facts above `MEMORY_SMALL_STORE_GRACE_THRESHOLD` (default 12, counted
+  over non-mandatory in-policy relevance facts), preserving the all-zero
+  degeneracy guard.
+- **Pin mechanism:** confirmed **priority-based** (pinned = `priority ≤
+  MEMORY_PIN_PRIORITY_THRESHOLD`, default 10, no schema change) — resolving the
+  §12/B1 "priority-based vs. explicit flag" sub-question in favour of priority.
+- **Off-switch:** confirmed as the single global flag (no per-project setting).
 
-Row 12-PR-C is the first slice that actually exercises D5, so the maintainer
-should **affirmatively confirm** (a) relevance-omission semantics + grace
-threshold (default 12) and (b) the pin mechanism — rather than relying on the
-blanket "accepted as written" — before PR-C is implemented.
+PR-C ships dormant (`MEMORY_RELEVANCE_OMISSION_ENABLED=False`), so the
+confirmation activates nothing by default.
 
 ## Deferred (do not start from this brief)
 
-- **Row 12 PR-C** (relevance omission / human-pinning / per-project off-switch —
-  gated on D5).
+- **Activating `MEMORY_RELEVANCE_OMISSION_ENABLED`** in any environment — an
+  operational soak decision, not a code change (it turns on omission + pinning).
+  - When flipping it on, also update the prompt-preview 422 detail from "Memory
+    safety tier exceeds the requested token budget" to "Memory mandatory tier
+    exceeds the requested token budget" and update its API test (the route string
+    is intentionally left unchanged in PR-C to preserve flag-off parity).
 - **Row 16** — post-run hygiene (auto-analysis + generation, D7/B2).
 - **Row 19** — retriever interface + FTS rung 1.
 - **Row 23** — vector / embedding rung 2 (D6/B4).

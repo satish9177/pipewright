@@ -81,11 +81,24 @@ Current truth:
   no planner/triage/prompt-preview plumbing, and no
   schema/frontend/gate/scope/Git/PR/memory-mutation change; the scoring
   `files_expected` never reaches `scope_guard`.
-- **Deferred (not opened):** Row 12 **PR-C** (relevance omission / human-pinning /
-  off-switch — requires D5 confirmation), post-run hygiene / auto-generation (row
-  16), retriever/FTS (row 19), vector/embedding memory (row 23), and the thread/run
-  UI (rows 22b–22e). Next memory step is a maintainer **D5** decision/review before
-  opening PR-C.
+- **Row 12 PR-C — request-aware relevance omission + priority-based pinning +
+  global off-switch — COMPLETE (dormant-by-default).** D5 confirmed 2026-06-14
+  (proposal §24's "D5 confirmed" note). One default-off policy flag
+  `MEMORY_RELEVANCE_OMISSION_ENABLED=False` gates **both**: omission emits
+  `not_relevant_to_request` for zero path-overlap + zero token-overlap relevance
+  facts, but only when the flag is on, the request carries signal, the
+  relevance-candidate count exceeds `MEMORY_SMALL_STORE_GRACE_THRESHOLD` (12, over
+  non-mandatory in-policy relevance facts), and at least one relevance fact carries
+  signal (all-zero signal omits nothing); priority-based pinning routes
+  `priority ≤ MEMORY_PIN_PRIORITY_THRESHOLD` (10) facts into the mandatory tier
+  (never scored/omitted/budget-dropped). **The flag ships `False`, so default
+  behavior is byte-identical to PR-B.** No schema/frontend/per-project setting/
+  planner/triage/prompt-preview plumbing/adaptive-budget activation/retriever/FTS/
+  vector/memory-mutation change. Rollback: keep `MEMORY_RELEVANCE_OMISSION_ENABLED=False`.
+- **Deferred (not opened):** post-run hygiene / auto-generation (row 16),
+  retriever/FTS (row 19), vector/embedding memory (row 23), and the thread/run UI
+  (rows 22b–22e). The remaining Row 12 gate is **operational, not code** — flipping
+  `MEMORY_RELEVANCE_OMISSION_ENABLED` on is a soak decision.
 
 The redesign preserves every safety invariant in this doc: human approval gates,
 scope guard, branch/PR safety, no empty commits, no auto-merge, pending-only
@@ -289,22 +302,26 @@ request-aware relevance ordering** of the non-mandatory tier (coder-only
 `request_context` plumbing; deterministic rung-0 path/token overlap; ordering only,
 no omission; mandatory tier never scored/reordered/dropped). See
 `PIPEWRIGHT_REDESIGN_WORKPLAN.md`, `PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md`, and the
-proposal's Appendix E.1/E.2. The next pause is the **D5** decision/review before
-Row 12 PR-C.
+proposal's Appendix E.1/E.2. **D5 is confirmed (2026-06-14) and Row 12 PR-C is
+complete (dormant-by-default);** the next Row 12 gate is operational — flipping
+`MEMORY_RELEVANCE_OMISSION_ENABLED` on is a soak decision, not a code change.
 
 - **Safe now (no decision needed):** documentation / smoke-checklist upkeep; small
   honest stabilization fixes; optional PR-B soak follow-ups such as an endpoint
   test for `db_engine` + non-DB warning coexistence, or tightening
   backend-framework manifest substring matching later only if false positives
   appear in soak.
-- **Next memory step:** pause for maintainer **D5** decision/review before opening
-  Row 12 **PR-C**. Row 12 **PR-A** (scaffolding) and **PR-B** (request-aware
-  relevance ordering) are complete.
-- **Deferred (explicitly):** Row 12 **PR-C** (relevance omission / human-pinning /
-  off-switch — requires **D5** confirmation before implementation); post-run
-  hygiene (row 16, D7); retriever/FTS (row 19); vector/embedding memory (row 23,
-  D6); the thread/run UI (rows 22b–22e). Demo / README / devex polish remains fine
-  opportunistically, but is no longer the recommended next step.
+- **Next memory step:** Row 12 is fully implemented — **PR-A** (scaffolding),
+  **PR-B** (relevance ordering), and **PR-C** (relevance omission + priority-based
+  pinning + global off-switch, dormant-by-default) are all complete. The remaining
+  Row 12 action is operational: a soak decision on whether/when to flip
+  `MEMORY_RELEVANCE_OMISSION_ENABLED` on. The next *code* memory step is row 16
+  (post-run hygiene, D7), row 19 (retriever/FTS), or row 23 (vector, D6).
+- **Deferred (explicitly):** activating `MEMORY_RELEVANCE_OMISSION_ENABLED` (soak
+  decision, not code); post-run hygiene (row 16, D7); retriever/FTS (row 19);
+  vector/embedding memory (row 23, D6); the thread/run UI (rows 22b–22e). Demo /
+  README / devex polish remains fine opportunistically, but is no longer the
+  recommended next step.
 
 ---
 
@@ -355,9 +372,11 @@ change. ROW 11 COMPLETE. CANONICAL roadmap: PIPEWRIGHT_REDESIGN_WORKPLAN.md (seq
 proposal §23; decisions §24; cycle window Appendix E). This current-state page is
 a snapshot; the workplan wins.
 
-CURRENT NEXT RECOMMENDED TASK: pause for maintainer D5 decision/review before
-opening Row 12 PR-C. Row 12 PR-A (scaffolding) and PR-B (request-aware relevance
-ordering) are COMPLETE. PR-A: request_context dormant; request_context=None
+CURRENT NEXT RECOMMENDED TASK: Row 12 is fully implemented; D5 confirmed 2026-06-14.
+Row 12 PR-A (scaffolding), PR-B (relevance ordering), and PR-C (relevance omission +
+priority-based pinning + global off-switch, dormant-by-default) are COMPLETE. The
+remaining Row 12 action is operational (a soak decision on whether/when to flip
+MEMORY_RELEVANCE_OMISSION_ENABLED on). PR-A: request_context dormant; request_context=None
 preserves existing injection behavior; budgets/estimator single-sourced in policy;
 adaptive budget scaffolding disabled; security+forbidden_paths mandatory and cannot
 be budget-dropped; MandatoryMemoryBudgetExceeded is the typed overflow;
@@ -367,9 +386,16 @@ path/token relevance ordering of the non-mandatory tier (reusing memory_trust
 helpers), tie-broken by the legacy key; request_context=None byte-identical;
 all-zero overlap preserves legacy order; mandatory tier never
 scored/reordered/dropped; ordering only, no omission, not_relevant_to_request still
-never emitted. DEFERRED: Row 12 PR-C (relevance omission / human-pinning /
-off-switch, requires D5 confirmation); post-run hygiene (row 16); retriever/FTS
-(row 19); vector/embedding (row 23); thread UI (22b–22e).
+never emitted. PR-C: one default-off flag MEMORY_RELEVANCE_OMISSION_ENABLED gates
+BOTH relevance omission (zero path+token overlap relevance facts excluded with
+not_relevant_to_request, only above MEMORY_SMALL_STORE_GRACE_THRESHOLD=12 counted over
+non-mandatory relevance facts, with the all-zero degeneracy guard preserved) and
+priority-based pinning (priority<=MEMORY_PIN_PRIORITY_THRESHOLD=10 joins the mandatory
+tier, never scored/omitted/budget-dropped); flag ships False so default == PR-B
+byte-for-byte; no schema/frontend/per-project/planner/triage/prompt-preview plumbing/
+adaptive/retriever/FTS/vector/memory-mutation change. DEFERRED: activating
+MEMORY_RELEVANCE_OMISSION_ENABLED (soak decision, not code); post-run hygiene (row 16);
+retriever/FTS (row 19); vector/embedding (row 23); thread UI (22b–22e).
 
 INVARIANTS (do not violate):
 - Never bypass chunk plan approval or final approval. Final approval is NOT
