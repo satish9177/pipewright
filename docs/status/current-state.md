@@ -51,11 +51,19 @@ Current truth:
   detector rules while preserving `suggested_test_command` behavior byte-for-byte.
   It included no PR-C2/new detector coverage, no classifier or runtime-validation
   change, and no frontend/schema/memory/gate/scope/Git/PR behavior change.
-- **Row 11 is COMPLETE.** Pause for an explicit maintainer decision before opening
-  the next memory row.
-- **Not next:** request-aware memory selection (row 12), retriever/FTS (row 19),
-  post-run hygiene / auto-generation (row 16), vector/embedding memory (row 23),
-  and the thread/run UI (rows 22b–22e).
+- **Row 11 is COMPLETE; Row 12 PR-A is now the open, active memory slice**
+  (docs-only opening, 2026-06-14). Row 12 PR-A is no-op-by-default scaffolding: a
+  dormant `request_context` (default `None`, byte-identical injected block), a
+  `security`/`forbidden_paths`-only mandatory safety tier, policy single-sourcing
+  of the injection budgets / token estimator / adaptive guardrail, and a
+  defined-but-dormant `not_relevant_to_request` provenance reason that is never
+  emitted. It is decision-free (it never acts on D5); design-first via
+  `PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md`, with **no code until that brief is
+  reviewed**. No schema, no injection-behavior change, no memory mutation.
+- **Deferred (not opened):** Row 12 **PR-B** (relevance ordering) and **PR-C**
+  (relevance omission / human-pinning / off-switch — requires D5 confirmation),
+  post-run hygiene / auto-generation (row 16), retriever/FTS (row 19),
+  vector/embedding memory (row 23), and the thread/run UI (rows 22b–22e).
 
 The redesign preserves every safety invariant in this doc: human approval gates,
 scope guard, branch/PR safety, no empty commits, no auto-merge, pending-only
@@ -178,9 +186,11 @@ routes revalidate every mutating action.
   PR-A (detection rules-as-data) is COMPLETE**; pre-PR-B fixture hardening is
   COMPLETE; **PR-B (advisory repo reality signals) is COMPLETE**; **PR-C
   (behavior-preserving test-command detector rules refactor) is COMPLETE**; and
-  **Row 11 is COMPLETE**. Request-aware selection (row 12), post-run hygiene
-  (row 16), retriever/FTS (row 19), vector/embedding memory (row 23), and thread
-  UI remain not-next until explicitly opened. See the workplan.
+  **Row 11 is COMPLETE**. Request-aware selection **row 12 PR-A** (no-op
+  scaffolding) is now OPEN (docs-only, 2026-06-14); its **PR-B** (ordering) and
+  **PR-C** (omission / pinning, D5), plus post-run hygiene (row 16), retriever/FTS
+  (row 19), vector/embedding memory (row 23), and thread UI remain not-next until
+  explicitly opened. See the workplan.
 - **Production hardening** (Postgres/Alembic, durable events, DB locks at scale,
   deployment).
 - **Deployment / Ollama / Provider Settings UI / BYOK DB storage / execution
@@ -248,22 +258,27 @@ is the db-only rollback kill switch. PR-B mutates no memory facts: no stale mark
 archiving, writes, `last_verified_at` bump, active memory creation, or auto-approval.
 PR-C refactored the test-command detector into ordered rules with no PR-C2/new
 coverage and no classifier/runtime-validation/frontend/schema/memory/gate/scope/Git/PR
-behavior change. **Row 11 is complete.** See
-`PIPEWRIGHT_REDESIGN_WORKPLAN.md` and the proposal's Appendix E.1/E.2 (reconciled
-2026-06-14) for the cycle window.
+behavior change. **Row 11 is complete; the next active memory slice is now Row 12
+PR-A** — no-op-by-default request-aware-selection scaffolding (docs-only opening,
+design-first, no code until the brief is reviewed). See
+`PIPEWRIGHT_REDESIGN_WORKPLAN.md`, `PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md`, and the
+proposal's Appendix E.1/E.2 (reconciled 2026-06-14, Row 12 PR-A opening) for the
+cycle window.
 
 - **Safe now (no decision needed):** documentation / smoke-checklist upkeep; small
   honest stabilization fixes; optional PR-B soak follow-ups such as an endpoint
   test for `db_engine` + non-DB warning coexistence, or tightening
   backend-framework manifest substring matching later only if false positives
   appear in soak.
-- **Next memory work:** pause for an explicit maintainer decision before opening the
-  next memory row.
-- **Not next (explicitly deferred):** request-aware selection (row 12, D5);
-  post-run hygiene (row 16, D7);
-  retriever/FTS (row 19); vector/embedding memory (row 23, D6); the thread/run UI
-  (rows 22b–22e). Demo / README / devex polish remains fine opportunistically, but
-  is no longer the recommended next step.
+- **Next memory work (open):** Row 12 **PR-A** — request-aware selection
+  scaffolding, no-op by default; decision-free; design-first via
+  `PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md` (no code until reviewed).
+- **Deferred (explicitly):** Row 12 **PR-B** (relevance ordering) and **PR-C**
+  (relevance omission / human-pinning / off-switch — requires **D5** confirmation
+  before implementation); post-run hygiene (row 16, D7); retriever/FTS (row 19);
+  vector/embedding memory (row 23, D6); the thread/run UI (rows 22b–22e). Demo /
+  README / devex polish remains fine opportunistically, but is no longer the
+  recommended next step.
 
 ---
 
@@ -314,13 +329,15 @@ change. ROW 11 COMPLETE. CANONICAL roadmap: PIPEWRIGHT_REDESIGN_WORKPLAN.md (seq
 proposal §23; decisions §24; cycle window Appendix E). This current-state page is
 a snapshot; the workplan wins.
 
-CURRENT NEXT RECOMMENDED TASK: pause for a maintainer decision before opening the
-next memory row; docs / smoke-checklist upkeep and small honest stabilization are
-safe. Optional PR-B soak follow-ups: endpoint test for db_engine + non-DB warning
-coexistence; tighten backend-framework manifest substring matching later only if
-false positives appear. NOT NEXT: request-aware selection (row 12); retriever/FTS
-(row 19); post-run hygiene (row 16); vector/embedding (row 23); thread UI
-(22b–22e).
+CURRENT NEXT RECOMMENDED TASK: Row 12 PR-A is OPEN (docs-only opening 2026-06-14) —
+request-aware selection scaffolding, no-op by default: dormant request_context
+(default None / byte-identical block), security+forbidden_paths-only mandatory
+safety tier, policy single-sourcing of injection budgets/estimator/adaptive
+guardrail, dormant not_relevant_to_request reason (never emitted). Decision-free;
+design-first via PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md; no code until the brief is
+reviewed. DEFERRED: Row 12 PR-B (relevance ordering) and PR-C (relevance omission /
+human-pinning / off-switch, requires D5 confirmation); post-run hygiene (row 16);
+retriever/FTS (row 19); vector/embedding (row 23); thread UI (22b–22e).
 
 INVARIANTS (do not violate):
 - Never bypass chunk plan approval or final approval. Final approval is NOT
