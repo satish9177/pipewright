@@ -23,6 +23,7 @@ from backend.llm.errors import LLMError
 from backend.llm.role_config import Role
 from backend.memory.memory_store import add_fact
 from backend.memory.prompt_builder import (
+    RequestContext,
     build_project_memory_block_detailed as real_build_memory_block_detailed,
 )
 from backend.models.handoff import PlannerHandoff
@@ -426,7 +427,7 @@ async def test_coder_prompt_injection_skips_empty_memory(monkeypatch, tmp_repo):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_coder_passes_project_id_to_memory_builder(monkeypatch, tmp_repo):
+async def test_coder_passes_request_context_to_memory_builder(monkeypatch, tmp_repo):
     run_id = str(uuid.uuid4())
     project_id = f"coder-spy-{uuid.uuid4().hex}"
     plan = make_test_plan(run_id)
@@ -441,11 +442,26 @@ async def test_coder_passes_project_id_to_memory_builder(monkeypatch, tmp_repo):
 
     monkeypatch.setattr(coder, "build_project_memory_block_detailed", spy_builder)
 
-    await run_coder(plan=plan, run_id=run_id, project_id=project_id)
+    continuation_context = "Previous attempt failed; keep the edit narrow."
+    await run_coder(
+        plan=plan,
+        run_id=run_id,
+        project_id=project_id,
+        continuation_context=continuation_context,
+    )
 
     assert len(calls) == 1
     assert calls[0]["project_id"] == project_id
     assert calls[0]["role"] == "coder"
+    assert "scopes" not in calls[0]
+    request_context = calls[0]["request_context"]
+    assert isinstance(request_context, RequestContext)
+    assert request_context.title == plan.goal
+    assert request_context.description == plan.feature_description
+    assert request_context.files_expected == tuple(
+        [*plan.files_to_modify, *plan.files_to_create]
+    )
+    assert request_context.steer_text == continuation_context
 
 
 @pytest.mark.unit

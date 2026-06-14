@@ -1,9 +1,9 @@
 """
-Row 12 PR-A memory-selection scaffolding tests.
+Memory-selection scaffolding and relevance-ordering tests.
 
-PR-A is intentionally no-op by default: request_context is accepted but dormant,
-the old static budgets remain effective while the adaptive flag is off, and no
-fact is excluded for request relevance.
+request_context=None preserves the legacy memory block bytes. A populated
+request_context can reorder only the non-mandatory relevance tier; facts are
+not omitted for relevance in this slice.
 """
 
 import uuid
@@ -112,32 +112,139 @@ def test_request_context_none_keeps_legacy_block_bytes(project_ids):
     ] == [("Reviewer preference hidden.", EXCLUSION_CATEGORY_NOT_ALLOWED)]
 
 
-def test_populated_request_context_is_dormant_in_pr_a(project_ids):
+def test_populated_request_context_reorders_relevance_tier_without_omission(
+    project_ids,
+):
     project_id = _new_project(project_ids)
-    for index in range(4):
-        add_fact(
-            project_id,
-            f"Stack fact number {index}: backend uses FastAPI.",
-            category="stack",
-            priority=100 + index,
-        )
+    add_fact(
+        project_id,
+        "Backend uses FastAPI routers.",
+        category="stack",
+        scope="backend",
+    )
+    add_fact(
+        project_id,
+        "Tests use pytest fixtures.",
+        category="test",
+    )
+    add_fact(
+        project_id,
+        "Frontend App tsx component lives in frontend src.",
+        category="structure",
+        scope="frontend",
+    )
 
     context = RequestContext(
-        title="Change frontend tests",
-        description="The request text should not reorder memory in PR-A.",
+        title="Update the frontend App view",
+        description="Change App component rendering.",
         files_expected=("frontend/src/App.tsx",),
         steer_text="Prefer the smallest edit.",
     )
     without_context = build_project_memory_block_detailed(
         project_id=project_id,
         role="planner",
-        token_budget=18,
+        token_budget=200,
     )
     with_context = build_project_memory_block_detailed(
         project_id=project_id,
         role="planner",
-        token_budget=18,
+        token_budget=200,
         request_context=context,
+    )
+
+    assert {entry.content for entry in with_context.included_entries} == {
+        entry.content for entry in without_context.included_entries
+    }
+    assert [entry.content for entry in without_context.included_entries] == [
+        "Backend uses FastAPI routers.",
+        "Tests use pytest fixtures.",
+        "Frontend App tsx component lives in frontend src.",
+    ]
+    assert [
+        (entry.content, entry.category, entry.scope, entry.priority)
+        for entry in with_context.included_entries
+    ] == [
+        (
+            "Frontend App tsx component lives in frontend src.",
+            "structure",
+            "frontend",
+            100,
+        ),
+        ("Backend uses FastAPI routers.", "stack", "backend", 100),
+        ("Tests use pytest fixtures.", "test", "global", 100),
+    ]
+    assert with_context.excluded_entries == ()
+
+
+def test_relevance_ordering_keeps_high_signal_fact_under_binding_budget(
+    project_ids,
+):
+    project_id = _new_project(project_ids)
+    zero_overlap = add_fact(
+        project_id,
+        "Style rule: keep helper naming concise.",
+        category="style",
+        priority=100,
+    )
+    high_relevance = add_fact(
+        project_id,
+        "Style rule: frontend App tsx rendering stays simple.",
+        category="style",
+        priority=100,
+    )
+    budget = _line_tokens("style", "global", high_relevance["content"])
+
+    result = build_project_memory_block_detailed(
+        project_id=project_id,
+        role="planner",
+        token_budget=budget,
+        request_context=RequestContext(
+            title="Update App rendering",
+            files_expected=("frontend/src/App.tsx",),
+        ),
+    )
+
+    assert [
+        (entry.content, entry.category, entry.scope, entry.priority)
+        for entry in result.included_entries
+    ] == [
+        (
+            "Style rule: frontend App tsx rendering stays simple.",
+            "style",
+            "global",
+            100,
+        )
+    ]
+    assert [
+        (entry.content, entry.exclusion_reason)
+        for entry in result.excluded_entries
+    ] == [(zero_overlap["content"], EXCLUSION_BUDGET_DROPPED)]
+    assert EXCLUSION_NOT_RELEVANT_TO_REQUEST not in {
+        entry.exclusion_reason for entry in result.excluded_entries
+    }
+
+
+def test_all_zero_request_overlap_preserves_legacy_order(project_ids):
+    project_id = _new_project(project_ids)
+    add_fact(project_id, "Backend uses FastAPI routers.", category="stack")
+    add_fact(project_id, "Tests use pytest fixtures.", category="test")
+    add_fact(project_id, "Structure rule: services stay layered.", category="structure")
+
+    without_context = build_project_memory_block_detailed(
+        project_id=project_id,
+        role="planner",
+        token_budget=200,
+    )
+    with_context = build_project_memory_block_detailed(
+        project_id=project_id,
+        role="planner",
+        token_budget=200,
+        request_context=RequestContext(
+            title="Banana orchard change",
+            description="Adjust pear grove notes.",
+            files_expected=("docs/kiwi.md",),
+            steer_text="Mention melon only.",
+        ),
     )
 
     assert _strip_generated(with_context.block) == _strip_generated(
@@ -145,6 +252,45 @@ def test_populated_request_context_is_dormant_in_pr_a(project_ids):
     )
     assert with_context.included_entries == without_context.included_entries
     assert with_context.excluded_entries == without_context.excluded_entries
+
+
+def test_relevance_ordering_is_deterministic_and_ties_use_legacy_key(
+    project_ids,
+):
+    project_id = _new_project(project_ids)
+    add_fact(
+        project_id,
+        "Style fact alpha frontend.",
+        category="style",
+        priority=200,
+    )
+    add_fact(
+        project_id,
+        "Style fact beta frontend.",
+        category="style",
+        priority=100,
+    )
+    context = RequestContext(title="frontend")
+
+    first = build_project_memory_block_detailed(
+        project_id=project_id,
+        role="planner",
+        token_budget=200,
+        request_context=context,
+    )
+    second = build_project_memory_block_detailed(
+        project_id=project_id,
+        role="planner",
+        token_budget=200,
+        request_context=context,
+    )
+
+    assert [entry.content for entry in first.included_entries] == [
+        "Style fact beta frontend.",
+        "Style fact alpha frontend.",
+    ]
+    assert first.included_entries == second.included_entries
+    assert first.excluded_entries == second.excluded_entries
 
 
 def test_mandatory_safety_facts_are_never_budget_dropped(project_ids):
@@ -177,6 +323,11 @@ def test_mandatory_safety_facts_are_never_budget_dropped(project_ids):
         project_id=project_id,
         role="planner",
         token_budget=mandatory_budget,
+        request_context=RequestContext(
+            title="Change backend FastAPI behavior",
+            description="This matches the non-mandatory stack fact.",
+            files_expected=("backend/app.py",),
+        ),
     )
 
     assert [

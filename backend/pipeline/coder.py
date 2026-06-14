@@ -27,7 +27,10 @@ from backend.llm.role_config import Role
 from backend.memory.memory_store import ALLOWED_CATEGORIES, ALLOWED_SCOPES
 from backend.models.handoff import PlannerHandoff, CoderHandoff
 from backend.memory.injection_store import capture_memory_injection
-from backend.memory.prompt_builder import build_project_memory_block_detailed
+from backend.memory.prompt_builder import (
+    RequestContext,
+    build_project_memory_block_detailed,
+)
 from backend.checkpoint.checkpoint_store import save_checkpoint
 from backend.pipeline.llm_call_provenance_store import try_record_llm_call_provenance
 from backend.pipeline.policy import LARGE_FILE_CONTEXT_LINE_CAP, MAX_FILE_LINES
@@ -420,10 +423,17 @@ async def run_coder(
     logger.info("[CODER] Starting | run_id=%s", run_id)
 
     try:
+        request_context = RequestContext(
+            title=plan.goal,
+            description=plan.feature_description,
+            files_expected=tuple([*plan.files_to_modify, *plan.files_to_create]),
+            steer_text=continuation_context,
+        )
         memory_result = build_project_memory_block_detailed(
             project_id=project_id,
             role="coder",
             project_name=project_name,
+            request_context=request_context,
         )
         project_memory_block = memory_result.block
         # Best-effort provenance capture from the SAME computation. Never raises;
