@@ -82,8 +82,10 @@ Current truth:
   schema/frontend/gate/scope/Git/PR/memory-mutation change; the scoring
   `files_expected` never reaches `scope_guard`.
 - **Row 12 PR-C — request-aware relevance omission + priority-based pinning +
-  global off-switch — COMPLETE (dormant-by-default).** D5 confirmed 2026-06-14
-  (proposal §24's "D5 confirmed" note). One default-off policy flag
+  global off-switch — COMPLETE & MERGED (dormant-by-default). Row 12 is now fully
+  implemented (PR-A scaffolding + PR-B ordering + PR-C omission/pinning).** D5
+  confirmed 2026-06-14 (proposal §24's "D5 confirmed" note). One default-off policy
+  flag
   `MEMORY_RELEVANCE_OMISSION_ENABLED=False` gates **both**: omission emits
   `not_relevant_to_request` for zero path-overlap + zero token-overlap relevance
   facts, but only when the flag is on, the request carries signal, the
@@ -98,7 +100,9 @@ Current truth:
 - **Deferred (not opened):** post-run hygiene / auto-generation (row 16),
   retriever/FTS (row 19), vector/embedding memory (row 23), and the thread/run UI
   (rows 22b–22e). The remaining Row 12 gate is **operational, not code** — flipping
-  `MEMORY_RELEVANCE_OMISSION_ENABLED` on is a soak decision.
+  `MEMORY_RELEVANCE_OMISSION_ENABLED` on is a soak decision (and omission/pinning
+  stay dormant until then). **Next step: a maintainer / Claude roadmap review
+  before opening any new row or activating the flag.**
 
 The redesign preserves every safety invariant in this doc: human approval gates,
 scope guard, branch/PR safety, no empty commits, no auto-merge, pending-only
@@ -293,30 +297,38 @@ is the db-only rollback kill switch. PR-B mutates no memory facts: no stale mark
 archiving, writes, `last_verified_at` bump, active memory creation, or auto-approval.
 PR-C refactored the test-command detector into ordered rules with no PR-C2/new
 coverage and no classifier/runtime-validation/frontend/schema/memory/gate/scope/Git/PR
-behavior change. **Row 11 is complete; Row 12 PR-A and PR-B are also complete.**
+behavior change. **Row 11 is complete; Row 12 is complete — PR-A, PR-B, and PR-C are all merged.**
 PR-A was no-op-by-default request-aware-selection scaffolding (`request_context`
 dormant; `request_context=None` preserves existing injection behavior; policy owns
 memory budgets / token estimation; adaptive budgets disabled; safety facts
 mandatory; prompt-preview maps mandatory overflow to 422). **PR-B added
 request-aware relevance ordering** of the non-mandatory tier (coder-only
 `request_context` plumbing; deterministic rung-0 path/token overlap; ordering only,
-no omission; mandatory tier never scored/reordered/dropped). See
+no omission; mandatory tier never scored/reordered/dropped). **PR-C added
+request-aware relevance omission + priority-based human-pinning + a global
+off-switch**, all behind one default-off flag `MEMORY_RELEVANCE_OMISSION_ENABLED`
+(grace threshold 12 over relevance-tier facts; pinned = `priority ≤ 10`). See
 `PIPEWRIGHT_REDESIGN_WORKPLAN.md`, `PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md`, and the
-proposal's Appendix E.1/E.2. **D5 is confirmed (2026-06-14) and Row 12 PR-C is
-complete (dormant-by-default);** the next Row 12 gate is operational — flipping
-`MEMORY_RELEVANCE_OMISSION_ENABLED` on is a soak decision, not a code change.
+proposal's Appendix E.1/E.2. **D5 is confirmed (2026-06-14) and Row 12 is complete —
+PR-A, PR-B, and PR-C are all merged, with PR-C shipped dormant
+(`MEMORY_RELEVANCE_OMISSION_ENABLED=False`).** Omission and pinning are not active
+until the flag is explicitly flipped later (a soak decision, not a code change).
+**Recommended next step: a maintainer / Claude roadmap review before opening any new
+row or activating the flag** — do not auto-start row 16/19/23 or the thread UI.
 
 - **Safe now (no decision needed):** documentation / smoke-checklist upkeep; small
   honest stabilization fixes; optional PR-B soak follow-ups such as an endpoint
   test for `db_engine` + non-DB warning coexistence, or tightening
   backend-framework manifest substring matching later only if false positives
   appear in soak.
-- **Next memory step:** Row 12 is fully implemented — **PR-A** (scaffolding),
+- **Next memory step:** Row 12 is complete and merged — **PR-A** (scaffolding),
   **PR-B** (relevance ordering), and **PR-C** (relevance omission + priority-based
-  pinning + global off-switch, dormant-by-default) are all complete. The remaining
-  Row 12 action is operational: a soak decision on whether/when to flip
-  `MEMORY_RELEVANCE_OMISSION_ENABLED` on. The next *code* memory step is row 16
-  (post-run hygiene, D7), row 19 (retriever/FTS), or row 23 (vector, D6).
+  pinning + global off-switch, dormant-by-default) are all done. The recommended
+  next step is a **maintainer / Claude roadmap review before opening any new row or
+  activating the flag** — do not auto-start row 16 (post-run hygiene, D7), row 19
+  (retriever/FTS), row 23 (vector, D6), or the thread UI. The only outstanding Row
+  12 action is operational: a soak decision on whether/when to flip
+  `MEMORY_RELEVANCE_OMISSION_ENABLED` on.
 - **Deferred (explicitly):** activating `MEMORY_RELEVANCE_OMISSION_ENABLED` (soak
   decision, not code); post-run hygiene (row 16, D7); retriever/FTS (row 19);
   vector/embedding memory (row 23, D6); the thread/run UI (rows 22b–22e). Demo /
@@ -372,11 +384,13 @@ change. ROW 11 COMPLETE. CANONICAL roadmap: PIPEWRIGHT_REDESIGN_WORKPLAN.md (seq
 proposal §23; decisions §24; cycle window Appendix E). This current-state page is
 a snapshot; the workplan wins.
 
-CURRENT NEXT RECOMMENDED TASK: Row 12 is fully implemented; D5 confirmed 2026-06-14.
+CURRENT NEXT RECOMMENDED TASK: a maintainer / Claude roadmap review before opening any
+new row or activating the flag. Row 12 is COMPLETE and MERGED; D5 confirmed 2026-06-14.
 Row 12 PR-A (scaffolding), PR-B (relevance ordering), and PR-C (relevance omission +
-priority-based pinning + global off-switch, dormant-by-default) are COMPLETE. The
-remaining Row 12 action is operational (a soak decision on whether/when to flip
-MEMORY_RELEVANCE_OMISSION_ENABLED on). PR-A: request_context dormant; request_context=None
+priority-based pinning + global off-switch, dormant-by-default) are all merged. The
+only outstanding Row 12 action is operational (a soak decision on whether/when to flip
+MEMORY_RELEVANCE_OMISSION_ENABLED on); do not auto-start row 16/19/23 or the thread UI.
+PR-A: request_context dormant; request_context=None
 preserves existing injection behavior; budgets/estimator single-sourced in policy;
 adaptive budget scaffolding disabled; security+forbidden_paths mandatory and cannot
 be budget-dropped; MandatoryMemoryBudgetExceeded is the typed overflow;

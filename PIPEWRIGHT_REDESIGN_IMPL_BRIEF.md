@@ -1,16 +1,19 @@
 # Pipewright Redesign — Rolling Implementation Brief
 
 **Date:** 2026-06-14
-**Status:** **D5 CONFIRMED — Row 12 PR-C implemented dormant-by-default.** D5 was
+**Status:** **ROW 12 COMPLETE — PR-A, PR-B, and PR-C are all merged.** D5 was
 affirmatively confirmed by the maintainer on 2026-06-14 (the D5 wording tension
 below is now **RESOLVED**), and Row 12 **PR-C** — relevance *omission* +
-priority-based human-pinning + a single global off-switch — has been implemented
+priority-based human-pinning + a single global off-switch — has been **merged**
 behind one default-off policy flag (`MEMORY_RELEVANCE_OMISSION_ENABLED=False`).
-The flag ships `False`, so default behavior is byte-identical to PR-B; flipping it
-on is an operational soak decision, not a code change. This brief retains the PR-B
-closeout record below (still accurate history) and adds the PR-C summary. Rows 16
-/ 19 / 23 and the §21 thread UI remain deferred. Full records live in
-`PIPEWRIGHT_REDESIGN_WORKPLAN.md` and the proposal's §24 + Appendix E.1/E.2.
+The flag ships `False`, so default behavior is byte-identical to PR-B; omission and
+priority pinning are **dormant** until the flag is explicitly flipped later (an
+operational soak decision, not a code change — and out of scope for this closeout).
+This brief retains the PR-B closeout record below (still accurate history) and adds
+the PR-C summary. Rows 16 / 19 / 23 and the §21 thread UI remain deferred. **Next
+step: a maintainer / Claude roadmap review before opening any new row or activating
+the flag.** Full records live in `PIPEWRIGHT_REDESIGN_WORKPLAN.md` and the
+proposal's §24 + Appendix E.1/E.2.
 
 ## Row 12 PR-C summary (request-aware omission + pinning, dormant-by-default)
 
@@ -45,9 +48,10 @@ and pinning), `MEMORY_SMALL_STORE_GRACE_THRESHOLD = 12`, `MEMORY_PIN_PRIORITY_TH
 
 Row 12 opened **one sub-slice at a time, safest first.** PR-A (decision-free
 scaffolding) landed first, was reviewed, and closed. **PR-B (relevance ordering
-only) has now been reviewed and merged.** PR-C (relevance omission + human-pinning
-+ per-project off-switch) remains deferred and **requires explicit D5
-confirmation** before it is opened.
+only) was reviewed and merged.** **PR-C (relevance omission + priority-based
+human-pinning + global off-switch) was reviewed and merged after D5 was
+affirmatively confirmed** — shipped dormant (`MEMORY_RELEVANCE_OMISSION_ENABLED=False`).
+Row 12 is now complete.
 
 ## Row 12 sub-slice split
 
@@ -60,11 +64,13 @@ confirmation** before it is opened.
   signal (lexical overlap on chunk title / description / `files_expected` /
   steer). Same set considered (no omission); `request_context` is plumbed from the
   **coder** only. Details below.
-- **PR-C — relevance *omission* + human-pinning + per-project off-switch —
-  DEFERRED, gated on D5.** The first slice that actually *acts* on D5: it would
-  emit `not_relevant_to_request`, activate omission above the small-store grace
-  threshold, and add human-pinned facts to the mandatory tier. Must not be
-  implemented until D5 is explicitly confirmed.
+- **PR-C — relevance *omission* + priority-based human-pinning + global
+  off-switch — COMPLETE (merged, dormant-by-default).** The slice that acts on D5,
+  behind one default-off flag (`MEMORY_RELEVANCE_OMISSION_ENABLED=False`): when the
+  flag is on it emits `not_relevant_to_request` for zero-signal relevance facts
+  above the small-store grace threshold (12, over relevance-tier facts) and routes
+  priority-pinned facts (`priority ≤ 10`) into the mandatory tier. The off-switch
+  is the global flag (no per-project setting). See the PR-C summary above.
 
 ## Row 12 PR-B closeout (request-aware relevance ordering)
 
