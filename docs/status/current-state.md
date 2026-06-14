@@ -45,8 +45,14 @@ Current truth:
   `policy.REPO_REALITY_SIGNAL_DIMENSIONS`; setting it back to
   `frozenset({"db_engine"})` restores db-only advisory signal behavior. PR-B mutates
   no memory facts: no stale marking, no archiving, no writes, no `last_verified_at`
-  bump, no active memory creation, and no auto-approval. PR-C (test-command detector
-  backfill) remains later.
+  bump, no active memory creation, and no auto-approval.
+- **Row 11 PR-C — test-command detector rules refactor — COMPLETE.** PR-C
+  refactored `backend/pipeline/test_command_detection.py` into explicit ordered
+  detector rules while preserving `suggested_test_command` behavior byte-for-byte.
+  It included no PR-C2/new detector coverage, no classifier or runtime-validation
+  change, and no frontend/schema/memory/gate/scope/Git/PR behavior change.
+- **Row 11 is COMPLETE.** Pause for an explicit maintainer decision before opening
+  the next memory row.
 - **Not next:** request-aware memory selection (row 12), retriever/FTS (row 19),
   post-run hygiene / auto-generation (row 16), vector/embedding memory (row 23),
   and the thread/run UI (rows 22b–22e).
@@ -170,10 +176,11 @@ routes revalidate every mutating action.
   LLM-assisted memory, pgvector at scale). **[STALE 2026-06-14]** The redesign
   reframes Area B (memory) as the §23 row series: M5 (row 7) shipped; **row 11
   PR-A (detection rules-as-data) is COMPLETE**; pre-PR-B fixture hardening is
-  COMPLETE; **PR-B (advisory repo reality signals) is COMPLETE**; PR-C
-  (test-command detector backfill) remains later. Request-aware selection (row
-  12), post-run hygiene (row 16), retriever/FTS (row 19), vector/embedding memory
-  (row 23), and thread UI remain not-next. See the workplan.
+  COMPLETE; **PR-B (advisory repo reality signals) is COMPLETE**; **PR-C
+  (behavior-preserving test-command detector rules refactor) is COMPLETE**; and
+  **Row 11 is COMPLETE**. Request-aware selection (row 12), post-run hygiene
+  (row 16), retriever/FTS (row 19), vector/embedding memory (row 23), and thread
+  UI remain not-next until explicitly opened. See the workplan.
 - **Production hardening** (Postgres/Alembic, durable events, DB locks at scale,
   deployment).
 - **Deployment / Ollama / Provider Settings UI / BYOK DB storage / execution
@@ -239,7 +246,9 @@ on read and surfaced only through existing memory injection analysis `reality_wa
 `db_engine` and DB conflict gate behavior remain unchanged; `policy.REPO_REALITY_SIGNAL_DIMENSIONS`
 is the db-only rollback kill switch. PR-B mutates no memory facts: no stale marking,
 archiving, writes, `last_verified_at` bump, active memory creation, or auto-approval.
-PR-C (test-command detector backfill) remains later. See
+PR-C refactored the test-command detector into ordered rules with no PR-C2/new
+coverage and no classifier/runtime-validation/frontend/schema/memory/gate/scope/Git/PR
+behavior change. **Row 11 is complete.** See
 `PIPEWRIGHT_REDESIGN_WORKPLAN.md` and the proposal's Appendix E.1/E.2 (reconciled
 2026-06-14) for the cycle window.
 
@@ -248,8 +257,10 @@ PR-C (test-command detector backfill) remains later. See
   test for `db_engine` + non-DB warning coexistence, or tightening
   backend-framework manifest substring matching later only if false positives
   appear in soak.
-- **Not next (explicitly deferred):** Row 11 PR-C (test-command backfill);
-  request-aware selection (row 12, D5); post-run hygiene (row 16, D7);
+- **Next memory work:** pause for an explicit maintainer decision before opening the
+  next memory row.
+- **Not next (explicitly deferred):** request-aware selection (row 12, D5);
+  post-run hygiene (row 16, D7);
   retriever/FTS (row 19); vector/embedding memory (row 23, D6); the thread/run UI
   (rows 22b–22e). Demo / README / devex polish remains fine opportunistically, but
   is no longer the recommended next step.
@@ -296,16 +307,20 @@ surface only through existing memory injection analysis reality_warnings. db_eng
 and DB conflict gate behavior are unchanged. policy.REPO_REALITY_SIGNAL_DIMENSIONS
 is the kill switch; db-only rollback is possible. PR-B mutates no memory facts:
 no stale marking, archiving, writes, last_verified_at bump, active memory creation,
-or auto-approval. CANONICAL roadmap: PIPEWRIGHT_REDESIGN_WORKPLAN.md (sequence
+or auto-approval. ROW 11 PR-C COMPLETE: behavior-preserving test-command detector
+rules refactor, with no PR-C2/new detector coverage and no classifier,
+runtime-validation, frontend, schema, memory, gate, scope, Git, or PR behavior
+change. ROW 11 COMPLETE. CANONICAL roadmap: PIPEWRIGHT_REDESIGN_WORKPLAN.md (sequence
 proposal §23; decisions §24; cycle window Appendix E). This current-state page is
 a snapshot; the workplan wins.
 
-CURRENT NEXT RECOMMENDED TASK: docs / smoke-checklist upkeep or small honest
-stabilization. Optional PR-B soak follow-ups: endpoint test for db_engine + non-DB
-warning coexistence; tighten backend-framework manifest substring matching later
-only if false positives appear. NOT NEXT: Row 11 PR-C (test-command backfill);
-request-aware selection (row 12); retriever/FTS (row 19); post-run hygiene (row
-16); vector/embedding (row 23); thread UI (22b–22e).
+CURRENT NEXT RECOMMENDED TASK: pause for a maintainer decision before opening the
+next memory row; docs / smoke-checklist upkeep and small honest stabilization are
+safe. Optional PR-B soak follow-ups: endpoint test for db_engine + non-DB warning
+coexistence; tighten backend-framework manifest substring matching later only if
+false positives appear. NOT NEXT: request-aware selection (row 12); retriever/FTS
+(row 19); post-run hygiene (row 16); vector/embedding (row 23); thread UI
+(22b–22e).
 
 INVARIANTS (do not violate):
 - Never bypass chunk plan approval or final approval. Final approval is NOT
