@@ -19,6 +19,8 @@ from backend.memory.injection_store import (
     record_memory_injection_event,
 )
 from backend.memory.memory_store import load_hard_facts
+from backend.memory.memory_store import add_fact
+from backend.pipeline import policy
 
 pytestmark = pytest.mark.unit
 
@@ -878,6 +880,33 @@ def test_prompt_preview_safety_overflow_returns_422(client, project_factory):
         "Never expose access tokens in prompt context.",
         category="security",
         scope="global",
+    )
+
+    response = client.get(
+        f"/api/v1/projects/{project_id}/memory/prompt-preview",
+        params={"role": "coder", "token_budget": 1},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Memory safety tier exceeds the requested token budget"
+    )
+
+
+def test_prompt_preview_pin_overflow_returns_current_422(
+    client,
+    project_factory,
+    monkeypatch,
+):
+    # Characterization/tripwire: Stage 3 must update the route detail to mention
+    # "safety + pinned" facts and update this assertion in the same PR.
+    monkeypatch.setattr(policy, "MEMORY_RELEVANCE_OMISSION_ENABLED", True)
+    project_id = project_factory()
+    add_fact(
+        project_id,
+        "Pinned style guidance always applies.",
+        category="style",
+        priority=5,
     )
 
     response = client.get(

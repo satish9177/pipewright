@@ -1,7 +1,7 @@
 # Memory Relevance Omission — Activation Design (Row 12 follow-up)
 
-**Status:** Stage 1 observability implemented. No backend, schema, route, policy, prompt-selection,
-runtime, package, or test-infrastructure change.
+**Status:** Stage 2 readiness tests and smoke implemented. No backend runtime, schema, route, policy,
+prompt-selection, package, frontend, or test-infrastructure change.
 The flag `MEMORY_RELEVANCE_OMISSION_ENABLED` stays `False`. **This document activates nothing.**
 **Mode:** Adversarial / evidence-based; behavioral claims cite a `file:line` or function.
 **Audience:** maintainer / Claude planning a future activation of request-aware memory omission.
@@ -122,7 +122,8 @@ The dominant risks, in priority order:
 ## 4. Required preconditions before activation
 
 All of the following must hold before `MEMORY_RELEVANCE_OMISSION_ENABLED` may move to `True` in any
-environment. Stage 1 completed the checked observability items; unchecked items remain deferred.
+environment. Stage 1 completed the checked observability items; Stage 2 completed the checked
+readiness/smoke items; unchecked items remain deferred.
 
 **Observability (closes risk 1):**
 
@@ -142,23 +143,26 @@ environment. Stage 1 completed the checked observability items; unchecked items 
       priority 10 or below is the pinned band. This is guidance only and does not promise inclusion.
 - [ ] Interactive Pin button / force-include affordance remains deferred.
 - [ ] High-pin-count **warning or guard** before the mandatory tier can overflow and surprise users with
-      a 422 (closes risk 3) remains deferred.
+      a 422 (closes risk 3) remains deferred. Stage 2 records the decision as warning/design-only,
+      never a hard guard, and adds a loud-fail pin-overflow tripwire.
 
 **Correctness / safety proof (re-proves the invariants under the flag on):**
 
-- [ ] Explicit **flag-on** safety tests proving `security` / `forbidden_paths` are **never** omitted and
+- [x] Explicit **flag-on** safety tests proving `security` / `forbidden_paths` are **never** omitted and
       **never** budget-dropped, even when they would score zero overlap.
-- [ ] Coder-path **integration proof** with **more than 12** relevance-tier facts: omission actually
+- [x] Coder-path **integration proof** with **more than 12** relevance-tier facts: omission actually
       engages.
-- [ ] A **pinned fact survives** omission (joins the mandatory tier; never `not_relevant_to_request`).
-- [ ] Omitted facts **persist** with `not_relevant_to_request` and **render** in the provenance panel.
-- [ ] **Rollback proof:** flag back to `False` restores PR-B behavior with **no omission** (byte-identical
+- [x] A **pinned fact survives** omission (joins the mandatory tier; never `not_relevant_to_request`).
+- [x] Omitted facts **persist** with `not_relevant_to_request` and **render** in the provenance panel.
+- [x] **Rollback proof:** flag back to `False` restores PR-B behavior with **no omission** (byte-identical
       block for the same inputs).
 
 **Process / rollout:**
 
 - [ ] prompt-preview 422 wording updated **only in the activation PR** to state the mandatory tier is
-      *safety + pinned* facts (deferred until pinning is live — see §2).
+      *safety + pinned* facts (deferred until pinning is live — see §2). Stage 2 adds a
+      characterization/tripwire test for the current wording so Stage 3 must update route copy and test
+      together.
 - [ ] Local / single-project rollout scope documented first (do not flip globally on the first activation).
 
 ---
@@ -182,10 +186,16 @@ Each stage is a separate, independently-reviewable change. No stage auto-starts 
 - Flag stays `False` throughout. Because omission never fires with the flag off, this slice is read-only
   display work over an already-persisted field — no runtime selection behavior changes.
 
-**Stage 2 — activation readiness tests / smoke** (still **no default activation**). Branch
-`feature/memory-relevance-omission-readiness`. Lands the §6 unit + integration + UI/manual coverage,
+**Stage 2 — activation readiness tests / smoke** (implemented; still **no default activation**). Branch
+`feature/memory-relevance-omission-readiness`. Landed the §6 unit + integration + UI/manual coverage,
 exercised with the flag toggled *in tests only* (monkeypatched on), never as the shipped default.
 Activation does not happen here.
+
+- FE test infra decision: Option A — no frontend test runner in this slice; automated frontend coverage
+  remains deferred to Stage 3/readiness follow-up.
+- High-pin warning decision: design-only warning, never a hard guard; Stage 2 proves the current loud-fail
+  422 behavior for pin overflow.
+- prompt-preview 422 decision: characterization test now; route wording changes only in Stage 3.
 
 **Stage 3 — controlled flag activation** (only after Stages 1–2 land and §4 is fully checked). Branch
 `feature/memory-relevance-omission-activate`:
@@ -213,19 +223,19 @@ Required before Stage 3 flips the flag. (Restates §4's test items as an executa
 
 **Unit tests** (`backend/tests/test_memory_selection_scaffolding.py`, flag toggled per-test):
 
-- [ ] flag-off parity (PR-B byte-identical)
-- [ ] omission above grace
-- [ ] below-grace no-op
-- [ ] all-zero degeneracy (no signal ⇒ no omission)
-- [ ] pin into mandatory tier
-- [ ] pin overflow → clean `MandatoryMemoryBudgetExceeded` (loud fail)
-- [ ] `security` / `forbidden_paths` never omitted or budget-dropped **under flag on**
+- [x] flag-off parity (PR-B byte-identical)
+- [x] omission above grace
+- [x] below-grace no-op
+- [x] all-zero degeneracy (no signal ⇒ no omission)
+- [x] pin into mandatory tier
+- [x] pin overflow → clean `MandatoryMemoryBudgetExceeded` (loud fail)
+- [x] `security` / `forbidden_paths` never omitted or budget-dropped **under flag on**
 
 **Integration** (coder path):
 
-- [ ] `run_coder` path with **>12** relevance facts engages omission
-- [ ] omitted fact **persisted** (`injection_store`) and **rendered** in provenance
-- [ ] **pinned fact survives** (stays included)
+- [x] `run_coder` path with **>12** relevance facts engages omission
+- [x] omitted fact **persisted** (`injection_store`) and **rendered** in provenance
+- [x] **pinned fact survives** (stays included)
 
 **Manual UI** ("What Pipewright told the AI" — `RunMemoryProvenancePanel.tsx:456`):
 
@@ -234,20 +244,23 @@ Required before Stage 3 flips the flag. (Restates §4's test items as an executa
 - [ ] aggregate count is **visible and non-alarming** (neutral styling)
 - [ ] pinning an omitted fact **returns it to included memory**
 
+Stage 2 adds `docs/testing/memory-relevance-omission-readiness-smoke.md` as the
+manual procedure for these UI checks; execution remains required before Stage 3.
+
 **Rollback:**
 
-- [ ] flag `False` restores no-omission behavior (PR-B), verified on the same inputs
+- [x] flag `False` restores no-omission behavior (PR-B), verified on the same inputs
 
 **Negative:**
 
-- [ ] enough pinned facts trigger a **clean 422** with the future (safety + pinned) wording — not a
-      partial or garbled block
+- [x] enough pinned facts trigger a **clean 422** with the current safety-tier wording — not a partial or
+      garbled block. Stage 3 must update this wording to safety + pinned.
 
 ---
 
 ## 7. Explicit non-goals
 
-This document and the Stage 1 observability PR do **not**:
+This document and the Stage 2 readiness PR do **not**:
 
 - Activate `MEMORY_RELEVANCE_OMISSION_ENABLED` (stays `False`).
 - Modify any policy constant (`MEMORY_SMALL_STORE_GRACE_THRESHOLD`, `MEMORY_PIN_PRIORITY_THRESHOLD`, the
@@ -257,7 +270,7 @@ This document and the Stage 1 observability PR do **not**:
 - Add semantic / vector / embedding memory.
 - Change any runtime behavior (selection, ordering, omission, pinning, budgets).
 - Change backend code, schema, route, test infrastructure, or package files.
-- Change the prompt-preview 422 wording (deferred to Stage 3).
+- Change the prompt-preview 422 wording (deferred to Stage 3; guarded by a tripwire test).
 
 ---
 

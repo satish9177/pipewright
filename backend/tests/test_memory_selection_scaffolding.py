@@ -524,6 +524,65 @@ def test_omission_emits_not_relevant_above_grace_when_flag_on(
     }
 
 
+def test_safety_facts_never_omitted_as_not_relevant_when_flag_on(
+    project_ids,
+    monkeypatch,
+):
+    _enable_omission(monkeypatch)
+    project_id = _new_project(project_ids)
+    security = add_fact(
+        project_id,
+        "Never leak tokens.",
+        category="security",
+        priority=100,
+    )
+    forbidden = add_fact(
+        project_id,
+        "Keep secret files untouched.",
+        category="forbidden_paths",
+        priority=100,
+    )
+    signal = add_fact(
+        project_id,
+        "Frontend App tsx rendering stays simple.",
+        category="style",
+        priority=100,
+    )
+    zeros = [
+        add_fact(
+            project_id,
+            f"Database migration note number {index} stays small.",
+            category="style",
+            priority=100,
+        )
+        for index in range(13)
+    ]
+
+    result = build_project_memory_block_detailed(
+        project_id=project_id,
+        role="planner",
+        token_budget=4000,
+        request_context=_REL_CONTEXT,
+    )
+
+    included = {
+        (entry.content, entry.category, entry.exclusion_reason)
+        for entry in result.included_entries
+    }
+    assert (security["content"], "security", None) in included
+    assert (forbidden["content"], "forbidden_paths", None) in included
+    assert (signal["content"], "style", None) in included
+    assert all(
+        entry.category not in {"security", "forbidden_paths"}
+        for entry in result.excluded_entries
+    )
+    assert {
+        entry.content
+        for entry in result.excluded_entries
+        if entry.exclusion_reason == EXCLUSION_NOT_RELEVANT_TO_REQUEST
+    } == {zero["content"] for zero in zeros}
+
+
 def test_omission_no_op_at_grace_threshold_when_flag_on(project_ids, monkeypatch):
     # Exactly 12 relevance candidates: at the threshold, not above it, so nothing
     # is omitted even with the flag on.
