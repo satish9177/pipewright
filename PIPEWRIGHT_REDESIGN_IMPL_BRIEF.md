@@ -1,134 +1,145 @@
 # Pipewright Redesign — Rolling Implementation Brief
 
 **Date:** 2026-06-14
-**Status:** **CLOSED — Row 12 PR-A complete.** This brief is now the closeout
-record for the no-op-by-default request-aware memory-selection scaffolding slice.
-Row 12 PR-B and PR-C remain deferred; the next step is a maintainer
-decision/review before opening PR-B. The previous occupant — the Row 11 closeout
-— is complete; its record lives in `PIPEWRIGHT_REDESIGN_WORKPLAN.md`.
+**Status:** **CLOSED — Row 12 PR-B complete.** This brief is now the closeout
+record for the request-aware memory **relevance-ordering** slice (PR-B), which
+builds on the completed PR-A scaffolding. Row 12 **PR-C** remains deferred and is
+**gated on D5** — it must not be opened until D5 is explicitly confirmed (see the
+D5 wording tension below). Rows 16 / 19 / 23 and the §21 thread UI remain
+deferred. The previous occupant — the Row 12 PR-A closeout — is complete; its
+full record lives in `PIPEWRIGHT_REDESIGN_WORKPLAN.md` and the proposal's
+Appendix E.1/E.2.
 
 ---
 
 ## Maintainer decision (2026-06-14)
 
-Row 11 (detection rules-as-data) is complete and closed. Row 12 opened **one
-sub-slice at a time**, safest first. **Row 12 PR-A is now complete** as
-no-op-by-default scaffolding only. PR-B and PR-C remain deferred.
+Row 12 opened **one sub-slice at a time, safest first.** PR-A (decision-free
+scaffolding) landed first, was reviewed, and closed. **PR-B (relevance ordering
+only) has now been reviewed and merged.** PR-C (relevance omission + human-pinning
++ per-project off-switch) remains deferred and **requires explicit D5
+confirmation** before it is opened.
 
 ## Row 12 sub-slice split
 
-- **PR-A — scaffolding, no-op by default — COMPLETE.** Decision-free. It
-  introduced the structure and single-sourced the policy numbers without changing
-  normal memory injection behavior.
-- **PR-B — relevance *ordering* only — DEFERRED.** When a `request_context` is
-  supplied, order the relevance tier by a deterministic rung-0 signal (lexical
-  overlap on chunk title / description / `files_expected`). Same set injected
-  (no omission). Plumbs `request_context` from the orchestrator. Not opened yet.
+- **PR-A — scaffolding, no-op by default — COMPLETE.** Decision-free. Introduced
+  the structure (dormant `request_context`, mandatory safety tier, policy
+  single-sourcing of budgets / token estimator / adaptive guardrail) without
+  changing normal memory injection behavior.
+- **PR-B — relevance *ordering* only — COMPLETE.** When a `request_context` is
+  supplied, it orders the non-mandatory relevance tier by a deterministic rung-0
+  signal (lexical overlap on chunk title / description / `files_expected` /
+  steer). Same set considered (no omission); `request_context` is plumbed from the
+  **coder** only. Details below.
 - **PR-C — relevance *omission* + human-pinning + per-project off-switch —
-  DEFERRED, and gated on D5.** This is the first slice that actually *acts* on
-  D5; it must not be implemented until D5 is explicitly confirmed (see the D5
-  wording tension below). Not opened yet.
+  DEFERRED, gated on D5.** The first slice that actually *acts* on D5: it would
+  emit `not_relevant_to_request`, activate omission above the small-store grace
+  threshold, and add human-pinned facts to the mandatory tier. Must not be
+  implemented until D5 is explicitly confirmed.
 
-## Row 12 PR-A closeout (no-op-by-default scaffolding)
+## Row 12 PR-B closeout (request-aware relevance ordering)
 
-PR-A made the structure exist and paid down the buried-magic-number debt
-(§14 / §8b) **without changing normal injected memory behavior.**
+PR-B turned the dormant PR-A scaffolding into observable, auditable request-aware
+**ordering** — with no omission and no new decision (D5 governs PR-C, not PR-B).
 
-1. **`request_context` as a dormant, default-`None` concept.** PR-A introduced an
-   optional `request_context` parameter on the memory block builder
-   (`backend/memory/prompt_builder.py:build_project_memory_block_detailed`).
-   `request_context` exists but remains dormant. **`request_context=None`
-   preserves today's injected behavior** (golden-locked). PR-A did not plumb a
-   non-`None` value from anywhere — orchestrator call sites are untouched;
-   threading a real `request_context` is PR-B.
-2. **Mandatory safety tier scaffolding — `security` and `forbidden_paths` only.**
-   These two categories become structurally un-droppable: they live outside the
-   token-budget loop and can never appear as a `budget_dropped` exclusion. Human
-   pinning is **not** part of PR-A (pinning is a D5 concern, deferred to PR-C).
-   Loud-fail discipline: if the mandatory tier *alone* exceeds the cap, the
-   builder raises the typed `MandatoryMemoryBudgetExceeded` rather than silently
-   shedding a guardrail. The prompt-preview debug route catches that typed
-   overflow and returns HTTP 422.
-3. **Policy single-sourcing for memory injection.** Relocate the buried numbers
-   in `prompt_builder.py` — `ROLE_TOKEN_BUDGETS` and the `(len + 3) // 4` token
-   estimator — into the policy spine (`backend/pipeline/policy.py`), and express
-   the **adaptive guardrail** there: cap = clamp(policy floor, role share ×
-   resolved model context window, policy ceiling), with the model resolved from
-   `backend/llm/role_config.py` (one source of truth) and the estimator's safety
-   margin stated in policy. The adaptive budget scaffolding exists but remains
-   disabled, so the effective cap for current roles remains unchanged.
-4. **Dormant `not_relevant_to_request` provenance reason.** The reason name may
-   be **documented/defined** in the exclusion vocabulary alongside the existing
-   `budget_dropped` and `category_not_allowed_for_role`, but **PR-A must never
-   emit it** (no fact is excluded for relevance in PR-A). It activates no earlier
-   than PR-C.
+1. **Coder-only `request_context` plumbing.** `run_coder`
+   (`backend/pipeline/coder.py`) builds a `RequestContext` from data it already
+   holds — `plan.goal` (title), `plan.feature_description` (description),
+   `files_to_modify + files_to_create` (`files_expected`), and
+   `continuation_context` (steer text) — and passes it to
+   `build_project_memory_block_detailed`. The planner, triage, and prompt-preview
+   call sites are **untouched** (they still pass no `request_context`, so their
+   behavior is unchanged). The `files_expected` carried here is advisory scoring
+   input only: it is a fresh tuple, never mutates the plan, and **never reaches
+   `scope_guard` or the write scope**.
+2. **Relevance ordering of the non-mandatory tier only.**
+   `backend/memory/prompt_builder.py` scores each relevance-tier fact by a
+   two-tier deterministic key — path-token overlap (primary) then content-token
+   Jaccard (secondary) — and orders by it, falling back to the existing
+   `(category, scope, priority, created_at)` key as the tie-break. The scorer
+   **reuses the existing `memory_trust` helpers** (`_content_tokens`, `_jaccard`);
+   no second tokenizer was introduced, and no new policy constant / threshold was
+   added.
+3. **`request_context=None` ⇒ byte-identical block (golden-locked).** With a
+   `None` context the relevance tier is not scored and the block is produced by the
+   exact legacy path.
+4. **All-zero overlap ⇒ legacy order preserved.** When a `request_context` is
+   supplied but no fact carries any path or token signal, the order is identical to
+   today's — the no-signal degeneracy guard.
+5. **Mandatory safety tier untouched.** `security` / `forbidden_paths` facts remain
+   first and are **never scored, never reordered, and never budget-dropped**; only
+   the non-mandatory relevance rows are reordered.
+6. **No omission.** PR-B only reorders. Under a binding budget, ordering changes
+   *which* relevance facts fit, but every exclusion keeps an existing reason
+   (`budget_dropped` / `category_not_allowed_for_role`). `not_relevant_to_request`
+   stays **defined-but-dormant and is never emitted.**
 
-## Row 12 PR-A non-goals (explicit)
+## Row 12 PR-B non-goals (explicit — all held)
 
-- No relevance omission.
-- No request-aware **ordering** behavior change (that is PR-B).
-- No orchestrator `request_context` plumbing (kept `None`; plumbing is PR-B).
-- No human-pinning mechanism or UI (D5 / PR-C).
-- No D5 behavior activation of any kind.
-- No retriever / FTS / vector / embeddings (rows 19 / 23).
-- No memory mutation, auto-approval, active memory creation, stale/archive, or
-  `last_verified_at` bump.
-- No schema change (any provenance additions are in-memory dataclass fields, not
-  persisted columns).
-- No frontend / UI / thread work.
-- No gate / scope / Git / PR / model-selection behavior change.
-- No reviewer memory wiring (M8 stays off, per §11.5).
+- No relevance omission; no `not_relevant_to_request` emission.
+- No D5 activation; no human-pinning; no per-project off-switch.
+- No grace threshold, relevance floor, or any new policy constant / threshold.
+- No adaptive-budget activation (the flag stays off).
+- No `MemoryRetriever` interface / FTS / vector / embedding work (rows 19 / 23).
+- No planner / triage / prompt-preview plumbing.
+- No schema / frontend / gate / scope / Git / PR / model-selection change.
+- No memory mutation: no auto-approval, no active-memory creation, no
+  stale/archive, no `last_verified_at` bump.
+- Not rows 16 / 19 / 23; not the thread UI.
 
-All of the above held in PR-A.
+## Row 12 PR-B safety invariants (preserved)
 
-## Row 12 PR-A safety invariants
-
-- **Never evict a safety fact.** `security` + `forbidden_paths` are structurally
-  outside the droppable set; never listed as `budget_dropped`.
 - **`request_context=None` ⇒ byte-identical block.** Golden-locked parity.
-- **Loud-fail, never silently shed** a guardrail to fit budget.
-- **Memory stays advisory.** PR-A changes structure only — never grants scope,
-  gates, or touches Git/PR/authority (B5).
-- **Read-only + project-scoped.** Selection performs no writes; the query stays
-  `project_id`-filtered, `status='active' AND is_stale=0`; never cross-project.
-- **Provenance stays complete and observable.** Existing exclusion reasons are
-  preserved; the new reason is defined-but-dormant.
-- **No buried magic numbers.** The guardrail/threshold/margin live in policy,
-  single-sourced — do not trade one buried constant for three.
+- **Never evict or reorder a safety fact.** The `security` / `forbidden_paths`
+  tier is never scored, reordered, or dropped — always injected first.
+- **Ordering only, never omission while budget remains.** Exclusions keep existing
+  reasons; `not_relevant_to_request` is never emitted.
+- **Memory stays advisory.** Ordering changes ranking only — never scope, gates,
+  Git/PR, or authority (B5). The scoring `files_expected` never reaches
+  `scope_guard`.
+- **Read-only + project-scoped.** Selection performs no writes; the query is
+  unchanged (`status='active' AND is_stale=0`, project-filtered); never
+  cross-project.
+- **No buried magic numbers / one source of truth.** Reuses the `memory_trust`
+  tokenizer; introduces no policy threshold.
 
-## Files changed by PR-A
+## Files changed by PR-B
 
-- `backend/memory/prompt_builder.py` — mandatory safety tier, adaptive guardrail,
-  optional `request_context` (default `None`), dormant `not_relevant_to_request`.
-- `backend/pipeline/policy.py` — single-sourced budgets / estimator / guardrail.
-- `backend/llm/role_config.py` — **read-only** model → context-window resolution.
-- `backend/routes/memory.py` — prompt-preview maps mandatory overflow to HTTP 422.
-- `backend/memory/memory_store.py` — token-estimator single-source cleanup.
-- `backend/tests/test_memory_selection_scaffolding.py`, prompt-builder tests, and
-  memory API tests.
-- Docs: this closeout plus status/workplan/Appendix E reconciliation.
-- **Untouched:** orchestrator call sites, schema, gates, `scope_guard`,
-  Git/PR, `bootstrap.py`, `detection_rules.py`, `suggestion_quality.py`.
+- `backend/memory/prompt_builder.py` — rung-0 relevance scorer + non-mandatory
+  tier ordering; extracted the shared sort key; reuses the `memory_trust` helpers.
+- `backend/pipeline/coder.py` — builds and passes the coder `RequestContext`.
+- `backend/tests/test_memory_selection_scaffolding.py`,
+  `backend/tests/test_coder.py` — ordering / no-omission / mandatory-tier /
+  determinism / coder-plumb coverage.
+- **Untouched:** `backend/pipeline/policy.py`, schema, gates, `scope_guard`,
+  Git/PR, routes (incl. prompt-preview), frontend, planner/triage call sites,
+  `bootstrap.py`, `detection_rules.py`.
 
-## Tests / validation recorded for PR-A
+## Tests / validation recorded for PR-B
 
-- **Parity/golden:** block byte-identical across representative stores with
-  `request_context=None`.
-- **Mandatory tier:** under an artificially tiny budget, `security` /
-  `forbidden_paths` facts are always included, never in `excluded_entries`.
-- **Loud-fail:** mandatory tier alone > cap ⇒ `NEEDS_HUMAN` outcome.
-- **Adaptive guardrail:** cap = clamp(floor, role share × model window, ceiling),
-  sourced from policy / `role_config`; assert no duplicated constant.
-- **Dormancy:** `not_relevant_to_request` is defined but never emitted in PR-A.
-- **Regression:** existing `injection_analysis` / provenance tests stay green.
-- **API guard:** prompt-preview with a tiny budget and safety memory returns 422,
-  not an unhandled server error.
+- **Parity/golden:** `request_context=None` byte-identical (legacy golden kept).
+- **No-signal:** all-zero overlap ⇒ legacy order (block byte-identical, equal
+  included/excluded entries).
+- **Ordering, no omission:** a populated context reorders the relevance tier with
+  the **same set**; `excluded_entries == ()` when all facts fit.
+- **Binding budget:** the high-relevance fact is kept and the zero-overlap fact is
+  `budget_dropped` (never `not_relevant_to_request`).
+- **Mandatory tier:** safety facts stay first even when a request favors a
+  non-mandatory fact.
+- **Determinism:** identical inputs ⇒ identical order; ties fall back to the
+  legacy `(category, scope, priority, created_at)` key.
+- **Coder plumb:** `run_coder` builds the `RequestContext` from the plan fields +
+  steer and passes it; verified advisory (no `scopes` kwarg, no scope coupling).
+- **Suite:** targeted suites green under `-m unit`. The two unmarked
+  `test_coder.py` failures (`test_coder_returns_valid_handoff`,
+  `test_coder_handles_missing_files_gracefully`) are **pre-existing live/integration
+  tests** that need a configured target repo and fail identically without this
+  change.
 
-## D5 wording tension (resolve before PR-C, not before PR-A)
+## D5 wording tension (resolve before PR-C — the next gated slice)
 
 There is a soft contradiction in the planning docs that must be settled before
-**PR-C** (the omission/pinning slice), but **not** before PR-A (which never acts
-on D5):
+**PR-C** (the omission/pinning slice), and PR-C must not be opened until it is:
 
 - **Appendix E.2** records §24's recommended defaults as "accepted as written,"
   including **D5**.
@@ -145,7 +156,8 @@ blanket "accepted as written" — before PR-C is implemented.
 
 ## Deferred (do not start from this brief)
 
-- **Row 12 PR-B** (relevance ordering) and **PR-C** (omission / pinning / D5).
+- **Row 12 PR-C** (relevance omission / human-pinning / per-project off-switch —
+  gated on D5).
 - **Row 16** — post-run hygiene (auto-analysis + generation, D7/B2).
 - **Row 19** — retriever interface + FTS rung 1.
 - **Row 23** — vector / embedding rung 2 (D6/B4).
