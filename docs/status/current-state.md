@@ -319,7 +319,7 @@ PR-A, PR-B, and PR-C are all merged, with PR-C shipped dormant
 (`MEMORY_RELEVANCE_OMISSION_ENABLED=False`).** Omission and pinning are not active
 until the flag is explicitly flipped later (a soak decision, not a code change).
 **Recommended next step: a maintainer / Claude roadmap review before opening any new
-row or activating the flag** — do not auto-start row 16/19/23 or the thread UI.
+row or activating the flag** — do not auto-start row 16 implementation (design brief only), row 19/23, or the thread UI.
 
 - **Safe now (no decision needed):** documentation / smoke-checklist upkeep; small
   honest stabilization fixes; optional PR-B soak follow-ups such as an endpoint
@@ -330,13 +330,22 @@ row or activating the flag** — do not auto-start row 16/19/23 or the thread UI
   **PR-B** (relevance ordering), and **PR-C** (relevance omission + priority-based
   pinning + global off-switch, dormant-by-default) are all done. The recommended
   next step is a **maintainer / Claude roadmap review before opening any new row or
-  activating the flag** — do not auto-start row 16 (post-run hygiene, D7), row 19
-  (retriever/FTS), row 23 (vector, D6), or the thread UI. The only outstanding Row
-  12 action is operational: a soak decision on whether/when to flip
-  `MEMORY_RELEVANCE_OMISSION_ENABLED` on.
+  activating the flag** — do not auto-start row 19 (retriever/FTS), row 23 (vector,
+  D6), or the thread UI. The only outstanding Row 12 action is operational: a soak
+  decision on whether/when to flip `MEMORY_RELEVANCE_OMISSION_ENABLED` on.
+- **Row 16 (post-run hygiene) — design brief written; not implemented.**
+  [`../design/memory-postrun-hygiene-row16.md`](../design/memory-postrun-hygiene-row16.md)
+  locks the D7 framing (dormant, default-off `MEMORY_POSTRUN_HYGIENE_ENABLED`; the
+  manual `memory-suggestions/generate` route stays the only active path) and scopes
+  **PR-A to a success-terminal-only trigger**: a per-site best-effort call in
+  `pr_orchestrator` after `complete` is committed and the repo lock is released — not
+  `_update_run_status` (which writes only `failed` and would miss successful `complete`
+  runs), and no shared terminal-settle refactor. Failed/`rejected`/`push_failed` hygiene
+  is a possible later Row 16 follow-up. No code, no Codex prompt, no flag activation yet.
 - **Deferred (explicitly):** activating `MEMORY_RELEVANCE_OMISSION_ENABLED` (soak
-  decision, not code); post-run hygiene (row 16, D7); retriever/FTS (row 19);
-  vector/embedding memory (row 23, D6); the thread/run UI (rows 22b–22e). Demo /
+  decision, not code); **implementing** post-run hygiene (row 16 — design brief exists,
+  PR-A not opened); retriever/FTS (row 19); vector/embedding memory (row 23, D6); the
+  thread/run UI (rows 22b–22e). Demo /
   README / devex polish remains fine opportunistically, but is no longer the
   recommended next step.
 
@@ -394,7 +403,7 @@ new row or activating the flag. Row 12 is COMPLETE and MERGED; D5 confirmed 2026
 Row 12 PR-A (scaffolding), PR-B (relevance ordering), and PR-C (relevance omission +
 priority-based pinning + global off-switch, dormant-by-default) are all merged. The
 only outstanding Row 12 action is operational (a soak decision on whether/when to flip
-MEMORY_RELEVANCE_OMISSION_ENABLED on); do not auto-start row 16/19/23 or the thread UI.
+MEMORY_RELEVANCE_OMISSION_ENABLED on); do not auto-start row 16 implementation (design brief only), row 19/23, or the thread UI.
 PR-A: request_context dormant; request_context=None
 preserves existing injection behavior; budgets/estimator single-sourced in policy;
 adaptive budget scaffolding disabled; security+forbidden_paths mandatory and cannot
@@ -413,8 +422,10 @@ priority-based pinning (priority<=MEMORY_PIN_PRIORITY_THRESHOLD=10 joins the man
 tier, never scored/omitted/budget-dropped); flag ships False so default == PR-B
 byte-for-byte; no schema/frontend/per-project/planner/triage/prompt-preview plumbing/
 adaptive/retriever/FTS/vector/memory-mutation change. DEFERRED: activating
-MEMORY_RELEVANCE_OMISSION_ENABLED (soak decision, not code); post-run hygiene (row 16);
-retriever/FTS (row 19); vector/embedding (row 23); thread UI (22b–22e).
+MEMORY_RELEVANCE_OMISSION_ENABLED (soak decision, not code); post-run hygiene (row 16 —
+design brief docs/design/memory-postrun-hygiene-row16.md exists; PR-A scoped to a dormant,
+success-terminal-only pr_orchestrator trigger, not implemented); retriever/FTS (row 19);
+vector/embedding (row 23); thread UI (22b–22e).
 
 INVARIANTS (do not violate):
 - Never bypass chunk plan approval or final approval. Final approval is NOT
