@@ -9,6 +9,8 @@ behind one default-off policy flag (`MEMORY_RELEVANCE_OMISSION_ENABLED=False`).
 The flag ships `False`, so default behavior is byte-identical to PR-B; omission and
 priority pinning are **dormant** until the flag is explicitly flipped later (an
 operational soak decision, not a code change — and out of scope for this closeout).
+Stage 2 readiness is complete: backend tests and a manual smoke doc now prove the
+future flag-on omission path without changing the shipped default.
 This brief retains the PR-B closeout record below (still accurate history) and adds
 the PR-C summary. Rows 16 / 19 / 23 and the §21 thread UI remain deferred. **Next
 step: a maintainer / Claude roadmap review before opening any new row or activating

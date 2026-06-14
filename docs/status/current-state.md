@@ -97,6 +97,11 @@ Current truth:
   behavior is byte-identical to PR-B.** No schema/frontend/per-project setting/
   planner/triage/prompt-preview plumbing/adaptive-budget activation/retriever/FTS/
   vector/memory-mutation change. Rollback: keep `MEMORY_RELEVANCE_OMISSION_ENABLED=False`.
+- **Row 12 omission readiness Stage 2 — COMPLETE.** Added backend unit/integration
+  readiness proof and a manual UI smoke doc for future activation: flag-on safety,
+  coder-path omission persistence, pinned/safety survival, flag-off rollback, and
+  the current prompt-preview pin-overflow 422 tripwire are covered. The flag still
+  ships `False`; activation and prompt-preview wording changes remain later.
 - **Deferred (not opened):** post-run hygiene / auto-generation (row 16),
   retriever/FTS (row 19), vector/embedding memory (row 23), and the thread/run UI
   (rows 22b–22e). The remaining Row 12 gate is **operational, not code** — flipping
