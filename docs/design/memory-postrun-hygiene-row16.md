@@ -1,8 +1,10 @@
 # Row 16 — Memory Post-Run Hygiene (design brief)
 
-Status: **PR-A implemented.** The dormant, default-off, success-terminal-only trigger
-is wired behind `MEMORY_POSTRUN_HYGIENE_ENABLED=False`; PR-B digest/observability and
-PR-C activation remain deferred. There is no active auto-generation by default.
+Status: **PR-A and PR-B implemented.** The dormant, default-off,
+success-terminal-only trigger is wired behind
+`MEMORY_POSTRUN_HYGIENE_ENABLED=False`; PR-B adds read-only digest/observability
+for pending run suggestions. PR-C activation remains deferred. There is no active
+auto-generation by default.
 
 Scope owner: memory roadmap. Predecessor: Row 12 (relevance omission) shipped its
 scaffolding dormant behind a default-off flag and activated later only after proof.
@@ -30,7 +32,8 @@ quality-scored. A manual route already exists:
 `POST /api/v1/runs/{run_id}/memory-suggestions/generate` (`routes/memory.py`).
 
 **The gap is not a new subsystem.** The gap is (a) a dormant automatic trigger and
-(b) observability/digest over the results the generator already returns.
+(b) observability over the persisted pending suggestions produced by that path or
+the existing manual route.
 
 ### Reality check that reshapes the attach point (read before §5)
 
@@ -94,10 +97,17 @@ helper that returns immediately while the flag is off; when monkeypatched on, it
 (log + swallow). It runs only after a successful `complete` result and after the repo
 lock releases. It never fails/stalls a run. No digest UI. No lifecycle mutation.
 
-**PR-B — housekeeping digest / observability.** A read-model (or compute-on-read) digest
-over the counts the generator already returns (`generated_count`, `skipped_count`,
-`blocked_count`, `floored_count`, `capped_count` on `RunSuggestionResult`). Neutral copy:
-"N suggestions proposed for review." Never implies memory was auto-added. Manual smoke doc.
+**PR-B — housekeeping digest / observability — implemented.** Added a read-only
+run suggestion digest over persisted pending suggestions from the run:
+`GET /api/v1/runs/{run_id}/memory-suggestions`. It resolves the run's project,
+lists pending project suggestions, filters by `source_run_id`, returns
+`pending_count` and the safe `MemorySuggestionResponse` shape, and never calls the
+generator. The Run Detail page renders a neutral card only when pending
+suggestions exist and links to Project Memory for review. Full
+`generated/skipped/blocked/floored/capped` breakdowns remain available only in
+the existing manual `POST .../generate` response because those counts are
+transient and not persisted. Persisting a fuller digest would require schema and
+is deferred out of PR-B.
 
 **PR-C — activation decision.** Only after PR-A/PR-B soak. Decide whether to flip the
 default or keep manual. May add a "review suggestions now" affordance. Still pending-only.
@@ -179,13 +189,17 @@ Built on the existing `backend/tests/test_memory_run_outcome_suggestions.py` har
 
 ---
 
-## 7. Tests / smoke required for PR-B
+## 7. Tests / smoke for PR-B
 
-1. Digest counts equal the corresponding `RunSuggestionResult` fields for a run.
-2. Digest language asserts "pending / proposed / review" framing only — no
-   "added to memory" / "auto-approved" copy anywhere.
-3. UI/manual smoke (doc) confirms no "auto-added to memory" copy.
-4. No frontend test-runner requirement unless separately justified.
+1. Read-only route returns 404 for missing runs and empty digest for runs with no
+   pending suggestions.
+2. Digest filters to the target `source_run_id` and excludes non-pending rows.
+3. Repeated reads do not create suggestions, active facts, or approval gates, and
+   never call `generate_run_memory_suggestions`.
+4. Response uses the existing safe suggestion shape and does not expose
+   `content_hash`.
+5. Manual smoke confirms neutral copy: pending/review framing, no
+   "added to memory" / "auto-saved" / "learned automatically" wording.
 
 ---
 
@@ -211,7 +225,22 @@ prompt-injection changes; schema changes (unproven ⇒ excluded); enabling
 
 ---
 
-## 10. Decisions (locked) and remaining detail
+## 10. PR-B implementation files
+
+- `backend/routes/memory.py` — adds the read-only run suggestion digest route.
+- `backend/tests/test_memory_run_suggestions_readmodel.py` — route isolation,
+  pending-only, non-mutating, and response-shape coverage.
+- `frontend/src/api/client.ts` — typed `getRunMemorySuggestions` client.
+- `frontend/src/components/RunMemorySuggestionsDigest.tsx` — neutral read-only
+  Run Detail digest card.
+- `frontend/src/pages/RunDetailPage.tsx` — renders the digest above the existing
+  manual generator panel on terminal runs.
+- `docs/testing/memory-postrun-hygiene-smoke.md`, `docs/status/current-state.md`,
+  and this design doc — status and manual smoke coverage.
+
+---
+
+## 11. Decisions (locked) and remaining detail
 
 **Decided (2026-06-14):**
 1. **Attach breadth — success terminal only.** PR-A covers the successful `complete`
@@ -231,8 +260,8 @@ prompt-injection changes; schema changes (unproven ⇒ excluded); enabling
 
 ## Final recommendation
 
-PR-A is implemented and remains dormant by default. The blocking decisions are preserved
-(§10: success-terminal only; best-effort call in `pr_orchestrator` after `complete`
-commits + lock release; **not** `_update_run_status`; no shared terminal-settle
-refactor), and the provenance string is `"postrun_auto"`. Next work requires a
-maintainer decision before PR-B digest/observability or PR-C activation.
+PR-A and PR-B are implemented and remain dormant/read-only by default. The blocking
+decisions are preserved (§11: success-terminal only; best-effort call in
+`pr_orchestrator` after `complete` commits + lock release; **not**
+`_update_run_status`; no shared terminal-settle refactor), and the provenance string is
+`"postrun_auto"`. Next work requires a maintainer decision before PR-C activation.

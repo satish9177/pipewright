@@ -985,6 +985,13 @@ export interface RunMemorySuggestionGenerateResponse extends ExtraFields {
   suggestions: MemorySuggestion[]
 }
 
+export interface RunMemorySuggestionsDigestResponse extends ExtraFields {
+  run_id: string
+  project_id: string
+  pending_count: number
+  suggestions: MemorySuggestion[]
+}
+
 export interface BootstrapSuggestionsResponse {
   project_id: string
   suggestions: MemorySuggestion[]
@@ -1439,6 +1446,10 @@ export const memoryApi = {
     api.post<MemorySuggestion>(
       `/api/v1/projects/${projectId}/memory/suggestions/${suggestionId}/reject`,
       { reason },
+    ).then(r => r.data),
+  getRunMemorySuggestions: (runId: string) =>
+    api.get<RunMemorySuggestionsDigestResponse>(
+      `/api/v1/runs/${runId}/memory-suggestions`,
     ).then(r => r.data),
   generateRunMemorySuggestions: (runId: string, requestedBy?: string) =>
     api.post<RunMemorySuggestionGenerateResponse>(

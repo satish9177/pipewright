@@ -47,6 +47,7 @@ import PushPrPanel from '@/components/PushPrPanel'
 import PrStatusPanel from '@/components/PrStatusPanel'
 import ProviderDiagnosticsPanel from '@/components/ProviderDiagnosticsPanel'
 import RunMemoryProvenancePanel from '@/components/RunMemoryProvenancePanel'
+import RunMemorySuggestionsDigest from '@/components/RunMemorySuggestionsDigest'
 import RunSafetyStrip from '@/components/RunSafetyStrip'
 import TestCommandQualityWarning from '@/components/TestCommandQualityWarning'
 import ReportView from '@/components/ReportView'
@@ -1616,7 +1617,10 @@ export default function RunDetailPage() {
       )}
 
       {TERMINAL_RUN_STATUSES.includes(run.status) && (
-        <RunMemorySuggestions run={run} />
+        <>
+          <RunMemorySuggestionsDigest runId={run.id} />
+          <RunMemorySuggestions run={run} />
+        </>
       )}
 
       <section className="mb-6">

@@ -110,12 +110,18 @@ Current truth:
   best-effort, uses `requested_by="postrun_auto"`, creates pending suggestions only
   through the existing generator, and does not auto-approve, create active facts, or
   mutate memory lifecycle state. It is not attached to `_update_run_status`.
-- **Deferred (not opened):** Row 16 PR-B digest/observability, Row 16 PR-C
-  activation, retriever/FTS (row 19), vector/embedding memory (row 23), and the
-  thread/run UI (rows 22b–22e). The remaining Row 12 gate is **operational, not
-  code** — flipping `MEMORY_RELEVANCE_OMISSION_ENABLED` on is a soak decision (and
-  omission/pinning stay dormant until then). **Next step: a maintainer / Claude
-  roadmap review before opening any next row/PR or activating a flag.**
+- **Row 16 PR-B — post-run hygiene digest / observability — COMPLETE.** Added a
+  read-only `GET /api/v1/runs/{run_id}/memory-suggestions` digest plus a neutral
+  Run Detail card showing persisted pending suggestions from the run. It does not
+  call the generator, does not show transient generated/skipped/blocked/floored/
+  capped counts, does not mutate suggestions/facts/gates, and does not replace the
+  existing manual generate route. `MEMORY_POSTRUN_HYGIENE_ENABLED` remains `False`.
+- **Deferred (not opened):** Row 16 PR-C activation, retriever/FTS (row 19),
+  vector/embedding memory (row 23), and the thread/run UI (rows 22b–22e). The
+  remaining Row 12 gate is **operational, not code** — flipping
+  `MEMORY_RELEVANCE_OMISSION_ENABLED` on is a soak decision (and omission/pinning
+  stay dormant until then). **Next step: a maintainer / Claude roadmap review
+  before opening any next row/PR or activating a flag.**
 
 The redesign preserves every safety invariant in this doc: human approval gates,
 scope guard, branch/PR safety, no empty commits, no auto-merge, pending-only
@@ -327,8 +333,8 @@ PR-A, PR-B, and PR-C are all merged, with PR-C shipped dormant
 (`MEMORY_RELEVANCE_OMISSION_ENABLED=False`).** Omission and pinning are not active
 until the flag is explicitly flipped later (a soak decision, not a code change).
 **Recommended next step: a maintainer / Claude roadmap review before opening any new
-row/PR or activating a flag** — Row 16 PR-A is implemented and dormant; do not
-auto-start Row 16 PR-B/PR-C, row 19/23, or the thread UI.
+row/PR or activating a flag** — Row 16 PR-A and PR-B are implemented, with the
+trigger still dormant; do not auto-start Row 16 PR-C, row 19/23, or the thread UI.
 
 - **Safe now (no decision needed):** documentation / smoke-checklist upkeep; small
   honest stabilization fixes; optional PR-B soak follow-ups such as an endpoint
@@ -339,24 +345,23 @@ auto-start Row 16 PR-B/PR-C, row 19/23, or the thread UI.
   **PR-B** (relevance ordering), and **PR-C** (relevance omission + priority-based
   pinning + global off-switch, dormant-by-default) are all done. The recommended
   next step is a **maintainer / Claude roadmap review before opening any new row or
-  activating a flag** — do not auto-start Row 16 PR-B/PR-C, row 19
+  activating a flag** — do not auto-start Row 16 PR-C, row 19
   (retriever/FTS), row 23 (vector, D6), or the thread UI. The only outstanding Row
   12 action is operational: a soak decision on whether/when to flip
   `MEMORY_RELEVANCE_OMISSION_ENABLED` on.
-- **Row 16 (post-run hygiene) — PR-A implemented, dormant by default.**
+- **Row 16 (post-run hygiene) — PR-A and PR-B implemented, dormant/read-only by default.**
   [`../design/memory-postrun-hygiene-row16.md`](../design/memory-postrun-hygiene-row16.md)
   records the D7 framing: `MEMORY_POSTRUN_HYGIENE_ENABLED=False`; the manual
-  `memory-suggestions/generate` route stays the only active path by default; the
-  PR-A trigger is success-terminal-only, best-effort, and called from
+  `memory-suggestions/generate` route stays the only active generation path by
+  default; the PR-A trigger is success-terminal-only, best-effort, and called from
   `pr_orchestrator` after `complete` is committed and the repo lock is released —
-  not `_update_run_status`, with no shared terminal-settle refactor. It creates
-  pending suggestions only through the existing generator and no active facts.
-  Failed/`rejected`/`push_failed` hygiene, PR-B digest/observability, and PR-C
-  activation are later decisions.
+  not `_update_run_status`, with no shared terminal-settle refactor. PR-B adds only
+  a read-only pending-suggestion digest/card; it does not call the generator or show
+  transient generated/skipped/blocked/floored/capped counts. Failed/`rejected`/
+  `push_failed` hygiene and PR-C activation are later decisions.
 - **Deferred (explicitly):** activating `MEMORY_RELEVANCE_OMISSION_ENABLED` (soak
-  decision, not code); Row 16 PR-B digest/observability; Row 16 PR-C activation;
-  retriever/FTS (row 19); vector/embedding memory (row 23, D6); the thread/run UI
-  (rows 22b–22e). Demo /
+  decision, not code); Row 16 PR-C activation; retriever/FTS (row 19);
+  vector/embedding memory (row 23, D6); the thread/run UI (rows 22b–22e). Demo /
   README / devex polish remains fine opportunistically, but is no longer the
   recommended next step.
 
@@ -414,7 +419,7 @@ new row/PR or activating a flag. Row 12 is COMPLETE and MERGED; D5 confirmed 202
 Row 12 PR-A (scaffolding), PR-B (relevance ordering), and PR-C (relevance omission +
 priority-based pinning + global off-switch, dormant-by-default) are all merged. The
 only outstanding Row 12 action is operational (a soak decision on whether/when to flip
-MEMORY_RELEVANCE_OMISSION_ENABLED on); do not auto-start Row 16 PR-B/PR-C, row 19/23, or the thread UI.
+MEMORY_RELEVANCE_OMISSION_ENABLED on); do not auto-start Row 16 PR-C, row 19/23, or the thread UI.
 PR-A: request_context dormant; request_context=None
 preserves existing injection behavior; budgets/estimator single-sourced in policy;
 adaptive budget scaffolding disabled; security+forbidden_paths mandatory and cannot
@@ -436,7 +441,8 @@ adaptive/retriever/FTS/vector/memory-mutation change. DEFERRED: activating
 MEMORY_RELEVANCE_OMISSION_ENABLED (soak decision, not code); post-run hygiene (row 16 —
 PR-A COMPLETE: dormant default-off success-terminal-only pr_orchestrator trigger behind
 MEMORY_POSTRUN_HYGIENE_ENABLED=False; manual route remains the only active path by
-default; PR-B digest/observability and PR-C activation deferred); retriever/FTS (row 19);
+default. PR-B COMPLETE: read-only pending-suggestion digest/card; PR-C activation
+deferred); retriever/FTS (row 19);
 vector/embedding (row 23); thread UI (22b–22e).
 
 INVARIANTS (do not violate):

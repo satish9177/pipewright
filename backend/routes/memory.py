@@ -737,6 +737,35 @@ class RunMemorySuggestionGenerateResponse(BaseModel):
     suggestions: list[MemorySuggestionResponse]
 
 
+class RunMemorySuggestionsDigestResponse(BaseModel):
+    run_id: str
+    project_id: str
+    pending_count: int
+    suggestions: list[MemorySuggestionResponse]
+
+
+@run_memory_router.get("", response_model=RunMemorySuggestionsDigestResponse)
+def list_run_suggestions(run_id: str):
+    project_id = _resolve_run_project_id(run_id)
+    try:
+        pending = [
+            suggestion
+            for suggestion in list_suggestions(project_id, status="pending")
+            if suggestion.get("source_run_id") == run_id
+        ]
+    except ValueError as error:
+        raise _map_memory_error(error)
+    except RuntimeError as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+    return {
+        "run_id": run_id,
+        "project_id": project_id,
+        "pending_count": len(pending),
+        "suggestions": pending,
+    }
+
+
 @run_memory_router.post("/generate", response_model=RunMemorySuggestionGenerateResponse)
 def generate_run_suggestions(
     run_id: str,
