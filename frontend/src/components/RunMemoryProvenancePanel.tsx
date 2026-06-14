@@ -57,6 +57,7 @@ function shortId(value?: string | null): string {
 }
 
 const SAFETY_CATEGORIES = new Set(['security', 'forbidden_paths'])
+const NOT_RELEVANT_REASON = 'not_relevant_to_request'
 
 function exclusionReasonLabel(reason?: string | null): string {
   return humanizeMemoryReason(reason)
@@ -81,10 +82,13 @@ function summarizeExclusions(entries: MemoryInjectionEntry[]): string {
   if (budget) parts.push(`${budget} not enough room this run`)
   const category = counts.get('category_not_allowed_for_role')
   if (category) parts.push(`${category} not used by this role`)
+  const notRelevant = counts.get(NOT_RELEVANT_REASON)
+  if (notRelevant) parts.push(`${notRelevant} not relevant to this request`)
   for (const [reason, count] of counts) {
     if (
       reason !== 'budget_dropped' &&
-      reason !== 'category_not_allowed_for_role'
+      reason !== 'category_not_allowed_for_role' &&
+      reason !== NOT_RELEVANT_REASON
     ) {
       parts.push(`${count} ${humanizeMemoryReason(reason)}`)
     }
@@ -168,6 +172,9 @@ function EventCard({ event }: { event: MemoryInjectionEvent }) {
   const budgetDropped = event.excluded_entries.filter(
     entry => entry.exclusion_reason === 'budget_dropped',
   )
+  const notRelevant = event.excluded_entries.filter(
+    entry => entry.exclusion_reason === NOT_RELEVANT_REASON,
+  )
 
   return (
     <li className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4">
@@ -239,6 +246,17 @@ function EventCard({ event }: { event: MemoryInjectionEvent }) {
           The AI did not see {budgetDropped.length === 1 ? 'it' : 'them'} in
           this role, so it could not act on{' '}
           {budgetDropped.length === 1 ? 'it' : 'them'}.
+        </p>
+      )}
+
+      {notRelevant.length > 0 && (
+        <p className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+          {notRelevant.length}{' '}
+          {notRelevant.length === 1 ? 'memory was' : 'memories were'} left out
+          as not relevant to this request. Pipewright focuses each role on the
+          memories that match the work. Nothing was deleted — these stay in your
+          project memory. Raise a memory's priority to keep it in front of the
+          AI.
         </p>
       )}
 
