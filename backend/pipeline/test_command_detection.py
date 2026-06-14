@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from backend.repo.repo_fingerprint import load_repo_file
@@ -38,6 +40,20 @@ _MAKE_TEST_TARGET_RE = re.compile(r"^test\s*:")
 
 # Python dependency manifests consulted for the Django signal.
 _PYTHON_DEP_MANIFESTS = ("requirements.txt", "pyproject.toml", "Pipfile", "setup.py")
+
+# Keep detector package literals local for now. Physical vocabulary unification
+# is deferred because this detector returns root-only first-match command strings,
+# while repo reality returns canonical values from manifest walking and omits
+# ambiguous dimensions.
+_JEST_PACKAGE_NAME = "jest"
+_VITEST_PACKAGE_NAME = "vitest"
+
+
+@dataclass(frozen=True)
+class TestCommandRule:
+    name: str
+    command: str
+    matches: Callable[[Path], bool]
 
 
 def _has_config_section(content: str, section_prefix: str) -> bool:
@@ -74,6 +90,82 @@ def _has_django_dependency(root: Path) -> bool:
     return False
 
 
+def _has_root_file(root: Path, filename: str) -> bool:
+    return load_repo_file(root, filename) is not None
+
+
+def _pyproject_has_pytest_section(root: Path) -> bool:
+    pyproject = load_repo_file(root, "pyproject.toml")
+    return pyproject is not None and _has_config_section(pyproject, "[tool.pytest")
+
+
+def _setup_cfg_has_pytest_section(root: Path) -> bool:
+    setup_cfg = load_repo_file(root, "setup.cfg")
+    return setup_cfg is not None and _has_config_section(setup_cfg, "[tool:pytest]")
+
+
+def _package_json_has_test_dependency(root: Path, package_name: str) -> bool:
+    package_json = load_repo_file(root, "package.json")
+    return (
+        package_json is not None
+        and _package_json_has_dependency(package_json, package_name)
+    )
+
+
+def _makefile_has_test_target(root: Path) -> bool:
+    makefile = load_repo_file(root, "Makefile")
+    return makefile is not None and any(
+        _MAKE_TEST_TARGET_RE.match(line) for line in makefile.splitlines()
+    )
+
+
+def _has_django_test_signal(root: Path) -> bool:
+    return _has_root_file(root, "manage.py") and _has_django_dependency(root)
+
+
+_TEST_COMMAND_RULES = (
+    TestCommandRule(
+        name="pytest_ini",
+        command="pytest",
+        matches=lambda root: _has_root_file(root, "pytest.ini"),
+    ),
+    TestCommandRule(
+        name="pyproject_pytest",
+        command="pytest",
+        matches=_pyproject_has_pytest_section,
+    ),
+    TestCommandRule(
+        name="setup_cfg_pytest",
+        command="pytest",
+        matches=_setup_cfg_has_pytest_section,
+    ),
+    TestCommandRule(
+        name="package_json_jest",
+        command="npm test",
+        matches=lambda root: _package_json_has_test_dependency(
+            root, _JEST_PACKAGE_NAME
+        ),
+    ),
+    TestCommandRule(
+        name="package_json_vitest",
+        command="npx vitest run",
+        matches=lambda root: _package_json_has_test_dependency(
+            root, _VITEST_PACKAGE_NAME
+        ),
+    ),
+    TestCommandRule(
+        name="makefile_test_target",
+        command="make test",
+        matches=_makefile_has_test_target,
+    ),
+    TestCommandRule(
+        name="django_manage_py",
+        command="python manage.py test",
+        matches=_has_django_test_signal,
+    ),
+)
+
+
 def detect_test_command(repo_path) -> str | None:
     """
     Suggest a test command for the repo at ``repo_path``, or None.
@@ -81,14 +173,14 @@ def detect_test_command(repo_path) -> str | None:
     Checks root-level marker files in priority order and returns the first
     match:
 
-      1. ``pytest.ini`` present, or ``pyproject.toml`` with a ``[tool.pytest``
-         section                                            -> ``pytest``
-      2. ``setup.cfg`` with a ``[tool:pytest]`` section      -> ``pytest``
-      3. ``package.json`` with ``jest`` in (dev)dependencies -> ``npm test``
-      4. ``package.json`` with ``vitest`` in (dev)dependencies
+      1. ``pytest.ini`` present                             -> ``pytest``
+      2. ``pyproject.toml`` with a ``[tool.pytest`` section  -> ``pytest``
+      3. ``setup.cfg`` with a ``[tool:pytest]`` section      -> ``pytest``
+      4. ``package.json`` with ``jest`` in (dev)dependencies -> ``npm test``
+      5. ``package.json`` with ``vitest`` in (dev)dependencies
                                                              -> ``npx vitest run``
-      5. ``Makefile`` with a ``test:`` target                -> ``make test``
-      6. ``manage.py`` present + Django in a Python manifest
+      6. ``Makefile`` with a ``test:`` target                -> ``make test``
+      7. ``manage.py`` present + Django in a Python manifest
                                                              -> ``python manage.py test``
 
     Returns None for a missing/invalid path or when no signal is found. The
@@ -102,31 +194,8 @@ def detect_test_command(repo_path) -> str | None:
     if not root.exists() or not root.is_dir():
         return None
 
-    if load_repo_file(root, "pytest.ini") is not None:
-        return "pytest"
-
-    pyproject = load_repo_file(root, "pyproject.toml")
-    if pyproject is not None and _has_config_section(pyproject, "[tool.pytest"):
-        return "pytest"
-
-    setup_cfg = load_repo_file(root, "setup.cfg")
-    if setup_cfg is not None and _has_config_section(setup_cfg, "[tool:pytest]"):
-        return "pytest"
-
-    package_json = load_repo_file(root, "package.json")
-    if package_json is not None:
-        if _package_json_has_dependency(package_json, "jest"):
-            return "npm test"
-        if _package_json_has_dependency(package_json, "vitest"):
-            return "npx vitest run"
-
-    makefile = load_repo_file(root, "Makefile")
-    if makefile is not None and any(
-        _MAKE_TEST_TARGET_RE.match(line) for line in makefile.splitlines()
-    ):
-        return "make test"
-
-    if load_repo_file(root, "manage.py") is not None and _has_django_dependency(root):
-        return "python manage.py test"
+    for rule in _TEST_COMMAND_RULES:
+        if rule.matches(root):
+            return rule.command
 
     return None
