@@ -253,6 +253,11 @@ def _migrate_db(conn) -> None:
                 "ALTER TABLE pipeline_runs ADD COLUMN start_head_sha TEXT",
             ),
             (
+                "pipeline_runs",
+                "approved_plan_version",
+                "ALTER TABLE pipeline_runs ADD COLUMN approved_plan_version INTEGER",
+            ),
+            (
                 "projects",
                 "branch",
                 "ALTER TABLE projects ADD COLUMN branch TEXT DEFAULT 'main'",

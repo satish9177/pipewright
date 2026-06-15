@@ -17,8 +17,13 @@ from backend.core.statuses import ChunkPlanStatus, RunStatus
 from backend.db.database import engine
 from backend.main import app
 from backend.models.chunk import ChunkDefinition, TriageResult
+from backend.pipeline import chunked_orchestrator
 from backend.pipeline import policy
-from backend.pipeline.chunk_store import create_chunked_run
+from backend.pipeline.chunk_store import (
+    approve_chunk_plan,
+    create_chunked_run,
+    reject_chunk_plan,
+)
 from backend.pipeline.plan_version_store import (
     PLAN_VERSION_SOURCE_INITIAL,
     PLAN_VERSION_SOURCE_PLAN_TURN,
@@ -183,6 +188,39 @@ def _load_run_fields(run_id: str) -> dict:
     return dict(row) if row is not None else {}
 
 
+def _load_approved_plan_version(run_id: str) -> int | None:
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT approved_plan_version
+                FROM pipeline_runs
+                WHERE id = :run_id
+            """),
+            {"run_id": run_id},
+        ).fetchone()
+    return row[0] if row is not None else None
+
+
+def _set_approved_plan_version(run_id: str, version: int | None) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                UPDATE pipeline_runs
+                SET approved_plan_version = :version
+                WHERE id = :run_id
+            """),
+            {"run_id": run_id, "version": version},
+        )
+
+
+def _delete_plan_versions(run_id: str) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM plan_versions WHERE run_id = :run_id"),
+            {"run_id": run_id},
+        )
+
+
 def _row_count(table: str, run_id: str) -> int:
     run_column = "id" if table == "pipeline_runs" else "run_id"
     with engine.connect() as conn:
@@ -211,7 +249,11 @@ def test_existing_run_with_zero_plan_versions_returns_empty_versions(
     response = client.get(f"/runs/{run_id}/plan-versions")
 
     assert response.status_code == 200
-    assert response.json() == {"run_id": run_id, "versions": []}
+    assert response.json() == {
+        "run_id": run_id,
+        "approved_version": None,
+        "versions": [],
+    }
 
 
 def test_v1_only_lineage_returns_initial_entry_without_triage_json(
@@ -226,6 +268,7 @@ def test_v1_only_lineage_returns_initial_entry_without_triage_json(
     assert response.status_code == 200
     payload = response.json()
     assert payload["run_id"] == run_id
+    assert payload["approved_version"] is None
     assert payload["versions"] == [
         {
             "version": 1,
@@ -328,6 +371,107 @@ def test_dangling_created_from_turn_id_degrades_to_null(tmp_repo, tracked_runs):
     assert response.json()["versions"][1]["created_from_turn"] is None
 
 
+def test_v1_only_approval_stamps_approved_plan_version_and_read_model(
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = _create_awaiting_run(tmp_repo, tracked_runs)
+    client = TestClient(app)
+
+    approved = approve_chunk_plan(run_id)
+    lineage = client.get(f"/runs/{run_id}/plan-versions")
+
+    assert approved.chunk_plan_status == ChunkPlanStatus.APPROVED
+    assert _load_approved_plan_version(run_id) == 1
+    assert lineage.status_code == 200
+    assert lineage.json()["approved_version"] == 1
+
+
+def test_approval_after_plan_turn_versions_stamps_latest_version(
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, project = _create_awaiting_run(tmp_repo, tracked_runs)
+    _append_plan_turn_version(
+        run_id,
+        project["id"],
+        version=2,
+        message="Split backend and frontend chunks.",
+        titles=["Backend chunk", "Frontend chunk"],
+    )
+    _append_plan_turn_version(
+        run_id,
+        project["id"],
+        version=3,
+        message="Add a review chunk.",
+        titles=["Backend chunk", "Frontend chunk", "Review chunk"],
+    )
+    client = TestClient(app)
+
+    approve_chunk_plan(run_id)
+    response = client.get(f"/runs/{run_id}/plan-versions")
+
+    assert _load_approved_plan_version(run_id) == 3
+    assert response.status_code == 200
+    assert response.json()["approved_version"] == 3
+
+
+def test_legacy_zero_version_approval_succeeds_and_stamps_null(
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = _create_awaiting_run(tmp_repo, tracked_runs)
+    _delete_plan_versions(run_id)
+    client = TestClient(app)
+
+    approved = approve_chunk_plan(run_id)
+    response = client.get(f"/runs/{run_id}/plan-versions")
+
+    assert approved.chunk_plan_status == ChunkPlanStatus.APPROVED
+    assert _load_approved_plan_version(run_id) is None
+    assert response.status_code == 200
+    assert response.json() == {
+        "run_id": run_id,
+        "approved_version": None,
+        "versions": [],
+    }
+
+
+def test_flag_off_approval_still_stamps_initial_version(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = _create_awaiting_run(tmp_repo, tracked_runs)
+    monkeypatch.setattr(policy, "PLAN_TURNS_ENABLED", False)
+
+    approve_chunk_plan(run_id)
+
+    assert _load_approved_plan_version(run_id) == 1
+
+
+def test_reject_path_leaves_approved_plan_version_null(tmp_repo, tracked_runs):
+    run_id, _project = _create_awaiting_run(tmp_repo, tracked_runs)
+
+    rejected = reject_chunk_plan(run_id, "Needs a smaller plan.")
+
+    assert rejected.chunk_plan_status == ChunkPlanStatus.REJECTED
+    assert _load_approved_plan_version(run_id) is None
+
+
+def test_reapprove_guard_does_not_rewrite_approved_plan_version(
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = _create_awaiting_run(tmp_repo, tracked_runs)
+    approve_chunk_plan(run_id)
+
+    with pytest.raises(RuntimeError, match="awaiting approval"):
+        approve_chunk_plan(run_id)
+
+    assert _load_approved_plan_version(run_id) == 1
+
+
 def test_flag_off_still_allows_plan_versions_read(
     monkeypatch,
     tmp_repo,
@@ -340,6 +484,7 @@ def test_flag_off_still_allows_plan_versions_read(
     response = client.get(f"/runs/{run_id}/plan-versions")
 
     assert response.status_code == 200
+    assert response.json()["approved_version"] is None
     assert response.json()["versions"][0]["version"] == 1
 
 
@@ -381,3 +526,63 @@ def test_get_chunks_response_is_unchanged_by_plan_versions_read(
     assert lineage.status_code == 200
     assert after.status_code == 200
     assert after.json() == before.json()
+
+
+def test_get_chunks_response_does_not_expose_approved_plan_version(
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = _create_awaiting_run(tmp_repo, tracked_runs)
+    approve_chunk_plan(run_id)
+    client = TestClient(app)
+
+    response = client.get(f"/runs/{run_id}/chunks")
+
+    assert response.status_code == 200
+    assert "approved_version" not in response.text
+    assert "approved_plan_version" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_execution_ignores_approved_plan_version(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    run_id, _project = _create_awaiting_run(tmp_repo, tracked_runs)
+    approve_chunk_plan(run_id)
+    _set_approved_plan_version(run_id, 999)
+    captured: dict = {}
+
+    class DummyRepoLock:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    async def fake_execute_locked(run_id_arg, plan_status):
+        captured["run_id"] = run_id_arg
+        captured["plan_status"] = plan_status
+        return {
+            "status": "fake_execution_started",
+            "total_chunks": plan_status.total_chunks,
+        }
+
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "project_repo_lock",
+        lambda _project_id: DummyRepoLock(),
+    )
+    monkeypatch.setattr(
+        chunked_orchestrator,
+        "_execute_approved_chunks_locked",
+        fake_execute_locked,
+    )
+
+    result = await chunked_orchestrator.execute_approved_chunks(run_id)
+
+    assert result == {"status": "fake_execution_started", "total_chunks": 1}
+    assert captured["run_id"] == run_id
+    assert captured["plan_status"].chunk_plan_status == ChunkPlanStatus.APPROVED
+    assert captured["plan_status"].triage.total_chunks == 1

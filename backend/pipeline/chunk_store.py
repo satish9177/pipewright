@@ -482,17 +482,29 @@ def approve_chunk_plan(run_id: str) -> ChunkPlanResponse:
         init_db()
         with engine.begin() as conn:
             _require_awaiting_approval(conn, run_id)
+            approved_plan_version_row = conn.execute(text("""
+                SELECT MAX(version)
+                FROM plan_versions
+                WHERE run_id = :run_id
+            """), {"run_id": run_id}).fetchone()
+            approved_plan_version = (
+                approved_plan_version_row[0]
+                if approved_plan_version_row is not None
+                else None
+            )
             conn.execute(text("""
                 UPDATE pipeline_runs
                 SET chunk_plan_status = :chunk_plan_status,
                     status = :status,
-                    current_step = :current_step
+                    current_step = :current_step,
+                    approved_plan_version = :approved_plan_version
                 WHERE id = :run_id
             """), {
                 "run_id": run_id,
                 "chunk_plan_status": ChunkPlanStatus.APPROVED,
                 "status": RunStatus.CHUNK_PLAN_APPROVED,
                 "current_step": RunStatus.CHUNK_PLAN_APPROVED,
+                "approved_plan_version": approved_plan_version,
             })
         print(f"[CHUNKS] Chunk plan approved | run_id={run_id}")
         return get_chunk_plan_status(run_id)

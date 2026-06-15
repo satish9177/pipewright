@@ -2536,13 +2536,17 @@ def get_pr_status_route(run_id: str):
         raise HTTPException(status_code=500, detail=str(error))
 
 
-def _run_exists(run_id: str) -> bool:
+def _load_run_plan_version_binding(run_id: str) -> dict | None:
     with engine.connect() as conn:
         row = conn.execute(
-            text("SELECT 1 FROM pipeline_runs WHERE id = :run_id"),
+            text("""
+                SELECT approved_plan_version
+                FROM pipeline_runs
+                WHERE id = :run_id
+            """),
             {"run_id": run_id},
-        ).fetchone()
-    return row is not None
+        ).mappings().fetchone()
+    return dict(row) if row is not None else None
 
 
 @router.get("/runs/{run_id}/plan-versions")
@@ -2556,7 +2560,8 @@ def get_plan_versions_route(run_id: str):
     read path.
     """
     try:
-        if not _run_exists(run_id):
+        run_binding = _load_run_plan_version_binding(run_id)
+        if run_binding is None:
             raise ValueError(f"Run not found: {run_id}")
 
         plan_turns_by_id = {
@@ -2580,7 +2585,11 @@ def get_plan_versions_route(run_id: str):
                 "created_from_turn": created_from_turn,
             })
 
-        return {"run_id": run_id, "versions": versions}
+        return {
+            "run_id": run_id,
+            "approved_version": run_binding["approved_plan_version"],
+            "versions": versions,
+        }
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:

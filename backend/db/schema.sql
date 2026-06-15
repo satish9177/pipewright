@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     source_plan_run_id TEXT,
     start_branch TEXT,
     start_head_sha TEXT,
+    approved_plan_version INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id),
     FOREIGN KEY (source_plan_run_id) REFERENCES pipeline_runs(id)
