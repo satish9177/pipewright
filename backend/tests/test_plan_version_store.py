@@ -21,6 +21,7 @@ from backend.pipeline import plan_version_store
 from backend.pipeline.chunk_store import create_chunked_run
 from backend.pipeline.plan_version_store import (
     PLAN_VERSION_SOURCE_INITIAL,
+    PLAN_VERSION_SOURCE_PLAN_TURN,
     PLAN_VERSION_SOURCE_SEEDED,
     append_plan_version,
     list_plan_versions,
@@ -227,6 +228,26 @@ def test_duplicate_run_version_is_rejected(tmp_repo, tracked_runs):
     assert len(list_plan_versions(run_id)) == 1
 
 
+def test_plan_turn_source_is_allowed(tracked_runs):
+    run_id = str(uuid.uuid4())
+    tracked_runs.append(run_id)
+
+    with engine.begin() as conn:
+        append_plan_version(
+            conn,
+            run_id=run_id,
+            version=1,
+            triage_json=_make_triage(run_id, "project-plan-turn").model_dump_json(),
+            source=PLAN_VERSION_SOURCE_PLAN_TURN,
+            created_from_turn_id="turn-1",
+        )
+
+    versions = list_plan_versions(run_id)
+    assert len(versions) == 1
+    assert versions[0]["source"] == PLAN_VERSION_SOURCE_PLAN_TURN
+    assert versions[0]["created_from_turn_id"] == "turn-1"
+
+
 def test_plan_version_store_has_no_update_or_delete_api():
     public_names = {
         name for name in dir(plan_version_store) if not name.startswith("_")
@@ -301,3 +322,66 @@ def test_plan_versions_migration_shape_is_idempotent():
     ]
     assert indexes["idx_plan_versions_run_version"] == 1
     assert "idx_plan_versions_run" not in indexes
+
+
+def test_plan_versions_migration_expands_legacy_source_check_and_preserves_rows():
+    legacy_engine = create_engine("sqlite:///:memory:")
+    run_id = str(uuid.uuid4())
+    with legacy_engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE plan_versions (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                triage_json TEXT NOT NULL,
+                source TEXT NOT NULL CHECK (source IN ('initial', 'seeded')),
+                created_from_turn_id TEXT,
+                created_at DATETIME NOT NULL
+            )
+        """))
+        conn.execute(text("""
+            CREATE UNIQUE INDEX idx_plan_versions_run_version
+            ON plan_versions(run_id, version)
+        """))
+        conn.execute(text("""
+            INSERT INTO plan_versions (
+                id, run_id, version, triage_json, source, created_at
+            )
+            VALUES (
+                'pv-1', :run_id, 1, '{"plan": 1}', 'initial',
+                '2026-06-15T00:00:00+00:00'
+            )
+        """), {"run_id": run_id})
+
+        database._ensure_plan_versions_shape(conn)
+        source_sql = conn.execute(text("""
+            SELECT sql FROM sqlite_master
+            WHERE type = 'table' AND name = 'plan_versions'
+        """)).fetchone()[0]
+        rows = conn.execute(text("""
+            SELECT id, run_id, version, triage_json, source, created_from_turn_id
+            FROM plan_versions
+            ORDER BY version
+        """)).fetchall()
+        conn.execute(text("""
+            INSERT INTO plan_versions (
+                id, run_id, version, triage_json, source,
+                created_from_turn_id, created_at
+            )
+            VALUES (
+                'pv-2', :run_id, 2, '{"plan": 2}', 'plan_turn',
+                'turn-1', '2026-06-15T00:00:01+00:00'
+            )
+        """), {"run_id": run_id})
+
+    assert "plan_turn" in source_sql
+    assert rows == [
+        (
+            "pv-1",
+            run_id,
+            1,
+            '{"plan": 1}',
+            "initial",
+            None,
+        )
+    ]

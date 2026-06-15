@@ -1,14 +1,15 @@
 """
 plan_version_store.py
 
-Append-only plan version scaffold for §23 row 7a.
+Append-only plan version scaffold for §23 rows 7a/7b.
 
 triage_json is plan data: the same serialized TriageResult already stored in
 pipeline_runs.chunk_plan, with the same trust class and safety posture. This
-slice records version 1 at plan creation time only. It does not store diffs,
-repo file contents, prompts, provider output, test output, or secrets beyond
-what the existing plan JSON already contains, and runtime behavior continues to
-read pipeline_runs.chunk_plan as the live plan pointer.
+scaffold records version 1 at plan creation time and later plan-turn versions
+while a run is still awaiting plan approval. It does not store diffs, repo file
+contents, prompts, provider output, test output, or secrets beyond what the
+existing plan JSON already contains, and runtime behavior continues to read
+pipeline_runs.chunk_plan as the live plan pointer.
 """
 
 from __future__ import annotations
@@ -24,9 +25,11 @@ from backend.db.database import engine
 
 PLAN_VERSION_SOURCE_INITIAL = "initial"
 PLAN_VERSION_SOURCE_SEEDED = "seeded"
+PLAN_VERSION_SOURCE_PLAN_TURN = "plan_turn"
 PLAN_VERSION_SOURCES = {
     PLAN_VERSION_SOURCE_INITIAL,
     PLAN_VERSION_SOURCE_SEEDED,
+    PLAN_VERSION_SOURCE_PLAN_TURN,
 }
 
 

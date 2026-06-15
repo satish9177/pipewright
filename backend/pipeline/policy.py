@@ -107,6 +107,13 @@ MAX_STEER_TEXT_CHARS = 4000
 # diff is prompt context only — never standing working-tree state.
 STEER_CONTINUATION_DIFF_MAX_CHARS = 10000
 
+# --- Plan-gate turns (§23 row 7b / §19) -----------------------------------
+# Dormant engine scaffold only. No route or UI reads this flag in PR-A; it is
+# the later activation seam. The producer enforces the cap so any future route
+# gets the same bounded behavior by default.
+PLAN_TURNS_ENABLED = False
+PLAN_TURN_CAP = 5
+
 # --- Trivial-task stage profile (chunk_driver.py, item 17a) -----------------
 # Stable sample percentage for the first soak of the planner-elision profile.
 # 0 is the hard off switch and must preserve the standard planner path exactly.

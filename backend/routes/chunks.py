@@ -126,10 +126,8 @@ from backend.pipeline.plan_path_grounding import (
 )
 from backend.pipeline.file_scope_intent import (
     extract_user_file_constraints,
-    reconcile_file_scope,
 )
-from backend.pipeline.chunk_isolation import annotate_triage_result_isolation
-from backend.pipeline.chunk_sizing import annotate_triage_result_sizing
+from backend.pipeline.plan_postprocess import apply_plan_postprocess
 from backend.pipeline.plan_version_store import (
     PLAN_VERSION_SOURCE_INITIAL,
     append_plan_version,
@@ -1789,34 +1787,14 @@ async def _create_chunked_run_core(
                 pinned_path,
                 create_target=create_target_path is not None,
             )
-        # PR #9B: ground files_expected against the real repo index before the
-        # risk scan and before persisting. Removes invented paths and hardens
-        # affected chunks. Applies to both implementation and plan_only.
-        triage_result = ground_triage_result_paths(
-            project_id,
-            triage_result,
+        triage_result = apply_plan_postprocess(
+            project_id=project_id,
+            triage_result=triage_result,
+            request_file_constraints=request_file_constraints,
             sanctioned_new_paths=(
                 {create_target_path} if create_target_path is not None else None
             ),
         )
-        triage_result = scan_triage_result(triage_result)
-        # PR #22A: reconcile the grounded plan against explicit user file
-        # constraints ("only A and B", "do not touch A", "similar to A"). Seeds
-        # /caps files_expected to a hard allowlist, drops forbidden files, never
-        # auto-adds reference-only or planner-prose-only paths, and hardens
-        # chunks ([SCOPE] notes + human review) on any drop/cap/mismatch. The
-        # user-constraint logic no-ops when no files are named; the planner
-        # prose-vs-scope consistency check always runs. scope_guard is unchanged.
-        triage_result = reconcile_file_scope(
-            project_id,
-            triage_result,
-            request_file_constraints,
-            sanctioned_new_paths=(
-                {create_target_path} if create_target_path is not None else None
-            ),
-        )
-        triage_result = annotate_triage_result_sizing(project_id, triage_result)
-        triage_result = annotate_triage_result_isolation(triage_result)
         if intent == PLAN_ONLY:
             _create_read_only_run(
                 run_id=run_id,
