@@ -238,6 +238,10 @@ invoked** by any stage — setting them is harmless but currently inert.
 Notes:
 
 - The hardcoded fallback (no LLM env vars set) is **`gemini` / `gemini-2.5-flash-lite`**.
+  This lightweight default keeps local setup inexpensive. For serious self-use
+  or demos, configure stronger `PLANNER_LLM_*` and `CODER_LLM_*` models from
+  your chosen provider; configure `REVIEWER_LLM_*` as well once the reviewer
+  stage is wired into the runtime.
 - Provider API keys are required **only** for providers a role actually selects.
   A non-Gemini-only config never needs `GEMINI_API_KEY`; the all-default config
   still does, because the fallback is Gemini.
