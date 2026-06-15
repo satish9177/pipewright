@@ -540,26 +540,91 @@ def _table_exists(conn, table_name: str) -> bool:
         )
 
 
-def _ensure_plan_versions_shape(conn) -> None:
-    """
-    Ensure the append-only plan_versions scaffold exists for existing DB files.
+def _table_sql(conn, table_name: str) -> str | None:
+    try:
+        row = conn.execute(text("""
+            SELECT sql FROM sqlite_master
+            WHERE type = 'table' AND name = :table_name
+        """), {"table_name": table_name}).fetchone()
+        return row[0] if row is not None else None
+    except Exception as error:
+        raise RuntimeError(
+            f"database.py: Failed to inspect table SQL {table_name}: {error}"
+        )
 
-    Additive only: CREATE TABLE IF NOT EXISTS plus indexes, never DROP or
-    rewrite. This table records plan JSON already stored in
-    pipeline_runs.chunk_plan; it is not a runtime authority in this slice.
-    """
-    conn.execute(text("""
-        CREATE TABLE IF NOT EXISTS plan_versions (
+
+def _create_plan_versions_table(conn, table_name: str, *, if_not_exists: bool) -> None:
+    clause = "IF NOT EXISTS " if if_not_exists else ""
+    conn.execute(text(f"""
+        CREATE TABLE {clause}{table_name} (
             id TEXT PRIMARY KEY,
             run_id TEXT NOT NULL,
             version INTEGER NOT NULL,
             triage_json TEXT NOT NULL,
-            source TEXT NOT NULL CHECK (source IN ('initial', 'seeded')),
+            source TEXT NOT NULL CHECK (
+                source IN ('initial', 'seeded', 'plan_turn')
+            ),
             created_from_turn_id TEXT,
             created_at DATETIME NOT NULL,
             FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
         )
     """))
+
+
+def _plan_versions_source_check_blocks_plan_turn(conn) -> bool:
+    table_sql = _table_sql(conn, "plan_versions")
+    if not table_sql:
+        return False
+    lowered = table_sql.lower()
+    return "check" in lowered and "plan_turn" not in lowered
+
+
+def _rebuild_plan_versions_for_plan_turn_source(conn) -> None:
+    """
+    Rebuild plan_versions only when an existing SQLite CHECK blocks plan_turn.
+
+    SQLite cannot ALTER a CHECK constraint in place. The copy-then-swap keeps
+    existing v1 rows intact and lets the transaction roll back to the original
+    table if copying into the expanded shape fails.
+    """
+    conn.execute(text("DROP TABLE IF EXISTS plan_versions__new"))
+    _create_plan_versions_table(conn, "plan_versions__new", if_not_exists=False)
+    conn.execute(text("""
+        INSERT INTO plan_versions__new (
+            id,
+            run_id,
+            version,
+            triage_json,
+            source,
+            created_from_turn_id,
+            created_at
+        )
+        SELECT
+            id,
+            run_id,
+            version,
+            triage_json,
+            source,
+            created_from_turn_id,
+            created_at
+        FROM plan_versions
+    """))
+    conn.execute(text("DROP TABLE plan_versions"))
+    conn.execute(text("ALTER TABLE plan_versions__new RENAME TO plan_versions"))
+
+
+def _ensure_plan_versions_shape(conn) -> None:
+    """
+    Ensure the append-only plan_versions scaffold exists for existing DB files.
+
+    Additive-first: CREATE TABLE IF NOT EXISTS plus indexes. Existing rows are
+    preserved if SQLite needs a copy-then-swap rebuild to widen the source CHECK
+    for plan_turn. This table records plan JSON already stored in
+    pipeline_runs.chunk_plan; it is not a runtime authority in this slice.
+    """
+    _create_plan_versions_table(conn, "plan_versions", if_not_exists=True)
+    if _plan_versions_source_check_blocks_plan_turn(conn):
+        _rebuild_plan_versions_for_plan_turn_source(conn)
     _create_index_if_columns_exist(
         conn,
         "plan_versions",
@@ -640,6 +705,7 @@ def _ensure_run_turns_shape(conn) -> None:
             run_id TEXT NOT NULL,
             project_id TEXT NOT NULL,
             turn_number INTEGER NOT NULL,
+            target_type TEXT NOT NULL DEFAULT 'chunk',
             chunk_number INTEGER NOT NULL,
             steer_text TEXT NOT NULL,
             attempt_id TEXT,
@@ -649,6 +715,13 @@ def _ensure_run_turns_shape(conn) -> None:
             UNIQUE(run_id, turn_number)
         )
     """))
+    _add_column_if_missing(
+        conn,
+        "run_turns",
+        "target_type",
+        "ALTER TABLE run_turns ADD COLUMN target_type TEXT NOT NULL "
+        "DEFAULT 'chunk'",
+    )
     _create_index_if_columns_exist(
         conn,
         "run_turns",

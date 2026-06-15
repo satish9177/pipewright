@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS plan_versions (
     run_id TEXT NOT NULL,
     version INTEGER NOT NULL,
     triage_json TEXT NOT NULL,
-    source TEXT NOT NULL CHECK (source IN ('initial', 'seeded')),
+    source TEXT NOT NULL CHECK (source IN ('initial', 'seeded', 'plan_turn')),
     created_from_turn_id TEXT,
     created_at DATETIME NOT NULL,
     FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
@@ -243,21 +243,21 @@ CREATE TABLE IF NOT EXISTS chunk_attempts (
 
 -- run_turns is the append-only conversation/turn log for a run (Phase 3 item 13;
 -- proposal §4.3). One row per human steer message: the sanitized steer text, the
--- targeted chunk, and a link to the chunk_attempts row the turn produced
+-- target type/chunk sentinel, and a link to the chunk_attempts row the turn produced
 -- (attempt_id; the attempt is the ledger's job, the message is this table's).
 -- The original pipeline_runs.feature_description stays immutable — it is the
--- audit anchor; turns are additive context. The steer is advisory only: a turn
+-- audit anchor; turns are additive context. The message is advisory only: a turn
 -- row never grants scope, approves a gate, or alters Git/merge behavior. This
 -- table stores user steer text and metadata ONLY — never diffs, test output,
 -- provider/Git errors, prompts, or secrets (same discipline as chunk_attempts).
 -- Rows are never updated or deleted by the application. chunk_number is NOT NULL
--- today (item 13 only services failed chunks) but the shape accommodates the
--- deferred item-14 post-success turns without change.
+-- by design; plan turns use target_type='plan' and chunk_number=0.
 CREATE TABLE IF NOT EXISTS run_turns (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
     turn_number INTEGER NOT NULL,
+    target_type TEXT NOT NULL DEFAULT 'chunk',
     chunk_number INTEGER NOT NULL,
     steer_text TEXT NOT NULL,
     attempt_id TEXT,

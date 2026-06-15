@@ -272,6 +272,30 @@ def _insert_chunks(conn, run_id: str, project_id: str, triage_result: TriageResu
     return int(row[0])
 
 
+def replace_pending_chunks_for_plan(
+    conn,
+    run_id: str,
+    project_id: str,
+    triage_result: TriageResult,
+) -> int:
+    """
+    Replace pending chunk rows for an unapproved plan using the caller's transaction.
+
+    This is an internal plan-gate-turn helper. The caller must re-check the run
+    is still awaiting chunk-plan approval in the same transaction before calling.
+    It never touches completed/failed chunks and never executes or approves work.
+    """
+    conn.execute(text("""
+        DELETE FROM chunks
+        WHERE run_id = :run_id
+          AND status = :status
+    """), {
+        "run_id": run_id,
+        "status": ChunkStatusValue.PENDING,
+    })
+    return _insert_chunks(conn, run_id, project_id, triage_result)
+
+
 def create_chunked_run(
     run_id: str,
     project_id: str,
