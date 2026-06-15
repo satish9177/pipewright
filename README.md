@@ -276,18 +276,18 @@ Pipewright runs this command after applying changes, to confirm the repo still
 works. (This is the field historically called the "test command.") Use your test
 suite if you have one; otherwise use a build / typecheck / compile step.
 
-Pipewright can execute any configured verification command. Non-pytest commands
-are supported when they pass at baseline, but only pytest currently supports
-baseline-aware tolerance of pre-existing failing tests. For non-pytest projects,
-start from a green suite or use a build / typecheck / check command that is
-expected to pass.
+**Verification runner note:** Pipewright can execute any configured verification
+command. Non-pytest commands are supported when they pass at baseline, but only
+pytest currently supports baseline-aware tolerance of pre-existing failing tests.
+For non-pytest projects, start from a green suite or use a build / typecheck /
+check command that is expected to pass.
 
 | Stack | Examples |
 |-------|----------|
 | Python | `python -m pytest` (best-supported baseline-aware runner) or `python -m compileall .` |
 | Node / React | `npm test` when green, or `npm run build` / `npm run typecheck` / `npm run lint` if configured |
 | Java / Maven | `mvn test` when green, or `mvn -DskipTests package` / `mvn compile` |
-| Gradle | `./gradlew test` when green, or `./gradlew build -x test` / `./gradlew compileJava` |
+| Gradle | `./gradlew test` when green, or `gradle build -x test` / `./gradlew build -x test` / `./gradlew compileJava` |
 | Go | `go test ./...` when green |
 | Rust | `cargo check` or `cargo test` when green |
 
