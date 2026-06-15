@@ -103,7 +103,7 @@ Current truth:
   the current prompt-preview pin-overflow 422 tripwire are covered. The flag still
   ships `False`; activation and prompt-preview wording changes remain later.
 - **Row 16 PR-A — dormant post-run hygiene trigger — COMPLETE.** Added
-  `MEMORY_POSTRUN_HYGIENE_ENABLED=False` and a success-terminal-only, post-lock
+  default-off `MEMORY_POSTRUN_HYGIENE_ENABLED` and a success-terminal-only, post-lock
   `pr_orchestrator` trigger for existing run-outcome suggestion generation. Because
   the flag ships false, the manual `memory-suggestions/generate` route remains the
   only active generation path by default. When enabled in tests, the trigger is
@@ -115,7 +115,14 @@ Current truth:
   Run Detail card showing persisted pending suggestions from the run. It does not
   call the generator, does not show transient generated/skipped/blocked/floored/
   capped counts, does not mutate suggestions/facts/gates, and does not replace the
-  existing manual generate route. `MEMORY_POSTRUN_HYGIENE_ENABLED` remains `False`.
+  existing manual generate route. `MEMORY_POSTRUN_HYGIENE_ENABLED` remains
+  default false.
+- **Row 16 controlled env-gated soak — AVAILABLE.** Maintainers can set
+  `PIPEWRIGHT_MEMORY_POSTRUN_HYGIENE_ENABLED=true` for local/dev soak of the
+  existing PR-A trigger. Unset, false-ish, and invalid values keep automatic
+  post-run hygiene disabled; no committed config enables it. Default-on PR-C
+  activation remains deferred because smoke confirmed rejected same-content can
+  reappear from a later run.
 - **Deferred (not opened):** Row 16 PR-C activation, retriever/FTS (row 19),
   vector/embedding memory (row 23), and the thread/run UI (rows 22b–22e). The
   remaining Row 12 gate is **operational, not code** — flipping
@@ -333,8 +340,9 @@ PR-A, PR-B, and PR-C are all merged, with PR-C shipped dormant
 (`MEMORY_RELEVANCE_OMISSION_ENABLED=False`).** Omission and pinning are not active
 until the flag is explicitly flipped later (a soak decision, not a code change).
 **Recommended next step: a maintainer / Claude roadmap review before opening any new
-row/PR or activating a flag** — Row 16 PR-A and PR-B are implemented, with the
-trigger still dormant; do not auto-start Row 16 PR-C, row 19/23, or the thread UI.
+row/PR or activating a flag** — Row 16 PR-A and PR-B are implemented, and an
+env-gated local/dev soak is available with default false; do not auto-start
+default-on Row 16 PR-C, row 19/23, or the thread UI.
 
 - **Safe now (no decision needed):** documentation / smoke-checklist upkeep; small
   honest stabilization fixes; optional PR-B soak follow-ups such as an endpoint
@@ -349,16 +357,18 @@ trigger still dormant; do not auto-start Row 16 PR-C, row 19/23, or the thread U
   (retriever/FTS), row 23 (vector, D6), or the thread UI. The only outstanding Row
   12 action is operational: a soak decision on whether/when to flip
   `MEMORY_RELEVANCE_OMISSION_ENABLED` on.
-- **Row 16 (post-run hygiene) — PR-A and PR-B implemented, dormant/read-only by default.**
+- **Row 16 (post-run hygiene) — PR-A and PR-B implemented; env-gated soak available.**
   [`../design/memory-postrun-hygiene-row16.md`](../design/memory-postrun-hygiene-row16.md)
-  records the D7 framing: `MEMORY_POSTRUN_HYGIENE_ENABLED=False`; the manual
+  records the D7 framing: `MEMORY_POSTRUN_HYGIENE_ENABLED` defaults false and can
+  be enabled only for local/dev soak with
+  `PIPEWRIGHT_MEMORY_POSTRUN_HYGIENE_ENABLED=true`; the manual
   `memory-suggestions/generate` route stays the only active generation path by
-  default; the PR-A trigger is success-terminal-only, best-effort, and called from
+  default. The PR-A trigger is success-terminal-only, best-effort, and called from
   `pr_orchestrator` after `complete` is committed and the repo lock is released —
   not `_update_run_status`, with no shared terminal-settle refactor. PR-B adds only
   a read-only pending-suggestion digest/card; it does not call the generator or show
   transient generated/skipped/blocked/floored/capped counts. Failed/`rejected`/
-  `push_failed` hygiene and PR-C activation are later decisions.
+  `push_failed` hygiene and default-on PR-C activation are later decisions.
 - **Deferred (explicitly):** activating `MEMORY_RELEVANCE_OMISSION_ENABLED` (soak
   decision, not code); Row 16 PR-C activation; retriever/FTS (row 19);
   vector/embedding memory (row 23, D6); the thread/run UI (rows 22b–22e). Demo /
@@ -440,9 +450,10 @@ byte-for-byte; no schema/frontend/per-project/planner/triage/prompt-preview plum
 adaptive/retriever/FTS/vector/memory-mutation change. DEFERRED: activating
 MEMORY_RELEVANCE_OMISSION_ENABLED (soak decision, not code); post-run hygiene (row 16 —
 PR-A COMPLETE: dormant default-off success-terminal-only pr_orchestrator trigger behind
-MEMORY_POSTRUN_HYGIENE_ENABLED=False; manual route remains the only active path by
-default. PR-B COMPLETE: read-only pending-suggestion digest/card; PR-C activation
-deferred); retriever/FTS (row 19);
+MEMORY_POSTRUN_HYGIENE_ENABLED; manual route remains the only active path by
+default unless env-gated soak is explicitly enabled. PR-B COMPLETE: read-only pending-suggestion digest/card. ENV-GATED SOAK
+AVAILABLE: PIPEWRIGHT_MEMORY_POSTRUN_HYGIENE_ENABLED=true enables local/dev soak
+only; default-on PR-C activation deferred); retriever/FTS (row 19);
 vector/embedding (row 23); thread UI (22b–22e).
 
 INVARIANTS (do not violate):

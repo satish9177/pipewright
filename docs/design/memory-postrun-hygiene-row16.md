@@ -1,10 +1,10 @@
 # Row 16 — Memory Post-Run Hygiene (design brief)
 
-Status: **PR-A and PR-B implemented.** The dormant, default-off,
-success-terminal-only trigger is wired behind
-`MEMORY_POSTRUN_HYGIENE_ENABLED=False`; PR-B adds read-only digest/observability
-for pending run suggestions. PR-C activation remains deferred. There is no active
-auto-generation by default.
+Status: **PR-A and PR-B implemented; controlled env-gated soak available.**
+The success-terminal-only trigger remains default-off. It can be enabled only for
+local/dev soak via `PIPEWRIGHT_MEMORY_POSTRUN_HYGIENE_ENABLED=true`; PR-B adds
+read-only digest/observability for pending run suggestions. Default-on PR-C
+activation remains deferred. There is no active auto-generation by default.
 
 Scope owner: memory roadmap. Predecessor: Row 12 (relevance omission) shipped its
 scaffolding dormant behind a default-off flag and activated later only after proof.
@@ -109,8 +109,15 @@ the existing manual `POST .../generate` response because those counts are
 transient and not persisted. Persisting a fuller digest would require schema and
 is deferred out of PR-B.
 
-**PR-C — activation decision.** Only after PR-A/PR-B soak. Decide whether to flip the
-default or keep manual. May add a "review suggestions now" affordance. Still pending-only.
+**Controlled env-gated soak — implemented.** Maintainers can set
+`PIPEWRIGHT_MEMORY_POSTRUN_HYGIENE_ENABLED=true` locally to exercise the existing
+PR-A trigger without changing shipped defaults. Unset, false-ish, and invalid
+values keep automatic post-run hygiene disabled. This is not default-on PR-C
+activation.
+
+**PR-C — activation decision.** Only after controlled soak. Decide whether to flip
+the default or keep manual/env-gated. May add a "review suggestions now"
+affordance. Still pending-only.
 
 ---
 
@@ -209,6 +216,9 @@ Row 19 retriever/FTS; Row 23 vector/embedding; thread/run UI; stale-memory lifec
 automation; repo-verification `last_verified_at` auto-bump; auto-archive; auto-approval;
 prompt-injection changes; schema changes (unproven ⇒ excluded); enabling
 `MEMORY_RELEVANCE_OMISSION_ENABLED`; enabling `MEMORY_POSTRUN_HYGIENE_ENABLED` by default.
+Default-on PR-C remains deferred because local activation smoke confirmed that a
+suggestion rejected from run A can reappear as pending from run B when a later run
+proposes the same content.
 
 ---
 
@@ -240,7 +250,19 @@ prompt-injection changes; schema changes (unproven ⇒ excluded); enabling
 
 ---
 
-## 11. Decisions (locked) and remaining detail
+## 11. Controlled soak implementation files
+
+- `backend/pipeline/policy.py` — resolves
+  `MEMORY_POSTRUN_HYGIENE_ENABLED` from
+  `PIPEWRIGHT_MEMORY_POSTRUN_HYGIENE_ENABLED`, defaulting false.
+- `backend/tests/test_memory_postrun_hygiene_trigger.py` — env parsing,
+  env-enabled trigger, disabled/invalid env, and existing monkeypatch coverage.
+- `.env.example`, `docs/testing/memory-postrun-hygiene-smoke.md`,
+  `docs/status/current-state.md`, and this design doc — local/dev soak notes.
+
+---
+
+## 12. Decisions (locked) and remaining detail
 
 **Decided (2026-06-14):**
 1. **Attach breadth — success terminal only.** PR-A covers the successful `complete`
@@ -260,8 +282,10 @@ prompt-injection changes; schema changes (unproven ⇒ excluded); enabling
 
 ## Final recommendation
 
-PR-A and PR-B are implemented and remain dormant/read-only by default. The blocking
-decisions are preserved (§11: success-terminal only; best-effort call in
+PR-A, PR-B, and the controlled env-gated soak path are implemented. Shipped behavior
+remains disabled by default. The blocking decisions are preserved (§12:
+success-terminal only; best-effort call in
 `pr_orchestrator` after `complete` commits + lock release; **not**
 `_update_run_status`; no shared terminal-settle refactor), and the provenance string is
-`"postrun_auto"`. Next work requires a maintainer decision before PR-C activation.
+`"postrun_auto"`. Next work requires a maintainer decision before default-on PR-C
+activation.

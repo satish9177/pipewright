@@ -37,6 +37,37 @@ Manual smoke checklist for Row 16 PR-B read-only digest / observability.
 - Do not expect generated/skipped/blocked/floored/capped counts in the digest;
   those transient counts are only returned by the manual generate response.
 
+## Controlled Env-Gated Soak
+
+Default behavior remains disabled. For a local/dev soak only, set the env var
+before starting the backend/test process:
+
+```powershell
+$env:PIPEWRIGHT_MEMORY_POSTRUN_HYGIENE_ENABLED = "true"
+```
+
+Then run one successful `local_only` or PR success flow and confirm:
+
+1. Pending suggestions are created automatically after successful completion.
+2. The Run Detail digest appears with the correct pending count.
+3. Project Memory shows the pending suggestions for human review.
+4. Approve/reject still works through Project Memory only.
+5. Reloading Run Detail does not create new suggestions.
+6. Repeating an idempotent complete/PR action does not create duplicates.
+
+Unset the flag after the soak:
+
+```powershell
+Remove-Item Env:PIPEWRIGHT_MEMORY_POSTRUN_HYGIENE_ENABLED
+```
+
+Unset, false-ish, and invalid values keep automatic post-run hygiene disabled.
+Do not use this as default-on activation; it is a controlled local/dev soak path.
+
+Before running the normal unit suite, unset
+`PIPEWRIGHT_MEMORY_POSTRUN_HYGIENE_ENABLED`. The env-gated soak flag is read at
+policy import time and is intended only for controlled local/dev smoke.
+
 ## Activation Smoke Result — 2026-06-15
 
 This smoke used a throwaway SQLite database via `PIPEWRIGHT_DB_PATH` under
