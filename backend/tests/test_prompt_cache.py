@@ -1,3 +1,4 @@
+import importlib
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,21 @@ from backend.pipeline import coder, planner, policy
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture()
+def reload_prompt_cache_policy(monkeypatch):
+    def reload_with(value: str | None):
+        if value is None:
+            monkeypatch.delenv(policy.PROMPT_CACHE_ENV, raising=False)
+        else:
+            monkeypatch.setenv(policy.PROMPT_CACHE_ENV, value)
+        return importlib.reload(policy)
+
+    yield reload_with
+
+    monkeypatch.delenv(policy.PROMPT_CACHE_ENV, raising=False)
+    importlib.reload(policy)
+
+
 def _request(messages: list[Message]) -> LLMRequest:
     return LLMRequest(messages=messages, model="test-model")
 
@@ -19,7 +35,10 @@ def _response_with_usage(usage: SimpleNamespace):
     return SimpleNamespace(content=[block], usage=usage, stop_reason="end_turn")
 
 
-def test_prompt_cache_policy_defaults_disabled():
+def test_prompt_cache_policy_defaults_disabled(reload_prompt_cache_policy):
+    reloaded = reload_prompt_cache_policy(None)
+
+    assert reloaded.PROMPT_CACHE_ENABLED is False
     assert policy.PROMPT_CACHE_ENABLED is False
     assert policy.GEMINI_EXPLICIT_CACHE_ENABLED is False
 
@@ -74,6 +93,31 @@ def test_anthropic_cache_enabled_marks_only_marked_system_text(monkeypatch):
     assert "".join(block["text"] for block in system) == (
         "Static system.\n\nUnmarked system."
     )
+    assert messages == [{"role": "user", "content": "Request-varying user prompt."}]
+
+
+def test_anthropic_cache_truthy_env_marks_only_marked_system_text(
+    reload_prompt_cache_policy,
+):
+    reloaded = reload_prompt_cache_policy("true")
+    assert reloaded.PROMPT_CACHE_ENABLED is True
+    req = _request([
+        Message(role="system", content="Static system.", cache=True),
+        Message(role="system", content="Unmarked system."),
+        Message(role="user", content="Request-varying user prompt.", cache=True),
+    ])
+
+    system, messages = anthropic._translate_messages(req)
+
+    assert system == [
+        {
+            "type": "text",
+            "text": "Static system.",
+            "cache_control": {"type": "ephemeral"},
+        },
+        {"type": "text", "text": "\n\n"},
+        {"type": "text", "text": "Unmarked system."},
+    ]
     assert messages == [{"role": "user", "content": "Request-varying user prompt."}]
 
 
