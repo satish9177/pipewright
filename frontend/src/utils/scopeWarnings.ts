@@ -11,8 +11,13 @@
 
 export const SCOPE_MARKER = '[SCOPE]'
 export const SIZE_MARKER = '[SIZE]'
+export const ISOLATION_MARKER = '[ISOLATION]'
 
-export const KNOWN_NOTE_MARKERS = [SCOPE_MARKER, SIZE_MARKER] as const
+export const KNOWN_NOTE_MARKERS = [
+  SCOPE_MARKER,
+  SIZE_MARKER,
+  ISOLATION_MARKER,
+] as const
 
 function findNextMarkerIndex(text: string, startIndex: number): number {
   let nextIndex = -1
@@ -28,9 +33,9 @@ function findNextMarkerIndex(text: string, startIndex: number): number {
 /**
  * Extract the individual marker notes from one or more text fields.
  *
- * The backend joins multiple notes as `[SCOPE] a [SIZE] b`, so each segment is
- * captured only until the next known marker. Any leading unmarked rationale text
- * before the first target marker is ignored.
+ * The backend joins multiple notes as `[SCOPE] a [SIZE] b [ISOLATION] c`, so
+ * each segment is captured only until the next known marker. Any leading
+ * unmarked rationale text before the first target marker is ignored.
  */
 export function extractMarkerNotes(
   marker: (typeof KNOWN_NOTE_MARKERS)[number],
@@ -72,4 +77,10 @@ export function extractSizeWarnings(
   ...texts: Array<string | null | undefined>
 ): string[] {
   return extractMarkerNotes(SIZE_MARKER, ...texts)
+}
+
+export function extractIsolationWarnings(
+  ...texts: Array<string | null | undefined>
+): string[] {
+  return extractMarkerNotes(ISOLATION_MARKER, ...texts)
 }

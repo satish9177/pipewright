@@ -81,6 +81,15 @@ CHUNK_SIZING_NEW_FILE_DEFAULT_TOKENS = 800
 CHUNK_SIZING_MANY_FILES_THRESHOLD = 6
 CHUNK_SIZING_TINY_TOKEN_FLOOR = 200
 
+# --- Chunk isolation advisories (chunk_isolation.py, row 6c / 18.8) --------
+# Dormant, advisory-only notes appended to chunk rationale. False preserves
+# chunk-plan output exactly.
+CHUNK_ISOLATION_ADVISORY_ENV = "PIPEWRIGHT_CHUNK_ISOLATION_ADVISORY_ENABLED"
+CHUNK_ISOLATION_ADVISORY_ENABLED = _env_flag_enabled(
+    CHUNK_ISOLATION_ADVISORY_ENV,
+    default=False,
+)
+
 # --- Human attempts on a failed chunk (patch_failures.py, item 13) ----------
 # Combined per-chunk budget for human-triggered attempts on a failed chunk:
 # plain human retries and steered attempts (recovery_mode "human" /
