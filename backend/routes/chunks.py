@@ -130,6 +130,10 @@ from backend.pipeline.file_scope_intent import (
 )
 from backend.pipeline.chunk_isolation import annotate_triage_result_isolation
 from backend.pipeline.chunk_sizing import annotate_triage_result_sizing
+from backend.pipeline.plan_version_store import (
+    PLAN_VERSION_SOURCE_INITIAL,
+    append_plan_version,
+)
 from backend.pipeline.report_analyzer import (
     build_limited_report,
     run_report_analysis,
@@ -1103,6 +1107,14 @@ def _create_read_only_run(
             "total_chunks": total_chunks,
             "created_at": _utc_now(),
         })
+        if chunk_plan is not None:
+            append_plan_version(
+                conn,
+                run_id=run_id,
+                version=1,
+                triage_json=chunk_plan,
+                source=PLAN_VERSION_SOURCE_INITIAL,
+            )
 
 
 def _load_run_intent(run_id: str) -> str:

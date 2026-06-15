@@ -517,6 +517,7 @@ def _migrate_db(conn) -> None:
             "ON memory_suggestions(project_id, status)",
             ("project_id", "status"),
         )
+        _ensure_plan_versions_shape(conn)
         _ensure_chunk_attempts_shape(conn)
         _ensure_run_turns_shape(conn)
         _ensure_review_finding_acknowledgements_shape(conn)
@@ -537,6 +538,35 @@ def _table_exists(conn, table_name: str) -> bool:
         raise RuntimeError(
             f"database.py: Failed to inspect table {table_name}: {error}"
         )
+
+
+def _ensure_plan_versions_shape(conn) -> None:
+    """
+    Ensure the append-only plan_versions scaffold exists for existing DB files.
+
+    Additive only: CREATE TABLE IF NOT EXISTS plus indexes, never DROP or
+    rewrite. This table records plan JSON already stored in
+    pipeline_runs.chunk_plan; it is not a runtime authority in this slice.
+    """
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS plan_versions (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            triage_json TEXT NOT NULL,
+            source TEXT NOT NULL CHECK (source IN ('initial', 'seeded')),
+            created_from_turn_id TEXT,
+            created_at DATETIME NOT NULL,
+            FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
+        )
+    """))
+    _create_index_if_columns_exist(
+        conn,
+        "plan_versions",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_versions_run_version "
+        "ON plan_versions(run_id, version)",
+        ("run_id", "version"),
+    )
 
 
 def _ensure_chunk_attempts_shape(conn) -> None:

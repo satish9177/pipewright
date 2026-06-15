@@ -31,6 +31,11 @@ from backend.pipeline.scope_expansion import (
     compute_effective_files_expected,
     is_in_force,
 )
+from backend.pipeline.plan_version_store import (
+    PLAN_VERSION_SOURCE_INITIAL,
+    PLAN_VERSION_SOURCE_SEEDED,
+    append_plan_version,
+)
 from backend.pipeline.test_run_validation import TestRunValidationResult
 
 
@@ -299,6 +304,12 @@ def create_chunked_run(
             },
             sort_keys=True,
         )
+        chunk_plan_json = triage_result.model_dump_json()
+        plan_version_source = (
+            PLAN_VERSION_SOURCE_SEEDED
+            if source_plan_run_id
+            else PLAN_VERSION_SOURCE_INITIAL
+        )
         with engine.begin() as conn:
             conn.execute(text("""
                 INSERT INTO pipeline_runs
@@ -326,13 +337,20 @@ def create_chunked_run(
                 "intent": intent or "implementation",
                 "report_json": report_json,
                 "chunk_plan_status": ChunkPlanStatus.AWAITING_APPROVAL,
-                "chunk_plan": triage_result.model_dump_json(),
+                "chunk_plan": chunk_plan_json,
                 "total_chunks": triage_result.total_chunks,
                 "source_plan_run_id": source_plan_run_id,
                 "start_branch": start_branch,
                 "start_head_sha": start_head_sha,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             })
+            append_plan_version(
+                conn,
+                run_id=run_id,
+                version=1,
+                triage_json=chunk_plan_json,
+                source=plan_version_source,
+            )
             _insert_chunks(conn, run_id, project_id, triage_result)
 
         print(f"[CHUNKS] Chunked run created | run_id={run_id}")
