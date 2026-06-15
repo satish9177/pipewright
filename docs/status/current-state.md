@@ -8,7 +8,7 @@
 
 ---
 
-## ⚠️ Reconciled 2026-06-14 — read this first
+## ⚠️ Reconciled 2026-06-16 — read this first
 
 This page was written **before** the Pipewright redesign
 (`PIPEWRIGHT_REDESIGN_PROPOSAL.md`), and several sections below are **stale**. For
@@ -123,7 +123,8 @@ Current truth:
   post-run hygiene disabled; no committed config enables it. Rejected same-content
   suggestions no longer silently return from later runs; default-on PR-C activation
   remains deferred pending maintainer decision and fresh soak evidence.
-- **§23 row 7b — plan-gate turns — COMPLETE & MERGED, default-off.** PR-A added
+- **§23 row 7b — plan-gate turns + plan-version lineage — COMPLETE & MERGED,
+  default-off.** PR-A added
   the internal plan-turn engine scaffold; PR-B added
   `POST /runs/{run_id}/plan-turns` behind `PLAN_TURNS_ENABLED`; PR-C added the
   collapsed Run Detail "Revise plan" affordance at the chunk-plan approval gate;
@@ -143,9 +144,21 @@ Current truth:
   chunks stayed pending, and no execution route was called / auto-triggered.
   Flag-off verification passed after restart without the env var: a valid
   plan-turn request returned 404 and the frontend source maps that to "Plan
-  revision is not enabled for this run." Production frontend build passed with
-  the existing Vite chunk-size warning; direct browser visual smoke remains
-  pending until local automation works. Default remains off.
+  revision is not enabled for this run." Follow-up stabilization slices are also
+  merged: **Slice A** added backend `GET /runs/{run_id}/plan-versions` as a
+  read-only lineage/audit model; **Slice B** added nullable
+  `approved_plan_version` binding on chunk-plan approval and exposes it as
+  top-level `approved_version`; and **Slice C** added the frontend plan-version
+  lineage display on Run Detail. Later manual smoke after Slice C confirmed
+  flag-off behavior still hides valid plan-turn requests as 404 with the
+  frontend disabled copy, and flag-on behavior shows the revise/history/approval
+  flow: revisions update lineage, approval stamps/displays the approved version,
+  and the revised plan still requires explicit human approval. Safety invariants
+  held: no auto-execution, no approval blocker from lineage/stamping, and no
+  final-approval bypass. Production frontend build passed with the existing Vite
+  chunk-size warning. The earlier Windows browser-automation gap remains recorded;
+  no newer uncompleted browser/manual limitation was recorded in this closeout.
+  Default remains off.
 - **Deferred (not opened):** Row 16 PR-C activation, retriever/FTS (row 19),
   vector/embedding memory (row 23), and the thread/run UI (rows 22b–22e). The
   remaining Row 12 gate is **operational, not code** — flipping

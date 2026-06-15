@@ -1,16 +1,18 @@
 # Pipewright Redesign — Rolling Implementation Brief
 
-**Date:** 2026-06-15
-**Status:** **§23 row 7b plan-gate turns are COMPLETE & MERGED, end-to-end but
-default-off.** PR-A/PR-B/PR-C/PR-D landed the internal engine, backend route,
-frontend "Revise plan" affordance, and `PIPEWRIGHT_PLAN_TURNS_ENABLED` env
-wiring. Backend/API/DB env-var smoke passed with process-local
-`PIPEWRIGHT_PLAN_TURNS_ENABLED=true`; the revised plan still required explicit
-approval, the existing approve route worked, and no execution auto-triggered.
-Flag-off restart returned 404 for a valid plan-turn request and the frontend maps
-that to "Plan revision is not enabled for this run." Browser visual smoke remains
-pending because local Windows automation failed, not because of a known product
-bug. Default remains off.
+**Date:** 2026-06-16
+**Status:** **§23 row 7b plan-gate turns plus plan-version lineage are COMPLETE
+& MERGED, end-to-end but default-off.** PR-A/PR-B/PR-C/PR-D landed the internal
+engine, backend route, frontend "Revise plan" affordance, and
+`PIPEWRIGHT_PLAN_TURNS_ENABLED` env wiring. Stabilization Slices A/B/C then
+landed the backend `GET /runs/{run_id}/plan-versions` read model,
+`approved_plan_version` approval binding, and frontend lineage display.
+Backend/API/DB env-var smoke passed with process-local
+`PIPEWRIGHT_PLAN_TURNS_ENABLED=true`; later manual smoke after Slice C confirmed
+flag-off disabled behavior and flag-on revise/history/approval behavior. The
+revised plan still requires explicit approval, lineage/stamping never blocks
+approval, and no execution or final-approval bypass is introduced. Default remains
+off.
 
 Previous status remains true: **ROW 12 COMPLETE — PR-A, PR-B, and PR-C are all
 merged.** D5 was affirmatively confirmed by the maintainer on 2026-06-14 (the D5
@@ -29,7 +31,7 @@ Row 16 PR-C activation, rows 19 / 23, and the §21 thread UI remain deferred.
 activating a default.** Full records live in `PIPEWRIGHT_REDESIGN_WORKPLAN.md`
 and the proposal's §24 + Appendix E.1/E.2.
 
-## §23 row 7b closeout (plan-gate turns, default-off)
+## §23 row 7b closeout (plan-gate turns + lineage, default-off)
 
 - **PR-A:** internal plan-turn engine scaffold.
 - **PR-B:** backend `POST /runs/{run_id}/plan-turns`, hidden as 404 while
@@ -38,6 +40,11 @@ and the proposal's §24 + Appendix E.1/E.2.
   approval gate.
 - **PR-D:** `PIPEWRIGHT_PLAN_TURNS_ENABLED` env wiring; unset/false-ish/invalid
   keeps the feature disabled, truthy enables it locally.
+- **Slice A:** backend `GET /runs/{run_id}/plan-versions` read-only lineage/audit
+  endpoint.
+- **Slice B:** nullable `approved_plan_version` binding on chunk-plan approval,
+  surfaced as top-level `approved_version` in the lineage endpoint.
+- **Slice C:** frontend Run Detail plan-version lineage display.
 - **Smoke:** backend/API/DB env-var activation passed on project `proj-4d529cfb`,
   run `dcacba8c-a993-44b6-bc50-e3ba0c57bea1`: `POST /runs/{run_id}/plan-turns`
   returned 200 (`plan_version=2`, `total_chunks=3`,
@@ -50,10 +57,17 @@ and the proposal's §24 + Appendix E.1/E.2.
 - **Flag-off invariant:** restart without the env var returned 404 for a valid
   plan-turn request; frontend source maps that 404 to "Plan revision is not
   enabled for this run."
+- **Post-Slice-C smoke:** manual smoke confirmed flag-off disabled behavior and
+  flag-on revise/history/approval behavior. Revisions update lineage, approval
+  stamps/displays the approved version, and the revised plan still requires
+  explicit approval.
+- **Safety invariants:** no auto-execution, no approval blocker from lineage or
+  stamping, and no final-approval bypass.
 - **Known smoke gap:** direct browser visual smoke remains pending because local
   Windows automation failed (`CreateProcessAsUserW failed: 5`) and the Vite dev
-  process exited under automated launch. Production frontend build passed. This is
-  not a known product bug.
+  process exited under automated launch. Production frontend build passed. No
+  newer uncompleted browser/manual limitation was recorded in this closeout; the
+  earlier automation issue is not a known product bug.
 - **Default:** remains off.
 
 ## Row 12 PR-C summary (request-aware omission + pinning, dormant-by-default)
