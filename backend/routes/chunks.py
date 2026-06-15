@@ -139,7 +139,9 @@ from backend.pipeline.plan_turn_engine import (
 from backend.pipeline.plan_version_store import (
     PLAN_VERSION_SOURCE_INITIAL,
     append_plan_version,
+    list_plan_versions,
 )
+from backend.pipeline.run_turn_store import RUN_TURN_TARGET_PLAN, list_run_turns
 from backend.pipeline.report_analyzer import (
     build_limited_report,
     run_report_analysis,
@@ -2528,6 +2530,57 @@ def get_pr_status_route(run_id: str):
     """
     try:
         return build_run_pr_status(run_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=str(error))
+
+
+def _run_exists(run_id: str) -> bool:
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT 1 FROM pipeline_runs WHERE id = :run_id"),
+            {"run_id": run_id},
+        ).fetchone()
+    return row is not None
+
+
+@router.get("/runs/{run_id}/plan-versions")
+def get_plan_versions_route(run_id: str):
+    """
+    Read-only plan-version lineage for a run.
+
+    This is an audit/read-model endpoint only: it does not parse the live plan,
+    acquire mutation/repo locks, consult capability flags, or trigger pipeline
+    work. Missing run_turn rows degrade to null lineage instead of failing the
+    read path.
+    """
+    try:
+        if not _run_exists(run_id):
+            raise ValueError(f"Run not found: {run_id}")
+
+        plan_turns_by_id = {
+            turn["id"]: turn
+            for turn in list_run_turns(run_id, target_type=RUN_TURN_TARGET_PLAN)
+        }
+        versions = []
+        for version in list_plan_versions(run_id):
+            turn = plan_turns_by_id.get(version.get("created_from_turn_id"))
+            created_from_turn = None
+            if turn is not None:
+                created_from_turn = {
+                    "turn_number": turn["turn_number"],
+                    "created_at": turn["created_at"],
+                    "message": turn["steer_text"],
+                }
+            versions.append({
+                "version": version["version"],
+                "source": version["source"],
+                "created_at": version["created_at"],
+                "created_from_turn": created_from_turn,
+            })
+
+        return {"run_id": run_id, "versions": versions}
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:
