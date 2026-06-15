@@ -19,8 +19,10 @@ from backend.memory.bootstrap import (
     CandidateSuggestion,
     generate_bootstrap_suggestions,
     insert_pending_suggestion,
+    list_suggestions,
+    reject_suggestion,
 )
-from backend.memory.memory_store import add_fact, compute_content_hash
+from backend.memory.memory_store import add_fact, compute_content_hash, list_facts
 
 pytestmark = pytest.mark.unit
 
@@ -264,6 +266,132 @@ def test_insert_pending_suggestion_accepts_optional_quality_score(
     assert scored["quality_score"] == 72
     assert unscored is not None
     assert unscored["quality_score"] is None
+
+
+def test_insert_pending_suggestion_suppresses_rejected_same_hash_from_later_run(
+    project_factory,
+    project_repo,
+):
+    project_id = project_factory(project_repo)
+    content = "Run memory suggestions require explicit human review."
+    first = insert_pending_suggestion(
+        project_id,
+        content,
+        source_run_id="run-a",
+        source_type="run_handoff",
+    )
+    assert first is not None
+
+    rejected = reject_suggestion(
+        project_id,
+        first["id"],
+        reason="Not useful for this project.",
+    )
+    assert rejected["status"] == "rejected"
+
+    second = insert_pending_suggestion(
+        project_id,
+        content,
+        source_run_id="run-b",
+        source_type="run_handoff",
+    )
+
+    assert second is None
+    assert list_suggestions(project_id, status="pending") == []
+    rejected_rows = list_suggestions(project_id, status="rejected")
+    assert len(rejected_rows) == 1
+    assert rejected_rows[0]["id"] == first["id"]
+    assert list_facts(project_id, status="active") == []
+
+
+def test_insert_pending_suggestion_rejected_suppression_is_hash_and_project_scoped(
+    project_factory,
+    project_repo,
+):
+    project_id = project_factory(project_repo)
+    content = "Planner notes are reviewed before becoming project memory."
+    rejected_source = insert_pending_suggestion(
+        project_id,
+        content,
+        source_run_id="run-a",
+    )
+    assert rejected_source is not None
+    reject_suggestion(
+        project_id,
+        rejected_source["id"],
+        reason="Not accurate for this project.",
+    )
+
+    different_hash = insert_pending_suggestion(
+        project_id,
+        "Planner notes are reviewed before becoming durable project memory.",
+        source_run_id="run-b",
+    )
+    assert different_hash is not None
+    assert different_hash["status"] == "pending"
+
+    project_b_repo = LOCAL_TMP / str(uuid.uuid4())
+    project_b_repo.mkdir(parents=True, exist_ok=True)
+    try:
+        project_b = project_factory(project_b_repo, "Rejected Suppression B")
+
+        other_project = insert_pending_suggestion(
+            project_b,
+            content,
+            source_run_id="run-c",
+        )
+
+        assert other_project is not None
+        assert other_project["status"] == "pending"
+    finally:
+        shutil.rmtree(project_b_repo, ignore_errors=True)
+
+
+def test_insert_pending_suggestion_existing_dedupe_paths_remain(
+    project_factory,
+    project_repo,
+):
+    project_id = project_factory(project_repo)
+    active_content = "Backend uses FastAPI routes."
+    pending_content = "Memory suggestion review is project-scoped."
+    rejected_content = "Post-run suggestions stay pending until review."
+    add_fact(project_id, active_content, category="stack")
+
+    active_duplicate = insert_pending_suggestion(
+        project_id,
+        active_content,
+        category="stack",
+    )
+    pending = insert_pending_suggestion(
+        project_id,
+        pending_content,
+        source_run_id="pending-run",
+    )
+    pending_duplicate = insert_pending_suggestion(
+        project_id,
+        pending_content,
+        source_run_id="other-run",
+    )
+    rejected = insert_pending_suggestion(
+        project_id,
+        rejected_content,
+        source_run_id="same-run",
+    )
+    assert rejected is not None
+    reject_suggestion(project_id, rejected["id"], reason="Not useful here.")
+    rejected_same_run_duplicate = insert_pending_suggestion(
+        project_id,
+        rejected_content,
+        source_run_id="same-run",
+    )
+
+    assert active_duplicate is None
+    assert pending is not None
+    assert pending_duplicate is None
+    assert rejected_same_run_duplicate is None
+    assert len(list_suggestions(project_id, status="pending")) == 1
+    assert len(list_suggestions(project_id, status="rejected")) == 1
+    assert len(list_facts(project_id, status="active")) == 1
 
 
 def test_suggestion_list_order_remains_created_at_desc_with_quality_scores(

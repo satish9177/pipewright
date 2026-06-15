@@ -150,6 +150,21 @@ def _pending_suggestion_exists(project_id: str, content_hash: str) -> bool:
     return row is not None
 
 
+def _rejected_suggestion_exists(project_id: str, content_hash: str) -> bool:
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT id FROM memory_suggestions
+            WHERE project_id = :project_id
+              AND content_hash = :content_hash
+              AND status = 'rejected'
+            LIMIT 1
+        """), {
+            "project_id": project_id,
+            "content_hash": content_hash,
+        }).fetchone()
+    return row is not None
+
+
 def _run_scoped_suggestion_exists(
     project_id: str, content_hash: str, source_run_id: str
 ) -> bool:
@@ -157,12 +172,10 @@ def _run_scoped_suggestion_exists(
     True if this run already produced a suggestion with the same content,
     whether it is still pending, was approved, or was rejected.
 
-    This prevents a *rejected* run-outcome suggestion from being silently
-    recreated the next time the user clicks "generate" for the same run: the
-    pending-only dedupe (_pending_suggestion_exists) and the active-fact dedupe
-    (_active_memory_exists) both miss a rejected suggestion. The check is scoped
-    to source_run_id, so a similar suggestion from a *different* future run can
-    still be generated.
+    Project-scoped active/pending/rejected content-hash dedupe handles most
+    cases. This preserves the older run-scoped guard for statuses tied to one
+    source run, including approved/rejected rows that should not be recreated
+    by repeating generation for that same run.
     """
     with engine.connect() as conn:
         row = conn.execute(text("""
@@ -265,17 +278,21 @@ def insert_pending_suggestion(
 
     Reuses the same content gate as manual memory creation
     (validate_memory_content, which raises ValueError on blocked content) and
-    the same per-project dedupe (active fact + pending suggestion content hash).
+    the same per-project dedupe (active fact + pending/rejected suggestion
+    content hash).
 
-    Returns the sanitized suggestion dict, or None when an active fact or a
-    pending suggestion with the same content hash already exists. Suggestions
-    are always inserted as pending — this never creates an active memory fact.
+    Returns the sanitized suggestion dict, or None when an active fact, pending
+    suggestion, or rejected suggestion with the same content hash already
+    exists. Suggestions are always inserted as pending — this never creates an
+    active memory fact.
     """
     content = validate_memory_content(content)
     content_hash = compute_content_hash(content)
     if _active_memory_exists(project_id, content_hash):
         return None
     if _pending_suggestion_exists(project_id, content_hash):
+        return None
+    if _rejected_suggestion_exists(project_id, content_hash):
         return None
     # Run-scoped suppression: once this run produced this suggestion, do not
     # recreate it for the same run even if it was rejected (or already approved).

@@ -113,7 +113,8 @@ is deferred out of PR-B.
 `PIPEWRIGHT_MEMORY_POSTRUN_HYGIENE_ENABLED=true` locally to exercise the existing
 PR-A trigger without changing shipped defaults. Unset, false-ish, and invalid
 values keep automatic post-run hygiene disabled. This is not default-on PR-C
-activation.
+activation. Rejected same-content suppression was required before any future
+default-on PR-C reconsideration and is now in place.
 
 **PR-C — activation decision.** Only after controlled soak. Decide whether to flip
 the default or keep manual/env-gated. May add a "review suggestions now"
@@ -216,9 +217,9 @@ Row 19 retriever/FTS; Row 23 vector/embedding; thread/run UI; stale-memory lifec
 automation; repo-verification `last_verified_at` auto-bump; auto-archive; auto-approval;
 prompt-injection changes; schema changes (unproven ⇒ excluded); enabling
 `MEMORY_RELEVANCE_OMISSION_ENABLED`; enabling `MEMORY_POSTRUN_HYGIENE_ENABLED` by default.
-Default-on PR-C remains deferred because local activation smoke confirmed that a
-suggestion rejected from run A can reappear as pending from run B when a later run
-proposes the same content.
+Rejected same-content reappearance was fixed by same-project content-hash
+suppression in `insert_pending_suggestion`; default-on PR-C still requires a
+maintainer decision and fresh soak evidence.
 
 ---
 

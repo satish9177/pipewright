@@ -269,9 +269,10 @@ def test_rejected_suggestion_is_not_regenerated_for_same_run(run_env):
     assert list_facts(project_id, status="active") == []
 
 
-def test_similar_candidate_from_different_run_still_generates(run_env):
+def test_rejected_same_content_from_different_run_is_suppressed(run_env):
     project_id = run_env.create_project()
     handoff = "Repo indexing uses project_id isolation everywhere."
+    different_handoff = "Repo indexing records project-scoped manifest snapshots."
 
     run_one = run_env.create_run(project_id, status="complete")
     run_env.add_chunk(
@@ -286,8 +287,8 @@ def test_similar_candidate_from_different_run_still_generates(run_env):
     )
     assert rejected["status"] == "rejected"
 
-    # A *different* run proposing the same content is still allowed: run-scoped
-    # suppression keys on source_run_id, and no pending/active copy exists.
+    # A different run proposing the same rejected content must not silently
+    # recreate it as pending.
     run_two = run_env.create_run(project_id, status="complete")
     run_env.add_chunk(
         run_two, project_id, 1,
@@ -295,10 +296,33 @@ def test_similar_candidate_from_different_run_still_generates(run_env):
     )
     second = generate_run_memory_suggestions(run_two)
 
-    regenerated = [s for s in second.generated if s["content"] == handoff]
-    assert len(regenerated) == 1
-    assert regenerated[0]["source_run_id"] == run_two
-    assert regenerated[0]["status"] == "pending"
+    regenerated = [
+        suggestion for suggestion in second.generated if suggestion["content"] == handoff
+    ]
+    assert regenerated == []
+    assert second.skipped_count >= 1
+    assert [
+        suggestion
+        for suggestion in list_suggestions(project_id, status="pending")
+        if suggestion["content"] == handoff
+    ] == []
+
+    # Different content with a different hash can still be suggested normally.
+    run_three = run_env.create_run(project_id, status="complete")
+    run_env.add_chunk(
+        run_three, project_id, 1,
+        completion_summary=_success_summary([different_handoff]),
+    )
+    third = generate_run_memory_suggestions(run_three)
+
+    new_suggestions = [
+        suggestion
+        for suggestion in third.generated
+        if suggestion["content"] == different_handoff
+    ]
+    assert len(new_suggestions) == 1
+    assert new_suggestions[0]["source_run_id"] == run_three
+    assert new_suggestions[0]["status"] == "pending"
 
 
 # C. Blocked unsafe generated content -----------------------------------------
