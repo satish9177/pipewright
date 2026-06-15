@@ -3,6 +3,7 @@ test_memory_postrun_hygiene_trigger.py
 Dormant Row 16 PR-A post-run memory hygiene trigger tests.
 """
 
+import importlib
 import inspect
 import uuid
 
@@ -18,6 +19,21 @@ from backend.pipeline import chunked_orchestrator, policy, pr_orchestrator
 from backend.projects.project_store import create_project
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture()
+def reload_postrun_policy(monkeypatch):
+    def reload_with(value: str | None):
+        if value is None:
+            monkeypatch.delenv(policy.MEMORY_POSTRUN_HYGIENE_ENV, raising=False)
+        else:
+            monkeypatch.setenv(policy.MEMORY_POSTRUN_HYGIENE_ENV, value)
+        return importlib.reload(policy)
+
+    yield reload_with
+
+    monkeypatch.delenv(policy.MEMORY_POSTRUN_HYGIENE_ENV, raising=False)
+    importlib.reload(policy)
 
 
 @pytest.fixture()
@@ -180,8 +196,116 @@ def _patch_github_cli_success(monkeypatch, branch_name: str) -> None:
     )
 
 
-def test_postrun_hygiene_flag_defaults_off():
-    assert policy.MEMORY_POSTRUN_HYGIENE_ENABLED is False
+def test_postrun_hygiene_flag_defaults_off(reload_postrun_policy):
+    reloaded = reload_postrun_policy(None)
+
+    assert reloaded.MEMORY_POSTRUN_HYGIENE_ENABLED is False
+
+
+def test_postrun_hygiene_env_unset_defaults_false(reload_postrun_policy):
+    reloaded = reload_postrun_policy(None)
+
+    assert reloaded.MEMORY_POSTRUN_HYGIENE_ENABLED is False
+
+
+@pytest.mark.parametrize("value", ["true", "TRUE", "True", "1", "yes", "on", " On "])
+def test_postrun_hygiene_env_truthy_values_enable_flag(
+    reload_postrun_policy,
+    value,
+):
+    reloaded = reload_postrun_policy(value)
+
+    assert reloaded.MEMORY_POSTRUN_HYGIENE_ENABLED is True
+
+
+@pytest.mark.parametrize("value", ["false", "0", "no", "off", "", "maybe", "treu"])
+def test_postrun_hygiene_env_falsey_or_invalid_values_disable_flag(
+    reload_postrun_policy,
+    value,
+):
+    reloaded = reload_postrun_policy(value)
+
+    assert reloaded.MEMORY_POSTRUN_HYGIENE_ENABLED is False
+
+
+def test_env_false_successful_local_only_complete_does_not_call_generator(
+    monkeypatch,
+    reload_postrun_policy,
+    run_env,
+):
+    reload_postrun_policy("false")
+    project = run_env.add_project(pr_mode="local_only")
+    run_id = run_env.add_run(project["id"])
+    calls: list[tuple[tuple, dict]] = []
+    _patch_local_only_git(monkeypatch)
+    monkeypatch.setattr(
+        pr_orchestrator,
+        "generate_run_memory_suggestions",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    result = pr_orchestrator.push_and_create_pr(run_id)
+
+    assert result["status"] == RunStatus.COMPLETE
+    assert calls == []
+    assert list_suggestions(project["id"], status="pending") == []
+
+
+def test_env_invalid_successful_local_only_complete_does_not_call_generator(
+    monkeypatch,
+    reload_postrun_policy,
+    run_env,
+):
+    reload_postrun_policy("definitely")
+    project = run_env.add_project(pr_mode="local_only")
+    run_id = run_env.add_run(project["id"])
+    calls: list[tuple[tuple, dict]] = []
+    _patch_local_only_git(monkeypatch)
+    monkeypatch.setattr(
+        pr_orchestrator,
+        "generate_run_memory_suggestions",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    result = pr_orchestrator.push_and_create_pr(run_id)
+
+    assert result["status"] == RunStatus.COMPLETE
+    assert calls == []
+    assert list_suggestions(project["id"], status="pending") == []
+
+
+def test_env_true_success_trigger_creates_pending_only_suggestions(
+    monkeypatch,
+    reload_postrun_policy,
+    run_env,
+):
+    reload_postrun_policy("true")
+    project = run_env.add_project(
+        pr_mode="local_only",
+        test_command="python -m pytest backend/tests -q",
+    )
+    run_id = run_env.add_run(project["id"])
+    _patch_local_only_git(monkeypatch)
+    before_block = build_project_memory_block(project["id"], role="coder")
+
+    result = pr_orchestrator.push_and_create_pr(run_id)
+    after_block = build_project_memory_block(project["id"], role="coder")
+
+    suggestions = [
+        suggestion
+        for suggestion in list_suggestions(project["id"], status="pending")
+        if suggestion["source_run_id"] == run_id
+    ]
+    assert result["status"] == RunStatus.COMPLETE
+    assert len(suggestions) == 1
+    assert suggestions[0]["content"] == (
+        "Project test command: python -m pytest backend/tests -q"
+    )
+    assert suggestions[0]["status"] == "pending"
+    assert suggestions[0]["suggested_by"] == "postrun_auto"
+    assert list_facts(project["id"], status="active") == []
+    assert _count_approval_gates(run_id) == 0
+    assert after_block == before_block == ""
 
 
 def test_flag_off_successful_local_only_complete_does_not_call_generator(

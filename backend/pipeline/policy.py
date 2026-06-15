@@ -18,6 +18,25 @@ Per-role model selection deliberately does NOT live here:
 per-stage model constants were deleted, not moved).
 """
 
+import os
+from collections.abc import Mapping
+
+_TRUTHY_ENV_VALUES = frozenset({"true", "1", "yes", "on"})
+
+
+def _env_flag_enabled(
+    name: str,
+    *,
+    default: bool = False,
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    env = os.environ if env is None else env
+    value = env.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in _TRUTHY_ENV_VALUES
+
+
 # --- Tester (tester.py) -----------------------------------------------------
 # Hard wall-clock limit for one test-command run.
 TESTER_TIMEOUT_SECONDS = 300
@@ -158,8 +177,13 @@ RUN_SUGGESTION_TOTAL_CAP = 8
 # --- Dormant post-run memory hygiene trigger (pr_orchestrator.py, Row 16 PR-A) -
 # Controls automatic run-outcome suggestion generation after successful complete
 # runs. False keeps the manual route as the only active path; tests may
-# monkeypatch this flag on in isolation.
-MEMORY_POSTRUN_HYGIENE_ENABLED = False
+# monkeypatch this flag on in isolation. The env override is for controlled
+# local/dev soak only; unset, false-ish, and invalid values all keep it disabled.
+MEMORY_POSTRUN_HYGIENE_ENV = "PIPEWRIGHT_MEMORY_POSTRUN_HYGIENE_ENABLED"
+MEMORY_POSTRUN_HYGIENE_ENABLED = _env_flag_enabled(
+    MEMORY_POSTRUN_HYGIENE_ENV,
+    default=False,
+)
 
 # --- Memory injection budgets (prompt_builder.py, Row 12 PR-A) -------------
 # Current effective budgets, relocated without behavior change. The adaptive
