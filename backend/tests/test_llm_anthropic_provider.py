@@ -4,9 +4,11 @@ Unit tests for AnthropicProvider. All SDK calls are fully mocked — no live
 API calls, no ANTHROPIC_API_KEY required.
 """
 
+import logging
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import httpx
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import anthropic
 
@@ -18,6 +20,7 @@ from backend.llm.errors import (
     ProviderInvalidResponseError,
     ProviderRateLimitError,
     ProviderTimeoutError,
+    UnsupportedModelError,
 )
 from backend.llm.providers.anthropic import AnthropicProvider, _translate_messages
 from backend.llm.registry import default_registry
@@ -86,11 +89,43 @@ def test_anthropic_supports_known_model():
     assert p.supports_model("claude-opus-4-1") is True
 
 
+@pytest.mark.parametrize("model", ["claude-opus-4-8", "claude-fable-5"])
+def test_anthropic_supports_unknown_claude_prefixed_models(model):
+    assert AnthropicProvider().supports_model(model) is True
+
+
 def test_anthropic_does_not_support_unknown_model():
     assert AnthropicProvider().supports_model("not-a-real-model-xyz") is False
 
 
 # ─── config validation ────────────────────────────────────────────────────────
+
+def test_anthropic_known_model_validates_without_warning(provider, caplog):
+    with caplog.at_level(logging.WARNING, logger="backend.llm.providers.anthropic"):
+        provider.validate_config("claude-3-5-haiku-latest")
+
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize("model", ["claude-opus-4-8", "claude-fable-5"])
+def test_anthropic_unknown_claude_prefixed_model_validates_with_warning(
+    provider,
+    caplog,
+    model,
+):
+    with caplog.at_level(logging.WARNING, logger="backend.llm.providers.anthropic"):
+        provider.validate_config(model)
+
+    assert len(caplog.records) == 1
+    assert "outside known-good set" in caplog.records[0].message
+    assert model in caplog.records[0].message
+
+
+@pytest.mark.parametrize("model", ["gpt-5", "gemini-2.5-pro", "not-a-real-model"])
+def test_anthropic_non_claude_model_still_raises(provider, model):
+    with pytest.raises(UnsupportedModelError):
+        provider.validate_config(model)
+
 
 def test_anthropic_missing_api_key_raises_configuration_error(monkeypatch):
     monkeypatch.setattr(settings, "anthropic_api_key", None)

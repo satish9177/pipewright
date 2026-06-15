@@ -54,6 +54,9 @@ When no LLM env vars are set, the default remains Gemini (`gemini-2.5-flash-lite
 | `claude-haiku-4-5` | Claude 4 Haiku |
 | `claude-haiku-4-5-20251001` | Claude 4.5 Haiku versioned |
 
+Anthropic accepts `claude-*` model IDs and warns when the ID is outside this
+known-good set.
+
 ## Message Translation
 
 Anthropic's messages API separates the system prompt from the turn list.
