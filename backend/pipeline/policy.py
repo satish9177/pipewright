@@ -137,8 +137,10 @@ TRIVIAL_PROFILE_DENYLIST_PATTERNS = frozenset({
 
 # --- Provider prompt caching (LLM providers, item 17b) ----------------------
 # Hard off switch for explicit prompt-cache translation. False must preserve
-# provider request shapes exactly.
-PROMPT_CACHE_ENABLED = False
+# provider request shapes exactly. The env override is for controlled local/dev
+# soak only; unset, false-ish, and invalid values all keep it disabled.
+PROMPT_CACHE_ENV = "PIPEWRIGHT_PROMPT_CACHE_ENABLED"
+PROMPT_CACHE_ENABLED = _env_flag_enabled(PROMPT_CACHE_ENV, default=False)
 # Disabled seam for future Gemini explicit caching. The 17b slice must not create
 # CachedContent handles.
 GEMINI_EXPLICIT_CACHE_ENABLED = False
