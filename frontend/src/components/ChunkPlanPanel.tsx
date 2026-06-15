@@ -5,6 +5,7 @@ import type {
   ChunkReview,
   ChunkReviewFinding,
   ChunkStatus,
+  PlanVersionsResponse,
   RequestFileConstraints,
   StartContextDriftedResponse,
   TestRunValidation,
@@ -28,6 +29,7 @@ import RuntimeTestValidationBanner from '@/components/RuntimeTestValidationBanne
 import AdvisoryReviewPanel from '@/components/AdvisoryReviewPanel'
 import ReviewFindingsAckPanel from '@/components/ReviewFindingsAckPanel'
 import RevisePlanPanel from '@/components/RevisePlanPanel'
+import PlanVersionLineage from '@/components/PlanVersionLineage'
 import AttemptHistory from '@/components/AttemptHistory'
 import {
   parsePatchFailureSummary,
@@ -59,6 +61,10 @@ interface ChunkPlanPanelProps {
   startContextDrift?: StartContextDriftedResponse | null
   chunkActionMessage: string | null
   chunkActionError: string | null
+  // Slice C: read-only plan-version lineage (page-owned query). Optional/null-safe
+  // so existing callers/tests stay valid; when absent the lineage renders nothing.
+  // Provenance only — never gates or blocks any control in this panel.
+  planVersions?: PlanVersionsResponse | null
   hiddenApprovalChunkNumbers?: number[]
   // Patch retry wiring (#26E2). Optional so existing callers/tests stay valid.
   retryingChunkNumber?: number | null
@@ -1522,6 +1528,7 @@ export default function ChunkPlanPanel({
   startContextDrift = null,
   chunkActionMessage,
   chunkActionError,
+  planVersions = null,
   hiddenApprovalChunkNumbers = [],
   retryingChunkNumber = null,
   steeringChunkNumber = null,
@@ -1713,6 +1720,15 @@ export default function ChunkPlanPanel({
             )}
           </div>
         )}
+
+        {/* Slice C: read-only plan-version lineage. Mounted OUTSIDE the
+            isAwaitingApproval block so it survives after approval (the approved
+            version badge is most useful on a finished run). Provenance only —
+            it owns no controls and never gates approve/reject/execute. */}
+        <PlanVersionLineage
+          lineage={planVersions}
+          chunkPlanStatus={plan.chunk_plan_status}
+        />
 
         {isAwaitingApproval && (
           <>
