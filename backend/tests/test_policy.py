@@ -7,6 +7,7 @@ constants were deleted outright — role_config is the only model authority.
 """
 
 import importlib
+import os
 
 import pytest
 
@@ -38,8 +39,28 @@ def reload_prompt_cache_policy(monkeypatch):
     importlib.reload(policy)
 
 
+@pytest.fixture()
+def reload_tester_timeout_policy(monkeypatch):
+    original_value = os.environ.get(policy.TESTER_TIMEOUT_ENV)
+
+    def reload_with(value: str | None):
+        if value is None:
+            monkeypatch.delenv(policy.TESTER_TIMEOUT_ENV, raising=False)
+        else:
+            monkeypatch.setenv(policy.TESTER_TIMEOUT_ENV, value)
+        return importlib.reload(policy)
+
+    yield reload_with
+
+    if original_value is None:
+        monkeypatch.delenv(policy.TESTER_TIMEOUT_ENV, raising=False)
+    else:
+        monkeypatch.setenv(policy.TESTER_TIMEOUT_ENV, original_value)
+    importlib.reload(policy)
+
+
 def test_policy_values_are_unchanged_by_relocation():
-    assert policy.TESTER_TIMEOUT_SECONDS == 300
+    assert policy.TESTER_TIMEOUT_ENV == "PIPEWRIGHT_TESTER_TIMEOUT_SECONDS"
     assert policy.MAX_OUTPUT_CHARS == 10000
     assert policy.SCOPED_VERIFICATION_ENABLED is False
     assert policy.MAX_FILE_LINES == 200
@@ -88,6 +109,38 @@ def test_prompt_cache_env_falsey_or_invalid_values_disable_flag(
     reloaded = reload_prompt_cache_policy(value)
 
     assert reloaded.PROMPT_CACHE_ENABLED is False
+
+
+def test_tester_timeout_env_unset_defaults_300(reload_tester_timeout_policy):
+    reloaded = reload_tester_timeout_policy(None)
+
+    assert reloaded.TESTER_TIMEOUT_SECONDS == 300
+
+
+def test_tester_timeout_env_valid_positive_integer_overrides(
+    reload_tester_timeout_policy,
+):
+    reloaded = reload_tester_timeout_policy("600")
+
+    assert reloaded.TESTER_TIMEOUT_SECONDS == 600
+
+
+def test_tester_timeout_env_valid_positive_integer_allows_whitespace(
+    reload_tester_timeout_policy,
+):
+    reloaded = reload_tester_timeout_policy(" 600 ")
+
+    assert reloaded.TESTER_TIMEOUT_SECONDS == 600
+
+
+@pytest.mark.parametrize("value", ["abc", "", "0", "-1"])
+def test_tester_timeout_env_invalid_empty_zero_or_negative_defaults_300(
+    reload_tester_timeout_policy,
+    value,
+):
+    reloaded = reload_tester_timeout_policy(value)
+
+    assert reloaded.TESTER_TIMEOUT_SECONDS == 300
 
 
 def test_stages_read_constants_from_policy():
