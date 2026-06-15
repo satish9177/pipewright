@@ -59,6 +59,26 @@ def reload_tester_timeout_policy(monkeypatch):
     importlib.reload(policy)
 
 
+@pytest.fixture()
+def reload_chunk_sizing_policy(monkeypatch):
+    original_value = os.environ.get(policy.CHUNK_SIZING_ADVISORY_ENV)
+
+    def reload_with(value: str | None):
+        if value is None:
+            monkeypatch.delenv(policy.CHUNK_SIZING_ADVISORY_ENV, raising=False)
+        else:
+            monkeypatch.setenv(policy.CHUNK_SIZING_ADVISORY_ENV, value)
+        return importlib.reload(policy)
+
+    yield reload_with
+
+    if original_value is None:
+        monkeypatch.delenv(policy.CHUNK_SIZING_ADVISORY_ENV, raising=False)
+    else:
+        monkeypatch.setenv(policy.CHUNK_SIZING_ADVISORY_ENV, original_value)
+    importlib.reload(policy)
+
+
 def test_policy_values_are_unchanged_by_relocation():
     assert policy.TESTER_TIMEOUT_ENV == "PIPEWRIGHT_TESTER_TIMEOUT_SECONDS"
     assert policy.MAX_OUTPUT_CHARS == 10000
@@ -73,6 +93,14 @@ def test_policy_values_are_unchanged_by_relocation():
     })
     assert policy.MERGED_PROFILE_SAMPLE_PCT == 50
     assert policy.PROMPT_CACHE_ENV == "PIPEWRIGHT_PROMPT_CACHE_ENABLED"
+    assert (
+        policy.CHUNK_SIZING_ADVISORY_ENV
+        == "PIPEWRIGHT_CHUNK_SIZING_ADVISORY_ENABLED"
+    )
+    assert policy.CHUNK_CONTEXT_BUDGET_SHARE == 0.5
+    assert policy.CHUNK_SIZING_NEW_FILE_DEFAULT_TOKENS == 800
+    assert policy.CHUNK_SIZING_MANY_FILES_THRESHOLD == 6
+    assert policy.CHUNK_SIZING_TINY_TOKEN_FLOOR == 200
     assert "schema.sql" in policy.TRIVIAL_PROFILE_DENYLIST_PATTERNS
     assert "requirements*.txt" in policy.TRIVIAL_PROFILE_DENYLIST_PATTERNS
     assert policy.REPO_REALITY_SIGNAL_DIMENSIONS == frozenset({
@@ -141,6 +169,34 @@ def test_tester_timeout_env_invalid_empty_zero_or_negative_defaults_300(
     reloaded = reload_tester_timeout_policy(value)
 
     assert reloaded.TESTER_TIMEOUT_SECONDS == 300
+
+
+def test_chunk_sizing_advisory_env_unset_defaults_false(
+    reload_chunk_sizing_policy,
+):
+    reloaded = reload_chunk_sizing_policy(None)
+
+    assert reloaded.CHUNK_SIZING_ADVISORY_ENABLED is False
+
+
+@pytest.mark.parametrize("value", ["true", "TRUE", "True", "1", "yes", "on", " On "])
+def test_chunk_sizing_advisory_env_truthy_values_enable_flag(
+    reload_chunk_sizing_policy,
+    value,
+):
+    reloaded = reload_chunk_sizing_policy(value)
+
+    assert reloaded.CHUNK_SIZING_ADVISORY_ENABLED is True
+
+
+@pytest.mark.parametrize("value", ["false", "0", "no", "off", "", "maybe", "treu"])
+def test_chunk_sizing_advisory_env_falsey_or_invalid_values_disable_flag(
+    reload_chunk_sizing_policy,
+    value,
+):
+    reloaded = reload_chunk_sizing_policy(value)
+
+    assert reloaded.CHUNK_SIZING_ADVISORY_ENABLED is False
 
 
 def test_stages_read_constants_from_policy():
