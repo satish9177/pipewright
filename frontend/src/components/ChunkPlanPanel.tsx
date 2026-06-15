@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
+import { RUN_FLOW_ACTION_COPY, RUN_FLOW_ACTION_LABELS } from '@/lib/runFlowCopy'
 import { getStatusDisplay } from '@/utils/statusDisplay'
 import PatchFailureBanner from '@/components/PatchFailureBanner'
 import ScopeExpansionBanner from '@/components/ScopeExpansionBanner'
@@ -421,13 +422,13 @@ interface ExecutionControlsProps {
   executionError: string | null
   startContextDrift?: StartContextDriftedResponse | null
   // #39A: when true, the wired top-cockpit "Execute approved chunks" action is the
-  // single primary control, so this panel hides its duplicate "Execute Chunks"
+  // single primary control, so this panel hides its duplicate execute action
   // button and points the user upward. Only meaningful before execution starts.
   hideExecute?: boolean
   // #39A follow-up: true once chunk execution has begun (any chunk left `pending`,
   // or operator_state moved off the approved-not-executed state). The chunk plan
   // stays `approved` through running/completion/final, so this is what stops the
-  // legacy "Execute Chunks" button from reappearing after it started.
+  // legacy execute button from reappearing after it started.
   executionStarted?: boolean
   // #39A follow-up: a chunk is actively running — drives an optional read-only
   // status line only (no controls exist while a chunk runs).
@@ -457,7 +458,7 @@ function ExecutionControls({
   onExecute,
   onResume,
 }: ExecutionControlsProps) {
-  // "Execute Chunks" belongs only to the pristine approved-but-not-executed state.
+  // Execute belongs only to the pristine approved-but-not-executed state.
   // Once execution starts it must never come back; before then it is hidden only
   // when its wired top-cockpit twin owns the action (#39A dedup).
   const showExecute = !executionStarted && !hideExecute
@@ -533,26 +534,35 @@ function ExecutionControls({
       )}
 
       {(showExecute || showResume) && (
-        <div className="flex flex-wrap gap-3">
-          {showExecute && (
-            <Button
-              onClick={onExecute}
-              disabled={actionPending}
-              className="bg-blue-600 hover:bg-blue-700 text-white"
-            >
-              {isExecuting ? 'Executing...' : 'Execute Chunks'}
-            </Button>
-          )}
+        <>
+          <div className="flex flex-wrap gap-3">
+            {showExecute && (
+              <Button
+                onClick={onExecute}
+                disabled={actionPending}
+                className="bg-blue-600 hover:bg-blue-700 text-white"
+              >
+                {isExecuting
+                  ? 'Executing...'
+                  : RUN_FLOW_ACTION_LABELS.executeApprovedChunks}
+              </Button>
+            )}
+            {showResume && (
+              <Button
+                variant="outline"
+                onClick={onResume}
+                disabled={actionPending}
+              >
+                {isResuming ? 'Resuming...' : RUN_FLOW_ACTION_LABELS.resumeRun}
+              </Button>
+            )}
+          </div>
           {showResume && (
-            <Button
-              variant="outline"
-              onClick={onResume}
-              disabled={actionPending}
-            >
-              {isResuming ? 'Resuming...' : 'Resume Run'}
-            </Button>
+            <p className="text-xs text-muted-foreground">
+              {RUN_FLOW_ACTION_COPY.resumeCaption}
+            </p>
           )}
-        </div>
+        </>
       )}
     </div>
   )
@@ -646,7 +656,7 @@ function InlineChunkApprovalControls({
         >
           {chunkActionPending && approvingChunkNumber
             ? 'Approving...'
-            : 'Approve Chunk'}
+            : RUN_FLOW_ACTION_LABELS.approveChunk}
         </Button>
         <Button
           variant="destructive"
@@ -655,7 +665,7 @@ function InlineChunkApprovalControls({
         >
           {chunkActionPending && rejectingChunkNumber
             ? 'Rejecting...'
-            : 'Reject Chunk'}
+            : RUN_FLOW_ACTION_LABELS.rejectChunk}
         </Button>
       </div>
     </div>
@@ -1227,7 +1237,7 @@ interface PlanApprovalControlsProps {
   isRejecting: boolean
   actionPending: boolean
   // #39A: when true, the wired top-cockpit "Approve chunk plan" action is the
-  // single approve control, so this panel hides its duplicate "Approve Plan"
+  // single approve control, so this panel hides its duplicate plan approval
   // button and points the user upward. The reject textarea + "Reject Plan" stay —
   // reject has no top twin and must remain reachable here.
   hideApprove?: boolean
@@ -1275,7 +1285,9 @@ function PlanApprovalControls({
             disabled={actionPending}
             className="bg-green-600 hover:bg-green-700 text-white"
           >
-            {isApproving ? 'Approving...' : 'Approve Plan'}
+            {isApproving
+              ? 'Approving...'
+              : RUN_FLOW_ACTION_LABELS.approveChunkPlan}
           </Button>
         )}
         <Button
@@ -1283,7 +1295,9 @@ function PlanApprovalControls({
           onClick={() => onReject(rejectReason)}
           disabled={actionPending}
         >
-          {isRejecting ? 'Rejecting...' : 'Reject Plan'}
+          {isRejecting
+            ? 'Rejecting...'
+            : RUN_FLOW_ACTION_LABELS.rejectChunkPlan}
         </Button>
       </div>
     </div>
@@ -1466,7 +1480,7 @@ export default function ChunkPlanPanel({
   const isApproved = plan.chunk_plan_status === 'approved'
   // #39A follow-up: chunk_plan_status stays `approved` through running, completion,
   // and final approval, so it cannot tell whether execution already started. Derive
-  // that here so the legacy "Execute Chunks" button cannot reappear once a run is
+  // that here so the legacy execute button cannot reappear once a run is
   // under way. A chunk leaving `pending` is the durable, fail-open signal (works for
   // old responses without operator_state); operator_state.primary_action moving off
   // `execute_chunks` covers the brief window before the first chunk flips while the

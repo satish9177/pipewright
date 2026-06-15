@@ -7,6 +7,7 @@ import type {
 } from '@/api/client'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { RUN_FLOW_ACTION_COPY, RUN_FLOW_ACTION_LABELS } from '@/lib/runFlowCopy'
 
 interface AdvisoryReviewPanelProps {
   review?: ChunkReview | null
@@ -21,7 +22,7 @@ interface AdvisoryReviewPanelProps {
  * Renders the read-only `ChunkStatus.review` overlay for the human reviewing a
  * chunk's result. It is advisory evidence ONLY: it never approves, rejects,
  * acknowledges, or blocks anything. When the parent says the chunk is failed or
- * completed, a finding can offer "Steer this" through the existing steer route;
+ * completed, a finding can ask the AI to fix it through the existing steer route;
  * awaiting_chunk_approval deliberately gets no steer affordance. It must never
  * imply the code or tests are correct, and a stale review is visually demoted.
  *
@@ -190,15 +191,20 @@ function FindingRow({
         </p>
       )}
       {showSteer && (
-        <div className="pt-1">
+        <div className="flex flex-col items-start gap-1 pt-1">
           <Button
             size="sm"
             variant="outline"
             onClick={() => onSteerFinding?.(finding)}
             disabled={isSteering}
           >
-            {isSteering ? 'Steering...' : 'Steer this'}
+            {isSteering
+              ? 'Sending...'
+              : RUN_FLOW_ACTION_LABELS.askAiToFixThis}
           </Button>
+          <p className="text-xs text-muted-foreground">
+            {RUN_FLOW_ACTION_COPY.steerFindingCaption}
+          </p>
         </div>
       )}
     </li>
