@@ -123,6 +123,29 @@ Current truth:
   post-run hygiene disabled; no committed config enables it. Rejected same-content
   suggestions no longer silently return from later runs; default-on PR-C activation
   remains deferred pending maintainer decision and fresh soak evidence.
+- **§23 row 7b — plan-gate turns — COMPLETE & MERGED, default-off.** PR-A added
+  the internal plan-turn engine scaffold; PR-B added
+  `POST /runs/{run_id}/plan-turns` behind `PLAN_TURNS_ENABLED`; PR-C added the
+  collapsed Run Detail "Revise plan" affordance at the chunk-plan approval gate;
+  and PR-D wired local activation through `PIPEWRIGHT_PLAN_TURNS_ENABLED` while
+  keeping the default off. Final env-var smoke was **PARTIAL only because browser
+  visual automation was blocked locally** (`CreateProcessAsUserW failed: 5`; the
+  Vite dev process also exited under automated launch), not because of a known
+  product bug. Backend/API/DB smoke with process-local
+  `PIPEWRIGHT_PLAN_TURNS_ENABLED=true` passed on project `proj-4d529cfb`, run
+  `dcacba8c-a993-44b6-bc50-e3ba0c57bea1`: the run reached
+  `awaiting_chunk_plan_approval`; `POST /runs/{run_id}/plan-turns` returned 200
+  with `plan_version=2`, `total_chunks=3`, and
+  `chunk_plan_status=awaiting_approval`; DB contained v2
+  `plan_versions.source='plan_turn'`; live `pipeline_runs.chunk_plan` changed
+  from 2 to 3 chunks; pending chunk rows were replaced; and the run still required
+  explicit plan approval. The existing approve route approved the revised plan,
+  chunks stayed pending, and no execution route was called / auto-triggered.
+  Flag-off verification passed after restart without the env var: a valid
+  plan-turn request returned 404 and the frontend source maps that to "Plan
+  revision is not enabled for this run." Production frontend build passed with
+  the existing Vite chunk-size warning; direct browser visual smoke remains
+  pending until local automation works. Default remains off.
 - **Deferred (not opened):** Row 16 PR-C activation, retriever/FTS (row 19),
   vector/embedding memory (row 23), and the thread/run UI (rows 22b–22e). The
   remaining Row 12 gate is **operational, not code** — flipping

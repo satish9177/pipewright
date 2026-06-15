@@ -1,21 +1,60 @@
 # Pipewright Redesign — Rolling Implementation Brief
 
-**Date:** 2026-06-14
-**Status:** **ROW 12 COMPLETE — PR-A, PR-B, and PR-C are all merged.** D5 was
-affirmatively confirmed by the maintainer on 2026-06-14 (the D5 wording tension
-below is now **RESOLVED**), and Row 12 **PR-C** — relevance *omission* +
-priority-based human-pinning + a single global off-switch — has been **merged**
-behind one default-off policy flag (`MEMORY_RELEVANCE_OMISSION_ENABLED=False`).
-The flag ships `False`, so default behavior is byte-identical to PR-B; omission and
-priority pinning are **dormant** until the flag is explicitly flipped later (an
-operational soak decision, not a code change — and out of scope for this closeout).
-Stage 2 readiness is complete: backend tests and a manual smoke doc now prove the
-future flag-on omission path without changing the shipped default.
-This brief retains the PR-B closeout record below (still accurate history) and adds
-the PR-C summary. Rows 16 / 19 / 23 and the §21 thread UI remain deferred. **Next
-step: a maintainer / Claude roadmap review before opening any new row or activating
-the flag.** Full records live in `PIPEWRIGHT_REDESIGN_WORKPLAN.md` and the
-proposal's §24 + Appendix E.1/E.2.
+**Date:** 2026-06-15
+**Status:** **§23 row 7b plan-gate turns are COMPLETE & MERGED, end-to-end but
+default-off.** PR-A/PR-B/PR-C/PR-D landed the internal engine, backend route,
+frontend "Revise plan" affordance, and `PIPEWRIGHT_PLAN_TURNS_ENABLED` env
+wiring. Backend/API/DB env-var smoke passed with process-local
+`PIPEWRIGHT_PLAN_TURNS_ENABLED=true`; the revised plan still required explicit
+approval, the existing approve route worked, and no execution auto-triggered.
+Flag-off restart returned 404 for a valid plan-turn request and the frontend maps
+that to "Plan revision is not enabled for this run." Browser visual smoke remains
+pending because local Windows automation failed, not because of a known product
+bug. Default remains off.
+
+Previous status remains true: **ROW 12 COMPLETE — PR-A, PR-B, and PR-C are all
+merged.** D5 was affirmatively confirmed by the maintainer on 2026-06-14 (the D5
+wording tension below is now **RESOLVED**), and Row 12 **PR-C** — relevance
+*omission* + priority-based human-pinning + a single global off-switch — has been
+**merged** behind one default-off policy flag
+(`MEMORY_RELEVANCE_OMISSION_ENABLED=False`). The flag ships `False`, so default
+behavior is byte-identical to PR-B; omission and priority pinning are **dormant**
+until the flag is explicitly flipped later (an operational soak decision, not a
+code change — and out of scope for this closeout). Stage 2 readiness is complete:
+backend tests and a manual smoke doc now prove the future flag-on omission path
+without changing the shipped default. This brief retains the PR-B closeout record
+below (still accurate history), the PR-C summary, and this Row 7b closeout note.
+Row 16 PR-C activation, rows 19 / 23, and the §21 thread UI remain deferred.
+**Next step: a maintainer / Claude roadmap review before opening any new row or
+activating a default.** Full records live in `PIPEWRIGHT_REDESIGN_WORKPLAN.md`
+and the proposal's §24 + Appendix E.1/E.2.
+
+## §23 row 7b closeout (plan-gate turns, default-off)
+
+- **PR-A:** internal plan-turn engine scaffold.
+- **PR-B:** backend `POST /runs/{run_id}/plan-turns`, hidden as 404 while
+  `PLAN_TURNS_ENABLED` is false.
+- **PR-C:** collapsed Run Detail "Revise plan" affordance at the chunk-plan
+  approval gate.
+- **PR-D:** `PIPEWRIGHT_PLAN_TURNS_ENABLED` env wiring; unset/false-ish/invalid
+  keeps the feature disabled, truthy enables it locally.
+- **Smoke:** backend/API/DB env-var activation passed on project `proj-4d529cfb`,
+  run `dcacba8c-a993-44b6-bc50-e3ba0c57bea1`: `POST /runs/{run_id}/plan-turns`
+  returned 200 (`plan_version=2`, `total_chunks=3`,
+  `chunk_plan_status=awaiting_approval`), DB persisted v2
+  `plan_versions.source='plan_turn'`, live `pipeline_runs.chunk_plan` changed from
+  2 to 3 chunks, and pending chunk rows were replaced.
+- **Approval invariant:** the revised plan still required explicit approval; the
+  existing approve route approved it, chunks stayed pending, and no execution route
+  was called / auto-triggered.
+- **Flag-off invariant:** restart without the env var returned 404 for a valid
+  plan-turn request; frontend source maps that 404 to "Plan revision is not
+  enabled for this run."
+- **Known smoke gap:** direct browser visual smoke remains pending because local
+  Windows automation failed (`CreateProcessAsUserW failed: 5`) and the Vite dev
+  process exited under automated launch. Production frontend build passed. This is
+  not a known product bug.
+- **Default:** remains off.
 
 ## Row 12 PR-C summary (request-aware omission + pinning, dormant-by-default)
 
