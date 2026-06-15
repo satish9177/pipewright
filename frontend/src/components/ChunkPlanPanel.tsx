@@ -34,7 +34,10 @@ import {
   patchRecoveryFrameCopy,
   type RecoveredPatchReviewSummary,
 } from '@/utils/patchFailure'
-import { extractScopeWarnings } from '@/utils/scopeWarnings'
+import {
+  extractScopeWarnings,
+  extractSizeWarnings,
+} from '@/utils/scopeWarnings'
 import {
   ACTIVE_ATTENTION_STATUSES,
   chunkNeedsAttention,
@@ -596,6 +599,31 @@ function ChunkScopeWarning({ scopeWarnings }: { scopeWarnings: string[] }) {
   )
 }
 
+function ChunkSizeAdvisory({ sizeWarnings }: { sizeWarnings: string[] }) {
+  return (
+    <div className="mb-3 grid gap-2 rounded border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700">
+      <div className="flex items-center gap-2">
+        <Badge
+          variant="outline"
+          className="border-slate-300 bg-slate-100 text-slate-700"
+        >
+          Size advisory
+        </Badge>
+        <span className="text-xs text-muted-foreground">
+          does not block approval
+        </span>
+      </div>
+      <ul className="list-disc space-y-1 pl-5">
+        {sizeWarnings.map((warning, index) => (
+          <li key={index} className="break-words">
+            {warning}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 interface InlineChunkApprovalControlsProps {
   chunkNumber: number
   rejectReason: string
@@ -869,6 +897,8 @@ function ChunkCard({
     definition?.description
   )
   const hasScopeWarning = scopeWarnings.length > 0
+  const sizeWarnings = extractSizeWarnings(definition?.rationale)
+  const hasSizeWarning = sizeWarnings.length > 0
   const isAwaitingChunkApproval =
     chunk.status === 'awaiting_chunk_approval'
   const reviewAckBlocking =
@@ -913,6 +943,7 @@ function ChunkCard({
       </div>
 
       {hasScopeWarning && <ChunkScopeWarning scopeWarnings={scopeWarnings} />}
+      {hasSizeWarning && <ChunkSizeAdvisory sizeWarnings={sizeWarnings} />}
 
       <div className="grid gap-3 text-sm">
         <div className="grid gap-3 sm:grid-cols-3">

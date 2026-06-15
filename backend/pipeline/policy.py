@@ -68,6 +68,19 @@ AUTO_RETRY_INFRA_BUDGET = 1
 # default and is not wired into execution in this slice.
 SCOPED_VERIFICATION_ENABLED = False
 
+# --- Chunk sizing advisories (chunk_sizing.py, row 6b / 18.7) --------------
+# Dormant, advisory-only notes appended to chunk rationale. False preserves
+# chunk-plan output exactly.
+CHUNK_SIZING_ADVISORY_ENV = "PIPEWRIGHT_CHUNK_SIZING_ADVISORY_ENABLED"
+CHUNK_SIZING_ADVISORY_ENABLED = _env_flag_enabled(
+    CHUNK_SIZING_ADVISORY_ENV,
+    default=False,
+)
+CHUNK_CONTEXT_BUDGET_SHARE = 0.5
+CHUNK_SIZING_NEW_FILE_DEFAULT_TOKENS = 800
+CHUNK_SIZING_MANY_FILES_THRESHOLD = 6
+CHUNK_SIZING_TINY_TOKEN_FLOOR = 200
+
 # --- Human attempts on a failed chunk (patch_failures.py, item 13) ----------
 # Combined per-chunk budget for human-triggered attempts on a failed chunk:
 # plain human retries and steered attempts (recovery_mode "human" /
