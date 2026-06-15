@@ -10,6 +10,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
+import { RUN_FLOW_ACTION_LABELS } from '@/lib/runFlowCopy'
 import { getStatusDisplay } from '@/utils/statusDisplay'
 
 interface FinalApprovalPanelProps {
@@ -26,7 +27,7 @@ interface FinalApprovalPanelProps {
   // the required action so the user isn't sent into an avoidable error.
   acknowledgementBlocking?: boolean
   // Phase 4 item 15 reviewer-finding acknowledgement. Separate from weak-test
-  // acknowledgement: either one can pre-disable Approve Final, and neither is
+  // acknowledgement: either one can pre-disable final approval, and neither is
   // final approval.
   reviewAcknowledgementBlocking?: boolean
   onApprove: () => void
@@ -132,14 +133,14 @@ export default function FinalApprovalPanel({
             disabled={approveDisabled}
             className="bg-green-600 hover:bg-green-700 text-white"
           >
-            {isApproving ? 'Approving...' : 'Approve Final'}
+            {isApproving ? 'Approving...' : RUN_FLOW_ACTION_LABELS.approveFinal}
           </Button>
           <Button
             variant="destructive"
             onClick={() => onReject(rejectReason)}
             disabled={actionPending}
           >
-            {isRejecting ? 'Rejecting...' : 'Reject Final'}
+            {isRejecting ? 'Rejecting...' : RUN_FLOW_ACTION_LABELS.rejectFinal}
           </Button>
         </div>
       </CardContent>
