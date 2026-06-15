@@ -27,6 +27,7 @@ import ScopeExpansionBanner from '@/components/ScopeExpansionBanner'
 import RuntimeTestValidationBanner from '@/components/RuntimeTestValidationBanner'
 import AdvisoryReviewPanel from '@/components/AdvisoryReviewPanel'
 import ReviewFindingsAckPanel from '@/components/ReviewFindingsAckPanel'
+import RevisePlanPanel from '@/components/RevisePlanPanel'
 import AttemptHistory from '@/components/AttemptHistory'
 import {
   parsePatchFailureSummary,
@@ -71,6 +72,10 @@ interface ChunkPlanPanelProps {
   // refreshes run/chunks/gates query data via the existing invalidation pattern.
   onScopeActionComplete?: () => void
   onReviewActionComplete?: () => void
+  // §23 row 7b: called after a successful plan revision so the parent refreshes
+  // run/chunks/gates via the existing invalidation pattern. Optional so existing
+  // callers/tests stay valid; when absent the panel simply skips the refresh.
+  onPlanRevised?: () => void
   // #39A: hide the duplicate legacy primary buttons when the wired top-cockpit
   // twin is the single primary control. Default false so any caller that does not
   // pass these (or any state where the top action is unwired) keeps the legacy
@@ -1524,6 +1529,7 @@ export default function ChunkPlanPanel({
   retryBlockedReason = null,
   onScopeActionComplete,
   onReviewActionComplete,
+  onPlanRevised,
   hideLegacyPlanApprove = false,
   hideLegacyExecute = false,
   onApprove,
@@ -1711,6 +1717,11 @@ export default function ChunkPlanPanel({
         {isAwaitingApproval && (
           <>
             <Separator />
+
+            {/* §23 row 7b: optional "Revise plan" affordance, grouped with the
+                approve/reject decision. It never approves — a successful revision
+                produces a new plan version that still requires approval here. */}
+            <RevisePlanPanel runId={plan.run_id} onRevised={onPlanRevised} />
 
             <PlanApprovalControls
               rejectReason={rejectReason}
