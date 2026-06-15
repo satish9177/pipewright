@@ -670,10 +670,22 @@ export default function RunDetailPage() {
     },
   })
 
+  // Slice C: read-only plan-version lineage. Eager once a chunk plan exists (the
+  // lineage describes that plan), but it adds NO polling interval — it only
+  // changes on revise/approve, both of which invalidate this key below. retry:
+  // false mirrors the chunk-plan query so an unknown-run 404 does not retry-storm.
+  const { data: planVersions } = useQuery({
+    queryKey: ['planVersions', runId],
+    queryFn: () => runsApi.getPlanVersions(runId!),
+    enabled: !!runId && !!chunkPlan,
+    retry: false,
+  })
+
   const refreshRunDecisionState = () => {
     queryClient.invalidateQueries({ queryKey: ['run', runId] })
     queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
     queryClient.invalidateQueries({ queryKey: ['gates'] })
+    queryClient.invalidateQueries({ queryKey: ['planVersions', runId] })
   }
 
   const { data: project } = useQuery({
@@ -769,6 +781,9 @@ export default function RunDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
       queryClient.invalidateQueries({ queryKey: ['gates'] })
+      // Slice C: refetch lineage so the freshly stamped approved_version (Slice B)
+      // surfaces its "Approved: vN" badge without a manual refresh.
+      queryClient.invalidateQueries({ queryKey: ['planVersions', runId] })
     },
     onError: (error: unknown) => {
       setChunkPlanActionError(
@@ -1332,6 +1347,7 @@ export default function RunDetailPage() {
       startContextDrift={startContextDrift}
       chunkActionMessage={chunkActionMessage}
       chunkActionError={chunkActionError}
+      planVersions={planVersions}
       hiddenApprovalChunkNumbers={gateBackedApprovalChunkNumbers}
       retryingChunkNumber={
         retryChunkMutation.isPending

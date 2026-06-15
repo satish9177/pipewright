@@ -694,6 +694,33 @@ export interface PlanTurnResponse extends ExtraFields {
   next_action: string
 }
 
+// Slice C: read-only plan-version lineage from GET /runs/{run_id}/plan-versions
+// (Slice A endpoint + Slice B approved_version). Audit/provenance only — the
+// frontend renders it as text and never derives an approval/execution decision
+// from it. `created_from_turn` is null for `initial`/`seeded` versions; for a
+// `plan_turn` version it carries the (already-sanitized) revision message.
+export interface PlanVersionTurn {
+  turn_number: number
+  created_at: string
+  message: string
+}
+
+export interface PlanVersionEntry {
+  version: number
+  source: string
+  created_at: string
+  created_from_turn: PlanVersionTurn | null
+}
+
+export interface PlanVersionsResponse extends ExtraFields {
+  run_id: string
+  // The plan version a human approved (Slice B). null until approved, and null
+  // for legacy runs that have no recorded versions.
+  approved_version: number | null
+  // Ordered version ASC (oldest first); the highest version is the current plan.
+  versions: PlanVersionEntry[]
+}
+
 export interface ChunkOperationResponse extends ExtraFields {
   status: RunStatus | ChunkStatusValue | string
   run_id?: string
@@ -1252,6 +1279,10 @@ export const runsApi = {
       `/runs/${runId}/plan-turns`,
       { message } satisfies PlanTurnRequest,
     ).then(r => r.data),
+  // Slice C: read-only plan-version lineage (Slice A endpoint + Slice B
+  // approved_version). Pure GET — no lock, no plan parse, no side effects.
+  getPlanVersions: (runId: string) =>
+    api.get<PlanVersionsResponse>(`/runs/${runId}/plan-versions`).then(r => r.data),
   executeChunks: (runId: string) =>
     api.post<ChunkExecuteResponse>(`/runs/${runId}/chunks/execute`).then(r => r.data),
   resumeChunks: (runId: string) =>
