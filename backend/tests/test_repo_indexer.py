@@ -19,6 +19,20 @@ def test_repo_indexer_blocks_real_env_and_allows_env_samples(tmp_repo):
     (tmp_repo / "credentials.json").write_text("{}\n", encoding="utf-8")
     (tmp_repo / "secrets.properties").write_text("token=value\n", encoding="utf-8")
     (tmp_repo / "credentials.xml").write_text("<token />\n", encoding="utf-8")
+    (tmp_repo / "secret.yaml").write_text("token: value\n", encoding="utf-8")
+    (tmp_repo / "secret.yml").write_text("token: value\n", encoding="utf-8")
+    (tmp_repo / "secrets.local.json").write_text("{}\n", encoding="utf-8")
+    (tmp_repo / "credentials.local.json").write_text("{}\n", encoding="utf-8")
+    (tmp_repo / "application.properties").write_text(
+        "spring.datasource.password=value\n",
+        encoding="utf-8",
+    )
+    (tmp_repo / "application.yaml").write_text("spring: {}\n", encoding="utf-8")
+    (tmp_repo / "application.yml").write_text("spring: {}\n", encoding="utf-8")
+    (tmp_repo / "application-secrets.properties").write_text(
+        "spring.datasource.password=value\n",
+        encoding="utf-8",
+    )
 
     files = scan_repo(str(tmp_repo))
     paths = {file["path"] for file in files}
@@ -28,6 +42,14 @@ def test_repo_indexer_blocks_real_env_and_allows_env_samples(tmp_repo):
     assert "credentials.json" not in paths
     assert "secrets.properties" not in paths
     assert "credentials.xml" not in paths
+    assert "secret.yaml" not in paths
+    assert "secret.yml" not in paths
+    assert "secrets.local.json" not in paths
+    assert "credentials.local.json" not in paths
+    assert "application.properties" not in paths
+    assert "application.yaml" not in paths
+    assert "application.yml" not in paths
+    assert "application-secrets.properties" not in paths
     assert ".env.example" in paths
     assert ".env.sample" in paths
 
@@ -118,6 +140,52 @@ def test_repo_indexer_still_skips_generated_directory_names(tmp_repo, dirname):
 )
 def test_skip_names_do_not_match_file_name_substrings(tmp_repo, filename):
     target = tmp_repo / filename
+    target.write_text("x = 1\n", encoding="utf-8")
+
+    files = scan_repo(str(tmp_repo))
+    paths = {file["path"] for file in files}
+
+    assert filename in paths
+    assert should_skip_path(target) is False
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "secret.yaml",
+        "secret.yml",
+        "secrets.local.json",
+        "credentials.local.json",
+        "application.properties",
+        "application.yaml",
+        "application.yml",
+        "application-secrets.properties",
+    ],
+)
+def test_repo_indexer_skips_sensitive_config_filenames(tmp_repo, filename):
+    target = tmp_repo / filename
+    target.write_text("value\n", encoding="utf-8")
+
+    assert should_skip_path(target) is True
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "secretary.py",
+        "credentialed_user.py",
+        "application_service.py",
+        "secret_manager.py",
+        "secret.go",
+        "credential_provider.ts",
+        "aws_secrets.py",
+        "secret_service.py",
+        "src/app.py",
+    ],
+)
+def test_sensitive_stem_skip_is_not_overbroad(tmp_repo, filename):
+    target = tmp_repo / Path(filename)
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("x = 1\n", encoding="utf-8")
 
     files = scan_repo(str(tmp_repo))

@@ -48,6 +48,29 @@ INDEX_FORBIDDEN_FILE_STEMS = {
     "secrets",
 }
 
+INDEX_SENSITIVE_CONFIG_FILE_STEM_TOKENS = {
+    "credential",
+    "credentials",
+    "secret",
+    "secrets",
+}
+
+INDEX_SENSITIVE_CONFIG_FILENAMES = {
+    "application.properties",
+    "application.yaml",
+    "application.yml",
+}
+
+INDEX_SENSITIVE_CONFIG_EXTENSIONS = {
+    ".ini",
+    ".json",
+    ".properties",
+    ".toml",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+
 SUPPORTED_EXTENSIONS = {
     ".cs",
     ".css",
@@ -87,6 +110,14 @@ def _normalize_relative_path(path: Path) -> str:
     return str(path).replace("\\", "/")
 
 
+def _has_sensitive_config_stem_token(path: Path) -> bool:
+    if path.suffix.lower() not in INDEX_SENSITIVE_CONFIG_EXTENSIONS:
+        return False
+    stem = path.stem.lower()
+    tokens = stem.replace("-", ".").replace("_", ".").split(".")
+    return any(token in INDEX_SENSITIVE_CONFIG_FILE_STEM_TOKENS for token in tokens)
+
+
 def should_skip_path(path: Path, *, repo_root: Path | None = None) -> bool:
     """
     Return True when a path should not be scanned or indexed.
@@ -121,7 +152,13 @@ def should_skip_path(path: Path, *, repo_root: Path | None = None) -> bool:
         if path.is_file() and is_forbidden_path(path.name):
             return True
 
+        if path.is_file() and lower_name in INDEX_SENSITIVE_CONFIG_FILENAMES:
+            return True
+
         if path.is_file() and path.stem.lower() in INDEX_FORBIDDEN_FILE_STEMS:
+            return True
+
+        if path.is_file() and _has_sensitive_config_stem_token(path):
             return True
 
         return False
