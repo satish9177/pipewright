@@ -99,6 +99,26 @@ def reload_chunk_isolation_policy(monkeypatch):
     importlib.reload(policy)
 
 
+@pytest.fixture()
+def reload_plan_turns_policy(monkeypatch):
+    original_value = os.environ.get(policy.PLAN_TURNS_ENV)
+
+    def reload_with(value: str | None):
+        if value is None:
+            monkeypatch.delenv(policy.PLAN_TURNS_ENV, raising=False)
+        else:
+            monkeypatch.setenv(policy.PLAN_TURNS_ENV, value)
+        return importlib.reload(policy)
+
+    yield reload_with
+
+    if original_value is None:
+        monkeypatch.delenv(policy.PLAN_TURNS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(policy.PLAN_TURNS_ENV, original_value)
+    importlib.reload(policy)
+
+
 def test_policy_values_are_unchanged_by_relocation():
     assert policy.TESTER_TIMEOUT_ENV == "PIPEWRIGHT_TESTER_TIMEOUT_SECONDS"
     assert policy.MAX_OUTPUT_CHARS == 10000
@@ -125,6 +145,9 @@ def test_policy_values_are_unchanged_by_relocation():
         policy.CHUNK_ISOLATION_ADVISORY_ENV
         == "PIPEWRIGHT_CHUNK_ISOLATION_ADVISORY_ENABLED"
     )
+    assert policy.PLAN_TURNS_ENV == "PIPEWRIGHT_PLAN_TURNS_ENABLED"
+    assert policy.PLAN_TURN_CAP == 5
+    assert policy.PLAN_TURN_MESSAGE_MAX_CHARS == 2000
     assert "schema.sql" in policy.TRIVIAL_PROFILE_DENYLIST_PATTERNS
     assert "requirements*.txt" in policy.TRIVIAL_PROFILE_DENYLIST_PATTERNS
     assert policy.REPO_REALITY_SIGNAL_DIMENSIONS == frozenset({
@@ -249,6 +272,48 @@ def test_chunk_isolation_advisory_env_falsey_or_invalid_values_disable_flag(
     reloaded = reload_chunk_isolation_policy(value)
 
     assert reloaded.CHUNK_ISOLATION_ADVISORY_ENABLED is False
+
+
+def test_plan_turns_env_unset_defaults_false(reload_plan_turns_policy):
+    reloaded = reload_plan_turns_policy(None)
+
+    assert reloaded.PLAN_TURNS_ENABLED is False
+
+
+def test_plan_turns_env_empty_value_disables_flag(reload_plan_turns_policy):
+    reloaded = reload_plan_turns_policy("")
+
+    assert reloaded.PLAN_TURNS_ENABLED is False
+
+
+@pytest.mark.parametrize("value", ["maybe", "treu", "enable", "2"])
+def test_plan_turns_env_invalid_values_disable_flag(
+    reload_plan_turns_policy,
+    value,
+):
+    reloaded = reload_plan_turns_policy(value)
+
+    assert reloaded.PLAN_TURNS_ENABLED is False
+
+
+@pytest.mark.parametrize("value", ["false", "FALSE", "0", "no", "off", " Off "])
+def test_plan_turns_env_falseish_values_disable_flag(
+    reload_plan_turns_policy,
+    value,
+):
+    reloaded = reload_plan_turns_policy(value)
+
+    assert reloaded.PLAN_TURNS_ENABLED is False
+
+
+@pytest.mark.parametrize("value", ["true", "TRUE", "True", "1", "yes", "on", " On "])
+def test_plan_turns_env_truthy_values_enable_flag(
+    reload_plan_turns_policy,
+    value,
+):
+    reloaded = reload_plan_turns_policy(value)
+
+    assert reloaded.PLAN_TURNS_ENABLED is True
 
 
 def test_stages_read_constants_from_policy():

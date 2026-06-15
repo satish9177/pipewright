@@ -111,7 +111,8 @@ STEER_CONTINUATION_DIFF_MAX_CHARS = 10000
 # Dormant by default. The PR-B route reads PLAN_TURNS_ENABLED and hides itself
 # (404) while it is false; the producer enforces the cap so any caller gets the
 # same bounded behavior by default.
-PLAN_TURNS_ENABLED = False
+PLAN_TURNS_ENV = "PIPEWRIGHT_PLAN_TURNS_ENABLED"
+PLAN_TURNS_ENABLED = _env_flag_enabled(PLAN_TURNS_ENV, default=False)
 PLAN_TURN_CAP = 5
 # Length cap for one plan-turn message. Over-cap messages are rejected (422),
 # never silently truncated (truncation changes the user's meaning). Kept
