@@ -37,9 +37,27 @@ def _env_flag_enabled(
     return value.strip().lower() in _TRUTHY_ENV_VALUES
 
 
+def _env_positive_int(
+    name: str,
+    *,
+    default: int,
+    env: Mapping[str, str] | None = None,
+) -> int:
+    env = os.environ if env is None else env
+    value = env.get(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value.strip())
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
 # --- Tester (tester.py) -----------------------------------------------------
 # Hard wall-clock limit for one test-command run.
-TESTER_TIMEOUT_SECONDS = 300
+TESTER_TIMEOUT_ENV = "PIPEWRIGHT_TESTER_TIMEOUT_SECONDS"
+TESTER_TIMEOUT_SECONDS = _env_positive_int(TESTER_TIMEOUT_ENV, default=300)
 # Stored/displayed test-output cap (tail-preserving; see tester.py).
 MAX_OUTPUT_CHARS = 10000
 # Bounded autonomous retry budget for infrastructure/harness failures after a
