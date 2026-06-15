@@ -120,9 +120,9 @@ Current truth:
 - **Row 16 controlled env-gated soak — AVAILABLE.** Maintainers can set
   `PIPEWRIGHT_MEMORY_POSTRUN_HYGIENE_ENABLED=true` for local/dev soak of the
   existing PR-A trigger. Unset, false-ish, and invalid values keep automatic
-  post-run hygiene disabled; no committed config enables it. Default-on PR-C
-  activation remains deferred because smoke confirmed rejected same-content can
-  reappear from a later run.
+  post-run hygiene disabled; no committed config enables it. Rejected same-content
+  suggestions no longer silently return from later runs; default-on PR-C activation
+  remains deferred pending maintainer decision and fresh soak evidence.
 - **Deferred (not opened):** Row 16 PR-C activation, retriever/FTS (row 19),
   vector/embedding memory (row 23), and the thread/run UI (rows 22b–22e). The
   remaining Row 12 gate is **operational, not code** — flipping
@@ -368,7 +368,9 @@ default-on Row 16 PR-C, row 19/23, or the thread UI.
   not `_update_run_status`, with no shared terminal-settle refactor. PR-B adds only
   a read-only pending-suggestion digest/card; it does not call the generator or show
   transient generated/skipped/blocked/floored/capped counts. Failed/`rejected`/
-  `push_failed` hygiene and default-on PR-C activation are later decisions.
+  `push_failed` hygiene and default-on PR-C activation are later decisions. Rejected
+  same-content suggestions are suppressed by project/content hash so they do not
+  silently reappear from later runs.
 - **Deferred (explicitly):** activating `MEMORY_RELEVANCE_OMISSION_ENABLED` (soak
   decision, not code); Row 16 PR-C activation; retriever/FTS (row 19);
   vector/embedding memory (row 23, D6); the thread/run UI (rows 22b–22e). Demo /
@@ -453,7 +455,8 @@ PR-A COMPLETE: dormant default-off success-terminal-only pr_orchestrator trigger
 MEMORY_POSTRUN_HYGIENE_ENABLED; manual route remains the only active path by
 default unless env-gated soak is explicitly enabled. PR-B COMPLETE: read-only pending-suggestion digest/card. ENV-GATED SOAK
 AVAILABLE: PIPEWRIGHT_MEMORY_POSTRUN_HYGIENE_ENABLED=true enables local/dev soak
-only; default-on PR-C activation deferred); retriever/FTS (row 19);
+only; rejected same-content suggestions no longer silently return from later runs;
+default-on PR-C activation deferred); retriever/FTS (row 19);
 vector/embedding (row 23); thread UI (22b–22e).
 
 INVARIANTS (do not violate):

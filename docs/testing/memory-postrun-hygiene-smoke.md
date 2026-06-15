@@ -108,8 +108,10 @@ Rejected-content reappearance:
 - Tested in a separate throwaway DB.
 - A handoff suggestion rejected from run A reappeared as a pending suggestion
   from run B when the later run proposed the same content.
-- This confirms the known behavior: rejection suppression is scoped to the same
-  `source_run_id`; it is not project-wide.
+- Follow-up fix: `insert_pending_suggestion` now suppresses same-project,
+  same-content-hash suggestions that were previously rejected, so rejected
+  same-content should not silently return from a later run. Future default-on
+  reconsideration should re-smoke this path.
 
 Recommendation after smoke: keep the shipped default `False`. If the maintainer
 wants activation next, prefer an env/config override with default `False` for a
