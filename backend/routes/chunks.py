@@ -128,6 +128,7 @@ from backend.pipeline.file_scope_intent import (
     extract_user_file_constraints,
     reconcile_file_scope,
 )
+from backend.pipeline.chunk_isolation import annotate_triage_result_isolation
 from backend.pipeline.chunk_sizing import annotate_triage_result_sizing
 from backend.pipeline.report_analyzer import (
     build_limited_report,
@@ -1803,6 +1804,7 @@ async def _create_chunked_run_core(
             ),
         )
         triage_result = annotate_triage_result_sizing(project_id, triage_result)
+        triage_result = annotate_triage_result_isolation(triage_result)
         if intent == PLAN_ONLY:
             _create_read_only_run(
                 run_id=run_id,

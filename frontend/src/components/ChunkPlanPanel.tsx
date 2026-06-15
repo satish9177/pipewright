@@ -35,6 +35,7 @@ import {
   type RecoveredPatchReviewSummary,
 } from '@/utils/patchFailure'
 import {
+  extractIsolationWarnings,
   extractScopeWarnings,
   extractSizeWarnings,
 } from '@/utils/scopeWarnings'
@@ -624,6 +625,35 @@ function ChunkSizeAdvisory({ sizeWarnings }: { sizeWarnings: string[] }) {
   )
 }
 
+function ChunkIsolationAdvisory({
+  isolationWarnings,
+}: {
+  isolationWarnings: string[]
+}) {
+  return (
+    <div className="mb-3 grid gap-2 rounded border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700">
+      <div className="flex items-center gap-2">
+        <Badge
+          variant="outline"
+          className="border-slate-300 bg-slate-100 text-slate-700"
+        >
+          Isolation advisory
+        </Badge>
+        <span className="text-xs text-muted-foreground">
+          does not block approval
+        </span>
+      </div>
+      <ul className="list-disc space-y-1 pl-5">
+        {isolationWarnings.map((warning, index) => (
+          <li key={index} className="break-words">
+            {warning}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 interface InlineChunkApprovalControlsProps {
   chunkNumber: number
   rejectReason: string
@@ -899,6 +929,8 @@ function ChunkCard({
   const hasScopeWarning = scopeWarnings.length > 0
   const sizeWarnings = extractSizeWarnings(definition?.rationale)
   const hasSizeWarning = sizeWarnings.length > 0
+  const isolationWarnings = extractIsolationWarnings(definition?.rationale)
+  const hasIsolationWarning = isolationWarnings.length > 0
   const isAwaitingChunkApproval =
     chunk.status === 'awaiting_chunk_approval'
   const reviewAckBlocking =
@@ -944,6 +976,9 @@ function ChunkCard({
 
       {hasScopeWarning && <ChunkScopeWarning scopeWarnings={scopeWarnings} />}
       {hasSizeWarning && <ChunkSizeAdvisory sizeWarnings={sizeWarnings} />}
+      {hasIsolationWarning && (
+        <ChunkIsolationAdvisory isolationWarnings={isolationWarnings} />
+      )}
 
       <div className="grid gap-3 text-sm">
         <div className="grid gap-3 sm:grid-cols-3">
