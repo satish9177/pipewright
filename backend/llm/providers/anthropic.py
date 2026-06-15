@@ -2,6 +2,7 @@
 Anthropic/Claude LLM provider adapter.
 """
 
+import logging
 from typing import Any
 
 import anthropic
@@ -20,6 +21,8 @@ from backend.llm.errors import (
 )
 from backend.llm.sanitize import sanitize_for_log
 from backend.pipeline import policy
+
+logger = logging.getLogger(__name__)
 
 
 class AnthropicProvider(BaseLLMProvider):
@@ -42,7 +45,7 @@ class AnthropicProvider(BaseLLMProvider):
         return "anthropic"
 
     def supports_model(self, model: str) -> bool:
-        return model in self._SUPPORTED_MODELS
+        return model in self._SUPPORTED_MODELS or model.startswith("claude-")
 
     def validate_config(self, model: str | None = None) -> None:
         if model is not None and not self.supports_model(model):
@@ -51,6 +54,11 @@ class AnthropicProvider(BaseLLMProvider):
                 provider=self.name,
                 model=model,
                 retryable=False,
+            )
+        if model is not None and model not in self._SUPPORTED_MODELS:
+            logger.warning(
+                "anthropic.py: accepting unknown Claude model outside known-good set: %s",
+                model,
             )
         api_key = getattr(settings, "anthropic_api_key", None)
         if not api_key:
