@@ -26,6 +26,7 @@ from backend.models.handoff import (
     _is_blank,
 )
 from backend.models.chunk import ChunkPlanResponse
+from backend.pipeline import policy
 from backend.pipeline.chunk_store import (
     approve_chunk_plan,
     create_chunked_run,
@@ -128,6 +129,13 @@ from backend.pipeline.file_scope_intent import (
     extract_user_file_constraints,
 )
 from backend.pipeline.plan_postprocess import apply_plan_postprocess
+from backend.pipeline.plan_turn_engine import (
+    PlanTurnConflictError,
+    PlanTurnLimitError,
+    PlanTurnsDisabledError,
+    assert_plan_turns_enabled,
+    produce_next_plan_version,
+)
 from backend.pipeline.plan_version_store import (
     PLAN_VERSION_SOURCE_INITIAL,
     append_plan_version,
@@ -951,6 +959,25 @@ class ClarificationSelectionRequest(BaseModel):
 
 class RejectChunkPlanRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=REJECTION_REASON_MAX_LENGTH)
+
+
+class PlanTurnRequest(BaseModel):
+    # §23 row 7b PR-B: one human revision message for a plan still awaiting
+    # chunk-plan approval. Blank/whitespace-only and over-cap messages are
+    # rejected (422) here, before the route body runs — never truncated. The
+    # message grants no scope and approves nothing; the revised plan must still
+    # be approved through the unchanged chunk-plan approval route.
+    message: str = Field(
+        min_length=1,
+        max_length=policy.PLAN_TURN_MESSAGE_MAX_CHARS,
+    )
+
+    @field_validator("message")
+    @classmethod
+    def message_must_not_be_blank(cls, value: str) -> str:
+        if _is_blank(value):
+            raise ValueError("Field must not be blank")
+        return value
 
 
 class RejectFinalApprovalRequest(BaseModel):
@@ -2541,6 +2568,82 @@ def reject_chunk_plan_route(run_id: str, request: RejectChunkPlanRequest):
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:
         raise HTTPException(status_code=400, detail=str(error))
+
+
+@router.post("/runs/{run_id}/plan-turns")
+async def create_plan_turn_route(run_id: str, request: PlanTurnRequest):
+    """
+    §23 row 7b PR-B: revise a chunk plan that is still awaiting approval.
+
+    Dormant by default. While ``PLAN_TURNS_ENABLED`` is false a valid request is
+    hidden as a 404, so the feature stays invisible without relying on future
+    frontend gating. Body validation runs before the capability gate, so a
+    malformed/blank body is still rejected as 422 even while disabled — only
+    valid requests are masked as 404, not every request. When enabled, it runs
+    the existing internal plan-turn producer: re-triages the run with the human
+    message as revision context, appends the next plan version, and atomically
+    swaps the live ``pipeline_runs.chunk_plan`` pointer and pending chunk rows.
+
+    This is NOT approval. The producer never approves, executes, commits, or
+    expands scope; the revised plan must still be approved through the unchanged
+    ``/chunks/approve`` route, which is why a successful response reports the run
+    is still awaiting approval.
+
+    Error mapping (a refused/conflicting turn never commits a partial version):
+      - flag off (valid body)                        -> 404 (hidden endpoint)
+      - blank / whitespace / over-cap message        -> 422 (PlanTurnRequest,
+        enforced before the capability gate, so it is 422 even while disabled)
+      - run not found                                -> 404
+      - run not awaiting chunk-plan approval, or the
+        plan was approved/rejected mid re-triage     -> 409
+      - plan-turn cap reached                        -> 409 (approve or reject)
+    """
+    # Authoritative capability gate (defense in depth: the engine module owns the
+    # flag read). A disabled capability is hidden as a generic 404 — no body leak
+    # about an unbuilt feature.
+    try:
+        assert_plan_turns_enabled()
+    except PlanTurnsDisabledError:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    try:
+        result = await produce_next_plan_version(run_id, request.message)
+    except PlanTurnLimitError:
+        # User-facing copy: the only way forward is to decide the current plan.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This plan has reached its revision limit "
+                f"({policy.PLAN_TURN_CAP} plan turns). Approve or reject the "
+                "current plan to continue."
+            ),
+        )
+    except PlanTurnConflictError:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This run is no longer awaiting chunk-plan approval, so the "
+                "plan can't be revised. Refresh to see the current state."
+            ),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    except Exception as error:
+        # Unexpected re-triage / provider failure is server-side and retryable,
+        # not a client error. Mirror the run-creation route, which maps the same
+        # class of failure to 500.
+        raise HTTPException(status_code=500, detail=str(error))
+
+    # Minimal response: the frontend (PR-C) refetches the full plan read-model
+    # via GET /runs/{run_id}/chunks. The run stays awaiting approval by design.
+    return {
+        "ok": True,
+        "run_id": result.run_id,
+        "plan_version": result.version,
+        "total_chunks": result.triage.total_chunks,
+        "chunk_plan_status": ChunkPlanStatus.AWAITING_APPROVAL,
+        "next_action": "approve_or_reject_plan",
+    }
 
 
 @router.post("/runs/{run_id}/chunks/execute")

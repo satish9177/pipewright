@@ -108,11 +108,16 @@ MAX_STEER_TEXT_CHARS = 4000
 STEER_CONTINUATION_DIFF_MAX_CHARS = 10000
 
 # --- Plan-gate turns (§23 row 7b / §19) -----------------------------------
-# Dormant engine scaffold only. No route or UI reads this flag in PR-A; it is
-# the later activation seam. The producer enforces the cap so any future route
-# gets the same bounded behavior by default.
+# Dormant by default. The PR-B route reads PLAN_TURNS_ENABLED and hides itself
+# (404) while it is false; the producer enforces the cap so any caller gets the
+# same bounded behavior by default.
 PLAN_TURNS_ENABLED = False
 PLAN_TURN_CAP = 5
+# Length cap for one plan-turn message. Over-cap messages are rejected (422),
+# never silently truncated (truncation changes the user's meaning). Kept
+# separate from MAX_STEER_TEXT_CHARS so plan-turn and chunk-steer limits can
+# diverge without one silently moving the other.
+PLAN_TURN_MESSAGE_MAX_CHARS = 2000
 
 # --- Trivial-task stage profile (chunk_driver.py, item 17a) -----------------
 # Stable sample percentage for the first soak of the planner-elision profile.
