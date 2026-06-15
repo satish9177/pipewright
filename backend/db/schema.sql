@@ -100,6 +100,23 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     FOREIGN KEY (source_plan_run_id) REFERENCES pipeline_runs(id)
 );
 
+-- plan_versions is the append-only within-run plan version scaffold for §23
+-- row 7a. triage_json stores the same plan data/trust class already persisted
+-- in pipeline_runs.chunk_plan. This slice only writes version 1 at plan creation
+-- time; it does not store diffs, repo file contents, prompts, or secrets beyond
+-- what the existing plan JSON already contains, and runtime still reads
+-- pipeline_runs.chunk_plan as the live pointer.
+CREATE TABLE IF NOT EXISTS plan_versions (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    triage_json TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('initial', 'seeded')),
+    created_from_turn_id TEXT,
+    created_at DATETIME NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
+);
+
 CREATE TABLE IF NOT EXISTS checkpoints (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
@@ -412,6 +429,8 @@ CREATE TABLE IF NOT EXISTS memory_injection_events (
 
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_project ON pipeline_runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_versions_run_version
+ON plan_versions(run_id, version);
 CREATE INDEX IF NOT EXISTS idx_chunks_run_status ON chunks(run_id, status);
 CREATE INDEX IF NOT EXISTS idx_chunk_attempts_run_chunk ON chunk_attempts(run_id, chunk_number, attempt_number);
 CREATE INDEX IF NOT EXISTS idx_chunk_attempts_completed_head ON chunk_attempts(run_id, final_status, chunk_number);
