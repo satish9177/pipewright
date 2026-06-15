@@ -1368,6 +1368,7 @@ export default function RunDetailPage() {
         })
       }
       onReviewActionComplete={refreshRunDecisionState}
+      onPlanRevised={refreshRunDecisionState}
       onScopeActionComplete={() => {
         // #27F: refresh run/chunks/gates after a scope expansion
         // approve/reject, matching the invalidation used by the chunk

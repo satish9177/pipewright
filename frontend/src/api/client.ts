@@ -673,6 +673,27 @@ export interface RejectRequest {
   reason?: string | null
 }
 
+// §23 row 7b: one human revision message for a chunk plan that is still awaiting
+// approval. The message grants no scope and approves nothing — the revised plan
+// must still be approved through the unchanged chunk-plan approval route.
+export interface PlanTurnRequest {
+  message: string
+}
+
+// Minimal success response from POST /runs/{run_id}/plan-turns. The revised plan
+// is fetched via GET /runs/{run_id}/chunks (the frontend refetches after a turn);
+// the run stays awaiting approval by design (next_action = approve_or_reject_plan).
+// Dormant behind the backend PLAN_TURNS_ENABLED flag: while disabled a valid
+// request returns 404, so the affordance treats 404 as "not enabled".
+export interface PlanTurnResponse extends ExtraFields {
+  ok: boolean
+  run_id: string
+  plan_version: number
+  total_chunks: number
+  chunk_plan_status: ChunkPlanStatus
+  next_action: string
+}
+
 export interface ChunkOperationResponse extends ExtraFields {
   status: RunStatus | ChunkStatusValue | string
   run_id?: string
@@ -1222,6 +1243,15 @@ export const runsApi = {
     api.post<ChunkPlanResponse>(`/runs/${runId}/chunks/approve`).then(r => r.data),
   rejectChunkPlan: (runId: string, reason?: string | null) =>
     api.post<ChunkPlanResponse>(`/runs/${runId}/chunks/reject`, { reason }).then(r => r.data),
+  // §23 row 7b: ask Pipewright to revise a chunk plan that is still awaiting
+  // approval. Dormant behind the backend PLAN_TURNS_ENABLED flag — a valid
+  // request returns 404 while disabled. Success creates a new plan version and
+  // keeps the run awaiting approval; the revised plan must still be approved.
+  createPlanTurn: (runId: string, message: string) =>
+    api.post<PlanTurnResponse>(
+      `/runs/${runId}/plan-turns`,
+      { message } satisfies PlanTurnRequest,
+    ).then(r => r.data),
   executeChunks: (runId: string) =>
     api.post<ChunkExecuteResponse>(`/runs/${runId}/chunks/execute`).then(r => r.data),
   resumeChunks: (runId: string) =>
