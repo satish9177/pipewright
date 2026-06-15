@@ -15,7 +15,7 @@ from backend.core.statuses import ChunkPlanStatus, RunStatus
 from backend.db import database
 from backend.db.database import engine
 from backend.models.chunk import ChunkDefinition, TriageResult
-from backend.pipeline import policy
+from backend.pipeline import plan_turn_engine, policy
 from backend.pipeline.chunk_store import create_chunked_run
 from backend.pipeline.plan_turn_engine import (
     PlanTurnConflictError,
@@ -350,6 +350,63 @@ async def test_status_change_during_retriage_discards_new_plan(
     assert _load_run(run_id)["total_chunks"] == before_run["total_chunks"]
     assert _chunk_titles(run_id) == before_chunks
     assert list_plan_versions(run_id) == before_versions
+
+
+@pytest.mark.asyncio
+async def test_conditional_write_discards_plan_if_status_flips_mid_transaction(
+    monkeypatch,
+    tmp_repo,
+    tracked_runs,
+):
+    """
+    The final write is self-guarded against the narrow SELECT-then-UPDATE window.
+    Even if the in-transaction re-check passes and an approval lands just before
+    the live-pointer UPDATE, the conditional WHERE drops to rowcount 0 and the
+    whole transaction — including the just-appended version row — rolls back.
+    """
+    run_id, _project = _create_awaiting_run(tmp_repo, tracked_runs)
+    before_run = _load_run(run_id)
+    before_chunks = _chunk_titles(run_id)
+    before_versions = list_plan_versions(run_id)
+
+    async def fake_run_triage(run_id, project_id, feature_description):
+        return _triage(run_id, project_id, feature_description, ["Replacement chunk"])
+
+    real_next_version = plan_turn_engine._next_plan_version
+
+    def flip_status_then_next_version(conn, run_id):
+        # Flip the run out of "awaiting approval" on the SAME transaction, after
+        # the in-transaction re-check has already passed, then hand back the real
+        # next version so append_plan_version still writes v2 before the guard.
+        conn.execute(text("""
+            UPDATE pipeline_runs
+            SET status = :status,
+                chunk_plan_status = :chunk_plan_status
+            WHERE id = :run_id
+        """), {
+            "status": RunStatus.CHUNK_PLAN_APPROVED,
+            "chunk_plan_status": ChunkPlanStatus.APPROVED,
+            "run_id": run_id,
+        })
+        return real_next_version(conn, run_id)
+
+    monkeypatch.setattr(
+        "backend.pipeline.plan_turn_engine.run_triage",
+        fake_run_triage,
+    )
+    monkeypatch.setattr(
+        plan_turn_engine,
+        "_next_plan_version",
+        flip_status_then_next_version,
+    )
+
+    with pytest.raises(PlanTurnConflictError):
+        await produce_next_plan_version(run_id, "Race the conditional write.")
+
+    assert list_plan_versions(run_id) == before_versions
+    assert _load_run(run_id)["chunk_plan"] == before_run["chunk_plan"]
+    assert _load_run(run_id)["total_chunks"] == before_run["total_chunks"]
+    assert _chunk_titles(run_id) == before_chunks
 
 
 @pytest.mark.asyncio

@@ -50,6 +50,28 @@ class PlanTurnLimitError(RuntimeError):
     """Raised when a run has reached the policy plan-turn cap."""
 
 
+class PlanTurnsDisabledError(RuntimeError):
+    """Raised when plan turns are invoked while the capability flag is off."""
+
+
+def assert_plan_turns_enabled() -> None:
+    """
+    Authoritative capability gate for plan turns (§23 row 7b).
+
+    This is the single flag-read seam: it lives in the engine module (the
+    capability owner) rather than in the route, so any caller of the plan-turn
+    producer guards with the same check instead of re-reading the policy flag.
+    The PR-B route translates this into a hidden-endpoint 404 while the flag is
+    false. ``produce_next_plan_version`` itself stays flag-agnostic so the PR-A
+    engine tests can drive it directly; callers must gate with this assertion.
+    """
+    if not policy.PLAN_TURNS_ENABLED:
+        raise PlanTurnsDisabledError(
+            "plan_turn_engine.py: plan turns are disabled "
+            "(PLAN_TURNS_ENABLED is off)."
+        )
+
+
 @dataclass(frozen=True)
 class PlanTurnResult:
     run_id: str
@@ -221,6 +243,7 @@ async def produce_next_plan_version(
     triage_json = triage_result.model_dump_json()
 
     with engine.begin() as conn:
+        # Fail fast with a precise conflict error in the common case...
         _require_awaiting_chunk_plan_approval(conn, run_id)
         next_version = _next_plan_version(conn, run_id)
         append_plan_version(
@@ -231,17 +254,33 @@ async def produce_next_plan_version(
             source=PLAN_VERSION_SOURCE_PLAN_TURN,
             created_from_turn_id=recorded_turn["id"],
         )
-        conn.execute(text("""
+        # ...and close the residual SELECT-then-UPDATE window with a conditional
+        # write: the live-pointer update only lands while the run is STILL
+        # awaiting chunk-plan approval. If an approval/rejection committed between
+        # the re-check above and here, rowcount is 0 and we raise inside the
+        # transaction, rolling back the just-appended version row and skipping the
+        # chunk replacement entirely. No partial v(N+1) and no chunk churn lands.
+        result = conn.execute(text("""
             UPDATE pipeline_runs
             SET chunk_plan = :chunk_plan,
                 total_chunks = :total_chunks,
                 current_chunk_number = 0
             WHERE id = :run_id
+              AND status = :awaiting_status
+              AND chunk_plan_status = :awaiting_plan_status
         """), {
             "run_id": run_id,
             "chunk_plan": triage_json,
             "total_chunks": triage_result.total_chunks,
+            "awaiting_status": RunStatus.AWAITING_CHUNK_PLAN_APPROVAL,
+            "awaiting_plan_status": ChunkPlanStatus.AWAITING_APPROVAL,
         })
+        if result.rowcount != 1:
+            raise PlanTurnConflictError(
+                "plan_turn_engine.py: run left awaiting chunk-plan approval "
+                "during re-triage; discarding plan turn. "
+                f"run_id={run_id} | rowcount={result.rowcount}"
+            )
         replace_pending_chunks_for_plan(
             conn,
             run_id,
