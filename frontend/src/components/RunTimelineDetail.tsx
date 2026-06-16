@@ -36,8 +36,37 @@ const SECRET_PATTERNS = [
   /\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi,
 ]
 
-const SENSITIVE_KEY_PATTERN =
-  /(diff|patch|stack|traceback|token|secret|password|api[_-]?key|authorization|auth|error|stderr|stdout|output|provider_error|git_error)/i
+// Key words that mark a value as sensitive (its whole value is hidden). Matched
+// against the key's discrete snake/kebab tokens, NOT as substrings — so a
+// descriptor that merely contains one of these words (`token_budget`,
+// `error_count`, `author`) is not redacted. `token`/`key` are heavily
+// overloaded (LLM token counts, map keys), so they only redact as an exact key
+// or a credential suffix (`access_token`, `api_key`), never as a prefix. Every
+// string value still passes through sanitizeText regardless of the key name, so
+// loosening the key match never lets a secret or technical payload leak.
+const SENSITIVE_KEY_WORDS = new Set([
+  'secret',
+  'password',
+  'apikey',
+  'authorization',
+  'auth',
+  'diff',
+  'patch',
+  'stack',
+  'traceback',
+  'stderr',
+  'stdout',
+  'output',
+  'error',
+])
+
+function isSensitiveKey(key: string): boolean {
+  const tokens = key.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+  if (tokens.length === 0) return false
+  if (tokens.some(token => SENSITIVE_KEY_WORDS.has(token))) return true
+  const last = tokens[tokens.length - 1]
+  return last === 'token' || last === 'key'
+}
 
 const TECHNICAL_PAYLOAD_MARKERS = [
   'traceback (most recent call last)',
@@ -141,7 +170,7 @@ function sanitizeText(value: string): string {
 }
 
 function sanitizeTechnicalValue(value: unknown, key = ''): unknown {
-  if (SENSITIVE_KEY_PATTERN.test(key)) return '[redacted]'
+  if (isSensitiveKey(key)) return '[redacted]'
   if (typeof value === 'string') return sanitizeText(value)
   if (
     typeof value === 'number' ||
