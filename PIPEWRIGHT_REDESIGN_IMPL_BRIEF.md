@@ -26,9 +26,9 @@ code change — and out of scope for this closeout). Stage 2 readiness is comple
 backend tests and a manual smoke doc now prove the future flag-on omission path
 without changing the shipped default. This brief retains the PR-B closeout record
 below (still accurate history), the PR-C summary, the Row 7b closeout note, and
-the Row 19 closeout note. Row 19 is complete and merged, but FTS retrieval remains
-default-off and explicit-rebuild-only. Row 16 PR-C activation, Row 23, and the §21
-thread UI remain deferred.
+the Row 19 closeout note. Row 19 and its FTS populate/soak follow-up are complete
+and merged, but FTS retrieval remains default-off and dormant. Row 16 PR-C
+activation, Row 23, and the §21 thread UI remain deferred.
 **Next step: a maintainer / Claude roadmap review before opening any new row or
 activating a default.** Full records live in `PIPEWRIGHT_REDESIGN_WORKPLAN.md`
 and the proposal's §24 + Appendix E.1/E.2.
@@ -92,6 +92,23 @@ Row 19 is complete across PR-A, PR-B, and PR-C.
 - **Non-goals held:** no endpoint, no frontend, no `schema.sql` FTS DDL, no
   approval/execution/final-approval/Git/PR behavior change, and no Row 23 vector
   memory started.
+
+## Row 19 FTS populate/soak follow-up
+
+Complete and merged. PR-1 added the explicit guarded manual FTS rebuild CLI. PR-2
+added the read-only compare/seed soak harness and
+`docs/design/row-19-fts-soak-results.md`.
+
+- **Seeded soak:** passed with identical included set, identical mandatory tier,
+  only relevance-tier order changed, no cross-project facts, and deterministic
+  output.
+- **Real-project soak:** safely fell back with zero ordering delta.
+- **State after soak:** FTS retrieval remains default-off/dormant.
+- **Non-goals held:** no activation trigger, no rebuild-on-write, no lazy
+  rebuild-on-read, no default-on flip, no endpoint/frontend/`schema.sql`/boot-
+  migration populate, and no Row 23 vector/embedding work.
+- **Deferred:** the later approval-write-path rebuild trigger remains deferred and
+  should not be started unless future soak shows real value.
 
 ## Row 12 PR-C summary (request-aware omission + pinning, dormant-by-default)
 

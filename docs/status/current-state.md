@@ -172,6 +172,17 @@ Current truth:
   rebuild-on-read, no endpoint, no frontend, no `schema.sql` FTS DDL, no
   approval/execution/final-approval/Git/PR behavior change, and no Row 23 vector
   memory.
+- **Row 19 FTS populate/soak follow-up — COMPLETE & MERGED.** PR-1 added an
+  explicit guarded manual FTS rebuild CLI; PR-2 added the read-only compare/seed
+  soak harness and [`../design/row-19-fts-soak-results.md`](../design/row-19-fts-soak-results.md).
+  The seeded soak passed: included set identical, mandatory tier identical, only
+  relevance-tier order changed, no cross-project facts, deterministic output. The
+  real-project soak safely fell back with zero ordering delta. FTS retrieval
+  remains default-off/dormant. No activation trigger, no rebuild-on-write, no lazy
+  rebuild-on-read, no default-on flip, no endpoint/frontend/`schema.sql`/boot-
+  migration populate, and no Row 23 vector/embedding work. The later
+  approval-write-path rebuild trigger remains deferred and should not be started
+  unless future soak shows real value.
 - **Deferred (not opened):** Row 16 PR-C activation, vector/embedding memory
   (row 23), and the thread/run UI (rows 22b–22e). The
   remaining Row 12 gate is **operational, not code** — flipping
