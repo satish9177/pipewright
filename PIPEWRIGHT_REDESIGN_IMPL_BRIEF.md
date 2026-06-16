@@ -25,8 +25,10 @@ until the flag is explicitly flipped later (an operational soak decision, not a
 code change — and out of scope for this closeout). Stage 2 readiness is complete:
 backend tests and a manual smoke doc now prove the future flag-on omission path
 without changing the shipped default. This brief retains the PR-B closeout record
-below (still accurate history), the PR-C summary, and this Row 7b closeout note.
-Row 16 PR-C activation, rows 19 / 23, and the §21 thread UI remain deferred.
+below (still accurate history), the PR-C summary, the Row 7b closeout note, and
+the Row 19 closeout note. Row 19 is complete and merged, but FTS retrieval remains
+default-off and explicit-rebuild-only. Row 16 PR-C activation, Row 23, and the §21
+thread UI remain deferred.
 **Next step: a maintainer / Claude roadmap review before opening any new row or
 activating a default.** Full records live in `PIPEWRIGHT_REDESIGN_WORKPLAN.md`
 and the proposal's §24 + Appendix E.1/E.2.
@@ -69,6 +71,27 @@ and the proposal's §24 + Appendix E.1/E.2.
   newer uncompleted browser/manual limitation was recorded in this closeout; the
   earlier automation issue is not a known product bug.
 - **Default:** remains off.
+
+## §23 Row 19 closeout (MemoryRetriever/FTS, default-off)
+
+Row 19 is complete across PR-A, PR-B, and PR-C.
+
+- **PR-A:** inert SQLite FTS scaffold: guarded FTS5 table shape, derived/rebuildable
+  index infrastructure, explicit rebuild lifecycle, and no runtime reader.
+- **PR-B:** `MemoryRetriever` seam: deterministic rung-0 candidate loading moved
+  behind the retriever interface with byte-identical prompt/memory behavior.
+- **PR-C:** FTS rung-1 retrieval behind
+  `PIPEWRIGHT_MEMORY_FTS_RETRIEVAL_ENABLED`; the flag defaults off.
+- **Flag-off invariant:** byte-identical to deterministic rung-0/current behavior.
+- **Flag-on invariant:** FTS is advisory ordering signal only over the canonical
+  rung-0 candidate set; it never adds, drops, caps, or cross-projects candidates.
+- **Safety invariant:** rung-0 remains the canonical safety spine, and
+  mandatory/safety facts are never scored, demoted, omitted, or dropped.
+- **Lifecycle:** explicit rebuild/population is required for flag-on to have
+  effect. There is no rebuild-on-write and no lazy rebuild-on-read.
+- **Non-goals held:** no endpoint, no frontend, no `schema.sql` FTS DDL, no
+  approval/execution/final-approval/Git/PR behavior change, and no Row 23 vector
+  memory started.
 
 ## Row 12 PR-C summary (request-aware omission + pinning, dormant-by-default)
 
@@ -256,7 +279,6 @@ confirmation activates nothing by default.
 - **Row 16** — PR-A dormant default-off post-run hygiene trigger, PR-B
   read-only digest, and default-false env-gated soak complete; default-on PR-C
   activation remains later (D7/B2).
-- **Row 19** — retriever interface + FTS rung 1.
 - **Row 23** — vector / embedding rung 2 (D6/B4).
 - **§21 thread UI** (rows 22b–22e, D13).
 

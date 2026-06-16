@@ -159,8 +159,21 @@ Current truth:
   chunk-size warning. The earlier Windows browser-automation gap remains recorded;
   no newer uncompleted browser/manual limitation was recorded in this closeout.
   Default remains off.
-- **Deferred (not opened):** Row 16 PR-C activation, retriever/FTS (row 19),
-  vector/embedding memory (row 23), and the thread/run UI (rows 22b–22e). The
+- **Row 19 PR-A/PR-B/PR-C — FTS-backed MemoryRetriever rung 1 — COMPLETE &
+  MERGED, default-off and explicit-rebuild-only.** PR-A added the guarded SQLite
+  FTS5 scaffold/table and explicit rebuild lifecycle; PR-B added the
+  `MemoryRetriever` seam with deterministic rung-0 behind it; PR-C added FTS
+  rung-1 behind `PIPEWRIGHT_MEMORY_FTS_RETRIEVAL_ENABLED`. Flag-off behavior is
+  byte-identical to deterministic rung-0/current memory output. Flag-on uses FTS
+  only as an advisory ordering signal over the canonical rung-0 candidate set: it
+  never adds, drops, caps, or cross-projects candidates, and mandatory/safety facts
+  are never scored, demoted, omitted, or dropped. Explicit rebuild/population is
+  required for flag-on to have effect. There is no rebuild-on-write, no lazy
+  rebuild-on-read, no endpoint, no frontend, no `schema.sql` FTS DDL, no
+  approval/execution/final-approval/Git/PR behavior change, and no Row 23 vector
+  memory.
+- **Deferred (not opened):** Row 16 PR-C activation, vector/embedding memory
+  (row 23), and the thread/run UI (rows 22b–22e). The
   remaining Row 12 gate is **operational, not code** — flipping
   `MEMORY_RELEVANCE_OMISSION_ENABLED` on is a soak decision (and omission/pinning
   stay dormant until then). **Next step: a maintainer / Claude roadmap review
@@ -289,9 +302,10 @@ routes revalidate every mutating action.
   (behavior-preserving test-command detector rules refactor) is COMPLETE**; and
   **Row 11 is COMPLETE**. Request-aware selection **row 12 PR-A** (no-op
   scaffolding) is COMPLETE; its **PR-B** (ordering) and **PR-C** (omission /
-  pinning, D5), plus post-run hygiene (row 16), retriever/FTS (row 19),
-  vector/embedding memory (row 23), and thread UI remain not-next until explicitly
-  opened. See the workplan.
+  pinning, D5), plus post-run hygiene (row 16). **Row 19 retriever/FTS is now
+  complete and merged, default-off and explicit-rebuild-only.** Vector/embedding
+  memory (row 23) and thread UI remain not-next until explicitly opened. See the
+  workplan.
 - **Production hardening** (Postgres/Alembic, durable events, DB locks at scale,
   deployment).
 - **Deployment / Ollama / Provider Settings UI / BYOK DB storage / execution
@@ -377,8 +391,8 @@ PR-A, PR-B, and PR-C are all merged, with PR-C shipped dormant
 until the flag is explicitly flipped later (a soak decision, not a code change).
 **Recommended next step: a maintainer / Claude roadmap review before opening any new
 row/PR or activating a flag** — Row 16 PR-A and PR-B are implemented, and an
-env-gated local/dev soak is available with default false; do not auto-start
-default-on Row 16 PR-C, row 19/23, or the thread UI.
+env-gated local/dev soak is available with default false; Row 19 is complete and
+default-off; do not auto-start default-on Row 16 PR-C, row 23, or the thread UI.
 
 - **Safe now (no decision needed):** documentation / smoke-checklist upkeep; small
   honest stabilization fixes; optional PR-B soak follow-ups such as an endpoint
@@ -387,11 +401,15 @@ default-on Row 16 PR-C, row 19/23, or the thread UI.
   appear in soak.
 - **Next memory step:** Row 12 is complete and merged — **PR-A** (scaffolding),
   **PR-B** (relevance ordering), and **PR-C** (relevance omission + priority-based
-  pinning + global off-switch, dormant-by-default) are all done. The recommended
-  next step is a **maintainer / Claude roadmap review before opening any new row or
-  activating a flag** — do not auto-start Row 16 PR-C, row 19
-  (retriever/FTS), row 23 (vector, D6), or the thread UI. The only outstanding Row
-  12 action is operational: a soak decision on whether/when to flip
+  pinning + global off-switch, dormant-by-default) are all done. Row 19 is also
+  complete and merged: PR-A inert FTS scaffold, PR-B retriever seam, and PR-C
+  default-off FTS rung-1 retrieval behind
+  `PIPEWRIGHT_MEMORY_FTS_RETRIEVAL_ENABLED`. Flag-off is byte-identical to rung-0;
+  flag-on FTS is advisory ordering only and requires explicit index rebuild. The
+  recommended next step is a **maintainer / Claude roadmap review before opening
+  any new row or activating a flag** — do not auto-start Row 16 PR-C, row 23
+  (vector, D6), or the thread UI. The only outstanding Row 12 action is
+  operational: a soak decision on whether/when to flip
   `MEMORY_RELEVANCE_OMISSION_ENABLED` on.
 - **Row 16 (post-run hygiene) — PR-A and PR-B implemented; env-gated soak available.**
   [`../design/memory-postrun-hygiene-row16.md`](../design/memory-postrun-hygiene-row16.md)
@@ -408,8 +426,8 @@ default-on Row 16 PR-C, row 19/23, or the thread UI.
   same-content suggestions are suppressed by project/content hash so they do not
   silently reappear from later runs.
 - **Deferred (explicitly):** activating `MEMORY_RELEVANCE_OMISSION_ENABLED` (soak
-  decision, not code); Row 16 PR-C activation; retriever/FTS (row 19);
-  vector/embedding memory (row 23, D6); the thread/run UI (rows 22b–22e). Demo /
+  decision, not code); Row 16 PR-C activation; vector/embedding memory
+  (row 23, D6); the thread/run UI (rows 22b–22e). Demo /
   README / devex polish remains fine opportunistically, but is no longer the
   recommended next step.
 
@@ -467,7 +485,16 @@ new row/PR or activating a flag. Row 12 is COMPLETE and MERGED; D5 confirmed 202
 Row 12 PR-A (scaffolding), PR-B (relevance ordering), and PR-C (relevance omission +
 priority-based pinning + global off-switch, dormant-by-default) are all merged. The
 only outstanding Row 12 action is operational (a soak decision on whether/when to flip
-MEMORY_RELEVANCE_OMISSION_ENABLED on); do not auto-start Row 16 PR-C, row 19/23, or the thread UI.
+MEMORY_RELEVANCE_OMISSION_ENABLED on). Row 19 is COMPLETE and MERGED: PR-A added the
+guarded inert SQLite FTS scaffold and explicit rebuild lifecycle; PR-B added the
+MemoryRetriever seam and deterministic rung-0; PR-C added default-off FTS rung-1 behind
+PIPEWRIGHT_MEMORY_FTS_RETRIEVAL_ENABLED. Flag-off is byte-identical to rung-0/current
+memory behavior. Flag-on uses FTS only as an advisory ordering signal over canonical
+rung-0 candidates, never adds/drops/caps/cross-projects candidates, never scores/
+demotes/omits/drops mandatory or safety facts, and requires explicit FTS rebuild/
+population to matter. No rebuild-on-write, lazy rebuild-on-read, endpoint, frontend,
+schema.sql FTS DDL, approval/execution/final approval/Git/PR behavior change, or Row 23
+vector memory. Do not auto-start Row 16 PR-C, row 23, or the thread UI.
 PR-A: request_context dormant; request_context=None
 preserves existing injection behavior; budgets/estimator single-sourced in policy;
 adaptive budget scaffolding disabled; security+forbidden_paths mandatory and cannot
@@ -492,8 +519,7 @@ MEMORY_POSTRUN_HYGIENE_ENABLED; manual route remains the only active path by
 default unless env-gated soak is explicitly enabled. PR-B COMPLETE: read-only pending-suggestion digest/card. ENV-GATED SOAK
 AVAILABLE: PIPEWRIGHT_MEMORY_POSTRUN_HYGIENE_ENABLED=true enables local/dev soak
 only; rejected same-content suggestions no longer silently return from later runs;
-default-on PR-C activation deferred); retriever/FTS (row 19);
-vector/embedding (row 23); thread UI (22b–22e).
+default-on PR-C activation deferred); vector/embedding (row 23); thread UI (22b–22e).
 
 INVARIANTS (do not violate):
 - Never bypass chunk plan approval or final approval. Final approval is NOT
