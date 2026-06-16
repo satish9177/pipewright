@@ -2234,6 +2234,14 @@ def _has_recovered_review(plan: ChunkPlanResponse) -> bool:
     return False
 
 
+def _review_needs_attention(plan: ChunkPlanResponse) -> bool:
+    return any(
+        chunk.review is not None
+        and chunk.review.verdict in {"needs_human_attention", "risky"}
+        for chunk in plan.chunks
+    )
+
+
 def _augment_plan_with_operator_state(plan: ChunkPlanResponse) -> ChunkPlanResponse:
     """
     Compute and attach operator_state to the chunk read model.
@@ -2360,6 +2368,7 @@ def _augment_plan_with_operator_state(plan: ChunkPlanResponse) -> ChunkPlanRespo
                 ),
                 pr_mode=pr_decision.pr_mode,
                 pr_decision=pr_decision,
+                review_needs_attention=_review_needs_attention(plan),
                 local_only_manual_push=(
                     pr_decision.pr_mode == "local_only"
                     and run_status in {

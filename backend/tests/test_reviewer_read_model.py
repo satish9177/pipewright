@@ -120,13 +120,19 @@ def _seed_strong_verdict(run_id, chunk_number):
     update_chunk_status(run_id, chunk_number, "completed")
 
 
-def _completed_review(run_id, chunk_number, *, hash_):
+def _completed_review(
+    run_id,
+    chunk_number,
+    *,
+    hash_,
+    verdict=ChunkReviewVerdict.NEEDS_HUMAN_ATTENTION,
+):
     return ChunkReviewRecord(
         id=str(uuid.uuid4()),
         run_id=run_id,
         chunk_number=chunk_number,
         review_status=ChunkReviewStatus.COMPLETED,
-        verdict=ChunkReviewVerdict.NEEDS_HUMAN_ATTENTION,
+        verdict=verdict,
         summary="One concern worth a human check.",
         findings=[
             ReviewFinding(
@@ -273,6 +279,76 @@ def test_route_surfaces_review_and_preserves_overlays(tmp_path, tracked_runs):
     # No action ids / approval controls leak into the overlay.
     assert "action" not in review
     assert "actions" not in review
+
+
+def test_route_operator_state_pr_ready_with_ok_review_stays_ready(
+    tmp_path,
+    tracked_runs,
+):
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+    _seed_strong_verdict(run_id, 1)
+    _seed_diff_hash(run_id, 1, "HASH-A")
+    create_review(
+        _completed_review(
+            run_id,
+            1,
+            hash_="HASH-A",
+            verdict=ChunkReviewVerdict.APPROVE_WITH_NOTES,
+        )
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                UPDATE pipeline_runs
+                SET status = 'complete',
+                    pr_url = 'https://github.com/acme/demo/pull/7',
+                    pr_number = 7
+                WHERE id = :run_id
+            """),
+            {"run_id": run_id},
+        )
+
+    response = client.get(f"/runs/{run_id}/chunks")
+
+    assert response.status_code == 200
+    state = response.json()["operator_state"]
+    assert state["title"] == "Pull request is ready"
+    assert state["waiting_on"] == "nobody"
+    assert "No further in-app action is required" in state["explanation"]
+
+
+def test_route_operator_state_pr_ready_with_review_attention_needs_inspection(
+    tmp_path,
+    tracked_runs,
+):
+    run_id, _ = _make_run(tmp_path, tracked_runs)
+    _seed_strong_verdict(run_id, 1)
+    _seed_diff_hash(run_id, 1, "HASH-A")
+    create_review(_completed_review(run_id, 1, hash_="HASH-A"))
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                UPDATE pipeline_runs
+                SET status = 'complete',
+                    pr_url = 'https://github.com/acme/demo/pull/7',
+                    pr_number = 7
+                WHERE id = :run_id
+            """),
+            {"run_id": run_id},
+        )
+
+    response = client.get(f"/runs/{run_id}/chunks")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["chunks"][0]["review"]["verdict"] == "needs_human_attention"
+    state = body["operator_state"]
+    assert state["title"] == "Review findings need inspection"
+    assert state["waiting_on"] == "human"
+    assert state["primary_action"] is None
+    assert "No further in-app action is required" not in state["explanation"]
+    assert "advisory reviewer findings need human inspection" in state["explanation"]
+    assert "before you merge" in state["explanation"]
 
 
 def test_route_no_review_returns_null_and_200(tmp_path, tracked_runs):

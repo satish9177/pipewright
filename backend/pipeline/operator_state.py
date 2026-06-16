@@ -221,6 +221,7 @@ class OperatorStateContext:
     pr_ready: bool = False
     pr_mode: str | None = None
     pr_decision: Any | None = None
+    review_needs_attention: bool = False
 
     # A prior push/PR attempt failed for this run (#31B). When set, the panel
     # must say so honestly instead of reusing the "Create pull request" ready
@@ -1321,6 +1322,28 @@ def _local_only_state(context: OperatorStateContext) -> OperatorState:
 
 
 def _pr_created_state(context: OperatorStateContext) -> OperatorState:
+    if context.review_needs_attention:
+        return _state(
+            title="Review findings need inspection",
+            explanation=(
+                "The pull request is open, but advisory reviewer findings need "
+                "human inspection before you merge."
+            ),
+            waiting_on=OperatorWaitingOn.HUMAN,
+            decision_type=OperatorDecisionType.NONE,
+            blocked_actions=[
+                _blocked_action("create_pr", "Create PR", "A pull request already exists for this run."),
+            ],
+            safety_checks=[
+                safety_check("final_approval", "Final approval", OperatorSafetyCheckStatus.PASSED, "Final approval is complete."),
+                safety_check("pr", "PR", OperatorSafetyCheckStatus.PASSED, "A pull request exists or was reused."),
+                safety_check("review", "Advisory review", OperatorSafetyCheckStatus.WEAK, "Reviewer findings need human inspection before merge."),
+            ],
+            trust_facts=[
+                trust_fact("pr_exists", "PR exists", "A PR is already recorded for this run."),
+                trust_fact("review_attention", "Review needs inspection", "Advisory reviewer findings still need a human look before merge."),
+            ],
+        )
     return _state(
         title="Pull request is ready",
         explanation=(

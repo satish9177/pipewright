@@ -623,6 +623,18 @@ def test_pr_created_or_reused_state():
     assert _check(state, "pr").status == "passed"
 
 
+def test_pr_created_with_review_attention_does_not_read_as_nothing_needed():
+    state = _state(pr_created=True, review_needs_attention=True)
+
+    assert state.title == "Review findings need inspection"
+    assert "No further in-app action is required" not in state.explanation
+    assert "advisory reviewer findings need human inspection" in state.explanation
+    assert state.waiting_on == OperatorWaitingOn.HUMAN.value
+    assert state.primary_action is None
+    assert _check(state, "pr").status == "passed"
+    assert _check(state, "review").status == "weak"
+
+
 def test_terminal_state():
     state = _state(is_terminal=True, terminal_status="failed")
 
