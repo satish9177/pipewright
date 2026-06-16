@@ -370,6 +370,94 @@ def test_timeline_normalizes_mixed_timestamp_formats_before_sorting(tracked_runs
     }
 
 
+def test_timeline_clamps_child_timestamps_to_run_created_floor(tracked_runs):
+    run_created = "2026-06-16T19:37:39.184934+00:00"
+    run_id = _insert_minimal_run(tracked_runs, created_at=run_created)
+    chunk_id = _new_id("chunk-floor")
+    attempt_id = _new_id("attempt-floor")
+    memory_id = _new_id("memory-floor")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO chunks (
+                    id, run_id, project_id, chunk_number, title, description,
+                    files_expected, risk_level, requires_human_review, status,
+                    test_run_verdict, created_at
+                )
+                VALUES (
+                    :id, :run_id, 'timeline-project', 1, 'Floored chunk',
+                    'Exercise run timestamp floor.', '["backend/pipeline/x.py"]',
+                    'low', 0, 'pending', 'not_run',
+                    '2026-06-16 19:37:39'
+                )
+                """
+            ),
+            {
+                "id": chunk_id,
+                "run_id": run_id,
+            },
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO chunk_attempts (
+                    id, run_id, project_id, chunk_number, attempt_number,
+                    entry_mode, final_outcome_class, final_status,
+                    stage_profile, trivial_profile_eligible, created_at
+                )
+                VALUES (
+                    :id, :run_id, 'timeline-project', 1, 1, 'normal',
+                    'success', 'completed', 'standard', 0,
+                    '2026-06-16T19:37:40+00:00'
+                )
+                """
+            ),
+            {
+                "id": attempt_id,
+                "run_id": run_id,
+            },
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO memory_injection_events (
+                    id, run_id, project_id, chunk_number, role,
+                    attempt_number, token_budget, category_policy,
+                    entries_json, included_count, excluded_count,
+                    entries_hash, created_at
+                )
+                VALUES (
+                    :id, :run_id, 'timeline-project', 1, 'coder', 1, 2048,
+                    '["architecture"]', '{"included":[],"excluded":[]}',
+                    0, 0, 'hash-memory-floor',
+                    '2026-06-16T19:37:30.812621+00:00'
+                )
+                """
+            ),
+            {
+                "id": memory_id,
+                "run_id": run_id,
+            },
+        )
+
+    entries = build_run_timeline(run_id)
+
+    assert entries is not None
+    assert [entry["id"] for entry in entries] == [
+        "run:created",
+        f"chunk:1:{chunk_id}:created",
+        f"memory_injection:{memory_id}",
+        f"chunk_attempt:1:1:{attempt_id}",
+    ]
+    assert _entry_by_id(entries, "run:created")["ts"] == run_created
+    assert _entry_by_id(entries, f"chunk:1:{chunk_id}:created")["ts"] == run_created
+    assert _entry_by_id(entries, f"memory_injection:{memory_id}")["ts"] == run_created
+    assert _entry_by_id(entries, f"chunk_attempt:1:1:{attempt_id}")["ts"] == (
+        "2026-06-16T19:37:40+00:00"
+    )
+
+
 def test_timeline_ordering_uses_timestamp_then_stable_category_kind_tiebreak(
     tracked_runs,
 ):
