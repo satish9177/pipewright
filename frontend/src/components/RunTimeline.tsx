@@ -45,6 +45,19 @@ const LEVEL_CLASS: Record<TimelineLevel, string> = {
   error: 'border-red-300 bg-red-50 text-red-700',
 }
 
+const LIVE_MILESTONE_KINDS = new Set([
+  'run_status_changed',
+  'chunk_status_changed',
+  'chunk_plan_created',
+  'chunk_plan_approved',
+  'chunk_plan_rejected',
+  'approval_required',
+  'approval_decided',
+  'git_operation',
+  'github_operation',
+  'terminal',
+])
+
 function getErrorMessage(error: unknown): string {
   if (typeof error === 'object' && error !== null && 'response' in error) {
     const response = (error as { response?: { data?: { detail?: unknown } } })
@@ -147,6 +160,7 @@ function mergeTimelineEntries(
   }
   for (const event of liveEvents) {
     if (event.kind === 'heartbeat' || byId.has(event.id)) continue
+    if (LIVE_MILESTONE_KINDS.has(event.kind)) continue
     byId.set(event.id, liveEventToTimelineEntry(event))
   }
   return [...byId.values()].sort(compareTimelineEntries)

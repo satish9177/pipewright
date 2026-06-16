@@ -623,11 +623,6 @@ export default function RunDetailPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { events, status: wsStatus } = useRunEvents(runId)
-  const {
-    data: timelineEntries,
-    isLoading: timelineLoading,
-    error: timelineError,
-  } = useRunTimeline(runId)
   const [viewMode, setViewMode] = useState<RunViewMode>(readStoredRunViewMode)
   const [chunkPlanActionError, setChunkPlanActionError] = useState<string | null>(
     null
@@ -675,6 +670,14 @@ export default function RunDetailPage() {
     },
   })
 
+  const {
+    data: timelineEntries,
+    isLoading: timelineLoading,
+    error: timelineError,
+  } = useRunTimeline(runId, {
+    refetchActive: run ? shouldPollRunStatus(run.status) : false,
+  })
+
   const { data: gates, isLoading: gatesLoading } = useQuery({
     queryKey: ['gates'],
     queryFn: gatesApi.list,
@@ -704,11 +707,16 @@ export default function RunDetailPage() {
     retry: false,
   })
 
+  const refreshRunTimeline = () => {
+    queryClient.invalidateQueries({ queryKey: ['runTimeline', runId] })
+  }
+
   const refreshRunDecisionState = () => {
     queryClient.invalidateQueries({ queryKey: ['run', runId] })
     queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
     queryClient.invalidateQueries({ queryKey: ['gates'] })
     queryClient.invalidateQueries({ queryKey: ['planVersions', runId] })
+    refreshRunTimeline()
   }
 
   const { data: project } = useQuery({
@@ -768,6 +776,7 @@ export default function RunDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['gates'] })
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+      refreshRunTimeline()
     },
   })
 
@@ -789,6 +798,7 @@ export default function RunDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['gates'] })
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
+      refreshRunTimeline()
     },
   })
 
@@ -807,6 +817,7 @@ export default function RunDetailPage() {
       // Slice C: refetch lineage so the freshly stamped approved_version (Slice B)
       // surfaces its "Approved: vN" badge without a manual refresh.
       queryClient.invalidateQueries({ queryKey: ['planVersions', runId] })
+      refreshRunTimeline()
     },
     onError: (error: unknown) => {
       setChunkPlanActionError(
@@ -828,6 +839,7 @@ export default function RunDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
       queryClient.invalidateQueries({ queryKey: ['gates'] })
+      refreshRunTimeline()
     },
     onError: (error: unknown) => {
       setChunkPlanActionError(
@@ -849,6 +861,7 @@ export default function RunDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
       queryClient.invalidateQueries({ queryKey: ['gates'] })
+      refreshRunTimeline()
     },
     onError: (error: unknown) => {
       setChunkExecutionMessage(null)
@@ -874,6 +887,7 @@ export default function RunDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
       queryClient.invalidateQueries({ queryKey: ['gates'] })
+      refreshRunTimeline()
     },
     onError: (error: unknown) => {
       setChunkExecutionMessage(null)
@@ -894,6 +908,7 @@ export default function RunDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
       queryClient.invalidateQueries({ queryKey: ['gates'] })
+      refreshRunTimeline()
     },
     onError: (error: unknown) => {
       setChunkActionMessage(null)
@@ -924,6 +939,7 @@ export default function RunDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
       queryClient.invalidateQueries({ queryKey: ['gates'] })
+      refreshRunTimeline()
     },
     onError: (error: unknown) => {
       setChunkActionMessage(null)
@@ -947,6 +963,7 @@ export default function RunDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
       queryClient.invalidateQueries({ queryKey: ['gates'] })
+      refreshRunTimeline()
     },
     onError: (error: unknown) => {
       setChunkActionMessage(null)
@@ -958,6 +975,7 @@ export default function RunDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
       queryClient.invalidateQueries({ queryKey: ['gates'] })
+      refreshRunTimeline()
     },
   })
 
@@ -998,6 +1016,7 @@ export default function RunDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
       queryClient.invalidateQueries({ queryKey: ['gates'] })
+      refreshRunTimeline()
     },
     onError: (error: unknown) => {
       setFinalApprovalMessage(null)
@@ -1021,6 +1040,7 @@ export default function RunDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
       queryClient.invalidateQueries({ queryKey: ['gates'] })
+      refreshRunTimeline()
     },
     onError: (error: unknown) => {
       setFinalApprovalMessage(null)
@@ -1039,6 +1059,7 @@ export default function RunDetailPage() {
       setMemoryConflictError(null)
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['gates'] })
+      refreshRunTimeline()
       // Override-once: the run returned to an executable state. Re-trigger
       // execution so the now-honored override lets the run continue.
       executeChunksMutation.mutate()
@@ -1063,6 +1084,7 @@ export default function RunDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
       queryClient.invalidateQueries({ queryKey: ['gates'] })
+      refreshRunTimeline()
     },
     onError: (error: unknown) => {
       setMemoryConflictMessage(null)
@@ -1084,6 +1106,7 @@ export default function RunDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['run', runId] })
       queryClient.invalidateQueries({ queryKey: ['runChunks', runId] })
       queryClient.invalidateQueries({ queryKey: ['gates'] })
+      refreshRunTimeline()
     },
     onError: (error: unknown) => {
       setPushPrMessage(null)
@@ -1586,6 +1609,7 @@ export default function RunDetailPage() {
                             queryKey: ['runChunks', runId],
                           })
                           queryClient.invalidateQueries({ queryKey: ['gates'] })
+                          refreshRunTimeline()
                         }}
                       />
                     )}
