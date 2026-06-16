@@ -81,6 +81,7 @@ from backend.pipeline.scope_expansion_store import (
 from backend.pipeline.pr_orchestrator import evaluate_push_pr_eligibility, push_and_create_pr
 from backend.pipeline.pr_checks import fetch_checks_summary
 from backend.pipeline.pr_status import build_pr_status, classify_push_failure
+from backend.pipeline.run_timeline import build_run_timeline
 from backend.pipeline.implementation_guard import (
     DEFAULT_EXAMPLES,
     DEFAULT_MISSING_DETAILS,
@@ -2594,6 +2595,14 @@ def get_plan_versions_route(run_id: str):
         raise HTTPException(status_code=404, detail=str(error))
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error))
+
+
+@router.get("/runs/{run_id}/timeline")
+def get_run_timeline_route(run_id: str):
+    entries = build_run_timeline(run_id)
+    if entries is None:
+        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+    return entries
 
 
 @router.get("/runs/{run_id}/chunks", response_model=ChunkPlanResponse)
