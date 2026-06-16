@@ -243,6 +243,33 @@ export interface Run extends ExtraFields {
 
 export type PipelineRun = Run
 
+export type TimelineCategory =
+  | 'lifecycle'
+  | 'plan'
+  | 'execution'
+  | 'approval'
+  | 'review'
+  | 'memory'
+  | 'ship'
+  | (string & {})
+
+export type TimelineLevel = 'info' | 'warn' | 'error'
+export type TimelineSource = 'persisted' | 'live'
+
+export interface TimelineEntry extends ExtraFields {
+  id: string
+  ts: string
+  kind: string
+  stage: string | null
+  chunk_number: number | null
+  level: TimelineLevel
+  category: TimelineCategory
+  title: string
+  detail: string | null
+  source: TimelineSource
+  data: Record<string, unknown>
+}
+
 export interface Gate extends ExtraFields {
   id: string
   run_id: string
@@ -1283,6 +1310,8 @@ export const runsApi = {
   // approved_version). Pure GET — no lock, no plan parse, no side effects.
   getPlanVersions: (runId: string) =>
     api.get<PlanVersionsResponse>(`/runs/${runId}/plan-versions`).then(r => r.data),
+  getRunTimeline: (runId: string) =>
+    api.get<TimelineEntry[]>(`/runs/${runId}/timeline`).then(r => r.data),
   executeChunks: (runId: string) =>
     api.post<ChunkExecuteResponse>(`/runs/${runId}/chunks/execute`).then(r => r.data),
   resumeChunks: (runId: string) =>

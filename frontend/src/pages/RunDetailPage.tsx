@@ -36,6 +36,7 @@ import {
 import { Separator } from '@/components/ui/separator'
 import RunStatusBadge from '@/components/RunStatusBadge'
 import EventLog from '@/components/EventLog'
+import RunTimeline from '@/components/RunTimeline'
 import ChunkPlanPanel from '@/components/ChunkPlanPanel'
 import { chunkNeedsAttention } from '@/utils/chunkAttention'
 import OperatorAttentionPanel from '@/components/OperatorAttentionPanel'
@@ -53,6 +54,7 @@ import TestCommandQualityWarning from '@/components/TestCommandQualityWarning'
 import ReportView from '@/components/ReportView'
 import PlanView from '@/components/PlanView'
 import useRunEvents from '@/hooks/useRunEvents'
+import useRunTimeline from '@/hooks/useRunTimeline'
 
 // #37A: the pipeline stages, in order, with plain display labels. The `key`
 // values match the backend's run.current_step vocabulary (same set the old
@@ -606,6 +608,11 @@ export default function RunDetailPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { events, status: wsStatus } = useRunEvents(runId)
+  const {
+    data: timelineEntries,
+    isLoading: timelineLoading,
+    error: timelineError,
+  } = useRunTimeline(runId)
   const [chunkPlanActionError, setChunkPlanActionError] = useState<string | null>(
     null
   )
@@ -1897,7 +1904,7 @@ export default function RunDetailPage() {
               </span>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              Timeline ({events.length}{' '}
+              Timeline · Live log ({events.length}{' '}
               {events.length === 1 ? 'event' : 'events'}) · Memory used · AI
               setup — collapsed by default, nothing was removed.
             </p>
@@ -1909,9 +1916,19 @@ export default function RunDetailPage() {
             <div className="mb-3">
               <h3 className="text-sm font-semibold">Timeline</h3>
               <p className="text-xs text-muted-foreground">
-                Live run events and status changes from the backend.
+                Persisted run milestones with the live event tail merged in.
               </p>
             </div>
+            <Card className="mb-4">
+              <CardContent className="py-4">
+                <RunTimeline
+                  entries={timelineEntries}
+                  liveEvents={events}
+                  isLoading={timelineLoading}
+                  error={timelineError}
+                />
+              </CardContent>
+            </Card>
             <Card>
               <CardContent className="py-4">
                 <EventLog events={events} status={wsStatus} />
