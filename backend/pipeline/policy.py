@@ -310,6 +310,20 @@ MEMORY_SMALL_STORE_GRACE_THRESHOLD = 12
 # priority. Lower priority value = higher precedence (see prompt_builder's sort key).
 MEMORY_PIN_PRIORITY_THRESHOLD = 10
 
+# --- Memory FTS rung-1 retrieval (memory_retriever.py, Row 19 PR-C) --------
+# Default-off switch for using SQLite FTS5 as an advisory relevance-ordering
+# signal. False preserves deterministic rung-0 memory selection byte-for-byte.
+MEMORY_FTS_RETRIEVAL_ENV = "PIPEWRIGHT_MEMORY_FTS_RETRIEVAL_ENABLED"
+MEMORY_FTS_RETRIEVAL_ENABLED = _env_flag_enabled(
+    MEMORY_FTS_RETRIEVAL_ENV,
+    default=False,
+)
+# Maximum sanitized request-context tokens used for FTS MATCH probes. The
+# retriever strips operators/punctuation before this cap is applied.
+MEMORY_FTS_QUERY_TOKEN_CAP = 8
+# Additive score weight used only inside non-mandatory relevance ordering.
+MEMORY_FTS_RELEVANCE_WEIGHT = 1.0
+
 # --- Memory repo-reality warnings (routes/memory.py, Row 11 PR-B) ----------
 # Active advisory repo-reality dimensions for memory-injection analysis. Roll
 # back PR-B behavior by setting this to frozenset({"db_engine"}).

@@ -7,6 +7,8 @@ truth and is not read by prompt construction or runtime memory selection.
 
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import text
 
 from backend.db.database import (
@@ -16,6 +18,8 @@ from backend.db.database import (
     engine,
 )
 from backend.memory.memory_store import _validate_project_id
+
+_SAFE_FTS_TOKEN_RE = re.compile(r"[a-z0-9_]+")
 
 
 def _memory_fts_table_exists(conn) -> bool:
@@ -110,3 +114,67 @@ def _match_memory_fts_for_project(
             "limit": limit,
         }).fetchall()
     return [dict(row._mapping) for row in rows]
+
+
+def _rank_memory_fts_for_project(
+    project_id: str,
+    query_tokens: tuple[str, ...],
+) -> list[dict]:
+    """
+    Internal project-scoped FTS rank helper for rung-1 retrieval.
+
+    Tokens must already be sanitized barewords. FTS is advisory only: unavailable
+    FTS, a missing/empty table, or MATCH errors all degrade to no scores.
+    """
+    project_id = _validate_project_id(project_id)
+    tokens = tuple(
+        token for token in query_tokens
+        if token and _SAFE_FTS_TOKEN_RE.fullmatch(token)
+    )
+    if not tokens:
+        return []
+
+    scores_by_fact_id: dict[str, dict] = {}
+    with engine.connect() as conn:
+        if not _sqlite_fts5_available(conn) or not _memory_fts_table_exists(conn):
+            return []
+
+        for token in tokens:
+            try:
+                rows = conn.execute(text(f"""
+                    SELECT
+                        fact_id,
+                        project_id,
+                        content_hash,
+                        -bm25({MEMORY_FTS_TABLE}) AS score
+                    FROM {MEMORY_FTS_TABLE}
+                    WHERE {MEMORY_FTS_TABLE} MATCH :query
+                      AND project_id = :project_id
+                """), {
+                    "project_id": project_id,
+                    "query": token,
+                }).fetchall()
+            except Exception:
+                return []
+
+            for row in rows:
+                item = dict(row._mapping)
+                fact_id = item.get("fact_id")
+                if not fact_id:
+                    continue
+                score = float(item.get("score") or 0.0)
+                existing = scores_by_fact_id.setdefault(
+                    fact_id,
+                    {
+                        "fact_id": fact_id,
+                        "project_id": item.get("project_id"),
+                        "content_hash": item.get("content_hash"),
+                        "score": 0.0,
+                    },
+                )
+                existing["score"] = float(existing["score"]) + score
+
+    return sorted(
+        scores_by_fact_id.values(),
+        key=lambda item: (-float(item["score"]), str(item["fact_id"])),
+    )

@@ -215,6 +215,7 @@ def _partition_relevance_rows(
     request_context: RequestContext | None,
     role_key: str,
     preferred_scopes: set[str],
+    relevance_scores: dict[str, float] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """
     Order the non-mandatory relevance tier by request relevance and, when
@@ -233,29 +234,43 @@ def _partition_relevance_rows(
     spare. Kept-row ordering is identical to PR-B; omission only removes
     zero-signal rows, it never reorders within the kept set.
     """
+    fts_scores = relevance_scores or {}
     if request_context is None or not rows:
         return rows, []
 
     path_tokens = _path_tokens(request_context.files_expected)
     request_tokens = _request_tokens(request_context)
-    if not path_tokens and not request_tokens:
+    if not path_tokens and not request_tokens and not fts_scores:
         return rows, []
 
-    scored_rows: list[tuple[dict, int, float]] = []
+    scored_rows: list[tuple[dict, int, float, float]] = []
     has_relevance_signal = False
     for row in rows:
         fact_tokens = _content_tokens(row.get("content") or "")
         path_overlap = len(fact_tokens & path_tokens)
         token_overlap = _jaccard(fact_tokens, request_tokens)
-        if path_overlap or token_overlap:
+        fts_score = float(fts_scores.get(str(row.get("id") or ""), 0.0))
+        if path_overlap or token_overlap or fts_score:
             has_relevance_signal = True
-        scored_rows.append((row, path_overlap, token_overlap))
+        scored_rows.append((row, path_overlap, token_overlap, fts_score))
 
     if not has_relevance_signal:
         return rows, []
 
-    def sort_key(item: tuple[dict, int, float]) -> tuple:
-        row, path_overlap, token_overlap = item
+    def sort_key(item: tuple[dict, int, float, float]) -> tuple:
+        row, path_overlap, token_overlap, fts_score = item
+        if fts_scores:
+            fused_signal = (
+                path_overlap
+                + token_overlap
+                + (fts_score * pipeline_policy.MEMORY_FTS_RELEVANCE_WEIGHT)
+            )
+            return (
+                -fused_signal,
+                -path_overlap,
+                -token_overlap,
+                *_memory_row_sort_key(row, role_key, preferred_scopes),
+            )
         return (
             -path_overlap,
             -token_overlap,
@@ -272,12 +287,12 @@ def _partition_relevance_rows(
         and len(rows) > pipeline_policy.MEMORY_SMALL_STORE_GRACE_THRESHOLD
     )
     if not omission_active:
-        return [row for row, _, _ in ordered], []
+        return [row for row, _, _, _ in ordered], []
 
     kept: list[dict] = []
     omitted: list[dict] = []
-    for row, path_overlap, token_overlap in ordered:
-        if path_overlap or token_overlap:
+    for row, path_overlap, token_overlap, fts_score in ordered:
+        if path_overlap or token_overlap or fts_score:
             kept.append(row)
         else:
             omitted.append(row)
@@ -513,6 +528,7 @@ def build_project_memory_block_detailed(
         request_context,
         role_key,
         preferred_scopes,
+        relevance_scores=candidates.relevance_scores,
     )
     not_relevant_entries = [
         _row_to_entry(row, EXCLUSION_NOT_RELEVANT_TO_REQUEST)
