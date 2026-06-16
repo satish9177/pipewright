@@ -329,6 +329,47 @@ def test_terminal_run_does_not_synthesize_created_at_status_entry(tracked_runs):
     assert entries[0]["data"]["status"] == "failed"
 
 
+def test_timeline_normalizes_mixed_timestamp_formats_before_sorting(tracked_runs):
+    run_id = _insert_minimal_run(
+        tracked_runs,
+        created_at="2026-06-16 18:38:00",
+    )
+    chunk_id = _new_id("chunk-mixed-ts")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO chunks (
+                    id, run_id, project_id, chunk_number, title, description,
+                    files_expected, risk_level, requires_human_review, status,
+                    test_run_verdict, created_at
+                )
+                VALUES (
+                    :id, :run_id, 'timeline-project', 1, 'Mixed timestamp chunk',
+                    'Exercise timestamp normalization.', '["backend/pipeline/x.py"]',
+                    'low', 0, 'pending', 'not_run',
+                    '2026-06-16T18:38:00+00:00'
+                )
+                """
+            ),
+            {
+                "id": chunk_id,
+                "run_id": run_id,
+            },
+        )
+
+    entries = build_run_timeline(run_id)
+
+    assert entries is not None
+    assert [entry["id"] for entry in entries] == [
+        "run:created",
+        f"chunk:1:{chunk_id}:created",
+    ]
+    assert {entry["ts"] for entry in entries} == {
+        "2026-06-16T18:38:00+00:00",
+    }
+
+
 def test_timeline_ordering_uses_timestamp_then_stable_category_kind_tiebreak(
     tracked_runs,
 ):
