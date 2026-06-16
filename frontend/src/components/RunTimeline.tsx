@@ -9,12 +9,14 @@ import { Badge } from '@/components/ui/badge'
 import RunTimelineDetail from '@/components/RunTimelineDetail'
 import { cn } from '@/lib/utils'
 import type { RunEvent } from '@/types/events'
+import type { RunViewMode } from '@/types/viewMode'
 
 interface RunTimelineProps {
   entries?: TimelineEntry[]
   liveEvents?: RunEvent[]
   isLoading?: boolean
   error?: unknown
+  viewMode?: RunViewMode
 }
 
 const CATEGORY_ORDER: Record<string, number> = {
@@ -174,6 +176,7 @@ export default function RunTimeline({
   liveEvents = [],
   isLoading = false,
   error,
+  viewMode = 'plain',
 }: RunTimelineProps) {
   const timelineEntries = useMemo(
     () => mergeTimelineEntries(entries, liveEvents),
@@ -186,6 +189,7 @@ export default function RunTimeline({
       : null
   const selectedEntry =
     timelineEntries.find(entry => entry.id === activeSelectedId) ?? null
+  const isDeveloperMode = viewMode === 'developer'
 
   if (isLoading) {
     return (
@@ -216,7 +220,9 @@ export default function RunTimeline({
           {timelineEntries.length === 1 ? 'entry' : 'entries'}
         </p>
         <p className="text-xs text-muted-foreground">
-          Persisted backbone plus live tail, deduped by event id.
+          {isDeveloperMode
+            ? 'Persisted backbone plus live tail, deduped by event id.'
+            : 'Persisted milestones with live progress folded in.'}
         </p>
       </div>
 
@@ -254,12 +260,21 @@ export default function RunTimeline({
                         chunk {entry.chunk_number}
                       </Badge>
                     )}
-                    <Badge variant="outline">{entry.source}</Badge>
+                    {isDeveloperMode && (
+                      <Badge variant="outline">{entry.source}</Badge>
+                    )}
                   </div>
                   <div className="grid gap-1">
                     <p className="text-sm font-medium leading-6 text-foreground">
                       {entry.title}
                     </p>
+                    {isDeveloperMode && (
+                      <p className="break-all font-mono text-[11px] text-muted-foreground">
+                        {entry.stage ? `${entry.stage}/${entry.kind}` : entry.kind}
+                        {' · '}
+                        {entry.id}
+                      </p>
+                    )}
                     {entry.detail && (
                       <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">
                         {entry.detail}
@@ -271,7 +286,7 @@ export default function RunTimeline({
             })}
           </div>
         </div>
-        <RunTimelineDetail entry={selectedEntry} />
+        <RunTimelineDetail entry={selectedEntry} viewMode={viewMode} />
       </div>
     </div>
   )

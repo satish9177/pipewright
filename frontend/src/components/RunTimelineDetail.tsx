@@ -2,9 +2,11 @@ import { useMemo } from 'react'
 
 import type { TimelineEntry, TimelineLevel } from '@/api/client'
 import { Badge } from '@/components/ui/badge'
+import type { RunViewMode } from '@/types/viewMode'
 
 interface RunTimelineDetailProps {
   entry: TimelineEntry | null
+  viewMode?: RunViewMode
 }
 
 const CATEGORY_CLASS: Record<string, string> = {
@@ -172,11 +174,15 @@ function technicalPayload(entry: TimelineEntry): Record<string, unknown> {
   }
 }
 
-export default function RunTimelineDetail({ entry }: RunTimelineDetailProps) {
+export default function RunTimelineDetail({
+  entry,
+  viewMode = 'plain',
+}: RunTimelineDetailProps) {
   const technicalJson = useMemo(
     () => (entry ? JSON.stringify(technicalPayload(entry), null, 2) : ''),
     [entry],
   )
+  const isDeveloperMode = viewMode === 'developer'
 
   if (!entry) {
     return (
@@ -207,6 +213,13 @@ export default function RunTimelineDetail({ entry }: RunTimelineDetailProps) {
           {typeof entry.chunk_number === 'number' && (
             <Badge variant="outline">chunk {entry.chunk_number}</Badge>
           )}
+          {isDeveloperMode && (
+            <>
+              <Badge variant="outline">{entry.source}</Badge>
+              <Badge variant="outline">{entry.kind}</Badge>
+              {entry.stage && <Badge variant="outline">{entry.stage}</Badge>}
+            </>
+          )}
         </div>
         <div>
           <p className="font-mono text-xs text-muted-foreground">
@@ -215,6 +228,11 @@ export default function RunTimelineDetail({ entry }: RunTimelineDetailProps) {
           <h4 className="mt-1 text-base font-semibold leading-6">
             {entry.title}
           </h4>
+          {isDeveloperMode && (
+            <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+              {entry.id}
+            </p>
+          )}
         </div>
       </div>
 
@@ -244,7 +262,10 @@ export default function RunTimelineDetail({ entry }: RunTimelineDetailProps) {
         </div>
       )}
 
-      <details className="rounded border bg-muted/30 px-3 py-2">
+      <details
+        className="rounded border bg-muted/30 px-3 py-2"
+        open={isDeveloperMode}
+      >
         <summary className="cursor-pointer text-sm font-medium">
           Technical details
         </summary>
