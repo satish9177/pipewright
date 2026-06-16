@@ -17,6 +17,7 @@ from backend.memory import memory_fts, memory_retriever, prompt_builder
 from backend.memory.memory_fts import rebuild_memory_fts
 from backend.memory.memory_retriever import (
     DeterministicMemoryRetriever,
+    FTSMemoryRetriever,
     RetrievedCandidates,
     default_memory_retriever,
 )
@@ -31,6 +32,7 @@ from backend.memory.prompt_builder import (
     RequestContext,
     build_project_memory_block,
 )
+from backend.pipeline import policy
 
 pytestmark = pytest.mark.unit
 
@@ -151,7 +153,8 @@ class FrozenDateTime(datetime):
 
 
 @pytest.fixture(params=[
-    pytest.param(default_memory_retriever, id="default-deterministic"),
+    pytest.param(lambda: DeterministicMemoryRetriever(), id="deterministic"),
+    pytest.param(lambda: FTSMemoryRetriever(), id="fts-rung1"),
 ])
 def retriever_factory(request):
     return request.param
@@ -299,7 +302,7 @@ def test_retriever_does_not_cap_or_drop_mandatory_candidates(
     assert len(candidates.in_policy_rows) == 22
 
 
-def test_rung_zero_ignores_request_context(memory_project_ids, retriever_factory):
+def test_rung_zero_ignores_request_context(memory_project_ids):
     project_id = _make_project_id(memory_project_ids)
     add_fact(project_id, "Backend fact mentions FastAPI", category="stack")
     add_fact(project_id, "Frontend fact mentions React", category="stack")
@@ -310,12 +313,12 @@ def test_rung_zero_ignores_request_context(memory_project_ids, retriever_factory
         steer_text="Prefer the React memory",
     )
 
-    without_context = retriever_factory().retrieve_candidates(
+    without_context = DeterministicMemoryRetriever().retrieve_candidates(
         project_id,
         ROLE_CATEGORIES["planner"],
         request_context=None,
     )
-    with_context = retriever_factory().retrieve_candidates(
+    with_context = DeterministicMemoryRetriever().retrieve_candidates(
         project_id,
         ROLE_CATEGORIES["planner"],
         request_context=context,
@@ -324,10 +327,21 @@ def test_rung_zero_ignores_request_context(memory_project_ids, retriever_factory
     assert with_context == without_context
 
 
-def test_retriever_module_does_not_import_or_read_fts():
+def test_resolver_flag_off_returns_rung_zero(monkeypatch):
+    monkeypatch.setattr(policy, "MEMORY_FTS_RETRIEVAL_ENABLED", False)
+
+    assert isinstance(default_memory_retriever(), DeterministicMemoryRetriever)
+
+
+def test_resolver_flag_on_returns_rung_one(monkeypatch):
+    monkeypatch.setattr(policy, "MEMORY_FTS_RETRIEVAL_ENABLED", True)
+
+    assert isinstance(default_memory_retriever(), FTSMemoryRetriever)
+
+
+def test_retriever_module_has_no_raw_match_or_table_reads():
     source = inspect.getsource(memory_retriever)
 
-    assert "memory_fts" not in source
     assert "memory_facts_fts" not in source
     assert "MATCH" not in source
 
