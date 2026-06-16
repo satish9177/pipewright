@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -597,9 +598,9 @@ def _append(
     )
 
 
-def _entry_sort_key(entry: TimelineEntry) -> tuple[str, int, int, str, str]:
+def _entry_sort_key(entry: TimelineEntry) -> tuple[datetime, int, int, str, str]:
     return (
-        entry.ts,
+        _parse_timeline_ts(entry.ts),
         CATEGORY_ORDER.get(entry.category, 999),
         KIND_ORDER.get(entry.kind, 999),
         entry.kind,
@@ -620,12 +621,25 @@ def _approval_gate_category(row: dict[str, Any]) -> str:
 
 
 def _coerce_ts(value: Any) -> str:
+    return _parse_timeline_ts(value).isoformat()
+
+
+def _parse_timeline_ts(value: Any) -> datetime:
     if value is None:
-        return "1970-01-01T00:00:00+00:00"
-    isoformat = getattr(value, "isoformat", None)
-    if callable(isoformat):
-        return isoformat()
-    return str(value)
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text_value = str(value).strip()
+        if text_value.endswith("Z"):
+            text_value = f"{text_value[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(text_value)
+        except ValueError:
+            return datetime(1970, 1, 1, tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _sanitize_payload(value: Any) -> Any:
