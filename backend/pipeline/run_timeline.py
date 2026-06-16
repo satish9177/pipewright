@@ -109,16 +109,17 @@ def build_run_timeline(run_id: str) -> list[dict[str, Any]] | None:
             return None
 
         entries: list[TimelineEntry] = []
+        run_created_floor = _parse_timeline_ts(run.get("created_at"))
         _add_run_entries(entries, run)
-        _add_plan_version_entries(entries, conn, run_id)
-        _add_approval_gate_entries(entries, conn, run_id)
-        _add_chunk_entries(entries, conn, run_id)
-        _add_chunk_attempt_entries(entries, conn, run_id)
-        _add_scope_expansion_entries(entries, conn, run_id)
-        _add_test_ack_entries(entries, conn, run_id)
-        _add_review_ack_entries(entries, conn, run_id)
-        _add_chunk_review_entries(entries, conn, run_id)
-        _add_memory_injection_entries(entries, conn, run_id)
+        _add_plan_version_entries(entries, conn, run_id, run_created_floor)
+        _add_approval_gate_entries(entries, conn, run_id, run_created_floor)
+        _add_chunk_entries(entries, conn, run_id, run_created_floor)
+        _add_chunk_attempt_entries(entries, conn, run_id, run_created_floor)
+        _add_scope_expansion_entries(entries, conn, run_id, run_created_floor)
+        _add_test_ack_entries(entries, conn, run_id, run_created_floor)
+        _add_review_ack_entries(entries, conn, run_id, run_created_floor)
+        _add_chunk_review_entries(entries, conn, run_id, run_created_floor)
+        _add_memory_injection_entries(entries, conn, run_id, run_created_floor)
 
     entries.sort(key=_entry_sort_key)
     return [entry.to_dict() for entry in entries]
@@ -185,7 +186,12 @@ def _add_run_entries(entries: list[TimelineEntry], run: dict[str, Any]) -> None:
         )
 
 
-def _add_plan_version_entries(entries: list[TimelineEntry], conn: Any, run_id: str) -> None:
+def _add_plan_version_entries(
+    entries: list[TimelineEntry],
+    conn: Any,
+    run_id: str,
+    ts_floor: datetime,
+) -> None:
     rows = conn.execute(
         text(
             """
@@ -210,6 +216,7 @@ def _add_plan_version_entries(entries: list[TimelineEntry], conn: Any, run_id: s
             category="plan",
             title=f"Plan version {version} created",
             detail="Chunk plan version persisted.",
+            ts_floor=ts_floor,
             data={
                 "plan_version_id": row.get("id"),
                 "version": version,
@@ -219,7 +226,12 @@ def _add_plan_version_entries(entries: list[TimelineEntry], conn: Any, run_id: s
         )
 
 
-def _add_approval_gate_entries(entries: list[TimelineEntry], conn: Any, run_id: str) -> None:
+def _add_approval_gate_entries(
+    entries: list[TimelineEntry],
+    conn: Any,
+    run_id: str,
+    ts_floor: datetime,
+) -> None:
     rows = conn.execute(
         text(
             """
@@ -246,6 +258,7 @@ def _add_approval_gate_entries(entries: list[TimelineEntry], conn: Any, run_id: 
             category=_approval_gate_category(row),
             title="Approval gate recorded",
             detail="Human approval gate persisted.",
+            ts_floor=ts_floor,
             data={
                 "approval_gate_id": gate_id,
                 "step": row.get("step"),
@@ -266,6 +279,7 @@ def _add_approval_gate_entries(entries: list[TimelineEntry], conn: Any, run_id: 
                 category=_approval_gate_category(row),
                 title="Approval gate decided",
                 detail="Human approval decision persisted.",
+                ts_floor=ts_floor,
                 data={
                     "approval_gate_id": gate_id,
                     "step": row.get("step"),
@@ -275,7 +289,12 @@ def _add_approval_gate_entries(entries: list[TimelineEntry], conn: Any, run_id: 
             )
 
 
-def _add_chunk_entries(entries: list[TimelineEntry], conn: Any, run_id: str) -> None:
+def _add_chunk_entries(
+    entries: list[TimelineEntry],
+    conn: Any,
+    run_id: str,
+    ts_floor: datetime,
+) -> None:
     rows = conn.execute(
         text(
             """
@@ -309,6 +328,7 @@ def _add_chunk_entries(entries: list[TimelineEntry], conn: Any, run_id: str) -> 
             category="execution",
             title=f"Chunk {chunk_number} created",
             detail="Chunk persisted.",
+            ts_floor=ts_floor,
             data=data,
         )
         if row.get("started_at"):
@@ -323,6 +343,7 @@ def _add_chunk_entries(entries: list[TimelineEntry], conn: Any, run_id: str) -> 
                 category="execution",
                 title=f"Chunk {chunk_number} started",
                 detail="Persisted chunk start timestamp recorded.",
+                ts_floor=ts_floor,
                 data=data,
             )
         if row.get("completed_at"):
@@ -338,11 +359,17 @@ def _add_chunk_entries(entries: list[TimelineEntry], conn: Any, run_id: str) -> 
                 category="execution",
                 title=f"Chunk {chunk_number} completed",
                 detail=f"Persisted chunk status is {status}.",
+                ts_floor=ts_floor,
                 data=data,
             )
 
 
-def _add_chunk_attempt_entries(entries: list[TimelineEntry], conn: Any, run_id: str) -> None:
+def _add_chunk_attempt_entries(
+    entries: list[TimelineEntry],
+    conn: Any,
+    run_id: str,
+    ts_floor: datetime,
+) -> None:
     rows = conn.execute(
         text(
             """
@@ -369,6 +396,7 @@ def _add_chunk_attempt_entries(entries: list[TimelineEntry], conn: Any, run_id: 
             category="execution",
             title=f"Chunk {chunk_number} attempt {attempt_number} recorded",
             detail="Chunk attempt outcome persisted.",
+            ts_floor=ts_floor,
             data={
                 "chunk_attempt_id": row.get("id"),
                 "attempt_number": attempt_number,
@@ -381,7 +409,12 @@ def _add_chunk_attempt_entries(entries: list[TimelineEntry], conn: Any, run_id: 
         )
 
 
-def _add_scope_expansion_entries(entries: list[TimelineEntry], conn: Any, run_id: str) -> None:
+def _add_scope_expansion_entries(
+    entries: list[TimelineEntry],
+    conn: Any,
+    run_id: str,
+    ts_floor: datetime,
+) -> None:
     rows = conn.execute(
         text(
             """
@@ -415,6 +448,7 @@ def _add_scope_expansion_entries(entries: list[TimelineEntry], conn: Any, run_id
             category="execution",
             title="Scope expansion requested",
             detail="Scope expansion request persisted.",
+            ts_floor=ts_floor,
             data=data,
         )
         if row.get("decided_at"):
@@ -429,11 +463,17 @@ def _add_scope_expansion_entries(entries: list[TimelineEntry], conn: Any, run_id
                 category="execution",
                 title="Scope expansion decided",
                 detail="Scope expansion decision persisted.",
+                ts_floor=ts_floor,
                 data=data,
             )
 
 
-def _add_test_ack_entries(entries: list[TimelineEntry], conn: Any, run_id: str) -> None:
+def _add_test_ack_entries(
+    entries: list[TimelineEntry],
+    conn: Any,
+    run_id: str,
+    ts_floor: datetime,
+) -> None:
     rows = conn.execute(
         text(
             """
@@ -458,6 +498,7 @@ def _add_test_ack_entries(entries: list[TimelineEntry], conn: Any, run_id: str) 
             category="review",
             title="Test validation acknowledged",
             detail="Test validation acknowledgement persisted.",
+            ts_floor=ts_floor,
             data={
                 "test_validation_acknowledgement_id": row.get("id"),
                 "verdict": row.get("verdict"),
@@ -466,7 +507,12 @@ def _add_test_ack_entries(entries: list[TimelineEntry], conn: Any, run_id: str) 
         )
 
 
-def _add_review_ack_entries(entries: list[TimelineEntry], conn: Any, run_id: str) -> None:
+def _add_review_ack_entries(
+    entries: list[TimelineEntry],
+    conn: Any,
+    run_id: str,
+    ts_floor: datetime,
+) -> None:
     rows = conn.execute(
         text(
             """
@@ -491,6 +537,7 @@ def _add_review_ack_entries(entries: list[TimelineEntry], conn: Any, run_id: str
             category="review",
             title="Review finding acknowledged",
             detail="Review finding acknowledgement persisted.",
+            ts_floor=ts_floor,
             data={
                 "review_finding_acknowledgement_id": row.get("id"),
                 "status": row.get("status"),
@@ -498,7 +545,12 @@ def _add_review_ack_entries(entries: list[TimelineEntry], conn: Any, run_id: str
         )
 
 
-def _add_chunk_review_entries(entries: list[TimelineEntry], conn: Any, run_id: str) -> None:
+def _add_chunk_review_entries(
+    entries: list[TimelineEntry],
+    conn: Any,
+    run_id: str,
+    ts_floor: datetime,
+) -> None:
     rows = conn.execute(
         text(
             """
@@ -523,6 +575,7 @@ def _add_chunk_review_entries(entries: list[TimelineEntry], conn: Any, run_id: s
             category="review",
             title=f"Chunk {chunk_number} review recorded",
             detail="Chunk review persisted.",
+            ts_floor=ts_floor,
             data={
                 "chunk_review_id": row.get("id"),
                 "review_status": row.get("review_status"),
@@ -531,7 +584,12 @@ def _add_chunk_review_entries(entries: list[TimelineEntry], conn: Any, run_id: s
         )
 
 
-def _add_memory_injection_entries(entries: list[TimelineEntry], conn: Any, run_id: str) -> None:
+def _add_memory_injection_entries(
+    entries: list[TimelineEntry],
+    conn: Any,
+    run_id: str,
+    ts_floor: datetime,
+) -> None:
     rows = conn.execute(
         text(
             """
@@ -557,6 +615,7 @@ def _add_memory_injection_entries(entries: list[TimelineEntry], conn: Any, run_i
             category="memory",
             title="Memory injection recorded",
             detail="Memory injection provenance persisted.",
+            ts_floor=ts_floor,
             data={
                 "memory_injection_event_id": row.get("id"),
                 "role": row.get("role"),
@@ -581,11 +640,12 @@ def _append(
     title: str,
     detail: str | None,
     data: dict[str, Any],
+    ts_floor: datetime | None = None,
 ) -> None:
     entries.append(
         TimelineEntry(
             id=entry_id,
-            ts=_coerce_ts(ts),
+            ts=_coerce_ts(ts, floor=ts_floor),
             kind=kind,
             stage=_sanitize_text(stage) if stage is not None else None,
             chunk_number=chunk_number,
@@ -620,8 +680,11 @@ def _approval_gate_category(row: dict[str, Any]) -> str:
     return "approval"
 
 
-def _coerce_ts(value: Any) -> str:
-    return _parse_timeline_ts(value).isoformat()
+def _coerce_ts(value: Any, *, floor: datetime | None = None) -> str:
+    parsed = _parse_timeline_ts(value)
+    if floor is not None and parsed < floor:
+        parsed = floor
+    return parsed.isoformat()
 
 
 def _parse_timeline_ts(value: Any) -> datetime:
