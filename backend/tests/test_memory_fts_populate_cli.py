@@ -1,11 +1,12 @@
 """
-Tests for Row 19 FTS populate PR-1's explicit rebuild CLI.
+Tests for Row 19 FTS populate PR-1/PR-2 explicit CLI tooling.
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+import re
 
 import pytest
 from sqlalchemy import text
@@ -80,6 +81,29 @@ def _fts_rows(project_id: str) -> list[dict]:
             FROM {MEMORY_FTS_TABLE}
             WHERE project_id = :project_id
             ORDER BY fact_id
+        """), {"project_id": project_id}).fetchall()
+    return [dict(row._mapping) for row in rows]
+
+
+def _memory_fact_rows(project_id: str) -> list[dict]:
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT id, project_id, content, category, scope, status, is_stale,
+                   content_hash
+            FROM memory_facts
+            WHERE project_id = :project_id
+            ORDER BY id
+        """), {"project_id": project_id}).fetchall()
+    return [dict(row._mapping) for row in rows]
+
+
+def _memory_suggestion_rows(project_id: str) -> list[dict]:
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT id, project_id, content, status, content_hash
+            FROM memory_suggestions
+            WHERE project_id = :project_id
+            ORDER BY id
         """), {"project_id": project_id}).fetchall()
     return [dict(row._mapping) for row in rows]
 
@@ -331,3 +355,187 @@ def test_flag_on_read_does_not_populate_and_degrades_safely(
 
     assert flag_on == rung0
     assert _fts_rows(project_id) == rows_before_read
+
+
+def test_compare_real_project_is_read_only_and_reports_invariants(
+    monkeypatch,
+    capsys,
+    memory_project_ids,
+):
+    _require_fts5()
+    project_id = _make_project_id(memory_project_ids)
+    add_fact(
+        project_id,
+        "Security fact: approval gates stay mandatory.",
+        category="security",
+    )
+    add_fact(project_id, "Style fact alpha baseline.", category="style")
+    add_fact(project_id, "Style fact uses Azure storage.", category="style")
+    assert rebuild_cli.main(["rebuild", "--project-id", project_id, "--yes"]) == 0
+    fact_rows_before = _memory_fact_rows(project_id)
+    suggestion_rows_before = _memory_suggestion_rows(project_id)
+    fts_rows_before = _fts_rows(project_id)
+
+    def fail_init():
+        raise AssertionError("real-project compare must not run init_db")
+
+    def fail_rebuild(project_id):
+        raise AssertionError("real-project compare must not rebuild FTS")
+
+    monkeypatch.setattr(rebuild_cli.database, "init_db", fail_init)
+    monkeypatch.setattr(rebuild_cli, "rebuild_memory_fts", fail_rebuild)
+
+    code = rebuild_cli.main([
+        "compare",
+        "--project-id",
+        project_id,
+        "--role",
+        "planner",
+        "--title",
+        "uses",
+        "--token-budget",
+        "4000",
+    ])
+
+    output = capsys.readouterr().out
+    assert code == 0
+    assert "included_set_identical=True" in output
+    assert "mandatory_tier_identical=True" in output
+    assert "only_relevance_tier_may_reorder=True" in output
+    assert "fts_coverage_count=1" in output
+    assert "fallback_count=0" in output
+    assert "no_cross_project_facts=True" in output
+    assert "deterministic_output=True" in output
+    assert _memory_fact_rows(project_id) == fact_rows_before
+    assert _memory_suggestion_rows(project_id) == suggestion_rows_before
+    assert _fts_rows(project_id) == fts_rows_before
+
+
+def test_compare_structured_entries_keep_set_and_mandatory_tier_identical(
+    memory_project_ids,
+):
+    _require_fts5()
+    project_id = _make_project_id(memory_project_ids)
+    security = add_fact(
+        project_id,
+        "Security fact: approval gates stay mandatory.",
+        category="security",
+    )
+    baseline = add_fact(project_id, "Style fact alpha baseline.", category="style")
+    fts_match = add_fact(
+        project_id,
+        "Style fact uses Azure storage.",
+        category="style",
+    )
+    assert rebuild_cli.main(["rebuild", "--project-id", project_id, "--yes"]) == 0
+    context = RequestContext(title="uses")
+
+    off_entries = rebuild_cli._included_entries(
+        project_id,
+        role="planner",
+        token_budget=4000,
+        request_context=context,
+        fts_enabled=False,
+    )
+    on_entries = rebuild_cli._included_entries(
+        project_id,
+        role="planner",
+        token_budget=4000,
+        request_context=context,
+        fts_enabled=True,
+    )
+    report = rebuild_cli.compare_memory_fts(
+        project_id,
+        role="planner",
+        token_budget=4000,
+        request_context=context,
+    )
+
+    assert {entry.fact_id for entry in off_entries} == {
+        entry.fact_id for entry in on_entries
+    } == {security["id"], baseline["id"], fts_match["id"]}
+    assert rebuild_cli._mandatory_tier(off_entries) == rebuild_cli._mandatory_tier(
+        on_entries
+    )
+    assert [entry.fact_id for entry in rebuild_cli._mandatory_tier(on_entries)] == [
+        security["id"],
+    ]
+    assert {
+        entry.fact_id for entry in rebuild_cli._relevance_entries(off_entries)
+    } == {
+        entry.fact_id for entry in rebuild_cli._relevance_entries(on_entries)
+    } == {baseline["id"], fts_match["id"]}
+    assert [
+        entry.fact_id for entry in rebuild_cli._relevance_entries(off_entries)
+    ] != [
+        entry.fact_id for entry in rebuild_cli._relevance_entries(on_entries)
+    ]
+    assert report.included_set_identical is True
+    assert report.mandatory_tier_identical is True
+    assert report.only_relevance_tier_may_reorder is True
+    assert report.relevance_order_delta > 0
+    assert report.no_cross_project_facts is True
+    assert report.deterministic_output is True
+
+
+def test_compare_reports_fallback_when_fts_has_no_coverage(memory_project_ids):
+    project_id = _make_project_id(memory_project_ids)
+    add_fact(project_id, "Echo fact has no populated FTS index.", category="style")
+
+    report = rebuild_cli.compare_memory_fts(
+        project_id,
+        role="planner",
+        request_context=RequestContext(title="uses"),
+    )
+
+    assert report.included_set_identical is True
+    assert report.fts_coverage_count == 0
+    assert report.fallback_count == 1
+    assert report.deterministic_output is True
+
+
+def test_seeded_compare_cleans_up_facts_suggestions_and_fts_rows(capsys):
+    code = rebuild_cli.main(["compare", "--seed"])
+
+    output = capsys.readouterr().out
+    assert code == 0
+    match = re.search(r"project_id=(fts-seed-[0-9a-f]+)", output)
+    assert match is not None
+    project_id = match.group(1)
+    assert "included_set_identical=True" in output
+    assert "mandatory_tier_identical=True" in output
+    assert "deterministic_output=True" in output
+    assert _memory_fact_rows(project_id) == []
+    assert _memory_suggestion_rows(project_id) == []
+    assert _fts_rows(project_id) == []
+
+
+def test_compare_flag_off_entries_remain_current_rung_zero(
+    monkeypatch,
+    memory_project_ids,
+):
+    _require_fts5()
+    project_id = _make_project_id(memory_project_ids)
+    add_fact(project_id, "Foxtrot style fact uses Azure storage.", category="style")
+    assert rebuild_cli.main(["rebuild", "--project-id", project_id, "--yes"]) == 0
+    context = RequestContext(title="uses")
+    monkeypatch.setattr(policy, "MEMORY_FTS_RETRIEVAL_ENABLED", False)
+
+    current = prompt_builder.build_project_memory_block_detailed(
+        project_id,
+        role="planner",
+        token_budget=4000,
+        request_context=context,
+    )
+    compare_off_entries = rebuild_cli._included_entries(
+        project_id,
+        role="planner",
+        token_budget=4000,
+        request_context=context,
+        fts_enabled=False,
+    )
+
+    assert compare_off_entries == tuple(
+        rebuild_cli._snapshot_entry(entry) for entry in current.included_entries
+    )
+    assert policy.MEMORY_FTS_RETRIEVAL_ENABLED is False
