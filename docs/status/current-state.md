@@ -183,8 +183,26 @@ Current truth:
   migration populate, and no Row 23 vector/embedding work. The later
   approval-write-path rebuild trigger remains deferred and should not be started
   unless future soak shows real value.
+- **Phase 2F Thread UI / Run Timeline — COMPLETE & MERGED (2026-06-17), read-only.**
+  The Run Detail thread/run timeline shipped through PR-0..PR-4 plus review fixes
+  PR-A/PR-B/PR-C (design brief + closeout:
+  [`../design/phase-2f-thread-ui.md`](../design/phase-2f-thread-ui.md) §13). PR-0
+  added the backend read-only `GET /runs/{run_id}/timeline` derived from existing
+  persisted tables; PR-1 added the frontend `useRunTimeline` hook + additive
+  `RunTimeline`; PR-2 added the read-only `RunTimelineDetail` master-detail panel;
+  PR-3 promoted the timeline to the primary Run Detail layout and made the existing
+  `OperatorAttentionPanel` sticky/prominent; PR-4 added the Plain English / Developer
+  view toggle. PR-A fixed backend timeline correctness/redaction tests; PR-B fixed
+  persisted/live dedupe and timeline refresh; PR-C fixed redaction polish, sticky
+  height, the `localStorage` guard, and a11y. **Invariants held:** no PR-5 / event
+  persistence, no schema or event table, no backend writes, no POST lifecycle handler
+  changes, no approval/final-approval/Git/PR behavior change, no memory-retrieval
+  change, no FTS/Row 19 activation, and no Row 23/vector work — the only backend
+  surface added is the single read-only GET. **PR-5 (fine-grained event persistence)
+  remains deferred** and is the only unshipped slice of the brief.
 - **Deferred (not opened):** Row 16 PR-C activation, vector/embedding memory
-  (row 23), and the thread/run UI (rows 22b–22e). The
+  (row 23), and Phase 2F **PR-5** (fine-grained event persistence — the only
+  unshipped slice of the thread/run timeline UI; needs its own brief). The
   remaining Row 12 gate is **operational, not code** — flipping
   `MEMORY_RELEVANCE_OMISSION_ENABLED` on is a soak decision (and omission/pinning
   stay dormant until then). **Next step: a maintainer / Claude roadmap review
@@ -315,8 +333,9 @@ routes revalidate every mutating action.
   scaffolding) is COMPLETE; its **PR-B** (ordering) and **PR-C** (omission /
   pinning, D5), plus post-run hygiene (row 16). **Row 19 retriever/FTS is now
   complete and merged, default-off and explicit-rebuild-only.** Vector/embedding
-  memory (row 23) and thread UI remain not-next until explicitly opened. See the
-  workplan.
+  memory (row 23) remains not-next until explicitly opened; the Phase 2F read-only
+  thread/run timeline UI is now COMPLETE & MERGED (PR-0..PR-4 + PR-A/PR-B/PR-C),
+  with only its PR-5 event persistence deferred. See the workplan.
 - **Production hardening** (Postgres/Alembic, durable events, DB locks at scale,
   deployment).
 - **Deployment / Ollama / Provider Settings UI / BYOK DB storage / execution
@@ -403,7 +422,8 @@ until the flag is explicitly flipped later (a soak decision, not a code change).
 **Recommended next step: a maintainer / Claude roadmap review before opening any new
 row/PR or activating a flag** — Row 16 PR-A and PR-B are implemented, and an
 env-gated local/dev soak is available with default false; Row 19 is complete and
-default-off; do not auto-start default-on Row 16 PR-C, row 23, or the thread UI.
+default-off; do not auto-start default-on Row 16 PR-C, row 23, or Phase 2F PR-5
+(fine-grained event persistence).
 
 - **Safe now (no decision needed):** documentation / smoke-checklist upkeep; small
   honest stabilization fixes; optional PR-B soak follow-ups such as an endpoint
@@ -419,7 +439,7 @@ default-off; do not auto-start default-on Row 16 PR-C, row 23, or the thread UI.
   flag-on FTS is advisory ordering only and requires explicit index rebuild. The
   recommended next step is a **maintainer / Claude roadmap review before opening
   any new row or activating a flag** — do not auto-start Row 16 PR-C, row 23
-  (vector, D6), or the thread UI. The only outstanding Row 12 action is
+  (vector, D6), or Phase 2F PR-5 (event persistence). The only outstanding Row 12 action is
   operational: a soak decision on whether/when to flip
   `MEMORY_RELEVANCE_OMISSION_ENABLED` on.
 - **Row 16 (post-run hygiene) — PR-A and PR-B implemented; env-gated soak available.**
@@ -438,7 +458,8 @@ default-off; do not auto-start default-on Row 16 PR-C, row 23, or the thread UI.
   silently reappear from later runs.
 - **Deferred (explicitly):** activating `MEMORY_RELEVANCE_OMISSION_ENABLED` (soak
   decision, not code); Row 16 PR-C activation; vector/embedding memory
-  (row 23, D6); the thread/run UI (rows 22b–22e). Demo /
+  (row 23, D6); Phase 2F PR-5 (fine-grained event persistence — the rest of the
+  thread/run timeline UI shipped 2026-06-17, PR-0..PR-4 + PR-A/PR-B/PR-C). Demo /
   README / devex polish remains fine opportunistically, but is no longer the
   recommended next step.
 
@@ -505,7 +526,15 @@ rung-0 candidates, never adds/drops/caps/cross-projects candidates, never scores
 demotes/omits/drops mandatory or safety facts, and requires explicit FTS rebuild/
 population to matter. No rebuild-on-write, lazy rebuild-on-read, endpoint, frontend,
 schema.sql FTS DDL, approval/execution/final approval/Git/PR behavior change, or Row 23
-vector memory. Do not auto-start Row 16 PR-C, row 23, or the thread UI.
+vector memory. Phase 2F Thread UI / Run Timeline is COMPLETE & MERGED (2026-06-17),
+read-only, through PR-0..PR-4 + review fixes PR-A/PR-B/PR-C: PR-0 backend read-only
+GET /runs/{run_id}/timeline from persisted tables; PR-1 useRunTimeline + additive
+RunTimeline; PR-2 read-only RunTimelineDetail; PR-3 timeline promoted to primary Run
+Detail layout + OperatorAttentionPanel made sticky; PR-4 Plain English / Developer
+view toggle. No PR-5/event persistence, no schema/event table, no backend writes, no
+POST lifecycle handler changes, no approval/final-approval/Git/PR change, no
+memory-retrieval change, no FTS/Row 19 activation, no Row 23/vector work. Do not
+auto-start Row 16 PR-C, row 23, or Phase 2F PR-5 (event persistence).
 PR-A: request_context dormant; request_context=None
 preserves existing injection behavior; budgets/estimator single-sourced in policy;
 adaptive budget scaffolding disabled; security+forbidden_paths mandatory and cannot
@@ -530,7 +559,8 @@ MEMORY_POSTRUN_HYGIENE_ENABLED; manual route remains the only active path by
 default unless env-gated soak is explicitly enabled. PR-B COMPLETE: read-only pending-suggestion digest/card. ENV-GATED SOAK
 AVAILABLE: PIPEWRIGHT_MEMORY_POSTRUN_HYGIENE_ENABLED=true enables local/dev soak
 only; rejected same-content suggestions no longer silently return from later runs;
-default-on PR-C activation deferred); vector/embedding (row 23); thread UI (22b–22e).
+default-on PR-C activation deferred); vector/embedding (row 23); Phase 2F PR-5
+(fine-grained event persistence — the rest of the thread/run timeline UI shipped).
 
 INVARIANTS (do not violate):
 - Never bypass chunk plan approval or final approval. Final approval is NOT

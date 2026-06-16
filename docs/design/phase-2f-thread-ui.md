@@ -1,9 +1,14 @@
 # Phase 2F — Pipewright UX 1.0: Thread UI, Run Timeline & Approval Experience
 
-**Status:** Design-only brief. No implementation in this document.
+**Status:** **COMPLETE & MERGED through PR-0..PR-4 (plus review fixes
+PR-A/PR-B/PR-C), 2026-06-17.** This is the originating design brief; the
+implementation closeout and per-PR delta notes are **§13**. **PR-5 (fine-grained
+event persistence) is deferred / not started** and remains the only unshipped slice.
 **Scope:** Frontend Run Detail experience + one read-only backend read-model.
 **Out of scope (do not touch):** FTS activation, Row 23 vectors, memory retrieval,
-execution/approval/Git/PR *behavior*. First PRs are read-only.
+execution/approval/Git/PR *behavior*. The shipped PRs are read-only (a single GET +
+presentation): no backend writes, no schema/event table, no POST lifecycle handler
+changes.
 
 ---
 
@@ -383,6 +388,13 @@ For every read-only surface, define all five — failing safe and never implying
 ---
 
 ## 12. Open decisions to confirm before PR-0
+
+> **Resolved 2026-06-17 (see §13).** All four were taken as recommended: (1) derive
+> the timeline from persisted tables — no events table; (2) defer PR-5 fine-grained
+> persistence; (3) two-view model = plain default + per-event technical expander +
+> global developer toggle; (4) doc location/cadence as here, with per-PR delta notes
+> in §13.
+
 1. **Timeline source (recommended: derive from persisted tables).** Confirm we build the
    read-only read-model rather than adding an events table now. *(Recommended — it's read-only,
    restart-safe, and avoids any execution-path write.)*
@@ -393,3 +405,56 @@ For every read-only surface, define all five — failing safe and never implying
 4. **Doc location / PR cadence.** This brief lives at `docs/design/phase-2f-thread-ui.md`;
    each PR gets a short delta note here on merge (matches existing row-closeout convention).
 ```
+
+---
+
+## 13. Implementation closeout (2026-06-17)
+
+**Phase 2F Thread UI / Run Timeline is COMPLETE & MERGED** through PR-0..PR-4, plus
+review-fix follow-ups PR-A/PR-B/PR-C. It shipped exactly as framed in §0–§11: a
+read-only timeline spine derived from existing persisted tables, plus presentation
+recomposition of the Run Detail page — **no execution-path write, no schema change,
+no new events table.** §12's four open decisions were all resolved as recommended.
+
+### Delta notes (per the §12.4 convention)
+
+- **PR-0 — backend read-only `GET /runs/{run_id}/timeline`.** New
+  `backend/pipeline/run_timeline.py` deriver + one GET in `chunks.py`; queries the
+  existing persisted tables only and returns ordered `TimelineEntry[]` with stable,
+  idempotent ids and sanitized `data`. Pure read — no schema change, no write.
+- **PR-1 — frontend `useRunTimeline` + additive `RunTimeline`.** React Query hook
+  against PR-0 plus a read-only chronological component, merged with the live
+  `useRunEvents` tail by stable id. Additive; `EventLog` / `useRunEvents` untouched.
+- **PR-2 — read-only `RunTimelineDetail`.** Master-detail panel: plain-English
+  summary + "what it unlocks / why it's safe" + an expandable technical block. No
+  approval-control change.
+- **PR-3 — timeline promoted to the primary Run Detail layout.** The timeline is now
+  the spine; the existing `OperatorAttentionPanel` was made sticky/prominent as the
+  next-action banner. The real approval/exec controls were moved/reframed, not
+  rewritten — same wired mutations, no newly-reachable gate.
+- **PR-4 — Plain English / Developer view toggle.** Presentation-only, plain default,
+  persisted in `localStorage`; same data, fetches, and controls in both modes.
+- **PR-A — backend timeline correctness/redaction fixes.** Hardened the read-model
+  correctness and redaction tests; no write / POST / schema change.
+- **PR-B — persisted/live dedupe + timeline refresh fixes.** Fixed persisted-vs-live
+  reconciliation (dedupe by stable id) and timeline refresh; no data-layer authority
+  change.
+- **PR-C — redaction polish, sticky height, `localStorage` guard, a11y.**
+  Presentation/robustness polish only.
+
+### Invariants held
+
+- **No PR-5 / event persistence started.** No new schema or event table; the
+  in-memory `event_bus` execution-path publish is untouched.
+- **No backend writes and no POST lifecycle handler changes.** The only backend
+  surface added is the single read-only `GET /runs/{run_id}/timeline`.
+- **No approval / final-approval / Git / PR behavior change.** The sticky banner
+  reuses the existing wired controls; no gate became newly reachable.
+- **No memory-retrieval / injection change**; memory appears in the timeline as
+  read-only provenance only.
+- **No FTS / Row 19 activation and no Row 23 / vector work.**
+
+### Deferred (unchanged)
+
+- **PR-5 — fine-grained event persistence** for terminal-run replay. It is the only
+  unshipped slice of this brief and needs its own one-page brief before any prompt.

@@ -1,9 +1,24 @@
 # Pipewright Redesign — Rolling Implementation Brief
 
-**Date:** 2026-06-16
-**Status:** **§23 row 7b plan-gate turns plus plan-version lineage are COMPLETE
-& MERGED, end-to-end but default-off.** PR-A/PR-B/PR-C/PR-D landed the internal
-engine, backend route, frontend "Revise plan" affordance, and
+**Date:** 2026-06-17
+**Status:** **Phase 2F Thread UI / Run Timeline is COMPLETE & MERGED (read-only) —
+PR-0..PR-4 plus review fixes PR-A/PR-B/PR-C.** A read-only run-timeline spine derived
+from existing persisted tables plus Run Detail presentation recomposition: PR-0
+backend `GET /runs/{run_id}/timeline`, PR-1 `useRunTimeline` + additive
+`RunTimeline`, PR-2 read-only `RunTimelineDetail`, PR-3 timeline promoted to the
+primary layout with the existing `OperatorAttentionPanel` made sticky, PR-4 Plain
+English / Developer view toggle; PR-A/PR-B/PR-C fixed backend correctness/redaction,
+persisted/live dedupe + refresh, and redaction/sticky-height/`localStorage`/a11y
+polish. **No PR-5/event persistence, no schema/event table, no backend writes, no
+POST lifecycle handler changes, no approval/final-approval/Git/PR change, no
+memory-retrieval change, no FTS/Row 19 activation, no Row 23/vector work.** Design
+brief + closeout: `docs/design/phase-2f-thread-ui.md` (§13). The Phase 2F closeout
+section is below. PR-5 (fine-grained event persistence) remains the only deferred
+slice.
+
+Previous status remains true: **§23 row 7b plan-gate turns plus plan-version lineage
+are COMPLETE & MERGED, end-to-end but default-off.** PR-A/PR-B/PR-C/PR-D landed the
+internal engine, backend route, frontend "Revise plan" affordance, and
 `PIPEWRIGHT_PLAN_TURNS_ENABLED` env wiring. Stabilization Slices A/B/C then
 landed the backend `GET /runs/{run_id}/plan-versions` read model,
 `approved_plan_version` approval binding, and frontend lineage display.
@@ -28,10 +43,43 @@ without changing the shipped default. This brief retains the PR-B closeout recor
 below (still accurate history), the PR-C summary, the Row 7b closeout note, and
 the Row 19 closeout note. Row 19 and its FTS populate/soak follow-up are complete
 and merged, but FTS retrieval remains default-off and dormant. Row 16 PR-C
-activation, Row 23, and the §21 thread UI remain deferred.
+activation and Row 23 remain deferred; the §21 thread UI shipped as Phase 2F's
+read-only Run Timeline (2026-06-17), with only PR-5 event persistence deferred.
 **Next step: a maintainer / Claude roadmap review before opening any new row or
 activating a default.** Full records live in `PIPEWRIGHT_REDESIGN_WORKPLAN.md`
 and the proposal's §24 + Appendix E.1/E.2.
+
+## Phase 2F Thread UI / Run Timeline closeout (read-only, 2026-06-17)
+
+COMPLETE & MERGED through PR-0..PR-4 plus review fixes PR-A/PR-B/PR-C. Canonical
+design brief + per-PR delta notes: `docs/design/phase-2f-thread-ui.md` (§13).
+
+- **PR-0:** backend read-only `GET /runs/{run_id}/timeline` deriver
+  (`backend/pipeline/run_timeline.py`) over existing persisted tables; ordered
+  `TimelineEntry[]` with stable, idempotent ids and sanitized `data`. No schema
+  change, no write.
+- **PR-1:** frontend `useRunTimeline` hook + additive read-only `RunTimeline`
+  component, merged with the live `useRunEvents` tail by stable id. `EventLog` /
+  `useRunEvents` untouched.
+- **PR-2:** read-only `RunTimelineDetail` master-detail panel (plain-English summary
+  + "what it unlocks / why it's safe" + expandable technical block).
+- **PR-3:** timeline promoted to the primary Run Detail layout; the existing
+  `OperatorAttentionPanel` made sticky/prominent as the next-action banner. Real
+  controls moved/reframed, not rewritten — same wired mutations, no newly-reachable
+  gate.
+- **PR-4:** Plain English / Developer view toggle (presentation-only, plain default,
+  `localStorage`-persisted; same data/fetches/controls in both modes).
+- **PR-A:** backend timeline correctness/redaction test fixes.
+- **PR-B:** persisted/live dedupe (by stable id) + timeline refresh fixes.
+- **PR-C:** redaction polish, sticky height, `localStorage` guard, a11y.
+
+**Invariants held:** no PR-5 / event persistence started; no schema or event table;
+no backend writes; no POST lifecycle handler changes; no approval/final-approval/
+Git/PR behavior change; no memory-retrieval change; no FTS/Row 19 activation; no
+Row 23/vector work. The only backend surface added is the single read-only GET.
+
+**Deferred:** PR-5 (fine-grained event persistence) is the only unshipped slice and
+needs its own one-page brief before any prompt.
 
 ## §23 row 7b closeout (plan-gate turns + lineage, default-off)
 
@@ -297,7 +345,10 @@ confirmation activates nothing by default.
   read-only digest, and default-false env-gated soak complete; default-on PR-C
   activation remains later (D7/B2).
 - **Row 23** — vector / embedding rung 2 (D6/B4).
-- **§21 thread UI** (rows 22b–22e, D13).
+- **§21 thread UI / Phase 2F** — the read-only Run Timeline shipped 2026-06-17
+  (PR-0..PR-4 + review fixes PR-A/PR-B/PR-C; closeout above). Only **PR-5**
+  (fine-grained event persistence) remains deferred and needs its own one-page brief.
+  (Rows 22b–22e, D13.)
 
 ## Canonical pointers
 

@@ -7,6 +7,23 @@
 
 ## TL;DR
 
+- **Latest update (2026-06-17): Phase 2F Thread UI / Run Timeline is COMPLETE &
+  MERGED, read-only, through PR-0..PR-4 plus review fixes PR-A/PR-B/PR-C.** PR-0 added
+  the backend read-only `GET /runs/{run_id}/timeline` derived from existing persisted
+  tables; PR-1 added the frontend `useRunTimeline` hook + additive `RunTimeline`; PR-2
+  added the read-only `RunTimelineDetail` master-detail panel; PR-3 promoted the
+  timeline to the primary Run Detail layout and made the existing
+  `OperatorAttentionPanel` sticky/prominent; PR-4 added the Plain English / Developer
+  view toggle. PR-A fixed backend timeline correctness/redaction tests; PR-B fixed
+  persisted/live dedupe and timeline refresh; PR-C fixed redaction polish, sticky
+  height, the `localStorage` guard, and a11y. **Invariants held:** no PR-5 / event
+  persistence, no schema or event table, no backend writes, no POST lifecycle handler
+  changes, no approval/final-approval/Git/PR behavior change, no memory-retrieval
+  change, no FTS/Row 19 activation, and no Row 23/vector work — the only backend
+  surface added is the single read-only GET. Design brief + closeout:
+  `docs/design/phase-2f-thread-ui.md` (§13). **PR-5 (fine-grained event persistence)
+  remains deferred** and is the only unshipped slice; Row 16 PR-C activation and
+  Row 23 vector memory also remain deferred.
 - **Latest update (2026-06-16): §23 row 19 MemoryRetriever/FTS is COMPLETE &
   MERGED, default-off and explicit-rebuild-only.** PR-A landed the guarded inert
   SQLite FTS scaffold plus explicit rebuild lifecycle; PR-B landed the
@@ -63,7 +80,7 @@ It is **not** sound as a flat fan-out across the whole redesign, for three reaso
 | **`PIPEWRIGHT_REDESIGN_PROPOSAL.md`** | The authoritative, code-verified design. Pass 1 = pipeline engine (E-items, §1–7), Pass 2 = memory (M-items, §8+), plus addenda. Contains the §5 decision points and §6 phasing. | **Canonical. Supersedes the earlier reviews.** |
 | `ARCHITECTURE_REVIEW.md` | Older, code-*unverified* bug list (P1–P8 pipeline, M1–M7 memory) written for Fable. | Mostly **subsumed** by the proposal (which corrected several of its claims as stale). Keep only for the 3 gaps below. |
 | **`FABLE5_IMPL_SPEC_BRIEF.md`** | **The active working doc.** Harness telling Fable how to approach per-task implementation; first task block = E2. | **In use.** |
-| **`PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md`** | **The rolling per-phase implementation handoff brief.** Repurposed each phase; held the item-17, Row 11, Row 12, Row 7b, and Row 19 closeouts. Previously held items 10–16 in turn (each superseded; outcomes live in this workplan). | **ROW 19 COMPLETE — PR-A/PR-B/PR-C merged, default-off and explicit-rebuild-only.** Row 12 and Row 7b are also complete. Row 16 PR-C activation, Row 23 vector memory, and thread UI remain deferred. |
+| **`PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md`** | **The rolling per-phase implementation handoff brief.** Repurposed each phase; held the item-17, Row 11, Row 12, Row 7b, Row 19, and Phase 2F closeouts. Previously held items 10–16 in turn (each superseded; outcomes live in this workplan). The Phase 2F design brief + closeout lives at `docs/design/phase-2f-thread-ui.md` (§13). | **PHASE 2F THREAD UI / RUN TIMELINE COMPLETE & MERGED (read-only) — PR-0..PR-4 + review fixes PR-A/PR-B/PR-C.** Row 19, Row 12, and Row 7b are also complete. Row 16 PR-C activation, Row 23 vector memory, and Phase 2F PR-5 (event persistence) remain deferred. |
 | **`PIPEWRIGHT_ITEM7_M5_DESIGN.md`** | The design brief for §23 order-row 7 (M5 suggestion-quality gate); carries a 2026-06-14 closeout header. | **Done — shipped as PR #292.** Historical record + the two tracked non-blocking loose ends. |
 | `FABLE5_DESIGN_BRIEF.md`, `FABLE5_ISOLATION_ADDENDUM.md`, `FABLE5_PASS3_BRIEF.md` | The design briefs that *produced* the proposal. | Historical input. |
 | `PIPEWRIGHT_REDESIGN_BRIEF.md`, `PIPEWRIGHT_REDESIGN_UI_MOCKUP.svg` | The originating brief + a UI mock. | Input / reference. |
@@ -189,5 +206,7 @@ Plus §7 open questions (attempt-budget defaults; whether post-success refinemen
 26. **§23 Row 19 MemoryRetriever/FTS is COMPLETE & MERGED (2026-06-16), default-off and explicit-rebuild-only.** PR-A added the guarded inert SQLite FTS scaffold/table plus explicit rebuild/population lifecycle and no runtime reader; PR-B added the `MemoryRetriever` seam and deterministic rung-0 with byte-identical prompt/memory behavior; PR-C added FTS rung-1 retrieval behind `PIPEWRIGHT_MEMORY_FTS_RETRIEVAL_ENABLED`. Flag-off remains byte-identical to deterministic rung-0/current behavior. Flag-on uses FTS only as an advisory ordering signal over the canonical rung-0 candidate set: FTS never adds, drops, caps, or cross-projects candidates, and mandatory/safety facts are never scored, demoted, omitted, or dropped. The FTS index is derived/rebuildable; explicit rebuild/population is required for flag-on to have effect. There is no rebuild-on-write, no lazy rebuild-on-read, no endpoint, no frontend, no `schema.sql` FTS DDL, no approval/execution/final-approval/Git/PR behavior change, and no Row 23 vector memory started. Current deferred memory work is Row 16 PR-C activation and Row 23 vector/embedding memory; thread UI remains deferred.
 
 27. **Row 19 FTS populate/soak follow-up is COMPLETE & MERGED (2026-06-16).** PR-1 added an explicit guarded manual rebuild CLI. PR-2 added a read-only compare/seed soak harness and `docs/design/row-19-fts-soak-results.md`. Seeded soak passed: included set identical, mandatory tier identical, only relevance-tier order changed, no cross-project facts, deterministic output. Real-project soak safely fell back with zero ordering delta. FTS retrieval remains default-off/dormant. No activation trigger, no rebuild-on-write, no lazy rebuild-on-read, no default-on flip, no endpoint/frontend/`schema.sql`/boot-migration populate, and no Row 23 vector/embedding work. The later approval-write-path rebuild trigger remains deferred and should not be started unless future soak shows real value.
+
+28. **Phase 2F Thread UI / Run Timeline is COMPLETE & MERGED (2026-06-17), read-only.** Shipped through PR-0..PR-4 plus review fixes PR-A/PR-B/PR-C; design brief + closeout in `docs/design/phase-2f-thread-ui.md` (§13). **PR-0** added the backend read-only `GET /runs/{run_id}/timeline` derived from existing persisted tables; **PR-1** added the frontend `useRunTimeline` hook + additive `RunTimeline`; **PR-2** added the read-only `RunTimelineDetail` master-detail panel; **PR-3** promoted the timeline to the primary Run Detail layout and made the existing `OperatorAttentionPanel` sticky/prominent; **PR-4** added the Plain English / Developer view toggle. **PR-A** fixed backend timeline correctness/redaction tests; **PR-B** fixed persisted/live dedupe and timeline refresh; **PR-C** fixed redaction polish, sticky height, the `localStorage` guard, and a11y. **Invariants held:** no PR-5 / event persistence started, no schema or event table, no backend writes, no POST lifecycle handler changes, no approval/final-approval/Git/PR behavior change, no memory-retrieval change, no FTS/Row 19 activation, and no Row 23/vector work — the only backend surface added is the single read-only GET. **Deferred:** Phase 2F **PR-5** (fine-grained event persistence) is the only unshipped slice and needs its own one-page brief; Row 16 PR-C activation and Row 23 vector memory also remain deferred.
 
 *Note: commit these planning docs only when asked.*
