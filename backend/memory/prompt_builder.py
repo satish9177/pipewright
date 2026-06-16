@@ -18,10 +18,8 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import text
-
 from backend.memory.memory_trust import _content_tokens, _jaccard
-from backend.db.database import engine
+from backend.memory.memory_retriever import default_memory_retriever
 from backend.memory.memory_store import (
     CATEGORY_ORDER,
     DEFAULT_PRIORITY,
@@ -286,40 +284,6 @@ def _partition_relevance_rows(
     return kept, omitted
 
 
-def _load_active_memory_rows(
-    project_id: str, categories: set[str]
-) -> tuple[list[dict], list[dict]]:
-    """
-    Load active, non-stale facts ONCE and partition them by the role's category
-    policy. Returns ``(in_policy_rows, out_of_policy_rows)``.
-
-    The SQL is unchanged from before M3F2a — it still selects only
-    ``status='active' AND is_stale=0`` — so stale/archived/historical facts are
-    never loaded. The category split happens in Python over the same rows that
-    were already fetched: the in-policy rows feed the (unchanged) block render,
-    and the out-of-policy rows are surfaced read-only as
-    ``category_not_allowed_for_role`` exclusions at zero extra query cost.
-    """
-    with engine.connect() as conn:
-        result = conn.execute(text("""
-            SELECT id, content, content_hash, category, scope, priority, status,
-                   created_at
-            FROM memory_facts
-            WHERE project_id = :project_id
-              AND is_stale = 0
-              AND status = 'active'
-        """), {"project_id": project_id})
-        rows = [dict(row._mapping) for row in result.fetchall()]
-    in_policy: list[dict] = []
-    out_of_policy: list[dict] = []
-    for row in rows:
-        if (row.get("category") or "other") in categories:
-            in_policy.append(row)
-        else:
-            out_of_policy.append(row)
-    return in_policy, out_of_policy
-
-
 @dataclass(frozen=True)
 class RequestContext:
     title: str | None = None
@@ -504,9 +468,13 @@ def build_project_memory_block_detailed(
         if scope in ALLOWED_SCOPES and scope != "global"
     }
 
-    in_policy_rows, out_of_policy_rows = _load_active_memory_rows(
-        project_id, categories
+    candidates = default_memory_retriever().retrieve_candidates(
+        project_id,
+        categories,
+        request_context=request_context,
     )
+    in_policy_rows = candidates.in_policy_rows
+    out_of_policy_rows = candidates.out_of_policy_rows
 
     # Category-policy exclusions: active facts whose category is outside the
     # role's policy. Surfaced read-only from the SAME query; never rendered and
