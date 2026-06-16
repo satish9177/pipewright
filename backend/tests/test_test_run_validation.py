@@ -363,7 +363,19 @@ def test_command_not_found(exit_code, output):
 
 # --- SIGNAL_KILL: killed by a signal ----------------------------------------
 
-@pytest.mark.parametrize("exit_code", [-9, -11, 134, 137, 139, 143])
+@pytest.mark.parametrize(
+    "exit_code",
+    [
+        -9,
+        -11,
+        -1073741510,  # signed STATUS_CONTROL_C_EXIT
+        134,
+        137,
+        139,
+        143,
+        3221225786,  # unsigned STATUS_CONTROL_C_EXIT / 0xC000013A
+    ],
+)
 def test_signal_kill_exit_codes(exit_code):
     assert (
         classify_execution_integrity(exit_code, "partial output")
