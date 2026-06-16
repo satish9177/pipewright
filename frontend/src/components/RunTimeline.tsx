@@ -6,6 +6,7 @@ import type {
   TimelineLevel,
 } from '@/api/client'
 import { Badge } from '@/components/ui/badge'
+import RunTimelineDetail from '@/components/RunTimelineDetail'
 import { cn } from '@/lib/utils'
 import type { RunEvent } from '@/types/events'
 
@@ -183,6 +184,8 @@ export default function RunTimeline({
     selectedId && timelineEntries.some(entry => entry.id === selectedId)
       ? selectedId
       : null
+  const selectedEntry =
+    timelineEntries.find(entry => entry.id === activeSelectedId) ?? null
 
   if (isLoading) {
     return (
@@ -217,55 +220,58 @@ export default function RunTimeline({
         </p>
       </div>
 
-      <div className="max-h-96 overflow-y-auto rounded border bg-background">
-        <div className="divide-y">
-          {timelineEntries.map(entry => {
-            const selected = activeSelectedId === entry.id
-            return (
-              <button
-                key={entry.id}
-                type="button"
-                aria-pressed={selected}
-                onClick={() => setSelectedId(entry.id)}
-                className={cn(
-                  'grid w-full gap-2 px-3 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  selected && 'bg-muted ring-1 ring-ring',
-                )}
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono text-xs text-muted-foreground">
-                    {formatTimestamp(entry.ts)}
-                  </span>
-                  <Badge
-                    variant="outline"
-                    className={categoryClass(entry.category)}
-                  >
-                    {labelFromToken(entry.category)}
-                  </Badge>
-                  <Badge variant="outline" className={levelClass(entry.level)}>
-                    {entry.level}
-                  </Badge>
-                  {typeof entry.chunk_number === 'number' && (
-                    <Badge variant="outline">
-                      chunk {entry.chunk_number}
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(280px,380px)]">
+        <div className="max-h-96 overflow-y-auto rounded border bg-background">
+          <div className="divide-y">
+            {timelineEntries.map(entry => {
+              const selected = activeSelectedId === entry.id
+              return (
+                <button
+                  key={entry.id}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => setSelectedId(entry.id)}
+                  className={cn(
+                    'grid w-full gap-2 px-3 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    selected && 'bg-muted ring-1 ring-ring',
+                  )}
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {formatTimestamp(entry.ts)}
+                    </span>
+                    <Badge
+                      variant="outline"
+                      className={categoryClass(entry.category)}
+                    >
+                      {labelFromToken(entry.category)}
                     </Badge>
-                  )}
-                  <Badge variant="outline">{entry.source}</Badge>
-                </div>
-                <div className="grid gap-1">
-                  <p className="text-sm font-medium leading-6 text-foreground">
-                    {entry.title}
-                  </p>
-                  {entry.detail && (
-                    <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">
-                      {entry.detail}
+                    <Badge variant="outline" className={levelClass(entry.level)}>
+                      {entry.level}
+                    </Badge>
+                    {typeof entry.chunk_number === 'number' && (
+                      <Badge variant="outline">
+                        chunk {entry.chunk_number}
+                      </Badge>
+                    )}
+                    <Badge variant="outline">{entry.source}</Badge>
+                  </div>
+                  <div className="grid gap-1">
+                    <p className="text-sm font-medium leading-6 text-foreground">
+                      {entry.title}
                     </p>
-                  )}
-                </div>
-              </button>
-            )
-          })}
+                    {entry.detail && (
+                      <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">
+                        {entry.detail}
+                      </p>
+                    )}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
         </div>
+        <RunTimelineDetail entry={selectedEntry} />
       </div>
     </div>
   )
