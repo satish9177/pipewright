@@ -59,16 +59,28 @@ import type { RunViewMode } from '@/types/viewMode'
 
 const RUN_VIEW_MODE_STORAGE_KEY = 'pipewright.runDetail.viewMode'
 
+// localStorage can throw (private-mode quotas, disabled storage, sandboxed
+// iframes). The view-mode preference is non-essential, so any failure falls
+// back to Plain English on read and is silently ignored on write rather than
+// crashing the run detail page.
 function readStoredRunViewMode(): RunViewMode {
   if (typeof window === 'undefined') return 'plain'
-  return window.localStorage.getItem(RUN_VIEW_MODE_STORAGE_KEY) === 'developer'
-    ? 'developer'
-    : 'plain'
+  try {
+    return window.localStorage.getItem(RUN_VIEW_MODE_STORAGE_KEY) === 'developer'
+      ? 'developer'
+      : 'plain'
+  } catch {
+    return 'plain'
+  }
 }
 
 function writeStoredRunViewMode(mode: RunViewMode) {
   if (typeof window === 'undefined') return
-  window.localStorage.setItem(RUN_VIEW_MODE_STORAGE_KEY, mode)
+  try {
+    window.localStorage.setItem(RUN_VIEW_MODE_STORAGE_KEY, mode)
+  } catch {
+    // Preference persistence is best-effort; ignore storage failures.
+  }
 }
 
 // #37A: the pipeline stages, in order, with plain display labels. The `key`
@@ -1524,7 +1536,10 @@ export default function RunDetailPage() {
         <section
           className={`${
             chunkPlan.operator_state.waiting_on === 'human'
-              ? 'sticky top-3 z-30 rounded-xl bg-background/95 pb-1 shadow-sm backdrop-blur'
+              ? // Cap the sticky banner to the viewport and let it scroll
+                // internally so a tall panel cannot cover the page content
+                // below it on short screens (top-3 = 0.75rem top inset).
+                'sticky top-3 z-30 max-h-[calc(100vh-1.5rem)] overflow-y-auto rounded-xl bg-background/95 pb-1 shadow-sm backdrop-blur'
               : ''
           }`}
         >

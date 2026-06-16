@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 
 import type {
   TimelineCategory,
@@ -197,6 +197,9 @@ export default function RunTimeline({
     [entries, liveEvents],
   )
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Ties each selectable row to the detail region (aria-controls) so assistive
+  // tech knows the buttons drive that panel.
+  const detailPanelId = useId()
   const activeSelectedId =
     selectedId && timelineEntries.some(entry => entry.id === selectedId)
       ? selectedId
@@ -250,6 +253,7 @@ export default function RunTimeline({
                   key={entry.id}
                   type="button"
                   aria-pressed={selected}
+                  aria-controls={detailPanelId}
                   onClick={() => setSelectedId(entry.id)}
                   className={cn(
                     'grid w-full gap-2 px-3 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -300,7 +304,17 @@ export default function RunTimeline({
             })}
           </div>
         </div>
-        <RunTimelineDetail entry={selectedEntry} viewMode={viewMode} />
+        {/* aria-live announces the newly selected entry's detail to screen
+            readers when the selection changes; the region persists across
+            selections so updates are spoken politely. */}
+        <div
+          id={detailPanelId}
+          role="region"
+          aria-label="Selected timeline entry detail"
+          aria-live="polite"
+        >
+          <RunTimelineDetail entry={selectedEntry} viewMode={viewMode} />
+        </div>
       </div>
     </div>
   )
