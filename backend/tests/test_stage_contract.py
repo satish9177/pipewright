@@ -387,6 +387,8 @@ def test_verify_stage_pass_carries_test_result_verbatim(monkeypatch, tmp_repo):
          OutcomeClass.CODE_REJECTED, ExecutionIntegrity.OK),
         ("Fatal Python error: init_sys_streams", 1, False,
          OutcomeClass.INFRA_ERROR, ExecutionIntegrity.HARNESS_CRASH),
+        ("", 3221225786, False,
+         OutcomeClass.INFRA_ERROR, ExecutionIntegrity.SIGNAL_KILL),
         ("[TESTER] command timed out", None, True,
          OutcomeClass.INFRA_ERROR, ExecutionIntegrity.TIMEOUT),
     ],
@@ -418,6 +420,8 @@ def test_verify_stage_failure_classifies_and_matches_orchestrator_report(
     )
 
     expected_type, integrity = stage_contract.classify_test_failure(failed)
+    if expected_class is OutcomeClass.INFRA_ERROR:
+        assert expected_type is PatchFailureType.HARNESS_ERROR
     expected = stage_contract.build_test_failure_report(
         expected_type,
         failed,

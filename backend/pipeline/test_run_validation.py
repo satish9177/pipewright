@@ -157,9 +157,17 @@ _COMMAND_NOT_FOUND_EXIT_CODES = frozenset({127, 9009})
 
 # Process killed by a signal. POSIX subprocess sets returncode = -signum;
 # 128+signum is the shell convention (134 SIGABRT, 137 SIGKILL/OOM, 139 SIGSEGV,
-# 143 SIGTERM). Kept to these well-known values so an ordinary tool exit code is
-# never mistaken for a kill.
-_SIGNAL_KILL_EXIT_CODES = frozenset({134, 137, 139, 143})
+# 143 SIGTERM). Windows can surface console control termination as the unsigned
+# NTSTATUS STATUS_CONTROL_C_EXIT value. Kept to these well-known values so an
+# ordinary tool exit code is never mistaken for a kill.
+_WINDOWS_STATUS_CONTROL_C_EXIT = 0xC000013A
+_SIGNAL_KILL_EXIT_CODES = frozenset({
+    134,
+    137,
+    139,
+    143,
+    _WINDOWS_STATUS_CONTROL_C_EXIT,
+})
 
 # pytest could not even collect the tests (import error in a test module, bad
 # conftest, etc.). Phrasing is pytest-specific so it can't match an assertion.
