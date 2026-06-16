@@ -28,6 +28,15 @@ else:
     DB_PATH = DB_DIR / "pipewright.db"
 
 SCHEMA_PATH = DB_DIR / "schema.sql"
+MEMORY_FTS_TABLE = "memory_facts_fts"
+MEMORY_FTS_COLUMNS = (
+    "content",
+    "fact_id",
+    "project_id",
+    "category",
+    "scope",
+    "content_hash",
+)
 
 engine = create_engine(
     f"sqlite:///{DB_PATH}",
@@ -115,6 +124,82 @@ def _create_index_if_columns_exist(
         return
     if all(_column_exists(conn, table_name, column) for column in columns):
         conn.execute(text(index_sql))
+
+
+def _sqlite_fts5_available(conn) -> bool:
+    """
+    Return whether this SQLite connection can create FTS5 virtual tables.
+
+    The probe is isolated in a savepoint so an FTS5-missing build no-ops without
+    poisoning the surrounding migration transaction.
+    """
+    if getattr(conn.dialect, "name", None) != "sqlite":
+        return False
+
+    try:
+        conn.execute(text("SAVEPOINT pipewright_fts5_probe"))
+        conn.execute(text("""
+            CREATE VIRTUAL TABLE temp.pipewright_fts5_probe
+            USING fts5(content)
+        """))
+        conn.execute(text("DROP TABLE temp.pipewright_fts5_probe"))
+        conn.execute(text("RELEASE SAVEPOINT pipewright_fts5_probe"))
+        return True
+    except Exception:
+        try:
+            conn.execute(text("ROLLBACK TO SAVEPOINT pipewright_fts5_probe"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("RELEASE SAVEPOINT pipewright_fts5_probe"))
+        except Exception:
+            pass
+        return False
+
+
+def _memory_fts_shape_matches(conn) -> bool:
+    table_sql = (_table_sql(conn, MEMORY_FTS_TABLE) or "").lower()
+    if "using fts5" not in table_sql:
+        return False
+
+    rows = conn.execute(text(f"PRAGMA table_info({MEMORY_FTS_TABLE})")).fetchall()
+    columns = {row._mapping["name"] for row in rows}
+    return columns == set(MEMORY_FTS_COLUMNS)
+
+
+def _create_memory_fts_table(conn) -> None:
+    conn.execute(text(f"""
+        CREATE VIRTUAL TABLE IF NOT EXISTS {MEMORY_FTS_TABLE}
+        USING fts5(
+            content,
+            fact_id UNINDEXED,
+            project_id UNINDEXED,
+            category UNINDEXED,
+            scope UNINDEXED,
+            content_hash UNINDEXED
+        )
+    """))
+
+
+def _ensure_memory_fts_shape(conn) -> None:
+    """
+    Ensure the derived, rebuildable memory FTS5 table exists when supported.
+
+    This table is dormant scaffold only. It is never a source of truth and is not
+    read by prompt construction or runtime memory selection in this slice.
+    """
+    try:
+        if not _sqlite_fts5_available(conn):
+            return
+
+        if _table_exists(conn, MEMORY_FTS_TABLE) and not _memory_fts_shape_matches(conn):
+            conn.execute(text(f"DROP TABLE {MEMORY_FTS_TABLE}"))
+
+        _create_memory_fts_table(conn)
+    except Exception as error:
+        raise RuntimeError(
+            f"database.py: Failed to ensure {MEMORY_FTS_TABLE} shape: {error}"
+        ) from error
 
 
 def _migrate_db(conn) -> None:
@@ -522,6 +607,7 @@ def _migrate_db(conn) -> None:
             "ON memory_suggestions(project_id, status)",
             ("project_id", "status"),
         )
+        _ensure_memory_fts_shape(conn)
         _ensure_plan_versions_shape(conn)
         _ensure_chunk_attempts_shape(conn)
         _ensure_run_turns_shape(conn)
