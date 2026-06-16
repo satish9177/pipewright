@@ -244,7 +244,8 @@ def _insert_full_timeline_fixture(
                 )
                 VALUES (
                     :id, :run_id, 'timeline-project-a', 1, 'failure-1',
-                    '["backend/a.py", "backend/b.py"]', '["backend/a.py"]',
+                    '["backend/a,with-comma.py", "backend/b.py"]',
+                    '["backend/a,with-comma.py"]',
                     'approved', '2026-06-16T12:03:00+00:00', :created_at
                 )
                 """
@@ -314,6 +315,20 @@ def test_empty_minimal_run_returns_valid_small_timeline(tracked_runs):
     }
 
 
+def test_terminal_run_does_not_synthesize_created_at_status_entry(tracked_runs):
+    run_id = _insert_minimal_run(
+        tracked_runs,
+        created_at="2026-06-16T10:00:00+00:00",
+        status="failed",
+    )
+
+    entries = build_run_timeline(run_id)
+
+    assert entries is not None
+    assert [entry["id"] for entry in entries] == ["run:created"]
+    assert entries[0]["data"]["status"] == "failed"
+
+
 def test_timeline_ordering_uses_timestamp_then_stable_category_kind_tiebreak(
     tracked_runs,
 ):
@@ -373,7 +388,10 @@ def test_timeline_category_mapping_covers_persisted_sources(tracked_runs):
     assert _entry_by_id(entries, f"review_finding_ack:{ids['review_ack']}")["category"] == "review"
     assert _entry_by_id(entries, f"approval_gate:{ids['gate']}:created")["category"] == "approval"
     assert _entry_by_id(entries, f"approval_gate:{ids['gate']}:decided")["category"] == "approval"
-    assert _entry_by_id(entries, f"scope_expansion:{ids['scope']}:created")["category"] == "execution"
+    scope_entry = _entry_by_id(entries, f"scope_expansion:{ids['scope']}:created")
+    assert scope_entry["category"] == "execution"
+    assert scope_entry["data"]["requested_files_count"] == 2
+    assert scope_entry["data"]["approved_files_count"] == 1
     assert _entry_by_id(entries, f"scope_expansion:{ids['scope']}:decided")["category"] == "execution"
     assert _entry_by_id(entries, f"memory_injection:{ids['memory']}")["category"] == "memory"
     assert _entry_by_id(entries, "run:git:pushed")["category"] == "ship"
@@ -388,6 +406,9 @@ def test_timeline_data_redacts_or_omits_sensitive_payloads(tracked_runs):
         pushed_at="2026-06-16T13:05:00+00:00",
         branch_name="feature/ghp_SECRET1234567890",
     )
+    suffix = run_id.rsplit("-", maxsplit=1)[-1][:12]
+    gate_id = f"gate-redaction-{suffix}"
+    memory_id = f"memory-redaction-{suffix}"
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -410,7 +431,7 @@ def test_timeline_data_redacts_or_omits_sensitive_payloads(tracked_runs):
                     rejection_reason, created_at
                 )
                 VALUES (
-                    'gate-redaction', :run_id, 'chunk_approval',
+                    :gate_id, :run_id, 'chunk_approval',
                     'pending token=SECRET1234567890', :diff_payload,
                     :stack_payload, :secret_payload, :git_payload,
                     '2026-06-16T13:01:00+00:00'
@@ -418,6 +439,7 @@ def test_timeline_data_redacts_or_omits_sensitive_payloads(tracked_runs):
                 """
             ),
             {
+                "gate_id": gate_id,
                 "run_id": run_id,
                 "diff_payload": "diff --git a/app.py b/app.py\n@@ secret",
                 "stack_payload": "Traceback (most recent call last):\nboom",
@@ -425,16 +447,52 @@ def test_timeline_data_redacts_or_omits_sensitive_payloads(tracked_runs):
                 "git_payload": "fatal: authentication failed for ghp_SECRET1234567890",
             },
         )
+        conn.execute(
+            text(
+                """
+                INSERT INTO memory_injection_events (
+                    id, run_id, project_id, chunk_number, role,
+                    attempt_number, token_budget, category_policy,
+                    entries_json, included_count, excluded_count,
+                    entries_hash, created_at
+                )
+                VALUES (
+                    :id, :run_id, 'timeline-project-redaction', 1,
+                    'coder ghp_SECRET1234567890', 1, 2048,
+                    '["architecture"]', '{"included":[],"excluded":[]}',
+                    0, 0, 'hash-memory-redaction',
+                    '2026-06-16T13:02:00+00:00'
+                )
+                """
+            ),
+            {
+                "id": memory_id,
+                "run_id": run_id,
+            },
+        )
 
     entries = build_run_timeline(run_id)
 
     assert entries is not None
     serialized = json.dumps(entries, sort_keys=True)
+    data_json = json.dumps([entry["data"] for entry in entries], sort_keys=True)
     assert "ghp_SECRET1234567890" not in serialized
     assert "sk-SECRET1234567890" not in serialized
     assert "token=SECRET1234567890" not in serialized
     assert "diff --git" not in serialized
     assert "Traceback" not in serialized
     assert "fatal:" not in serialized
+    for denied_key in (
+        "diff",
+        "test_results",
+        "ai_summary",
+        "push_error",
+        "rejection_reason",
+    ):
+        assert f'"{denied_key}"' not in data_json
     push_entry = _entry_by_id(entries, "run:git:pushed")
     assert push_entry["data"]["branch_name"] == "feature/[redacted]"
+    gate_entry = _entry_by_id(entries, f"approval_gate:{gate_id}:created")
+    assert gate_entry["data"]["status"] == "pending [redacted]"
+    memory_entry = _entry_by_id(entries, f"memory_injection:{memory_id}")
+    assert memory_entry["data"]["role"] == "coder [redacted]"

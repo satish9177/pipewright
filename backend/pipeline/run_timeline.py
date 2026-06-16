@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
 import re
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import text
@@ -57,18 +58,6 @@ _TECHNICAL_PAYLOAD_MARKERS = (
     "\n--- ",
     "fatal:",
 )
-
-_TERMINAL_RUN_STATUSES = {
-    "completed",
-    "complete",
-    "failed",
-    "cancelled",
-    "rejected",
-    "final_rejected",
-    "push_failed",
-    "pr_failed",
-}
-
 
 @dataclass(frozen=True)
 class TimelineEntry:
@@ -158,24 +147,6 @@ def _add_run_entries(entries: list[TimelineEntry], run: dict[str, Any]) -> None:
             "current_chunk_number": run.get("current_chunk_number"),
         },
     )
-    if status in _TERMINAL_RUN_STATUSES:
-        _append(
-            entries,
-            entry_id=f"run:status:{status}",
-            ts=run.get("created_at"),
-            kind="run_status_changed",
-            stage="run",
-            chunk_number=None,
-            level="error" if "fail" in status or "reject" in status else "info",
-            category="lifecycle",
-            title="Run status recorded",
-            detail=f"Current persisted status is {status}.",
-            data={
-                "run_id": run.get("id"),
-                "status": status,
-                "current_step": run.get("current_step"),
-            },
-        )
     if run.get("pushed_at"):
         _append(
             entries,
@@ -709,11 +680,17 @@ def _bool_or_none(value: Any) -> bool | None:
 def _jsonish_count(value: Any) -> int | None:
     if value is None:
         return None
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, (list, tuple, set, dict)):
         return len(value)
     text_value = str(value).strip()
     if not text_value:
         return 0
-    if text_value in {"[]", "{}"}:
-        return 0
-    return text_value.count(",") + 1
+    if text_value[0] in "[{":
+        try:
+            parsed = json.loads(text_value)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, (list, dict)):
+            return len(parsed)
+    parts = [part for part in text_value.split(",") if part.strip()]
+    return len(parts) if parts else 0
