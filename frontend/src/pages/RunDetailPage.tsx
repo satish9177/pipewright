@@ -55,6 +55,21 @@ import ReportView from '@/components/ReportView'
 import PlanView from '@/components/PlanView'
 import useRunEvents from '@/hooks/useRunEvents'
 import useRunTimeline from '@/hooks/useRunTimeline'
+import type { RunViewMode } from '@/types/viewMode'
+
+const RUN_VIEW_MODE_STORAGE_KEY = 'pipewright.runDetail.viewMode'
+
+function readStoredRunViewMode(): RunViewMode {
+  if (typeof window === 'undefined') return 'plain'
+  return window.localStorage.getItem(RUN_VIEW_MODE_STORAGE_KEY) === 'developer'
+    ? 'developer'
+    : 'plain'
+}
+
+function writeStoredRunViewMode(mode: RunViewMode) {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(RUN_VIEW_MODE_STORAGE_KEY, mode)
+}
 
 // #37A: the pipeline stages, in order, with plain display labels. The `key`
 // values match the backend's run.current_step vocabulary (same set the old
@@ -613,6 +628,7 @@ export default function RunDetailPage() {
     isLoading: timelineLoading,
     error: timelineError,
   } = useRunTimeline(runId)
+  const [viewMode, setViewMode] = useState<RunViewMode>(readStoredRunViewMode)
   const [chunkPlanActionError, setChunkPlanActionError] = useState<string | null>(
     null
   )
@@ -1166,6 +1182,11 @@ export default function RunDetailPage() {
       `gh pr create --base ${configuredPrBase} --head ${localRunBranch}`
     : `git checkout ${localRunBranch}\n` +
       `git push -u origin ${localRunBranch}`
+  const isDeveloperMode = viewMode === 'developer'
+  const setRunViewMode = (nextMode: RunViewMode) => {
+    setViewMode(nextMode)
+    writeStoredRunViewMode(nextMode)
+  }
   const finishStep1Status: FinishStepStatus = showFinalApprovalPanel
     ? 'current'
     : 'done'
@@ -1435,7 +1456,33 @@ export default function RunDetailPage() {
             )}
           </div>
         </div>
-        <RunStatusBadge status={run.status} friendly />
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          <RunStatusBadge status={run.status} friendly />
+          <div
+            className="inline-flex rounded-lg border bg-background p-1"
+            role="group"
+            aria-label="Run detail view mode"
+          >
+            <Button
+              type="button"
+              size="sm"
+              variant={viewMode === 'plain' ? 'default' : 'ghost'}
+              onClick={() => setRunViewMode('plain')}
+              className="h-7 px-2 text-xs"
+            >
+              Plain English
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={isDeveloperMode ? 'default' : 'ghost'}
+              onClick={() => setRunViewMode('developer')}
+              className="h-7 px-2 text-xs"
+            >
+              Developer
+            </Button>
+          </div>
+        </div>
       </div>
 
       {/* #37A: calm pipeline rail replaces the old Run Summary StepIndicator.
@@ -1486,6 +1533,7 @@ export default function RunDetailPage() {
               liveEvents={events}
               isLoading={timelineLoading}
               error={timelineError}
+              viewMode={viewMode}
             />
           </CardContent>
         </Card>
@@ -1915,10 +1963,9 @@ export default function RunDetailPage() {
       )}
 
       {/* #35D: the noisy diagnostic/audit sections collapse into one
-          default-closed "Details & audit" area. Nothing is removed — the
-          Timeline, memory-use details, and provider diagnostics keep their
-          existing content, lazy-loading, and refresh controls. They are
-          demoted, not deleted, and stay one click away. */}
+          default-closed "Details & audit" area. Nothing is removed: memory and
+          provider diagnostics stay available in both modes, while the raw live
+          log appears in Developer mode only. */}
       <details className="group mb-6 rounded-xl border bg-card">
         <summary className="flex cursor-pointer list-none items-start gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
           <svg
@@ -1940,28 +1987,37 @@ export default function RunDetailPage() {
               </span>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              Timeline · Live log ({events.length}{' '}
-              {events.length === 1 ? 'event' : 'events'}) · Memory used · AI
-              setup — collapsed by default, nothing was removed.
+              {isDeveloperMode ? (
+                <>
+                  Live log ({events.length}{' '}
+                  {events.length === 1 ? 'event' : 'events'}) · Memory used ·
+                  AI setup
+                </>
+              ) : (
+                <>Memory used · AI setup</>
+              )}
+              {' '}— collapsed by default, nothing was removed.
             </p>
           </div>
         </summary>
 
         <div className="space-y-6 border-t px-4 py-4">
-          <section>
-            <div className="mb-3">
-              <h3 className="text-sm font-semibold">Raw live event log</h3>
-              <p className="text-xs text-muted-foreground">
-                Developer-oriented event stream. The readable timeline is shown
-                above as the primary run spine.
-              </p>
-            </div>
-            <Card>
-              <CardContent className="py-4">
-                <EventLog events={events} status={wsStatus} />
-              </CardContent>
-            </Card>
-          </section>
+          {isDeveloperMode && (
+            <section>
+              <div className="mb-3">
+                <h3 className="text-sm font-semibold">Raw live event log</h3>
+                <p className="text-xs text-muted-foreground">
+                  Developer-oriented event stream. The readable timeline is shown
+                  above as the primary run spine.
+                </p>
+              </div>
+              <Card>
+                <CardContent className="py-4">
+                  <EventLog events={events} status={wsStatus} />
+                </CardContent>
+              </Card>
+            </section>
+          )}
 
           <section>
             <div className="mb-3">
