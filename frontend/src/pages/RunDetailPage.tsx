@@ -1411,7 +1411,7 @@ export default function RunDetailPage() {
   )
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-6">
+    <div className="mx-auto max-w-6xl px-6 py-6">
       <div className="mb-6 flex items-start justify-between gap-4">
         <div className="min-w-0">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -1447,13 +1447,49 @@ export default function RunDetailPage() {
           the detailed banners/cards below remain the source of truth. */}
       <RunSafetyStrip run={run} chunkPlan={chunkPlan} project={project} />
 
-      {/* Display-only operator attention summary. Rendered above the existing
-          execution/approval controls; it never replaces or rewires them. */}
-      <OperatorAttentionPanel
-        operatorState={chunkPlan?.operator_state}
-        resolvePrimaryAction={resolvePrimaryAction}
-        resolveCoEqualAction={resolveCoEqualAction}
-      />
+      {/* Phase 2F PR-3: promote the existing next-action engine into a sticky
+          banner when the run is waiting on a human. The same resolvers are
+          passed through; this changes placement/prominence, not behavior. */}
+      {chunkPlan?.operator_state && (
+        <section
+          className={`${
+            chunkPlan.operator_state.waiting_on === 'human'
+              ? 'sticky top-3 z-30 rounded-xl bg-background/95 pb-1 shadow-sm backdrop-blur'
+              : ''
+          }`}
+        >
+          <OperatorAttentionPanel
+            operatorState={chunkPlan.operator_state}
+            resolvePrimaryAction={resolvePrimaryAction}
+            resolveCoEqualAction={resolveCoEqualAction}
+          />
+        </section>
+      )}
+
+      <section className="mb-6">
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h3 className="text-base font-semibold">Run timeline</h3>
+            <p className="text-xs text-muted-foreground">
+              The readable spine of this run: persisted milestones with the live
+              tail merged in.
+            </p>
+          </div>
+          <span className="rounded-full border bg-background px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+            Read-only
+          </span>
+        </div>
+        <Card className="bg-[var(--pw-bg-elev)]">
+          <CardContent className="py-4">
+            <RunTimeline
+              entries={timelineEntries}
+              liveEvents={events}
+              isLoading={timelineLoading}
+              error={timelineError}
+            />
+          </CardContent>
+        </Card>
+      </section>
 
       {/* #35H: in final-stage states the Finish & ship flow is the current
           decision context (weak-test ack, final approval, push/PR, checks), so
@@ -1914,21 +1950,12 @@ export default function RunDetailPage() {
         <div className="space-y-6 border-t px-4 py-4">
           <section>
             <div className="mb-3">
-              <h3 className="text-sm font-semibold">Timeline</h3>
+              <h3 className="text-sm font-semibold">Raw live event log</h3>
               <p className="text-xs text-muted-foreground">
-                Persisted run milestones with the live event tail merged in.
+                Developer-oriented event stream. The readable timeline is shown
+                above as the primary run spine.
               </p>
             </div>
-            <Card className="mb-4">
-              <CardContent className="py-4">
-                <RunTimeline
-                  entries={timelineEntries}
-                  liveEvents={events}
-                  isLoading={timelineLoading}
-                  error={timelineError}
-                />
-              </CardContent>
-            </Card>
             <Card>
               <CardContent className="py-4">
                 <EventLog events={events} status={wsStatus} />
