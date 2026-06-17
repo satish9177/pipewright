@@ -352,6 +352,17 @@ const STOPPED_TERMINAL_RAIL_STATUSES = new Set<RunStatus>([
   'push_failed',
 ])
 
+const OPERATOR_PREVIEW_ONLY_PRIMARY_ACTION_IDS = new Set([
+  'approve_plan',
+  'approve_final',
+  'approve_chunk',
+])
+
+const OPERATOR_PREVIEW_ONLY_CO_EQUAL_ACTION_IDS = new Set([
+  'approve_memory_conflict',
+  'reject_memory_conflict',
+])
+
 function getRunContextRailMode(
   run: Run,
   operatorState?: RailOperatorState | null,
@@ -2321,6 +2332,27 @@ export default function RunDetailPage() {
     }
   }
 
+  // Approval decisions need approve/reject together on one active surface. The
+  // resolver implementations above stay unchanged; this wrapper decides only
+  // what the cockpit panel may make clickable. Approval primary actions remain
+  // previews there unless their paired reject action is on the same surface.
+  const resolveOperatorPrimaryAction = (
+    action: OperatorAction,
+  ): { onClick: () => void; isPending: boolean } | null => {
+    if (OPERATOR_PREVIEW_ONLY_PRIMARY_ACTION_IDS.has(action.id)) return null
+    return resolvePrimaryAction(action)
+  }
+
+  // Memory-conflict approve/reject already live together in MemoryConflictPanel,
+  // including the optional rejection reason. Keep the cockpit read-only for that
+  // gate so the user sees a single active approval surface.
+  const resolveOperatorCoEqualAction = (
+    action: OperatorAction,
+  ): { onClick: () => void; isPending: boolean } | null => {
+    if (OPERATOR_PREVIEW_ONLY_CO_EQUAL_ACTION_IDS.has(action.id)) return null
+    return resolveCoEqualAction(action)
+  }
+
   const chunkSummary = chunkSummaryText(run)
   const operatorState = chunkPlan?.operator_state ?? null
   const contextRailMode = getRunContextRailMode(run, operatorState)
@@ -2351,21 +2383,16 @@ export default function RunDetailPage() {
     operatorState?.blocked_actions?.find(
       action => action.id === 'retry_patch',
     )?.blocked_reason ?? null
-  // #39A: hide a lower legacy PRIMARY button only when the SAME action is wired and
-  // clickable in the top OperatorAttentionPanel. We reuse resolvePrimaryAction (the
-  // single source of truth for which primary_action ids are clickable up top) so the
-  // two surfaces can never disagree. Fail-open: a missing operator_state, a
-  // different/blocked action id, a risk_decision, or a null resolver all leave the
-  // legacy button visible. Composition/display only — no mutation or wiring change,
-  // and Reject Plan / Resume Run are never hidden (they have no top twin).
+  // #39A: hide a lower legacy PRIMARY button only when the same action is wired
+  // and clickable in OperatorAttentionPanel. Approval actions are preview-only
+  // there unless approve/reject live together on that same active surface, so
+  // plan Approve + Reject stay paired in the chunk plan panel.
   const operatorPrimaryAction = operatorState?.primary_action ?? null
   const topPrimaryIsRisk = operatorState?.decision_type === 'risk_decision'
   const topPrimaryWired =
     operatorPrimaryAction && !topPrimaryIsRisk
-      ? resolvePrimaryAction(operatorPrimaryAction)
+      ? resolveOperatorPrimaryAction(operatorPrimaryAction)
       : null
-  const hideLegacyPlanApprove =
-    operatorPrimaryAction?.id === 'approve_plan' && topPrimaryWired !== null
   const hideLegacyExecute =
     operatorPrimaryAction?.id === 'execute_chunks' && topPrimaryWired !== null
   // The chunk plan panel (or the legacy empty-state) is built once here and placed
@@ -2402,7 +2429,6 @@ export default function RunDetailPage() {
       }
       retryEligible={retryEligible}
       retryBlockedReason={retryBlockedReason}
-      hideLegacyPlanApprove={hideLegacyPlanApprove}
       hideLegacyExecute={hideLegacyExecute}
       onApprove={() => approveChunkPlanMutation.mutate()}
       onReject={(reason) => rejectChunkPlanMutation.mutate(reason)}
@@ -2443,6 +2469,50 @@ export default function RunDetailPage() {
       </CardContent>
     </Card>
   )
+
+  const finalApprovalDecisionSurface = showFinalApprovalPanel ? (
+    <div className="grid gap-4" data-active-approval-surface="final">
+      {chunkPlan && (
+        <TestValidationAckPanel
+          runId={runId!}
+          plan={chunkPlan}
+          onAcknowledged={() => {
+            // Refresh run/chunks/gates so acknowledgement_status and the
+            // Approve-Final disabled state recompute, matching the invalidation
+            // used by the other mutations here.
+            queryClient.invalidateQueries({
+              queryKey: ['run', runId],
+            })
+            queryClient.invalidateQueries({
+              queryKey: ['runChunks', runId],
+            })
+            queryClient.invalidateQueries({ queryKey: ['gates'] })
+            refreshRunTimeline()
+          }}
+        />
+      )}
+      {chunkPlan && (
+        <ReviewFindingsAckPanel
+          runId={runId!}
+          chunks={chunkPlan.chunks}
+          onAcknowledged={refreshRunDecisionState}
+        />
+      )}
+      <FinalApprovalPanel
+        run={run}
+        hasPendingFinalGate={Boolean(pendingFinalGate)}
+        isCheckingFinalGate={gatesLoading}
+        isApproving={approveFinalApprovalMutation.isPending}
+        isRejecting={rejectFinalApprovalMutation.isPending}
+        message={finalApprovalMessage}
+        error={finalApprovalError}
+        acknowledgementBlocking={acknowledgementBlocking}
+        reviewAcknowledgementBlocking={reviewAcknowledgementBlocking}
+        onApprove={() => approveFinalApprovalMutation.mutate()}
+        onReject={(reason) => rejectFinalApprovalMutation.mutate(reason)}
+      />
+    </div>
+  ) : null
 
   return (
     <div className="mx-auto max-w-[1180px] px-4 py-5 sm:px-6 lg:py-7">
@@ -2522,7 +2592,7 @@ export default function RunDetailPage() {
 
       {/* Phase 2G: cockpit + context rail shell. The rail is read-only context;
           all actions stay inside the existing cockpit/action components. */}
-      {(operatorState || contextRailMode) && (
+      {(operatorState || contextRailMode || finalApprovalDecisionSurface) && (
         <div
           className={
             stackContextRail
@@ -2549,8 +2619,8 @@ export default function RunDetailPage() {
               >
                 <OperatorAttentionPanel
                   operatorState={operatorState}
-                  resolvePrimaryAction={resolvePrimaryAction}
-                  resolveCoEqualAction={resolveCoEqualAction}
+                  resolvePrimaryAction={resolveOperatorPrimaryAction}
+                  resolveCoEqualAction={resolveOperatorCoEqualAction}
                   viewMode={viewMode}
                 />
               </section>
@@ -2567,6 +2637,7 @@ export default function RunDetailPage() {
                 viewMode={viewMode}
               />
             )}
+            {finalApprovalDecisionSurface}
           </div>
           <aside
             className="min-w-0"
@@ -2610,12 +2681,9 @@ export default function RunDetailPage() {
         </Card>
       </section>
 
-      {/* #35H: in final-stage states the Finish & ship flow is the current
-          decision context (weak-test ack, final approval, push/PR, checks), so
-          it renders here — directly after the guided panel and ABOVE Chunk Plan
-          Details. The chunk plan stays rendered and functional below. This is
-          ordering + composition only; every panel keeps its existing component,
-          props, conditions, mutation handlers, and loading/error states. Nothing
+      {/* #35H / Phase 2G action de-dup: Finish & ship remains the read-only
+          history/stepper for final approval, push/PR, and checks. The active
+          final approval controls live once in the cockpit column above. Nothing
           auto-pushes, auto-merges, or auto-refreshes checks.
           showPrStatusPanel currently equals showPushPrPanel; it is listed in the
           gate explicitly so PR status/checks visibility is guaranteed even if
@@ -2640,50 +2708,10 @@ export default function RunDetailPage() {
                 effect="Final approval authorizes finishing the run."
               >
                 {showFinalApprovalPanel ? (
-                  <div className="grid gap-4">
-                    {chunkPlan && (
-                      <TestValidationAckPanel
-                        runId={runId!}
-                        plan={chunkPlan}
-                        onAcknowledged={() => {
-                          // Refresh run/chunks/gates so acknowledgement_status
-                          // and the Approve-Final disabled state recompute,
-                          // matching the invalidation used by the other
-                          // mutations here.
-                          queryClient.invalidateQueries({
-                            queryKey: ['run', runId],
-                          })
-                          queryClient.invalidateQueries({
-                            queryKey: ['runChunks', runId],
-                          })
-                          queryClient.invalidateQueries({ queryKey: ['gates'] })
-                          refreshRunTimeline()
-                        }}
-                      />
-                    )}
-                    {chunkPlan && (
-                      <ReviewFindingsAckPanel
-                        runId={runId!}
-                        chunks={chunkPlan.chunks}
-                        onAcknowledged={refreshRunDecisionState}
-                      />
-                    )}
-                    <FinalApprovalPanel
-                      run={run}
-                      hasPendingFinalGate={Boolean(pendingFinalGate)}
-                      isCheckingFinalGate={gatesLoading}
-                      isApproving={approveFinalApprovalMutation.isPending}
-                      isRejecting={rejectFinalApprovalMutation.isPending}
-                      message={finalApprovalMessage}
-                      error={finalApprovalError}
-                      acknowledgementBlocking={acknowledgementBlocking}
-                      reviewAcknowledgementBlocking={reviewAcknowledgementBlocking}
-                      onApprove={() => approveFinalApprovalMutation.mutate()}
-                      onReject={(reason) =>
-                        rejectFinalApprovalMutation.mutate(reason)
-                      }
-                    />
-                  </div>
+                  <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+                    Final approval is waiting in the cockpit above. Approve and
+                    Reject live together there.
+                  </p>
                 ) : (
                   <p className="text-sm text-muted-foreground">
                     Final approval is complete.
