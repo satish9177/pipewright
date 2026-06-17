@@ -2031,6 +2031,17 @@ export default function RunDetailPage() {
   const chunkSummary = chunkSummaryText(run)
   const operatorState = chunkPlan?.operator_state ?? null
   const contextRailMode = getRunContextRailMode(run, operatorState)
+  // Phase 2G PR-4/PR-5: the terminal rail modes carry the authoritative card for
+  // that state — 'pr' = the done/PR-open PR identity + checks panel, 'failure' =
+  // the stopped-run failure summary. At those stages the cockpit is informational
+  // (no pending decision), so the rail IS the main surface. The side-by-side grid
+  // (built for live working/review states, where the rail is supplementary to an
+  // active cockpit) puts that card in a narrow far-right column where a wide-
+  // viewport crop misses it, and marooned beside an empty cockpit when no
+  // operator_state exists. Stack it full-width below the cockpit instead so it is
+  // always visible. Live 'working'/'review' keep the side-by-side layout.
+  const stackContextRail =
+    contextRailMode === 'pr' || contextRailMode === 'failure'
   // #37D2: in finished/terminal states with no pending chunk action, the chunk
   // plan reads as history and may collapse into a disclosure (fail-open helper).
   const collapseChunkHistory = shouldCollapseChunkHistory(run, chunkPlan)
@@ -2206,7 +2217,15 @@ export default function RunDetailPage() {
       {/* Phase 2G: cockpit + context rail shell. The rail is read-only context;
           all actions stay inside the existing cockpit/action components. */}
       {(operatorState || contextRailMode) && (
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,22rem)] lg:items-start xl:gap-6">
+        <div
+          className={
+            stackContextRail
+              ? // Terminal states: single-column stack so the authoritative PR /
+                // failure card sits full-width directly below the cockpit.
+                'grid gap-4'
+              : 'grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,22rem)] lg:items-start xl:gap-6'
+          }
+        >
           <div className="min-w-0">
             {/* Phase 2F PR-3: promote the existing next-action engine into a sticky
                 banner when the run is waiting on a human. The same resolvers are
