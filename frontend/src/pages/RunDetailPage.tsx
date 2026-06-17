@@ -61,6 +61,7 @@ import {
   patchFailurePlainCopy,
   testFailureCountSummary,
 } from '@/utils/patchFailure'
+import { buildEvidenceChips } from '@/utils/chunkEvidence'
 import type { RunViewMode } from '@/types/viewMode'
 
 const RUN_VIEW_MODE_STORAGE_KEY = 'pipewright.runDetail.viewMode'
@@ -974,6 +975,208 @@ function RunContextRail({
             </p>
           </>
         )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// Phase 2G PR-3: identify the single chunk the current pending approval gate
+// belongs to, so the decision-evidence summary near the cockpit shows ONLY that
+// chunk's evidence and never assumes one chunk (§5.3). Returns null when no single
+// chunk can be honestly attributed: a multi-chunk final approval (the final gate
+// covers the whole run, not one chunk), or a plan-level decision before any chunk
+// ran. The caller then degrades to a pointer at the full chunk details rather than
+// guessing which chunk is "the" evidence.
+function selectDecisionChunk(
+  chunkPlan: ChunkPlanResponse | undefined,
+  pendingGate: ApprovalGate | undefined,
+  pendingFinalGate: ApprovalGate | undefined,
+): RailChunk | null {
+  const chunks = chunkPlan?.chunks ?? []
+  if (chunks.length === 0) return null
+  // A chunk-level gate (chunk approval / scope) names its chunk directly.
+  if (
+    typeof pendingGate?.chunk_number === 'number' &&
+    pendingGate.chunk_number > 0
+  ) {
+    return (
+      chunks.find(chunk => chunk.chunk_number === pendingGate.chunk_number) ??
+      null
+    )
+  }
+  // Final approval covers the whole run. Only a single-chunk run maps cleanly to
+  // one decision chunk; a multi-chunk final approval has no single owner, so it
+  // degrades rather than implying one chunk is "the" evidence.
+  if (pendingFinalGate && chunks.length === 1) {
+    return chunks[0]
+  }
+  return null
+}
+
+// Phase 2G PR-3: does this chunk carry recorded decision evidence worth
+// summarizing — a runtime test verdict or a completed advisory review?
+function chunkHasDecisionEvidence(chunk: RailChunk): boolean {
+  return Boolean(
+    chunk.test_validation ||
+      (chunk.review && chunk.review.review_status === 'completed'),
+  )
+}
+
+// Phase 2G PR-3: compact files-changed summary for the decision-evidence card.
+function summarizeChangedFiles(files: string[], max = 4): string {
+  if (files.length === 0) return ''
+  if (files.length <= max) return files.join(', ')
+  return `${files.slice(0, max).join(', ')} +${files.length - max} more`
+}
+
+// Phase 2G PR-3: the read-only body of the decision-evidence summary for one
+// chunk — what changed (files), the verification chips (test verdict, advisory
+// review verdict, reviewer independence, findings count), and the reviewer's own
+// summary text. The chips come from the SHARED buildEvidenceChips so they are
+// byte-identical to the chunk panel below; this never re-renders the action-wired
+// AdvisoryReviewPanel / ack panels (those stay black boxes), softens no verdict,
+// and exposes no controls.
+function DecisionEvidenceBody({ chunk }: { chunk: RailChunk }) {
+  const chips = buildEvidenceChips(chunk.test_validation, chunk.review)
+  const changedFiles = summarizeChangedFiles(chunk.files_expected)
+  const reviewSummary =
+    chunk.review && chunk.review.review_status === 'completed'
+      ? chunk.review.summary
+      : null
+
+  return (
+    <div className="grid gap-3">
+      <div className="grid gap-1">
+        <p className="font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          What changed
+        </p>
+        {changedFiles ? (
+          <p className="break-words text-sm text-foreground">{changedFiles}</p>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No target files were mapped for this chunk (high-risk). See the diff
+            and details below.
+          </p>
+        )}
+      </div>
+
+      {chips.length > 0 && (
+        <div className="grid gap-1">
+          <p className="font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Verification
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {chips.map(chip => (
+              <Badge key={chip.key} variant="outline" className={chip.className}>
+                {chip.label}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {reviewSummary && (
+        <div className="grid gap-1">
+          <p className="font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Reviewer summary
+          </p>
+          <p className="whitespace-pre-wrap text-sm text-muted-foreground">
+            {reviewSummary}
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Phase 2G PR-3: read-only "decision evidence" summary, rendered in the PRIMARY
+// column directly under the cockpit in the needs-review archetype. It pulls the
+// current decision's evidence up next to the approval action so the user can
+// approve/reject without scrolling deep into chunk history: what changed, the
+// test verdict, the advisory review verdict + reviewer independence + findings,
+// and a link to the full per-chunk detail below. DISPLAY-ONLY: it renders no
+// controls, wires no mutations, and re-renders no action component — the always-
+// present Safety overview above still owns the FAIL/WEAK chip, so a critical
+// safety signal is never only here. Multi-chunk: it shows the pending gate's chunk
+// only, degrading to a pointer when no single chunk can be attributed (§5.3).
+function DecisionEvidencePanel({
+  chunkPlan,
+  pendingGate,
+  pendingFinalGate,
+}: {
+  chunkPlan?: ChunkPlanResponse
+  pendingGate?: ApprovalGate
+  pendingFinalGate?: ApprovalGate
+}) {
+  const chunks = chunkPlan?.chunks ?? []
+  const decisionChunk = selectDecisionChunk(
+    chunkPlan,
+    pendingGate,
+    pendingFinalGate,
+  )
+  const showFull = Boolean(
+    decisionChunk && chunkHasDecisionEvidence(decisionChunk),
+  )
+  const anyEvidence = chunks.some(chunkHasDecisionEvidence)
+  // A degraded pointer only honestly reads as "multiple chunks" when there is
+  // more than one. A single-chunk run with no gate-attributable decision chunk
+  // (e.g. a memory-conflict / paused decision over a run that already produced
+  // one chunk's evidence) must NOT claim multiple chunks — keep the title/copy
+  // consistent with the singular body below.
+  const multiChunk = chunks.length > 1
+
+  // Nothing recorded to summarize yet (e.g. plan approval before any chunk ran):
+  // stay silent rather than add an empty card. The Safety overview and cockpit
+  // already convey the pending state.
+  if (!showFull && !anyEvidence) return null
+
+  return (
+    <Card className="mt-4 mb-6 bg-[var(--pw-bg-elev)]">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-2">
+          <p className="font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Decision evidence
+          </p>
+          <Badge variant="outline" className="text-[10px]">
+            Read-only
+          </Badge>
+        </div>
+        <CardTitle className="text-base">
+          {showFull && decisionChunk
+            ? `Chunk ${decisionChunk.chunk_number}: ${decisionChunk.title}`
+            : multiChunk
+              ? 'Decision spans multiple chunks'
+              : 'Decision evidence'}
+        </CardTitle>
+        <CardDescription>
+          {showFull
+            ? "A read-only summary of what you're approving and how it verified. Full detail is in the chunk panel below."
+            : multiChunk
+              ? "This decision isn't tied to a single chunk. Review each chunk's evidence in the full chunk details below."
+              : 'A read-only pointer to the recorded evidence for this decision, shown in full in the chunk panel below.'}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-4">
+        {showFull && decisionChunk ? (
+          <DecisionEvidenceBody chunk={decisionChunk} />
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            {multiChunk
+              ? `This run has ${chunks.length} chunks. Each chunk's test verdict and advisory review are shown in full below.`
+              : 'The recorded evidence for this decision is in the full chunk details below.'}
+          </p>
+        )}
+        <a
+          href="#chunk-plan-details"
+          className="inline-flex w-fit items-center gap-1 text-sm font-medium text-foreground underline-offset-4 hover:underline"
+        >
+          View full chunk details ↓
+        </a>
+        <p className="rounded-lg border border-dashed px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+          Read-only summary of existing signals. The approve / reject controls
+          stay in the cockpit above; the detailed evidence below is the source of
+          truth.
+        </p>
       </CardContent>
     </Card>
   )
@@ -2248,6 +2451,17 @@ export default function RunDetailPage() {
                 />
               </section>
             )}
+            {/* Phase 2G PR-3: pull the current decision's evidence up next to the
+                approval cockpit in the needs-review archetype. Read-only summary
+                only; the full per-chunk evidence and the approve/reject controls
+                are unchanged below. */}
+            {contextRailMode === 'review' && (
+              <DecisionEvidencePanel
+                chunkPlan={chunkPlan}
+                pendingGate={pendingGate}
+                pendingFinalGate={pendingFinalGate}
+              />
+            )}
           </div>
           <aside
             className="min-w-0"
@@ -2493,7 +2707,7 @@ export default function RunDetailPage() {
         </>
       )}
 
-      <section className="mb-6">
+      <section id="chunk-plan-details" className="mb-6">
         {collapseChunkHistory ? (
           // #37D2: finished/terminal run with no pending chunk action — the chunk
           // plan is history, so demote it into a default-collapsed disclosure so it
