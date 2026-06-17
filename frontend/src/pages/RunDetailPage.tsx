@@ -14,6 +14,7 @@ import {
 import type {
   ChunkPlanResponse,
   OperatorAction,
+  Project,
   Run,
   RunStatus,
   RunMemorySuggestionGenerateResponse,
@@ -312,7 +313,7 @@ function getRetryErrorMessage(error: unknown): string {
 
 const TERMINAL_RUN_STATUSES: RunStatus[] = ['complete', 'failed', 'rejected']
 
-type RunContextRailMode = 'working' | 'review'
+type RunContextRailMode = 'working' | 'review' | 'pr'
 type RailOperatorState = NonNullable<ChunkPlanResponse['operator_state']>
 type RailFact = {
   id: string
@@ -341,6 +342,7 @@ function getRunContextRailMode(
   run: Run,
   operatorState?: RailOperatorState | null,
 ): RunContextRailMode | null {
+  if (run.status === 'complete' && run.pr_url) return 'pr'
   if (!operatorState || TERMINAL_NO_RAIL_STATUSES.has(run.status)) return null
   if (
     operatorState.waiting_on === 'system' ||
@@ -461,12 +463,18 @@ function RailFactList({ facts }: { facts: RailFact[] }) {
 function RunContextRail({
   run,
   operatorState,
+  project,
 }: {
   run: Run
-  operatorState: RailOperatorState
+  operatorState?: RailOperatorState | null
+  project?: Project
 }) {
   const mode = getRunContextRailMode(run, operatorState)
   if (!mode) return null
+  if (mode === 'pr') {
+    return <PrStatusPanel run={run} project={project} />
+  }
+  if (!operatorState) return null
 
   const trustFacts = (operatorState.trust_facts ?? []).map(fact => ({
     id: fact.id,
@@ -1441,6 +1449,8 @@ export default function RunDetailPage() {
   // gate each panel, so the stepper never claims a state different from what is
   // shown. Display-only; changes no behavior.
   const hasPr = Boolean(run.pr_url)
+  const donePrOpen = run.status === 'complete' && hasPr
+  const showPrStatusPanelInFinish = showPrStatusPanel && !donePrOpen
   // local_only never pushes or opens a PR from inside Pipewright. When no real PR
   // exists, Finish & ship must show manual/out-of-app guidance instead of the
   // GitHub push/PR panels, so the stepper does not imply an in-app push is queued.
@@ -1485,7 +1495,9 @@ export default function RunDetailPage() {
   // rather than "current".
   const finishStep3Status: FinishStepStatus = localOnlyManualShip
     ? 'pending'
-    : showPrStatusPanel
+    : donePrOpen
+      ? 'done'
+      : showPrStatusPanelInFinish
       ? 'current'
       : 'pending'
   const finishStep2Title = localOnlyManualShip ? 'Finish locally' : 'Push / create PR'
@@ -1782,35 +1794,41 @@ export default function RunDetailPage() {
 
       {/* Phase 2G: cockpit + context rail shell. The rail is read-only context;
           all actions stay inside the existing cockpit/action components. */}
-      {operatorState && (
+      {(operatorState || contextRailMode === 'pr') && (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,22rem)] lg:items-start xl:gap-6">
           <div className="min-w-0">
             {/* Phase 2F PR-3: promote the existing next-action engine into a sticky
                 banner when the run is waiting on a human. The same resolvers are
                 passed through; this changes placement/prominence, not behavior. */}
-            <section
-              className={`${
-                operatorState.waiting_on === 'human'
-                  ? // Cap the sticky banner to the viewport and let it scroll
-                    // internally so a tall panel cannot cover the page content
-                    // below it on short screens (top-3 = 0.75rem top inset).
-                    'sticky top-3 z-30 max-h-[calc(100vh-1.5rem)] overflow-y-auto rounded-xl bg-background/95 pb-1 shadow-sm backdrop-blur'
-                  : ''
-              }`}
-            >
-              <OperatorAttentionPanel
-                operatorState={operatorState}
-                resolvePrimaryAction={resolvePrimaryAction}
-                resolveCoEqualAction={resolveCoEqualAction}
-              />
-            </section>
+            {operatorState && (
+              <section
+                className={`${
+                  operatorState.waiting_on === 'human'
+                    ? // Cap the sticky banner to the viewport and let it scroll
+                      // internally so a tall panel cannot cover the page content
+                      // below it on short screens (top-3 = 0.75rem top inset).
+                      'sticky top-3 z-30 max-h-[calc(100vh-1.5rem)] overflow-y-auto rounded-xl bg-background/95 pb-1 shadow-sm backdrop-blur'
+                    : ''
+                }`}
+              >
+                <OperatorAttentionPanel
+                  operatorState={operatorState}
+                  resolvePrimaryAction={resolvePrimaryAction}
+                  resolveCoEqualAction={resolveCoEqualAction}
+                />
+              </section>
+            )}
           </div>
           <aside
             className="min-w-0"
             data-run-context-rail={contextRailMode ?? 'empty'}
             aria-hidden={contextRailMode ? undefined : true}
           >
-            <RunContextRail run={run} operatorState={operatorState} />
+            <RunContextRail
+              run={run}
+              operatorState={operatorState}
+              project={project}
+            />
           </aside>
         </div>
       )}
@@ -1928,7 +1946,12 @@ export default function RunDetailPage() {
                 status={finishStep2Status}
                 effect={finishStep2Effect}
               >
-                {localOnlyManualShip ? (
+                {donePrOpen ? (
+                  <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+                    Pull request opened. See the PR panel for identity and
+                    checks.
+                  </p>
+                ) : localOnlyManualShip ? (
                   // local_only: no in-app push/PR. Show manual out-of-app
                   // guidance instead of the GitHub push panel so this never
                   // looks like Pipewright can open a PR for you.
@@ -2014,7 +2037,12 @@ export default function RunDetailPage() {
                     No GitHub pull request is created in local-only mode, so there
                     are no PR checks to show here.
                   </p>
-                ) : showPrStatusPanel ? (
+                ) : donePrOpen ? (
+                  <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+                    PR identity and GitHub check details are shown in the PR
+                    panel.
+                  </p>
+                ) : showPrStatusPanelInFinish ? (
                   <PrStatusPanel run={run} project={project} />
                 ) : (
                   <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
@@ -2203,22 +2231,8 @@ export default function RunDetailPage() {
             ) : run.pr_url ? (
               <>
                 <p className="text-sm font-medium text-green-600">
-                  Pipeline completed successfully.
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Your pull request is open on GitHub:{' '}
-                  <a
-                    href={run.pr_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="underline"
-                  >
-                    {run.pr_url}
-                  </a>
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Pipewright never merges automatically — review and merge it
-                  yourself when you're ready.
+                  Pipeline completed successfully. Pipewright never merges
+                  automatically.
                 </p>
               </>
             ) : (
