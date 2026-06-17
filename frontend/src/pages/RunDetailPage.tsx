@@ -312,6 +312,257 @@ function getRetryErrorMessage(error: unknown): string {
 
 const TERMINAL_RUN_STATUSES: RunStatus[] = ['complete', 'failed', 'rejected']
 
+type RunContextRailMode = 'working' | 'review'
+type RailOperatorState = NonNullable<ChunkPlanResponse['operator_state']>
+type RailFact = {
+  id: string
+  label: string
+  detail: string
+}
+
+const HUMAN_REVIEW_STATUSES = new Set<RunStatus>([
+  'awaiting_chunk_plan_approval',
+  'awaiting_chunk_approval',
+  'awaiting_final_approval',
+  'awaiting_memory_conflict_approval',
+  'awaiting_scope_approval',
+  'paused',
+])
+
+const TERMINAL_NO_RAIL_STATUSES = new Set<RunStatus>([
+  'complete',
+  'failed',
+  'rejected',
+  'final_rejected',
+  'push_failed',
+])
+
+function getRunContextRailMode(
+  run: Run,
+  operatorState?: RailOperatorState | null,
+): RunContextRailMode | null {
+  if (!operatorState || TERMINAL_NO_RAIL_STATUSES.has(run.status)) return null
+  if (
+    operatorState.waiting_on === 'system' ||
+    operatorState.phase === 'working' ||
+    WORKING_STATUSES.has(run.status)
+  ) {
+    return 'working'
+  }
+  if (
+    operatorState.waiting_on === 'human' ||
+    operatorState.phase === 'waiting_for_you' ||
+    HUMAN_REVIEW_STATUSES.has(run.status)
+  ) {
+    return 'review'
+  }
+  return null
+}
+
+function matchesRailFact(
+  candidate: { id?: string; label?: string },
+  patterns: string[],
+) {
+  const text = `${candidate.id ?? ''} ${candidate.label ?? ''}`.toLowerCase()
+  return patterns.some(pattern => text.includes(pattern))
+}
+
+function findTrustFact(
+  operatorState: RailOperatorState,
+  patterns: string[],
+): RailFact | null {
+  const fact = (operatorState.trust_facts ?? []).find(candidate =>
+    matchesRailFact(candidate, patterns),
+  )
+  if (!fact) return null
+  return {
+    id: fact.id,
+    label: fact.label,
+    detail: fact.detail,
+  }
+}
+
+function summarizeTrustOrSafety(
+  operatorState: RailOperatorState,
+  label: string,
+  patterns: string[],
+): RailFact {
+  const fact = findTrustFact(operatorState, patterns)
+  if (fact) return { ...fact, label }
+
+  const check = (operatorState.safety_checks ?? []).find(candidate =>
+    matchesRailFact(candidate, patterns),
+  )
+  if (check) {
+    return {
+      id: check.id,
+      label,
+      detail: `${check.status.replace(/_/g, ' ')}: ${check.detail}`,
+    }
+  }
+
+  return {
+    id: label.toLowerCase().replace(/\s+/g, '_'),
+    label,
+    detail: 'Not reported yet.',
+  }
+}
+
+function pushedSoFarFact(
+  run: Run,
+  operatorState: RailOperatorState,
+): RailFact {
+  const fact = findTrustFact(operatorState, ['push', 'pushed', 'pull request'])
+  if (fact) return { ...fact, label: 'Pushed so far' }
+
+  if (run.pr_url) {
+    return {
+      id: 'pushed_so_far',
+      label: 'Pushed so far',
+      detail: 'A pull request is already recorded.',
+    }
+  }
+  if (run.pushed_at || run.pr_created_at) {
+    return {
+      id: 'pushed_so_far',
+      label: 'Pushed so far',
+      detail: 'A push or pull request is already recorded.',
+    }
+  }
+  if (run.push_error) {
+    return {
+      id: 'pushed_so_far',
+      label: 'Pushed so far',
+      detail: 'A previous push attempt failed. See Finish & ship.',
+    }
+  }
+  return {
+    id: 'pushed_so_far',
+    label: 'Pushed so far',
+    detail: 'Nothing recorded.',
+  }
+}
+
+function RailFactList({ facts }: { facts: RailFact[] }) {
+  return (
+    <dl className="grid gap-2">
+      {facts.map(fact => (
+        <div key={fact.id} className="grid gap-0.5">
+          <dt className="font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            {fact.label}
+          </dt>
+          <dd className="text-sm leading-snug text-foreground">{fact.detail}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
+function RunContextRail({
+  run,
+  operatorState,
+}: {
+  run: Run
+  operatorState: RailOperatorState
+}) {
+  const mode = getRunContextRailMode(run, operatorState)
+  if (!mode) return null
+
+  const trustFacts = (operatorState.trust_facts ?? []).map(fact => ({
+    id: fact.id,
+    label: fact.label,
+    detail: fact.detail,
+  }))
+  const pushedFact = pushedSoFarFact(run, operatorState)
+  const waitingOnFact: RailFact = {
+    id: 'waiting_on',
+    label: 'Waiting on',
+    detail:
+      operatorState.waiting_on === 'system'
+        ? 'Pipewright / system'
+        : operatorState.waiting_on === 'human'
+          ? 'You'
+          : 'Nobody',
+  }
+
+  const reviewFacts: RailFact[] = [
+    summarizeTrustOrSafety(operatorState, 'Scope', ['scope']),
+    summarizeTrustOrSafety(operatorState, 'Tests', ['test', 'validation']),
+    summarizeTrustOrSafety(operatorState, 'Review', ['review']),
+    pushedFact,
+  ]
+
+  return (
+    <Card className="mb-6 bg-[var(--pw-bg-elev)]">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-2">
+          <p className="font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Context rail
+          </p>
+          <Badge variant="outline" className="text-[10px]">
+            Read-only
+          </Badge>
+        </div>
+        <CardTitle className="text-base">
+          {mode === 'working' ? 'While you wait' : 'Before you approve'}
+        </CardTitle>
+        <CardDescription>
+          {mode === 'working'
+            ? 'Supplementary run context while Pipewright is working.'
+            : 'Existing trust signals for the approval decision.'}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-4">
+        {mode === 'working' ? (
+          <>
+            <RailFactList
+              facts={[
+                waitingOnFact,
+                {
+                  id: 'will_pause',
+                  label: 'Will pause',
+                  detail:
+                    'Pipewright stops at required human approval or review gates before moving on.',
+                },
+                pushedFact,
+              ]}
+            />
+            {trustFacts.length > 0 && (
+              <div className="border-t pt-3">
+                <p className="mb-2 font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                  Trust facts
+                </p>
+                <RailFactList facts={trustFacts} />
+              </div>
+            )}
+            <p className="rounded-lg border border-dashed px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+              Pipewright does not commit, push, create pull requests, or merge
+              without the required gate for that step. Merge is always manual.
+            </p>
+          </>
+        ) : (
+          <>
+            <RailFactList facts={reviewFacts} />
+            {trustFacts.length > 0 && (
+              <div className="border-t pt-3">
+                <p className="mb-2 font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                  Trust facts
+                </p>
+                <RailFactList facts={trustFacts} />
+              </div>
+            )}
+            <p className="rounded-lg border border-dashed px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+              Approving authorizes the current safe step. Final approval may lead
+              to push or PR creation in supported modes. Pipewright never merges
+              automatically.
+            </p>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 function RunMemorySuggestions({ run }: { run: Run }) {
   const navigate = useNavigate()
   const [result, setResult] =
@@ -1355,6 +1606,8 @@ export default function RunDetailPage() {
   }
 
   const chunkSummary = chunkSummaryText(run)
+  const operatorState = chunkPlan?.operator_state ?? null
+  const contextRailMode = getRunContextRailMode(run, operatorState)
   // #37D2: in finished/terminal states with no pending chunk action, the chunk
   // plan reads as history and may collapse into a disclosure (fail-open helper).
   const collapseChunkHistory = shouldCollapseChunkHistory(run, chunkPlan)
@@ -1366,10 +1619,9 @@ export default function RunDetailPage() {
   // retry is ineligible (e.g. NO_CHANGES → disallowed_failure_type) it appears in
   // blocked_actions instead. Mirror that single source of truth here. Display-only:
   // the backend route stays the enforcing gate.
-  const retryEligible =
-    chunkPlan?.operator_state?.primary_action?.id === 'retry_patch'
+  const retryEligible = operatorState?.primary_action?.id === 'retry_patch'
   const retryBlockedReason =
-    chunkPlan?.operator_state?.blocked_actions?.find(
+    operatorState?.blocked_actions?.find(
       action => action.id === 'retry_patch',
     )?.blocked_reason ?? null
   // #39A: hide a lower legacy PRIMARY button only when the SAME action is wired and
@@ -1379,9 +1631,8 @@ export default function RunDetailPage() {
   // different/blocked action id, a risk_decision, or a null resolver all leave the
   // legacy button visible. Composition/display only — no mutation or wiring change,
   // and Reject Plan / Resume Run are never hidden (they have no top twin).
-  const operatorPrimaryAction = chunkPlan?.operator_state?.primary_action ?? null
-  const topPrimaryIsRisk =
-    chunkPlan?.operator_state?.decision_type === 'risk_decision'
+  const operatorPrimaryAction = operatorState?.primary_action ?? null
+  const topPrimaryIsRisk = operatorState?.decision_type === 'risk_decision'
   const topPrimaryWired =
     operatorPrimaryAction && !topPrimaryIsRisk
       ? resolvePrimaryAction(operatorPrimaryAction)
@@ -1529,10 +1780,9 @@ export default function RunDetailPage() {
           the detailed banners/cards below remain the source of truth. */}
       <RunSafetyStrip run={run} chunkPlan={chunkPlan} project={project} />
 
-      {/* Phase 2G PR-1: introduce the cockpit + context rail shell. The rail is
-          intentionally empty in this slice; later slices may add read-only
-          context without changing the action wiring below. */}
-      {chunkPlan?.operator_state && (
+      {/* Phase 2G: cockpit + context rail shell. The rail is read-only context;
+          all actions stay inside the existing cockpit/action components. */}
+      {operatorState && (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,22rem)] lg:items-start xl:gap-6">
           <div className="min-w-0">
             {/* Phase 2F PR-3: promote the existing next-action engine into a sticky
@@ -1540,7 +1790,7 @@ export default function RunDetailPage() {
                 passed through; this changes placement/prominence, not behavior. */}
             <section
               className={`${
-                chunkPlan.operator_state.waiting_on === 'human'
+                operatorState.waiting_on === 'human'
                   ? // Cap the sticky banner to the viewport and let it scroll
                     // internally so a tall panel cannot cover the page content
                     // below it on short screens (top-3 = 0.75rem top inset).
@@ -1549,7 +1799,7 @@ export default function RunDetailPage() {
               }`}
             >
               <OperatorAttentionPanel
-                operatorState={chunkPlan.operator_state}
+                operatorState={operatorState}
                 resolvePrimaryAction={resolvePrimaryAction}
                 resolveCoEqualAction={resolveCoEqualAction}
               />
@@ -1557,9 +1807,11 @@ export default function RunDetailPage() {
           </div>
           <aside
             className="min-w-0"
-            data-run-context-rail="empty"
-            aria-hidden="true"
-          />
+            data-run-context-rail={contextRailMode ?? 'empty'}
+            aria-hidden={contextRailMode ? undefined : true}
+          >
+            <RunContextRail run={run} operatorState={operatorState} />
+          </aside>
         </div>
       )}
 
