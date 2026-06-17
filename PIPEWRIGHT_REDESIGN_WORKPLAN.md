@@ -1,12 +1,29 @@
 # Pipewright Redesign — Workplan & Handoff (START HERE)
 
-**Last updated:** 2026-06-16
+**Last updated:** 2026-06-17
 **Purpose:** Orientation and resume-point for the redesign effort. If you have no other context, read this first — it explains *what* we're doing, *how* we decided to execute it, *where we stopped*, and *what's next*. It is an index over the other planning docs, not a replacement for them.
 
 ---
 
 ## TL;DR
 
+- **Latest update (2026-06-17): Phase 2G Run Detail Product UI is COMPLETE &
+  MERGED, frontend presentation/composition only.** The design spec is complete
+  in `docs/design/phase-2g-run-detail-product-ui.md`. **PR-1** merged the
+  two-column cockpit/context shell; **PR-2** merged Running and Needs-review
+  context rail trust facts; **PR-4** merged Done-state PR de-duplication and the
+  authoritative PR rail; **PR-5** merged the Failed-state failure rail; **PR-3**
+  merged decision evidence near the approval cockpit; and **PR-6** merged
+  visual/register polish plus Plain/Developer mode cleanup. Final state: Run
+  Detail is organized around the cockpit, safety overview, context rail,
+  decision evidence, timeline, and collapsed audit/details. **Invariants held:**
+  no backend behavior changes, no mutation handler changes, no approval/final
+  approval/Git/PR behavior changes, no new actions, no event persistence / Phase
+  2F PR-5 work, no memory retrieval changes, no FTS/Row 19 changes, and no Row
+  23 work. **Validation recorded:** build/lint/diff checks passed per slice;
+  PR-3 demo-smoke passed all 10 checks; PR-6 SSR smoke passed
+  running/final-approval/done/failed across Plain and Developer modes; protected
+  path checks confirmed frontend/docs-only scope per slice.
 - **Latest update (2026-06-17): Phase 2F Thread UI / Run Timeline is COMPLETE &
   MERGED, read-only, through PR-0..PR-4 plus review fixes PR-A/PR-B/PR-C.** PR-0 added
   the backend read-only `GET /runs/{run_id}/timeline` derived from existing persisted
@@ -80,7 +97,7 @@ It is **not** sound as a flat fan-out across the whole redesign, for three reaso
 | **`PIPEWRIGHT_REDESIGN_PROPOSAL.md`** | The authoritative, code-verified design. Pass 1 = pipeline engine (E-items, §1–7), Pass 2 = memory (M-items, §8+), plus addenda. Contains the §5 decision points and §6 phasing. | **Canonical. Supersedes the earlier reviews.** |
 | `ARCHITECTURE_REVIEW.md` | Older, code-*unverified* bug list (P1–P8 pipeline, M1–M7 memory) written for Fable. | Mostly **subsumed** by the proposal (which corrected several of its claims as stale). Keep only for the 3 gaps below. |
 | **`FABLE5_IMPL_SPEC_BRIEF.md`** | **The active working doc.** Harness telling Fable how to approach per-task implementation; first task block = E2. | **In use.** |
-| **`PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md`** | **The rolling per-phase implementation handoff brief.** Repurposed each phase; held the item-17, Row 11, Row 12, Row 7b, Row 19, and Phase 2F closeouts. Previously held items 10–16 in turn (each superseded; outcomes live in this workplan). The Phase 2F design brief + closeout lives at `docs/design/phase-2f-thread-ui.md` (§13). | **PHASE 2F THREAD UI / RUN TIMELINE COMPLETE & MERGED (read-only) — PR-0..PR-4 + review fixes PR-A/PR-B/PR-C.** Row 19, Row 12, and Row 7b are also complete. Row 16 PR-C activation, Row 23 vector memory, and Phase 2F PR-5 (event persistence) remain deferred. |
+| **`PIPEWRIGHT_REDESIGN_IMPL_BRIEF.md`** | **The rolling per-phase implementation handoff brief.** Repurposed each phase; held the item-17, Row 11, Row 12, Row 7b, Row 19, Phase 2F, and Phase 2G closeouts. Previously held items 10-16 in turn (each superseded; outcomes live in this workplan). The Phase 2F design brief + closeout lives at `docs/design/phase-2f-thread-ui.md` (§13); the Phase 2G design spec + closeout lives at `docs/design/phase-2g-run-detail-product-ui.md`. | **PHASE 2G RUN DETAIL PRODUCT UI COMPLETE & MERGED (frontend presentation/composition only) - PR-1, PR-2, PR-4, PR-5, PR-3, PR-6.** Phase 2F, Row 19, Row 12, and Row 7b are also complete. Row 16 PR-C activation, Row 23 vector memory, and Phase 2F PR-5 (event persistence) remain deferred. |
 | **`PIPEWRIGHT_ITEM7_M5_DESIGN.md`** | The design brief for §23 order-row 7 (M5 suggestion-quality gate); carries a 2026-06-14 closeout header. | **Done — shipped as PR #292.** Historical record + the two tracked non-blocking loose ends. |
 | `FABLE5_DESIGN_BRIEF.md`, `FABLE5_ISOLATION_ADDENDUM.md`, `FABLE5_PASS3_BRIEF.md` | The design briefs that *produced* the proposal. | Historical input. |
 | `PIPEWRIGHT_REDESIGN_BRIEF.md`, `PIPEWRIGHT_REDESIGN_UI_MOCKUP.svg` | The originating brief + a UI mock. | Input / reference. |
@@ -208,5 +225,7 @@ Plus §7 open questions (attempt-budget defaults; whether post-success refinemen
 27. **Row 19 FTS populate/soak follow-up is COMPLETE & MERGED (2026-06-16).** PR-1 added an explicit guarded manual rebuild CLI. PR-2 added a read-only compare/seed soak harness and `docs/design/row-19-fts-soak-results.md`. Seeded soak passed: included set identical, mandatory tier identical, only relevance-tier order changed, no cross-project facts, deterministic output. Real-project soak safely fell back with zero ordering delta. FTS retrieval remains default-off/dormant. No activation trigger, no rebuild-on-write, no lazy rebuild-on-read, no default-on flip, no endpoint/frontend/`schema.sql`/boot-migration populate, and no Row 23 vector/embedding work. The later approval-write-path rebuild trigger remains deferred and should not be started unless future soak shows real value.
 
 28. **Phase 2F Thread UI / Run Timeline is COMPLETE & MERGED (2026-06-17), read-only.** Shipped through PR-0..PR-4 plus review fixes PR-A/PR-B/PR-C; design brief + closeout in `docs/design/phase-2f-thread-ui.md` (§13). **PR-0** added the backend read-only `GET /runs/{run_id}/timeline` derived from existing persisted tables; **PR-1** added the frontend `useRunTimeline` hook + additive `RunTimeline`; **PR-2** added the read-only `RunTimelineDetail` master-detail panel; **PR-3** promoted the timeline to the primary Run Detail layout and made the existing `OperatorAttentionPanel` sticky/prominent; **PR-4** added the Plain English / Developer view toggle. **PR-A** fixed backend timeline correctness/redaction tests; **PR-B** fixed persisted/live dedupe and timeline refresh; **PR-C** fixed redaction polish, sticky height, the `localStorage` guard, and a11y. **Invariants held:** no PR-5 / event persistence started, no schema or event table, no backend writes, no POST lifecycle handler changes, no approval/final-approval/Git/PR behavior change, no memory-retrieval change, no FTS/Row 19 activation, and no Row 23/vector work — the only backend surface added is the single read-only GET. **Deferred:** Phase 2F **PR-5** (fine-grained event persistence) is the only unshipped slice and needs its own one-page brief; Row 16 PR-C activation and Row 23 vector memory also remain deferred.
+
+29. **Phase 2G Run Detail Product UI is COMPLETE & MERGED (2026-06-17), frontend presentation/composition only.** Design spec + closeout: `docs/design/phase-2g-run-detail-product-ui.md`. **PR-1** merged the two-column cockpit/context shell; **PR-2** merged Running/Needs-review context rail trust facts; **PR-4** merged Done-state PR de-duplication and the authoritative PR rail; **PR-5** merged the Failed-state failure rail; **PR-3** merged decision evidence near the approval cockpit; **PR-6** merged visual/register polish and Plain/Developer mode cleanup. Final state: Run Detail is organized around the cockpit, safety overview, context rail, decision evidence, timeline, and collapsed audit/details. **Invariants held:** no backend behavior changes, no mutation handler changes, no approval/final approval/Git/PR behavior changes, no new actions, no event persistence / Phase 2F PR-5 work, no memory retrieval changes, no FTS/Row 19 changes, and no Row 23 work. **Validation recorded:** build/lint/diff checks passed per slice; PR-3 demo-smoke passed all 10 checks; PR-6 SSR smoke passed running/final-approval/done/failed across Plain and Developer modes; protected-path checks confirmed frontend/docs-only scope per slice.
 
 *Note: commit these planning docs only when asked.*

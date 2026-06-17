@@ -1,8 +1,9 @@
 # Phase 2G — Run Detail Product UI
 
-> **Status: design / spec only (docs-only).** No frontend, backend, API, route,
-> schema, or behavior changes are introduced by this document. It is the
-> source-of-truth input for the Phase 2G implementation slices that follow.
+> **Status: COMPLETE & MERGED (2026-06-17).** The Phase 2G design/spec is
+> complete. This docs closeout records the merged frontend presentation slices;
+> the document itself introduces no frontend, backend, API, route, schema, or
+> behavior changes.
 >
 > **Source material:** the Claude Design handoff bundle
 > `Pipewright-handoff (2).zip`, primary file
@@ -14,6 +15,33 @@
 > here as the UI audit baseline — i.e. what we have today vs. the canonical
 > target. (The `.pptx` is an export of the same prototype; the HTML/JSX is the
 > canonical source and was read directly per the bundle README.)
+
+---
+
+## Status closeout
+
+Phase 2G Run Detail Product UI is complete and merged. The implementation landed
+as frontend presentation/composition slices only:
+
+- **PR-1:** two-column cockpit/context shell merged.
+- **PR-2:** Running and Needs-review context rail trust facts merged.
+- **PR-4:** Done-state PR de-duplication and authoritative PR rail merged.
+- **PR-5:** Failed-state failure rail and quieter failed banner merged.
+- **PR-3:** decision evidence near the approval cockpit merged.
+- **PR-6:** visual/register polish and Plain/Developer mode cleanup merged.
+
+Final state: Run Detail is organized around the cockpit, safety overview, context
+rail, decision evidence, timeline, and collapsed audit/details.
+
+Safety invariants preserved: no backend behavior changes; no mutation handler
+changes; no approval/final approval/Git/PR behavior changes; no new actions; no
+event persistence / Phase 2F PR-5 work; no memory retrieval changes; no FTS/Row
+19 changes; and no Row 23 work.
+
+Validation recorded across the slices: build/lint/diff checks passed per slice;
+PR-3 demo-smoke passed all 10 checks; PR-6 SSR smoke passed running/final
+approval/done/failed across Plain and Developer modes; protected-path checks
+confirmed frontend/docs-only scope per slice.
 
 ---
 
@@ -515,23 +543,21 @@ mutation, gate, Git/PR, persistence, or memory-retrieval surface changed.
 
 ## 9. Acceptance checklist (per slice and overall)
 
-- [ ] Same set of actions reachable as before; same handlers; same
+- [x] Same set of actions reachable as before; same handlers; same
       enabled/disabled conditions.
-- [ ] Running shows no action; Review shows one primary CTA (or co-equal for risk)
+- [x] Running shows no action; Review shows one primary CTA (or co-equal for risk)
       + evidence; Done shows PR identity **once**; Failed shows a real failure
       surface.
-- [ ] PR URL is printed in exactly one place in Done; "Refresh PR checks" exists
+- [x] PR URL is printed in exactly one place in Done; "Refresh PR checks" exists
       in exactly one place.
-- [ ] A FAIL/WEAK safety chip and any blocked action are visible in **both**
+- [x] A FAIL/WEAK safety chip and any blocked action are visible in **both**
       Plain and Developer modes.
-- [ ] Developer mode only **adds** technical detail; it never makes a different or
+- [x] Developer mode only **adds** technical detail; it never makes a different or
       weaker claim than Plain.
-- [ ] Context rail hosts no action other than the single PR open/refresh; it is
+- [x] Context rail hosts no action other than the single PR open/refresh; it is
       never the only home of a critical safety signal.
-- [ ] Two-pane timeline, chunk history, memory suggestions, and details & audit
+- [x] Two-pane timeline, chunk history, memory suggestions, and details & audit
       are unchanged.
-- [ ] `local_only` runs render manual-ship guidance, not an implied in-app push.
-- [ ] No `backend/` diff; no mutation/gate/Git/PR/persistence/memory-retrieval
+- [x] `local_only` runs render manual-ship guidance, not an implied in-app push.
+- [x] No `backend/` diff; no mutation/gate/Git/PR/persistence/memory-retrieval
       change.
-</content>
-</invoke>

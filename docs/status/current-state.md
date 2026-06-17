@@ -8,7 +8,7 @@
 
 ---
 
-## ⚠️ Reconciled 2026-06-16 — read this first
+## ⚠️ Reconciled 2026-06-17 — read this first
 
 This page was written **before** the Pipewright redesign
 (`PIPEWRIGHT_REDESIGN_PROPOSAL.md`), and several sections below are **stale**. For
@@ -200,6 +200,23 @@ Current truth:
   change, no FTS/Row 19 activation, and no Row 23/vector work — the only backend
   surface added is the single read-only GET. **PR-5 (fine-grained event persistence)
   remains deferred** and is the only unshipped slice of the brief.
+- **Phase 2G Run Detail Product UI - COMPLETE & MERGED (2026-06-17), frontend
+  presentation/composition only.** The design spec is complete
+  ([`../design/phase-2g-run-detail-product-ui.md`](../design/phase-2g-run-detail-product-ui.md)).
+  PR-1 merged the two-column cockpit/context shell; PR-2 merged Running and
+  Needs-review context rail trust facts; PR-4 merged Done-state PR
+  de-duplication and the authoritative PR rail; PR-5 merged the Failed-state
+  failure rail; PR-3 merged decision evidence near the approval cockpit; and
+  PR-6 merged visual/register polish plus Plain/Developer mode cleanup. Final
+  state: Run Detail is organized around the cockpit, safety overview, context
+  rail, decision evidence, timeline, and collapsed audit/details. **Invariants
+  held:** no backend behavior changes, no mutation handler changes, no
+  approval/final approval/Git/PR behavior changes, no new actions, no event
+  persistence / Phase 2F PR-5 work, no memory retrieval changes, no FTS/Row 19
+  changes, and no Row 23 work. **Validation recorded:** build/lint/diff checks
+  passed per slice; PR-3 demo-smoke passed all 10 checks; PR-6 SSR smoke passed
+  running/final approval/done/failed across Plain and Developer modes; and
+  protected-path checks confirmed frontend/docs-only scope per slice.
 - **Deferred (not opened):** Row 16 PR-C activation, vector/embedding memory
   (row 23), and Phase 2F **PR-5** (fine-grained event persistence — the only
   unshipped slice of the thread/run timeline UI; needs its own brief). The
@@ -533,8 +550,17 @@ RunTimeline; PR-2 read-only RunTimelineDetail; PR-3 timeline promoted to primary
 Detail layout + OperatorAttentionPanel made sticky; PR-4 Plain English / Developer
 view toggle. No PR-5/event persistence, no schema/event table, no backend writes, no
 POST lifecycle handler changes, no approval/final-approval/Git/PR change, no
-memory-retrieval change, no FTS/Row 19 activation, no Row 23/vector work. Do not
-auto-start Row 16 PR-C, row 23, or Phase 2F PR-5 (event persistence).
+memory-retrieval change, no FTS/Row 19 activation, no Row 23/vector work. Phase
+2G Run Detail Product UI is COMPLETE & MERGED (2026-06-17), frontend
+presentation/composition only: PR-1 cockpit/context shell; PR-2 Running/Review
+context rail; PR-4 Done PR de-duplication + authoritative PR rail; PR-5 Failed
+failure rail; PR-3 decision evidence near approval; PR-6 visual/register polish
+and Plain/Developer cleanup. Run Detail is now organized around the cockpit,
+safety overview, context rail, decision evidence, timeline, and collapsed
+audit/details; no backend behavior, mutation handler, approval/final
+approval/Git/PR, event persistence, memory retrieval, FTS/Row 19, or Row 23 work
+changed. Do not auto-start Row 16 PR-C, row 23, or Phase 2F PR-5 (event
+persistence).
 PR-A: request_context dormant; request_context=None
 preserves existing injection behavior; budgets/estimator single-sourced in policy;
 adaptive budget scaffolding disabled; security+forbidden_paths mandatory and cannot

@@ -1,20 +1,28 @@
 # Pipewright Redesign — Rolling Implementation Brief
 
 **Date:** 2026-06-17
-**Status:** **Phase 2F Thread UI / Run Timeline is COMPLETE & MERGED (read-only) —
-PR-0..PR-4 plus review fixes PR-A/PR-B/PR-C.** A read-only run-timeline spine derived
-from existing persisted tables plus Run Detail presentation recomposition: PR-0
-backend `GET /runs/{run_id}/timeline`, PR-1 `useRunTimeline` + additive
-`RunTimeline`, PR-2 read-only `RunTimelineDetail`, PR-3 timeline promoted to the
-primary layout with the existing `OperatorAttentionPanel` made sticky, PR-4 Plain
-English / Developer view toggle; PR-A/PR-B/PR-C fixed backend correctness/redaction,
-persisted/live dedupe + refresh, and redaction/sticky-height/`localStorage`/a11y
-polish. **No PR-5/event persistence, no schema/event table, no backend writes, no
-POST lifecycle handler changes, no approval/final-approval/Git/PR change, no
-memory-retrieval change, no FTS/Row 19 activation, no Row 23/vector work.** Design
-brief + closeout: `docs/design/phase-2f-thread-ui.md` (§13). The Phase 2F closeout
-section is below. PR-5 (fine-grained event persistence) remains the only deferred
-slice.
+**Status:** **Phase 2G Run Detail Product UI is COMPLETE & MERGED (frontend
+presentation/composition only).** The design spec is complete in
+`docs/design/phase-2g-run-detail-product-ui.md`. PR-1 merged the two-column
+cockpit/context shell; PR-2 merged Running and Needs-review context rail trust
+facts; PR-4 merged Done-state PR de-duplication and the authoritative PR rail;
+PR-5 merged the Failed-state failure rail; PR-3 merged decision evidence near the
+approval cockpit; PR-6 merged visual/register polish plus Plain/Developer mode
+cleanup. Final state: Run Detail is organized around the cockpit, safety overview,
+context rail, decision evidence, timeline, and collapsed audit/details. **No
+backend behavior changes, no mutation handler changes, no approval/final
+approval/Git/PR behavior changes, no new actions, no event persistence / Phase 2F
+PR-5 work, no memory retrieval changes, no FTS/Row 19 changes, and no Row 23
+work.** Validation recorded: build/lint/diff checks passed per slice; PR-3
+demo-smoke passed all 10 checks; PR-6 SSR smoke passed
+running/final-approval/done/failed across Plain and Developer modes; protected
+path checks confirmed frontend/docs-only scope per slice.
+
+Previous status remains true: **Phase 2F Thread UI / Run Timeline is COMPLETE &
+MERGED (read-only) through PR-0..PR-4 plus review fixes PR-A/PR-B/PR-C.** Design
+brief + closeout: `docs/design/phase-2f-thread-ui.md` (§13). The Phase 2F
+closeout section is below. PR-5 (fine-grained event persistence) remains the only
+deferred Phase 2F slice.
 
 Previous status remains true: **§23 row 7b plan-gate turns plus plan-version lineage
 are COMPLETE & MERGED, end-to-end but default-off.** PR-A/PR-B/PR-C/PR-D landed the
@@ -48,6 +56,31 @@ read-only Run Timeline (2026-06-17), with only PR-5 event persistence deferred.
 **Next step: a maintainer / Claude roadmap review before opening any new row or
 activating a default.** Full records live in `PIPEWRIGHT_REDESIGN_WORKPLAN.md`
 and the proposal's §24 + Appendix E.1/E.2.
+
+## Phase 2G Run Detail Product UI closeout (frontend presentation, 2026-06-17)
+
+COMPLETE & MERGED through PR-1, PR-2, PR-4, PR-5, PR-3, and PR-6. Canonical
+design spec + closeout: `docs/design/phase-2g-run-detail-product-ui.md`.
+
+- **PR-1:** two-column cockpit/context shell.
+- **PR-2:** Running and Needs-review context rail trust facts.
+- **PR-4:** Done-state PR de-duplication and authoritative PR rail.
+- **PR-5:** Failed-state failure rail and trimmed failed banner.
+- **PR-3:** decision evidence near the approval cockpit.
+- **PR-6:** visual/register polish and Plain/Developer mode cleanup.
+
+**Final state:** Run Detail is now organized around the cockpit, safety overview,
+context rail, decision evidence, timeline, and collapsed audit/details.
+
+**Invariants held:** no backend behavior changes; no mutation handler changes; no
+approval/final approval/Git/PR behavior changes; no new actions; no event
+persistence / Phase 2F PR-5 work; no memory retrieval changes; no FTS/Row 19
+changes; no Row 23 work.
+
+**Validation recorded:** build/lint/diff checks passed per slice; PR-3 demo-smoke
+passed all 10 checks; PR-6 SSR smoke passed running/final-approval/done/failed
+across Plain and Developer modes; protected-path checks confirmed frontend/docs-only
+scope per slice.
 
 ## Phase 2F Thread UI / Run Timeline closeout (read-only, 2026-06-17)
 
