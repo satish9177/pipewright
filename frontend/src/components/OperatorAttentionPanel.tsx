@@ -18,6 +18,7 @@ import {
   type CoEqualHandlerKey,
   type LegacyPrimaryHandlerKey,
 } from '@/lib/operatorPrimaryAction'
+import type { RunViewMode } from '@/types/viewMode'
 
 // Display-only operator attention panel. It mirrors the backend operator_state
 // read-model (computed on chunk reads, never persisted) and renders the current
@@ -305,6 +306,7 @@ export default function OperatorAttentionPanel({
   operatorState,
   resolvePrimaryAction,
   resolveCoEqualAction,
+  viewMode = 'plain',
 }: {
   operatorState?: OperatorState | null
   // #35F: optional resolver supplied by the page. Given the current
@@ -320,6 +322,7 @@ export default function OperatorAttentionPanel({
   resolveCoEqualAction?: (
     action: OperatorAction,
   ) => { onClick: () => void; isPending: boolean } | null
+  viewMode?: RunViewMode
 }) {
   // Render nothing when the backend did not attach operator_state.
   if (!operatorState) return null
@@ -348,6 +351,7 @@ export default function OperatorAttentionPanel({
   // stay sourced from the computed operator_state actions.
   const headline = narrative?.what_happened ?? title
   const body = narrative?.why ?? explanation
+  const isDeveloperMode = viewMode === 'developer'
   const orderedActions = [
     ...(primary_action ? [primary_action] : []),
     ...neutral_actions,
@@ -415,12 +419,12 @@ export default function OperatorAttentionPanel({
     // as the page's single cockpit spine, lifted off the warm-paper background.
     // The bar uses -mt-4 to sit flush against the card's top edge (Card has its
     // own py-4); Card already clips with overflow-hidden so it follows the radius.
-    <Card className="mb-6 bg-[var(--pw-bg-elev)]">
+    <Card className="mb-6 overflow-hidden border-slate-200 bg-[var(--pw-bg-elev)] shadow-sm">
       <div
         className={`-mt-4 h-1.5 w-full ${moodBar}`}
         aria-hidden="true"
       />
-      <CardHeader>
+      <CardHeader className="pb-3">
         <div className="flex flex-wrap items-center gap-2.5">
           {phase && <PhasePill phase={phase} />}
           <WaitingPill waitingOn={waiting_on} />
@@ -431,9 +435,16 @@ export default function OperatorAttentionPanel({
         <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
           {body}
         </p>
+        {isDeveloperMode && (
+          <p className="break-all font-mono text-[11px] leading-relaxed text-muted-foreground">
+            operator_state.phase={phase ?? 'unknown'} waiting_on={waiting_on}{' '}
+            decision_type={decision_type} primary_action=
+            {primary_action?.id ?? 'none'}
+          </p>
+        )}
       </CardHeader>
 
-      <CardContent className="grid gap-4">
+      <CardContent className="grid gap-4 pt-0">
         {/* #37B: the unknown_state_warning banner and the operator_state
             safety_checks list moved up into the single Safety overview surface
             (RunSafetyStrip) to remove duplicate safety summaries. Both remain

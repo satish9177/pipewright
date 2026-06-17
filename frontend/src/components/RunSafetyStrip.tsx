@@ -6,6 +6,7 @@ import type {
   Project,
   Run,
 } from '@/api/client'
+import type { RunViewMode } from '@/types/viewMode'
 
 // #35E: read-only safety/trust strip for Run Detail. It summarizes safety
 // signals that already exist on the run/chunk read model into compact, plain-
@@ -332,14 +333,23 @@ function WarnIcon() {
   )
 }
 
+function developerChipValue(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^A-Za-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+}
+
 export default function RunSafetyStrip({
   run,
   chunkPlan,
   project,
+  viewMode = 'plain',
 }: {
   run: Run
   chunkPlan?: ChunkPlanResponse
   project?: Project
+  viewMode?: RunViewMode
 }) {
   const chunks = chunkPlan?.chunks ?? []
   const operatorState = chunkPlan?.operator_state
@@ -357,15 +367,18 @@ export default function RunSafetyStrip({
   // as a banner instead); no warning is hidden.
   const unknownWarning = operatorState?.unknown_state_warning
   const safetyChecks = operatorState?.safety_checks ?? []
+  const isDeveloperMode = viewMode === 'developer'
 
   return (
-    <section className="mb-6" aria-label="Run safety overview">
+    <section className="mb-5" aria-label="Run safety overview">
       <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1">
         <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           Safety overview
         </h3>
         <span className="text-xs text-muted-foreground">
-          read-only summary of existing signals
+          {isDeveloperMode
+            ? 'read-only operator_state / run summary'
+            : 'read-only summary of existing signals'}
         </span>
       </div>
 
@@ -382,7 +395,9 @@ export default function RunSafetyStrip({
             >
               {showIcon && <WarnIcon />}
               <span className="font-medium">{chip.label}:</span>
-              <span>{chip.value}</span>
+              <span>
+                {isDeveloperMode ? developerChipValue(chip.value) : chip.value}
+              </span>
             </span>
           )
         })}
@@ -391,8 +406,9 @@ export default function RunSafetyStrip({
       <ProcessGateChecks checks={safetyChecks} />
 
       <p className="mt-2 text-xs text-muted-foreground">
-        This summarizes signals shown in full below. The detailed cards remain the
-        source of truth — nothing here changes run behavior.
+        {isDeveloperMode
+          ? 'Summarizes run fields and operator_state.safety_checks. The detailed cards remain the source of truth; this never changes run behavior.'
+          : 'This summarizes signals shown in full below. The detailed cards remain the source of truth; nothing here changes run behavior.'}
       </p>
     </section>
   )

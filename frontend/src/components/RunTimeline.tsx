@@ -244,7 +244,7 @@ export default function RunTimeline({
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(280px,380px)]">
-        <div className="max-h-96 overflow-y-auto rounded border bg-background">
+        <div className="max-h-[26rem] overflow-y-auto rounded-md border bg-background">
           <div className="divide-y">
             {timelineEntries.map(entry => {
               const selected = activeSelectedId === entry.id
@@ -256,7 +256,7 @@ export default function RunTimeline({
                   aria-controls={detailPanelId}
                   onClick={() => setSelectedId(entry.id)}
                   className={cn(
-                    'grid w-full gap-2 px-3 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    'grid w-full gap-1.5 px-3 py-2.5 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     selected && 'bg-muted ring-1 ring-ring',
                   )}
                 >

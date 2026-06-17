@@ -19,10 +19,12 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import type { RunViewMode } from '@/types/viewMode'
 
 interface PrStatusPanelProps {
   run: Run
   project?: Project
+  viewMode?: RunViewMode
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -131,7 +133,11 @@ function ChecksSummaryView({ checks }: { checks: PrChecksSummary }) {
   )
 }
 
-export default function PrStatusPanel({ run, project }: PrStatusPanelProps) {
+export default function PrStatusPanel({
+  run,
+  project,
+  viewMode = 'plain',
+}: PrStatusPanelProps) {
   // The last explicitly-refreshed payload, if any. Null until the user clicks.
   const [refreshed, setRefreshed] = useState<PrStatus | null>(null)
   const [checksError, setChecksError] = useState<string | null>(null)
@@ -153,16 +159,18 @@ export default function PrStatusPanel({ run, project }: PrStatusPanelProps) {
   const prState: PrState =
     refreshed?.pr_state ?? derivePrState(run, project?.pr_mode)
   const checks = refreshed?.checks ?? null
+  const isDeveloperMode = viewMode === 'developer'
 
   return (
-    <Card className="mb-4">
-      <CardHeader>
+    <Card className="mb-4 border-slate-200 bg-[var(--pw-bg-elev)] shadow-sm">
+      <CardHeader className="pb-3">
         <div className="flex items-start justify-between gap-3">
           <div>
             <CardTitle className="text-base">PR Status</CardTitle>
             <CardDescription>
-              Pull request lifecycle and GitHub checks. Display-only — refreshing
-              checks never pushes, merges, or changes approvals.
+              {isDeveloperMode
+                ? 'pr_state and checks summary. Refresh is manual and read-only.'
+                : 'Pull request lifecycle and GitHub checks. Refreshing checks never pushes, merges, or changes approvals.'}
             </CardDescription>
           </div>
           <Badge variant="outline" className={PR_STATE_CLASS[prState]}>
@@ -170,22 +178,28 @@ export default function PrStatusPanel({ run, project }: PrStatusPanelProps) {
           </Badge>
         </div>
       </CardHeader>
-      <CardContent className="grid gap-4">
+      <CardContent className="grid gap-4 pt-0">
         <div className="grid gap-3 text-sm sm:grid-cols-3">
-          <div>
-            <p className="font-medium">Branch</p>
+          <div className="rounded-md border bg-background/70 px-3 py-2">
+            <p className="font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Branch
+            </p>
             <p className="text-muted-foreground break-words">
               {run.branch_name || 'Not available yet'}
             </p>
           </div>
-          <div>
-            <p className="font-medium">PR Number</p>
+          <div className="rounded-md border bg-background/70 px-3 py-2">
+            <p className="font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              PR Number
+            </p>
             <p className="text-muted-foreground">
               {run.pr_number ? `#${run.pr_number}` : 'Not created yet'}
             </p>
           </div>
-          <div>
-            <p className="font-medium">Pull Request</p>
+          <div className="rounded-md border bg-background/70 px-3 py-2">
+            <p className="font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Pull Request
+            </p>
             {run.pr_url ? (
               <a
                 href={run.pr_url}
@@ -217,10 +231,17 @@ export default function PrStatusPanel({ run, project }: PrStatusPanelProps) {
               </Button>
               {!checks && !refreshMutation.isPending && (
                 <span className="text-xs text-muted-foreground">
-                  Checks are not fetched automatically. Click to refresh.
+                  {isDeveloperMode
+                    ? 'checks_status=not_fetched; refresh=manual'
+                    : 'Checks are not fetched automatically. Click to refresh.'}
                 </span>
               )}
             </div>
+            {isDeveloperMode && (
+              <p className="break-all font-mono text-[11px] text-muted-foreground">
+                pr_state={prState} pr_mode={project?.pr_mode ?? 'unknown'}
+              </p>
+            )}
             {checks && <ChecksSummaryView checks={checks} />}
             {checksError && (
               <p className="text-sm font-medium text-red-500">{checksError}</p>

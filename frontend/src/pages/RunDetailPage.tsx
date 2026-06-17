@@ -325,6 +325,7 @@ type RailFact = {
   id: string
   label: string
   detail: string
+  devDetail?: string
 }
 
 const HUMAN_REVIEW_STATUSES = new Set<RunStatus>([
@@ -395,6 +396,7 @@ function findTrustFact(
     id: fact.id,
     label: fact.label,
     detail: fact.detail,
+    devDetail: `trust_fact_id=${fact.id}`,
   }
 }
 
@@ -414,6 +416,7 @@ function summarizeTrustOrSafety(
       id: check.id,
       label,
       detail: `${check.status.replace(/_/g, ' ')}: ${check.detail}`,
+      devDetail: `safety_check_id=${check.id} status=${check.status}`,
     }
   }
 
@@ -421,6 +424,7 @@ function summarizeTrustOrSafety(
     id: label.toLowerCase().replace(/\s+/g, '_'),
     label,
     detail: 'Not reported yet.',
+    devDetail: 'source=missing',
   }
 }
 
@@ -436,6 +440,7 @@ function pushedSoFarFact(
       id: 'pushed_so_far',
       label: 'Pushed so far',
       detail: 'A pull request is already recorded.',
+      devDetail: `pr_url=${Boolean(run.pr_url)} pr_number=${run.pr_number ?? 'none'}`,
     }
   }
   if (run.pushed_at || run.pr_created_at) {
@@ -443,6 +448,7 @@ function pushedSoFarFact(
       id: 'pushed_so_far',
       label: 'Pushed so far',
       detail: 'A push or pull request is already recorded.',
+      devDetail: `pushed_at=${run.pushed_at ?? 'none'} pr_created_at=${run.pr_created_at ?? 'none'}`,
     }
   }
   if (run.push_error) {
@@ -450,24 +456,38 @@ function pushedSoFarFact(
       id: 'pushed_so_far',
       label: 'Pushed so far',
       detail: 'A previous push attempt failed. See Finish & ship.',
+      devDetail: 'push_error=true',
     }
   }
   return {
     id: 'pushed_so_far',
     label: 'Pushed so far',
     detail: 'Nothing recorded.',
+    devDetail: 'pushed_at=null pr_created_at=null pr_url=null',
   }
 }
 
-function RailFactList({ facts }: { facts: RailFact[] }) {
+function RailFactList({
+  facts,
+  viewMode = 'plain',
+}: {
+  facts: RailFact[]
+  viewMode?: RunViewMode
+}) {
+  const showDeveloperDetail = viewMode === 'developer'
   return (
-    <dl className="grid gap-2">
+    <dl className="grid gap-2.5">
       {facts.map(fact => (
-        <div key={fact.id} className="grid gap-0.5">
+        <div key={fact.id} className="grid gap-1 rounded-md px-1 py-0.5">
           <dt className="font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
             {fact.label}
           </dt>
           <dd className="text-sm leading-snug text-foreground">{fact.detail}</dd>
+          {showDeveloperDetail && (fact.devDetail || fact.id) && (
+            <dd className="break-all font-mono text-[11px] leading-snug text-muted-foreground">
+              {fact.devDetail ?? `id=${fact.id}`}
+            </dd>
+          )}
         </div>
       ))}
     </dl>
@@ -555,6 +575,7 @@ function failureStageFact(run: Run, failureChunk: RailChunk | null): RailFact {
       id: 'stopped_at',
       label: 'Stopped at',
       detail: `Chunk ${failureChunk.chunk_number}: ${failureChunk.title}`,
+      devDetail: `chunk=${failureChunk.chunk_number} status=${failureChunk.status}`,
     }
   }
 
@@ -562,6 +583,7 @@ function failureStageFact(run: Run, failureChunk: RailChunk | null): RailFact {
     id: 'stopped_at',
     label: 'Stopped at',
     detail: formatRailLabel(run.current_step || run.status),
+    devDetail: `run.status=${run.status}${run.current_step ? ` current_step=${run.current_step}` : ''}`,
   }
 }
 
@@ -589,11 +611,18 @@ function failureSummaryFacts(
         id: 'failure_summary',
         label: 'What failed',
         detail: plain.headline,
+        devDetail: `failure_type=${patchFailure.failure_type}`,
       },
       {
         id: 'failure_detail',
         label: 'Detail',
         detail: detail.join(' '),
+        devDetail: [
+          patchFailure.failed_step ? `failed_step=${patchFailure.failed_step}` : null,
+          patchFailure.failure_report_id
+            ? `failure_report_id=${patchFailure.failure_report_id}`
+            : null,
+        ].filter(Boolean).join(' '),
       },
     ]
   }
@@ -604,11 +633,13 @@ function failureSummaryFacts(
         id: 'failure_summary',
         label: 'What failed',
         detail: 'Chunk execution failed.',
+        devDetail: `chunk_status=${failureChunk.status}`,
       },
       {
         id: 'failure_detail',
         label: 'Detail',
         detail: failureChunk.error_message,
+        devDetail: 'source=chunk.error_message',
       },
     ]
   }
@@ -619,11 +650,13 @@ function failureSummaryFacts(
         id: 'failure_summary',
         label: 'What failed',
         detail: 'Push or PR creation failed.',
+        devDetail: 'source=run.push_error',
       },
       {
         id: 'failure_detail',
         label: 'Detail',
         detail: run.push_error,
+        devDetail: `status=${run.status}`,
       },
     ]
   }
@@ -634,11 +667,13 @@ function failureSummaryFacts(
         id: 'failure_summary',
         label: 'What happened',
         detail: 'The run was rejected.',
+        devDetail: `run.status=${run.status}`,
       },
       {
         id: 'failure_detail',
         label: 'Detail',
         detail: 'No additional failure detail is reported in the run summary.',
+        devDetail: 'source=terminal_rejection',
       },
     ]
   }
@@ -648,12 +683,14 @@ function failureSummaryFacts(
       id: 'failure_summary',
       label: 'What failed',
       detail: 'The run stopped before finishing.',
+      devDetail: `run.status=${run.status}`,
     },
     {
       id: 'failure_detail',
       label: 'Detail',
       detail:
         'No specific failure detail is reported here. Use the timeline and details below for the full audit story.',
+      devDetail: 'source=fallback',
     },
   ]
 }
@@ -672,6 +709,7 @@ function failureCommitFact(
       id: 'committed',
       label: 'Committed',
       detail: `This failed chunk was not committed. ${completedBefore} earlier completed chunk${completedBefore === 1 ? '' : 's'} may already have local commits.`,
+      devDetail: `failed_chunk_committed=false completed_before=${completedBefore}`,
     }
   }
 
@@ -681,6 +719,7 @@ function failureCommitFact(
       label: 'Committed',
       detail:
         'Nothing was committed for this failed chunk. No earlier completed chunks are recorded.',
+      devDetail: 'failed_chunk_committed=false completed_before=0',
     }
   }
 
@@ -689,6 +728,7 @@ function failureCommitFact(
       id: 'committed',
       label: 'Committed',
       detail: 'Commit state is not reported in this view.',
+      devDetail: 'chunk_plan=missing',
     }
   }
 
@@ -697,6 +737,7 @@ function failureCommitFact(
       id: 'committed',
       label: 'Committed',
       detail: `${completedBefore} earlier completed chunk${completedBefore === 1 ? '' : 's'} are recorded; local commit identity is not shown here.`,
+      devDetail: `completed_before=${completedBefore}`,
     }
   }
 
@@ -704,6 +745,7 @@ function failureCommitFact(
     id: 'committed',
     label: 'Committed',
     detail: 'No completed chunks are recorded; no commit is reported.',
+    devDetail: 'completed_before=0',
   }
 }
 
@@ -714,6 +756,7 @@ function failurePushFact(run: Run): RailFact {
       label: 'Pushed / PR',
       detail:
         'A pull request is recorded on this run. Check Details & audit for the full shipping story.',
+      devDetail: `pr_url=${Boolean(run.pr_url)} pr_number=${run.pr_number ?? 'none'}`,
     }
   }
 
@@ -723,6 +766,7 @@ function failurePushFact(run: Run): RailFact {
       label: 'Pushed / PR',
       detail:
         'A push or PR timestamp is recorded. Check Details & audit for the full shipping story.',
+      devDetail: `pushed_at=${run.pushed_at ?? 'none'} pr_created_at=${run.pr_created_at ?? 'none'}`,
     }
   }
 
@@ -731,6 +775,7 @@ function failurePushFact(run: Run): RailFact {
       id: 'pushed',
       label: 'Pushed / PR',
       detail: 'A push attempt failed; no PR URL is recorded.',
+      devDetail: `push_error=${Boolean(run.push_error)}`,
     }
   }
 
@@ -738,6 +783,7 @@ function failurePushFact(run: Run): RailFact {
     id: 'pushed',
     label: 'Pushed / PR',
     detail: 'No push or PR is recorded.',
+    devDetail: 'pushed_at=null pr_created_at=null pr_url=null',
   }
 }
 
@@ -753,6 +799,7 @@ function failureRepoFact(failureChunk: RailChunk | null): RailFact {
       detail: patchFailure.rollback_performed
         ? 'Rollback was recorded and the working tree was clean afterward.'
         : 'The working tree was recorded clean after the failure.',
+      devDetail: `working_tree_clean=true rollback_performed=${patchFailure.rollback_performed === true}`,
     }
   }
 
@@ -762,6 +809,7 @@ function failureRepoFact(failureChunk: RailChunk | null): RailFact {
       label: 'Repo state',
       detail:
         'The working tree was not clean after the failure; manual inspection may be needed.',
+      devDetail: 'working_tree_clean=false',
     }
   }
 
@@ -771,6 +819,7 @@ function failureRepoFact(failureChunk: RailChunk | null): RailFact {
       label: 'Repo state',
       detail:
         'Rollback was recorded; working-tree cleanliness is not reported here.',
+      devDetail: 'rollback_performed=true working_tree_clean=unknown',
     }
   }
 
@@ -780,6 +829,7 @@ function failureRepoFact(failureChunk: RailChunk | null): RailFact {
       label: 'Repo state',
       detail:
         'No code change was produced for the failed chunk; working-tree cleanliness is not separately reported.',
+      devDetail: 'failure_type=NO_CHANGES working_tree_clean=unknown',
     }
   }
 
@@ -787,6 +837,7 @@ function failureRepoFact(failureChunk: RailChunk | null): RailFact {
     id: 'repo_state',
     label: 'Repo state',
     detail: 'Working-tree state is not reported in this view.',
+    devDetail: 'working_tree_clean=unknown',
   }
 }
 
@@ -794,10 +845,12 @@ function FailureContextRail({
   run,
   chunkPlan,
   operatorState,
+  viewMode = 'plain',
 }: {
   run: Run
   chunkPlan?: ChunkPlanResponse
   operatorState?: RailOperatorState | null
+  viewMode?: RunViewMode
 }) {
   const failureChunk = selectFailureChunk(run, chunkPlan)
   const summaryFacts = failureSummaryFacts(run, failureChunk)
@@ -805,6 +858,7 @@ function FailureContextRail({
     id: fact.id,
     label: fact.label,
     detail: fact.detail,
+    devDetail: `trust_fact_id=${fact.id}`,
   }))
   const facts: RailFact[] = [
     failureStageFact(run, failureChunk),
@@ -817,11 +871,13 @@ function FailureContextRail({
       label: 'Approval',
       detail:
         'No approval is pending for this stopped run. Any recovery controls stay in the existing cockpit or chunk details.',
+      devDetail: `run.status=${run.status} pending_approval=false`,
     },
   ]
 
   return (
-    <Card className="mb-6 border-red-200 bg-[var(--pw-bg-elev)]">
+    <Card className="mb-6 overflow-hidden border-red-200 bg-[var(--pw-bg-elev)] shadow-sm">
+      <div className="h-1 w-full bg-red-400" aria-hidden="true" />
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between gap-2">
           <p className="font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
@@ -839,14 +895,14 @@ function FailureContextRail({
           Existing failure facts from the run and chunk records.
         </CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-4">
-        <RailFactList facts={facts} />
+      <CardContent className="grid gap-4 pt-0">
+        <RailFactList facts={facts} viewMode={viewMode} />
         {trustFacts.length > 0 && (
           <div className="border-t pt-3">
             <p className="mb-2 font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
               Trust facts
             </p>
-            <RailFactList facts={trustFacts} />
+            <RailFactList facts={trustFacts} viewMode={viewMode} />
           </div>
         )}
         <p className="rounded-lg border border-dashed px-3 py-2 text-xs leading-relaxed text-muted-foreground">
@@ -863,16 +919,18 @@ function RunContextRail({
   operatorState,
   project,
   chunkPlan,
+  viewMode = 'plain',
 }: {
   run: Run
   operatorState?: RailOperatorState | null
   project?: Project
   chunkPlan?: ChunkPlanResponse
+  viewMode?: RunViewMode
 }) {
   const mode = getRunContextRailMode(run, operatorState)
   if (!mode) return null
   if (mode === 'pr') {
-    return <PrStatusPanel run={run} project={project} />
+    return <PrStatusPanel run={run} project={project} viewMode={viewMode} />
   }
   if (mode === 'failure') {
     return (
@@ -880,6 +938,7 @@ function RunContextRail({
         run={run}
         chunkPlan={chunkPlan}
         operatorState={operatorState}
+        viewMode={viewMode}
       />
     )
   }
@@ -889,6 +948,7 @@ function RunContextRail({
     id: fact.id,
     label: fact.label,
     detail: fact.detail,
+    devDetail: `trust_fact_id=${fact.id}`,
   }))
   const pushedFact = pushedSoFarFact(run, operatorState)
   const waitingOnFact: RailFact = {
@@ -900,6 +960,7 @@ function RunContextRail({
         : operatorState.waiting_on === 'human'
           ? 'You'
           : 'Nobody',
+    devDetail: `waiting_on=${operatorState.waiting_on}${operatorState.phase ? ` phase=${operatorState.phase}` : ''}`,
   }
 
   const reviewFacts: RailFact[] = [
@@ -910,7 +971,7 @@ function RunContextRail({
   ]
 
   return (
-    <Card className="mb-6 bg-[var(--pw-bg-elev)]">
+    <Card className="mb-6 border-slate-200 bg-[var(--pw-bg-elev)] shadow-sm">
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between gap-2">
           <p className="font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
@@ -929,10 +990,11 @@ function RunContextRail({
             : 'Existing trust signals for the approval decision.'}
         </CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-4">
+      <CardContent className="grid gap-4 pt-0">
         {mode === 'working' ? (
           <>
             <RailFactList
+              viewMode={viewMode}
               facts={[
                 waitingOnFact,
                 {
@@ -940,6 +1002,7 @@ function RunContextRail({
                   label: 'Will pause',
                   detail:
                     'Pipewright stops at required human approval or review gates before moving on.',
+                  devDetail: 'approval_gate=required_before_human_steps',
                 },
                 pushedFact,
               ]}
@@ -949,7 +1012,7 @@ function RunContextRail({
                 <p className="mb-2 font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
                   Trust facts
                 </p>
-                <RailFactList facts={trustFacts} />
+                <RailFactList facts={trustFacts} viewMode={viewMode} />
               </div>
             )}
             <p className="rounded-lg border border-dashed px-3 py-2 text-xs leading-relaxed text-muted-foreground">
@@ -959,13 +1022,13 @@ function RunContextRail({
           </>
         ) : (
           <>
-            <RailFactList facts={reviewFacts} />
+            <RailFactList facts={reviewFacts} viewMode={viewMode} />
             {trustFacts.length > 0 && (
               <div className="border-t pt-3">
                 <p className="mb-2 font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
                   Trust facts
                 </p>
-                <RailFactList facts={trustFacts} />
+                <RailFactList facts={trustFacts} viewMode={viewMode} />
               </div>
             )}
             <p className="rounded-lg border border-dashed px-3 py-2 text-xs leading-relaxed text-muted-foreground">
@@ -1036,13 +1099,32 @@ function summarizeChangedFiles(files: string[], max = 4): string {
 // byte-identical to the chunk panel below; this never re-renders the action-wired
 // AdvisoryReviewPanel / ack panels (those stay black boxes), softens no verdict,
 // and exposes no controls.
-function DecisionEvidenceBody({ chunk }: { chunk: RailChunk }) {
+function DecisionEvidenceBody({
+  chunk,
+  viewMode = 'plain',
+}: {
+  chunk: RailChunk
+  viewMode?: RunViewMode
+}) {
   const chips = buildEvidenceChips(chunk.test_validation, chunk.review)
   const changedFiles = summarizeChangedFiles(chunk.files_expected)
   const reviewSummary =
     chunk.review && chunk.review.review_status === 'completed'
       ? chunk.review.summary
       : null
+  const developerFacts = [
+    `chunk_status=${chunk.status}`,
+    chunk.test_validation?.verdict
+      ? `test_verdict=${chunk.test_validation.verdict}`
+      : null,
+    chunk.review?.review_status
+      ? `review_status=${chunk.review.review_status}`
+      : null,
+    typeof chunk.review?.findings?.length === 'number'
+      ? `findings=${chunk.review.findings.length}`
+      : null,
+    `files_expected=${chunk.files_expected.length}`,
+  ].filter(Boolean).join(' ')
 
   return (
     <div className="grid gap-3">
@@ -1085,6 +1167,12 @@ function DecisionEvidenceBody({ chunk }: { chunk: RailChunk }) {
           </p>
         </div>
       )}
+
+      {viewMode === 'developer' && (
+        <p className="break-all rounded border border-dashed bg-muted/30 px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+          {developerFacts}
+        </p>
+      )}
     </div>
   )
 }
@@ -1103,10 +1191,12 @@ function DecisionEvidencePanel({
   chunkPlan,
   pendingGate,
   pendingFinalGate,
+  viewMode = 'plain',
 }: {
   chunkPlan?: ChunkPlanResponse
   pendingGate?: ApprovalGate
   pendingFinalGate?: ApprovalGate
+  viewMode?: RunViewMode
 }) {
   const chunks = chunkPlan?.chunks ?? []
   const decisionChunk = selectDecisionChunk(
@@ -1131,7 +1221,7 @@ function DecisionEvidencePanel({
   if (!showFull && !anyEvidence) return null
 
   return (
-    <Card className="mt-4 mb-6 bg-[var(--pw-bg-elev)]">
+    <Card className="mt-4 mb-6 border-slate-200 bg-[var(--pw-bg-elev)] shadow-sm">
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between gap-2">
           <p className="font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
@@ -1156,9 +1246,9 @@ function DecisionEvidencePanel({
               : 'A read-only pointer to the recorded evidence for this decision, shown in full in the chunk panel below.'}
         </CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-4">
+      <CardContent className="grid gap-4 pt-0">
         {showFull && decisionChunk ? (
-          <DecisionEvidenceBody chunk={decisionChunk} />
+          <DecisionEvidenceBody chunk={decisionChunk} viewMode={viewMode} />
         ) : (
           <p className="text-sm text-muted-foreground">
             {multiChunk
@@ -2355,13 +2445,13 @@ export default function RunDetailPage() {
   )
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-6">
-      <div className="mb-6 flex items-start justify-between gap-4">
+    <div className="mx-auto max-w-[1180px] px-4 py-5 sm:px-6 lg:py-7">
+      <div className="mb-5 flex items-start justify-between gap-4">
         <div className="min-w-0">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Pipeline Run
           </p>
-          <h2 className="text-2xl font-bold leading-tight mt-1 line-clamp-2">
+          <h2 className="mt-1 line-clamp-2 text-2xl font-semibold leading-tight tracking-normal">
             {run.feature_description || 'Untitled run'}
           </h2>
           {/* #37A: header meta row. The run id stays; total/current chunk moved
@@ -2378,11 +2468,19 @@ export default function RunDetailPage() {
               </>
             )}
           </div>
+          {isDeveloperMode && (
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-muted-foreground">
+              <span title={run.id}>run_id={run.id}</span>
+              {run.project_id && <span>project_id={run.project_id}</span>}
+              <span>status={run.status}</span>
+              {run.current_step && <span>current_step={run.current_step}</span>}
+            </div>
+          )}
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
-          <RunStatusBadge status={run.status} friendly />
+          <RunStatusBadge status={run.status} friendly={!isDeveloperMode} />
           <div
-            className="inline-flex rounded-lg border bg-background p-1"
+            className="inline-flex rounded-md border bg-background p-1 shadow-sm"
             role="group"
             aria-label="Run detail view mode"
           >
@@ -2415,7 +2513,12 @@ export default function RunDetailPage() {
 
       {/* #35E: compact read-only safety overview. Summarizes existing signals;
           the detailed banners/cards below remain the source of truth. */}
-      <RunSafetyStrip run={run} chunkPlan={chunkPlan} project={project} />
+      <RunSafetyStrip
+        run={run}
+        chunkPlan={chunkPlan}
+        project={project}
+        viewMode={viewMode}
+      />
 
       {/* Phase 2G: cockpit + context rail shell. The rail is read-only context;
           all actions stay inside the existing cockpit/action components. */}
@@ -2448,6 +2551,7 @@ export default function RunDetailPage() {
                   operatorState={operatorState}
                   resolvePrimaryAction={resolvePrimaryAction}
                   resolveCoEqualAction={resolveCoEqualAction}
+                  viewMode={viewMode}
                 />
               </section>
             )}
@@ -2460,6 +2564,7 @@ export default function RunDetailPage() {
                 chunkPlan={chunkPlan}
                 pendingGate={pendingGate}
                 pendingFinalGate={pendingFinalGate}
+                viewMode={viewMode}
               />
             )}
           </div>
@@ -2473,12 +2578,13 @@ export default function RunDetailPage() {
               operatorState={operatorState}
               project={project}
               chunkPlan={chunkPlan}
+              viewMode={viewMode}
             />
           </aside>
         </div>
       )}
 
-      <section className="mb-6">
+      <section className="mb-7">
         <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
           <div>
             <h3 className="text-base font-semibold">Run timeline</h3>
@@ -2491,7 +2597,7 @@ export default function RunDetailPage() {
             Read-only
           </span>
         </div>
-        <Card className="bg-[var(--pw-bg-elev)]">
+        <Card className="border-slate-200 bg-[var(--pw-bg-elev)] shadow-sm">
           <CardContent className="py-4">
             <RunTimeline
               entries={timelineEntries}
@@ -2688,7 +2794,11 @@ export default function RunDetailPage() {
                     panel.
                   </p>
                 ) : showPrStatusPanelInFinish ? (
-                  <PrStatusPanel run={run} project={project} />
+                  <PrStatusPanel
+                    run={run}
+                    project={project}
+                    viewMode={viewMode}
+                  />
                 ) : (
                   <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
                     Appears once a push or pull request exists.
