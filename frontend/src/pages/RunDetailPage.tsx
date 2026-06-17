@@ -56,6 +56,11 @@ import ReportView from '@/components/ReportView'
 import PlanView from '@/components/PlanView'
 import useRunEvents from '@/hooks/useRunEvents'
 import useRunTimeline from '@/hooks/useRunTimeline'
+import {
+  parsePatchFailureSummary,
+  patchFailurePlainCopy,
+  testFailureCountSummary,
+} from '@/utils/patchFailure'
 import type { RunViewMode } from '@/types/viewMode'
 
 const RUN_VIEW_MODE_STORAGE_KEY = 'pipewright.runDetail.viewMode'
@@ -313,7 +318,7 @@ function getRetryErrorMessage(error: unknown): string {
 
 const TERMINAL_RUN_STATUSES: RunStatus[] = ['complete', 'failed', 'rejected']
 
-type RunContextRailMode = 'working' | 'review' | 'pr'
+type RunContextRailMode = 'working' | 'review' | 'pr' | 'failure'
 type RailOperatorState = NonNullable<ChunkPlanResponse['operator_state']>
 type RailFact = {
   id: string
@@ -338,11 +343,19 @@ const TERMINAL_NO_RAIL_STATUSES = new Set<RunStatus>([
   'push_failed',
 ])
 
+const STOPPED_TERMINAL_RAIL_STATUSES = new Set<RunStatus>([
+  'failed',
+  'rejected',
+  'final_rejected',
+  'push_failed',
+])
+
 function getRunContextRailMode(
   run: Run,
   operatorState?: RailOperatorState | null,
 ): RunContextRailMode | null {
   if (run.status === 'complete' && run.pr_url) return 'pr'
+  if (STOPPED_TERMINAL_RAIL_STATUSES.has(run.status)) return 'failure'
   if (!operatorState || TERMINAL_NO_RAIL_STATUSES.has(run.status)) return null
   if (
     operatorState.waiting_on === 'system' ||
@@ -460,19 +473,414 @@ function RailFactList({ facts }: { facts: RailFact[] }) {
   )
 }
 
+type RailChunk = ChunkPlanResponse['chunks'][number]
+
+function formatRailLabel(value: string | null | undefined) {
+  if (!value) return 'Not reported'
+  return value
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, char => char.toUpperCase())
+}
+
+function currentStepChunkNumber(step: string | null | undefined) {
+  const match = step?.match(/^chunk_(\d+)/)
+  if (!match) return null
+  const parsed = Number(match[1])
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function selectFailureChunk(
+  run: Run,
+  chunkPlan?: ChunkPlanResponse,
+): RailChunk | null {
+  const chunks = chunkPlan?.chunks ?? []
+  if (chunks.length === 0) return null
+
+  const runChunkNumber =
+    typeof run.current_chunk_number === 'number'
+      ? run.current_chunk_number
+      : null
+  const planChunkNumber =
+    typeof chunkPlan?.current_chunk_number === 'number'
+      ? chunkPlan.current_chunk_number
+      : null
+  const stepChunkNumber = currentStepChunkNumber(run.current_step)
+  const preferredNumbers = [
+    runChunkNumber,
+    planChunkNumber,
+    stepChunkNumber,
+  ].filter((value): value is number => typeof value === 'number')
+
+  for (const chunkNumber of preferredNumbers) {
+    const failed = chunks.find(
+      chunk => chunk.chunk_number === chunkNumber && chunk.status === 'failed',
+    )
+    if (failed) return failed
+  }
+
+  const firstFailed = chunks.find(chunk => chunk.status === 'failed')
+  if (firstFailed) return firstFailed
+
+  for (const chunkNumber of preferredNumbers) {
+    const current = chunks.find(chunk => chunk.chunk_number === chunkNumber)
+    if (current) return current
+  }
+
+  return null
+}
+
+function completedChunksBeforeStop(
+  chunkPlan: ChunkPlanResponse | undefined,
+  failureChunk: RailChunk | null,
+) {
+  const chunks = chunkPlan?.chunks ?? []
+  if (chunks.length === 0) return 0
+  const stopChunkNumber =
+    failureChunk?.chunk_number ??
+    (typeof chunkPlan?.current_chunk_number === 'number'
+      ? chunkPlan.current_chunk_number
+      : null)
+
+  return chunks.filter(chunk => {
+    if (chunk.status !== 'completed') return false
+    if (stopChunkNumber == null) return true
+    return chunk.chunk_number < stopChunkNumber
+  }).length
+}
+
+function failureStageFact(run: Run, failureChunk: RailChunk | null): RailFact {
+  if (failureChunk) {
+    return {
+      id: 'stopped_at',
+      label: 'Stopped at',
+      detail: `Chunk ${failureChunk.chunk_number}: ${failureChunk.title}`,
+    }
+  }
+
+  return {
+    id: 'stopped_at',
+    label: 'Stopped at',
+    detail: formatRailLabel(run.current_step || run.status),
+  }
+}
+
+function failureSummaryFacts(
+  run: Run,
+  failureChunk: RailChunk | null,
+): RailFact[] {
+  const patchFailure = parsePatchFailureSummary(
+    failureChunk?.completion_summary,
+  )
+  if (patchFailure) {
+    const plain = patchFailurePlainCopy(patchFailure.failure_type)
+    const testCounts = testFailureCountSummary(
+      patchFailure.failure_type,
+      failureChunk?.test_validation,
+    )
+    const detail = [
+      plain.detail,
+      testCounts,
+      patchFailure.message ? `Diagnostic: ${patchFailure.message}` : null,
+    ].filter((value): value is string => Boolean(value))
+
+    return [
+      {
+        id: 'failure_summary',
+        label: 'What failed',
+        detail: plain.headline,
+      },
+      {
+        id: 'failure_detail',
+        label: 'Detail',
+        detail: detail.join(' '),
+      },
+    ]
+  }
+
+  if (failureChunk?.error_message) {
+    return [
+      {
+        id: 'failure_summary',
+        label: 'What failed',
+        detail: 'Chunk execution failed.',
+      },
+      {
+        id: 'failure_detail',
+        label: 'Detail',
+        detail: failureChunk.error_message,
+      },
+    ]
+  }
+
+  if (run.push_error) {
+    return [
+      {
+        id: 'failure_summary',
+        label: 'What failed',
+        detail: 'Push or PR creation failed.',
+      },
+      {
+        id: 'failure_detail',
+        label: 'Detail',
+        detail: run.push_error,
+      },
+    ]
+  }
+
+  if (run.status === 'rejected' || run.status === 'final_rejected') {
+    return [
+      {
+        id: 'failure_summary',
+        label: 'What happened',
+        detail: 'The run was rejected.',
+      },
+      {
+        id: 'failure_detail',
+        label: 'Detail',
+        detail: 'No additional failure detail is reported in the run summary.',
+      },
+    ]
+  }
+
+  return [
+    {
+      id: 'failure_summary',
+      label: 'What failed',
+      detail: 'The run stopped before finishing.',
+    },
+    {
+      id: 'failure_detail',
+      label: 'Detail',
+      detail:
+        'No specific failure detail is reported here. Use the timeline and details below for the full audit story.',
+    },
+  ]
+}
+
+function failureCommitFact(
+  chunkPlan: ChunkPlanResponse | undefined,
+  failureChunk: RailChunk | null,
+): RailFact {
+  const patchFailure = parsePatchFailureSummary(
+    failureChunk?.completion_summary,
+  )
+  const completedBefore = completedChunksBeforeStop(chunkPlan, failureChunk)
+
+  if (patchFailure && completedBefore > 0) {
+    return {
+      id: 'committed',
+      label: 'Committed',
+      detail: `This failed chunk was not committed. ${completedBefore} earlier completed chunk${completedBefore === 1 ? '' : 's'} may already have local commits.`,
+    }
+  }
+
+  if (patchFailure) {
+    return {
+      id: 'committed',
+      label: 'Committed',
+      detail:
+        'Nothing was committed for this failed chunk. No earlier completed chunks are recorded.',
+    }
+  }
+
+  if (!chunkPlan) {
+    return {
+      id: 'committed',
+      label: 'Committed',
+      detail: 'Commit state is not reported in this view.',
+    }
+  }
+
+  if (completedBefore > 0) {
+    return {
+      id: 'committed',
+      label: 'Committed',
+      detail: `${completedBefore} earlier completed chunk${completedBefore === 1 ? '' : 's'} are recorded; local commit identity is not shown here.`,
+    }
+  }
+
+  return {
+    id: 'committed',
+    label: 'Committed',
+    detail: 'No completed chunks are recorded; no commit is reported.',
+  }
+}
+
+function failurePushFact(run: Run): RailFact {
+  if (run.pr_url || run.pr_number) {
+    return {
+      id: 'pushed',
+      label: 'Pushed / PR',
+      detail:
+        'A pull request is recorded on this run. Check Details & audit for the full shipping story.',
+    }
+  }
+
+  if (run.pushed_at || run.pr_created_at) {
+    return {
+      id: 'pushed',
+      label: 'Pushed / PR',
+      detail:
+        'A push or PR timestamp is recorded. Check Details & audit for the full shipping story.',
+    }
+  }
+
+  if (run.push_error) {
+    return {
+      id: 'pushed',
+      label: 'Pushed / PR',
+      detail: 'A push attempt failed; no PR URL is recorded.',
+    }
+  }
+
+  return {
+    id: 'pushed',
+    label: 'Pushed / PR',
+    detail: 'No push or PR is recorded.',
+  }
+}
+
+function failureRepoFact(failureChunk: RailChunk | null): RailFact {
+  const patchFailure = parsePatchFailureSummary(
+    failureChunk?.completion_summary,
+  )
+
+  if (patchFailure?.working_tree_clean === true) {
+    return {
+      id: 'repo_state',
+      label: 'Repo state',
+      detail: patchFailure.rollback_performed
+        ? 'Rollback was recorded and the working tree was clean afterward.'
+        : 'The working tree was recorded clean after the failure.',
+    }
+  }
+
+  if (patchFailure?.working_tree_clean === false) {
+    return {
+      id: 'repo_state',
+      label: 'Repo state',
+      detail:
+        'The working tree was not clean after the failure; manual inspection may be needed.',
+    }
+  }
+
+  if (patchFailure?.rollback_performed === true) {
+    return {
+      id: 'repo_state',
+      label: 'Repo state',
+      detail:
+        'Rollback was recorded; working-tree cleanliness is not reported here.',
+    }
+  }
+
+  if (patchFailure?.failure_type === 'NO_CHANGES') {
+    return {
+      id: 'repo_state',
+      label: 'Repo state',
+      detail:
+        'No code change was produced for the failed chunk; working-tree cleanliness is not separately reported.',
+    }
+  }
+
+  return {
+    id: 'repo_state',
+    label: 'Repo state',
+    detail: 'Working-tree state is not reported in this view.',
+  }
+}
+
+function FailureContextRail({
+  run,
+  chunkPlan,
+  operatorState,
+}: {
+  run: Run
+  chunkPlan?: ChunkPlanResponse
+  operatorState?: RailOperatorState | null
+}) {
+  const failureChunk = selectFailureChunk(run, chunkPlan)
+  const summaryFacts = failureSummaryFacts(run, failureChunk)
+  const trustFacts = (operatorState?.trust_facts ?? []).map(fact => ({
+    id: fact.id,
+    label: fact.label,
+    detail: fact.detail,
+  }))
+  const facts: RailFact[] = [
+    failureStageFact(run, failureChunk),
+    ...summaryFacts,
+    failureCommitFact(chunkPlan, failureChunk),
+    failurePushFact(run),
+    failureRepoFact(failureChunk),
+    {
+      id: 'approval',
+      label: 'Approval',
+      detail:
+        'No approval is pending for this stopped run. Any recovery controls stay in the existing cockpit or chunk details.',
+    },
+  ]
+
+  return (
+    <Card className="mb-6 border-red-200 bg-[var(--pw-bg-elev)]">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-2">
+          <p className="font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Failure summary
+          </p>
+          <Badge
+            variant="outline"
+            className="border-red-200 bg-red-50 text-[10px] text-red-700"
+          >
+            Read-only
+          </Badge>
+        </div>
+        <CardTitle className="text-base">Run stopped</CardTitle>
+        <CardDescription>
+          Existing failure facts from the run and chunk records.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-4">
+        <RailFactList facts={facts} />
+        {trustFacts.length > 0 && (
+          <div className="border-t pt-3">
+            <p className="mb-2 font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Trust facts
+            </p>
+            <RailFactList facts={trustFacts} />
+          </div>
+        )}
+        <p className="rounded-lg border border-dashed px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+          The timeline and Details &amp; audit sections below remain the full
+          audit record for this stopped run.
+        </p>
+      </CardContent>
+    </Card>
+  )
+}
+
 function RunContextRail({
   run,
   operatorState,
   project,
+  chunkPlan,
 }: {
   run: Run
   operatorState?: RailOperatorState | null
   project?: Project
+  chunkPlan?: ChunkPlanResponse
 }) {
   const mode = getRunContextRailMode(run, operatorState)
   if (!mode) return null
   if (mode === 'pr') {
     return <PrStatusPanel run={run} project={project} />
+  }
+  if (mode === 'failure') {
+    return (
+      <FailureContextRail
+        run={run}
+        chunkPlan={chunkPlan}
+        operatorState={operatorState}
+      />
+    )
   }
   if (!operatorState) return null
 
@@ -1437,6 +1845,9 @@ export default function RunDetailPage() {
   }
 
   const hasPrData = Boolean(run.pr_url || run.pr_number || run.push_error)
+  const hasShippingRecord = Boolean(
+    run.pr_url || run.pr_number || run.pushed_at || run.pr_created_at,
+  )
   const showMemoryConflictPanel =
     run.status === 'awaiting_memory_conflict_approval'
   const showFinalApprovalPanel = run.status === 'awaiting_final_approval'
@@ -1794,7 +2205,7 @@ export default function RunDetailPage() {
 
       {/* Phase 2G: cockpit + context rail shell. The rail is read-only context;
           all actions stay inside the existing cockpit/action components. */}
-      {(operatorState || contextRailMode === 'pr') && (
+      {(operatorState || contextRailMode) && (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,22rem)] lg:items-start xl:gap-6">
           <div className="min-w-0">
             {/* Phase 2F PR-3: promote the existing next-action engine into a sticky
@@ -1828,6 +2239,7 @@ export default function RunDetailPage() {
               run={run}
               operatorState={operatorState}
               project={project}
+              chunkPlan={chunkPlan}
             />
           </aside>
         </div>
@@ -2248,19 +2660,15 @@ export default function RunDetailPage() {
       )}
 
       {run.status === 'failed' && (
-        <Card className="mb-4 border-red-500">
+        <Card className="mb-4 border-red-300">
           <CardContent className="py-4">
             <p className="text-sm font-medium text-red-600">
               This run stopped before finishing.
-              {run.current_step && (
-                <span className="font-normal text-muted-foreground">
-                  {' '}(during: {run.current_step})
-                </span>
-              )}
             </p>
             <p className="text-xs text-muted-foreground mt-1">
-              Open Details &amp; audit below to see the timeline and full
-              sequence. Nothing was pushed to GitHub and no merge was performed.
+              See the failure summary in the rail and Details &amp; audit below
+              for the full timeline.
+              {!hasShippingRecord && ' No push or PR is recorded.'}
             </p>
           </CardContent>
         </Card>
