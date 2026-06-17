@@ -1529,26 +1529,38 @@ export default function RunDetailPage() {
           the detailed banners/cards below remain the source of truth. */}
       <RunSafetyStrip run={run} chunkPlan={chunkPlan} project={project} />
 
-      {/* Phase 2F PR-3: promote the existing next-action engine into a sticky
-          banner when the run is waiting on a human. The same resolvers are
-          passed through; this changes placement/prominence, not behavior. */}
+      {/* Phase 2G PR-1: introduce the cockpit + context rail shell. The rail is
+          intentionally empty in this slice; later slices may add read-only
+          context without changing the action wiring below. */}
       {chunkPlan?.operator_state && (
-        <section
-          className={`${
-            chunkPlan.operator_state.waiting_on === 'human'
-              ? // Cap the sticky banner to the viewport and let it scroll
-                // internally so a tall panel cannot cover the page content
-                // below it on short screens (top-3 = 0.75rem top inset).
-                'sticky top-3 z-30 max-h-[calc(100vh-1.5rem)] overflow-y-auto rounded-xl bg-background/95 pb-1 shadow-sm backdrop-blur'
-              : ''
-          }`}
-        >
-          <OperatorAttentionPanel
-            operatorState={chunkPlan.operator_state}
-            resolvePrimaryAction={resolvePrimaryAction}
-            resolveCoEqualAction={resolveCoEqualAction}
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,22rem)] lg:items-start xl:gap-6">
+          <div className="min-w-0">
+            {/* Phase 2F PR-3: promote the existing next-action engine into a sticky
+                banner when the run is waiting on a human. The same resolvers are
+                passed through; this changes placement/prominence, not behavior. */}
+            <section
+              className={`${
+                chunkPlan.operator_state.waiting_on === 'human'
+                  ? // Cap the sticky banner to the viewport and let it scroll
+                    // internally so a tall panel cannot cover the page content
+                    // below it on short screens (top-3 = 0.75rem top inset).
+                    'sticky top-3 z-30 max-h-[calc(100vh-1.5rem)] overflow-y-auto rounded-xl bg-background/95 pb-1 shadow-sm backdrop-blur'
+                  : ''
+              }`}
+            >
+              <OperatorAttentionPanel
+                operatorState={chunkPlan.operator_state}
+                resolvePrimaryAction={resolvePrimaryAction}
+                resolveCoEqualAction={resolveCoEqualAction}
+              />
+            </section>
+          </div>
+          <aside
+            className="min-w-0"
+            data-run-context-rail="empty"
+            aria-hidden="true"
           />
-        </section>
+        </div>
       )}
 
       <section className="mb-6">
