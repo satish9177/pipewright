@@ -26,6 +26,7 @@ from backend.models.handoff import PlannerHandoff
 from backend.memory.injection_store import capture_memory_injection
 from backend.memory.prompt_builder import build_project_memory_block_detailed
 from backend.checkpoint.checkpoint_store import save_checkpoint
+from backend.pipeline.llm_call_provenance_store import try_record_llm_call_provenance
 from backend.utils.json_helpers import clean_json_response
 
 PLANNER_TEMPERATURE = 0.2
@@ -123,7 +124,11 @@ def _build_correction_request(
     )
 
 
-async def _call_llm(request: LLMRequest, run_id: str) -> str:
+async def _call_llm(
+    request: LLMRequest,
+    run_id: str,
+    chunk_number: int = 0,
+) -> str:
     # Bounded rate-limit retry (E4): backoff + jitter, Retry-After honored —
     # never a 60s sleep while the project repo lock is held. Non-rate-limit
     # errors propagate unchanged.
@@ -132,6 +137,17 @@ async def _call_llm(request: LLMRequest, run_id: str) -> str:
         description="planner LLM call",
     )
     log_token_usage(response, run_id=run_id, role=Role.PLANNER)
+    try_record_llm_call_provenance(
+        run_id=run_id,
+        chunk_number=chunk_number,
+        role=Role.PLANNER.value,
+        provider=response.provider,
+        model=response.model,
+        selection_source=None,
+        finish_reason=response.finish_reason,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+    )
     return response.text
 
 
@@ -196,7 +212,7 @@ async def run_planner(
     # First attempt
     try:
         logger.info("[PLANNER] Calling LLM (attempt 1)...")
-        raw_text = await _call_llm(request, run_id)
+        raw_text = await _call_llm(request, run_id, chunk_number=chunk_number)
         handoff = _parse_handoff(raw_text, run_id)
         logger.info("[PLANNER] Plan validated on attempt 1")
 
@@ -210,7 +226,11 @@ async def run_planner(
         )
 
         try:
-            raw_text = await _call_llm(correction_request, run_id)
+            raw_text = await _call_llm(
+                correction_request,
+                run_id,
+                chunk_number=chunk_number,
+            )
             handoff = _parse_handoff(raw_text, run_id)
             logger.info("[PLANNER] Plan validated on attempt 2")
 

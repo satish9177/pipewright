@@ -18,6 +18,7 @@ from backend.llm.role_config import Role
 from backend.memory.injection_store import capture_memory_injection
 from backend.memory.prompt_builder import build_project_memory_block_detailed
 from backend.models.chunk import TriageResult
+from backend.pipeline.llm_call_provenance_store import try_record_llm_call_provenance
 from backend.projects.project_store import require_project
 from backend.repo.index_freshness import (
     ensure_repo_indexed_and_record as ensure_repo_indexed,
@@ -164,6 +165,17 @@ async def _call_llm(prompt: str, run_id: str) -> str:
         _build_llm_request(prompt),
     )
     log_token_usage(response, run_id=run_id, role=Role.TRIAGE)
+    try_record_llm_call_provenance(
+        run_id=run_id,
+        chunk_number=None,
+        role=Role.TRIAGE.value,
+        provider=response.provider,
+        model=response.model,
+        selection_source=None,
+        finish_reason=response.finish_reason,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+    )
     return response.text
 
 

@@ -31,6 +31,7 @@ from backend.llm import complete_for_role, log_token_usage
 from backend.llm.base import LLMRequest, Message
 from backend.llm.role_config import Role
 from backend.llm.sanitize import sanitize_for_log
+from backend.pipeline.llm_call_provenance_store import try_record_llm_call_provenance
 from backend.projects.project_store import get_project
 from backend.repo.repo_indexer import ensure_repo_indexed, get_relevant_files
 from backend.utils.json_helpers import clean_json_response
@@ -551,6 +552,17 @@ async def _call_llm(prompt: str, run_id: str, kind: ReportKind) -> str:
         Role.SUMMARY, _build_llm_request(prompt, kind)
     )
     log_token_usage(response, run_id=run_id, role=Role.SUMMARY)
+    try_record_llm_call_provenance(
+        run_id=run_id,
+        chunk_number=None,
+        role=Role.SUMMARY.value,
+        provider=response.provider,
+        model=response.model,
+        selection_source=None,
+        finish_reason=response.finish_reason,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+    )
     return response.text
 
 
