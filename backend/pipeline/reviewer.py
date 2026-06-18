@@ -42,6 +42,7 @@ from backend.pipeline.chunk_review_store import (
     current_chunk_review_identity,
 )
 from backend.pipeline.chunk_store import get_chunk_test_run_verdict
+from backend.pipeline.llm_call_provenance_store import try_record_llm_call_provenance
 from backend.pipeline.policy import REVIEWER_MAX_DIFF_CHARS
 from backend.pipeline.reviewer_models import (
     ChunkReviewRecord,
@@ -352,6 +353,17 @@ async def run_chunk_review(
         request = _build_request(prompt, attempted_model or "reviewer")
         response = await complete_for_role(Role.REVIEWER, request)
         log_token_usage(response, run_id=run_id, role=Role.REVIEWER)
+        try_record_llm_call_provenance(
+            run_id=run_id,
+            chunk_number=chunk_number,
+            role=Role.REVIEWER.value,
+            provider=response.provider,
+            model=response.model,
+            selection_source=None,
+            finish_reason=response.finish_reason,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+        )
 
         record = parse_completed_review(
             response.text,
