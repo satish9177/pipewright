@@ -123,6 +123,15 @@ Current truth:
   post-run hygiene disabled; no committed config enables it. Rejected same-content
   suggestions no longer silently return from later runs; default-on PR-C activation
   remains deferred pending maintainer decision and fresh soak evidence.
+- **Row 16b - ledger metrics / observability queries doc - COMPLETE (docs-only).**
+  Added [`../metrics/ledger-metrics-queries.md`](../metrics/ledger-metrics-queries.md):
+  SELECT-only SQLite queries over existing ledger metadata for pre-activation
+  evidence collection across stage profiles, attempt outcomes, `INFRA_ERROR`
+  recovery, approvals, steer/refinement usage, reviewer acknowledgement proxies,
+  Row 16 suggestion yield, Row 12 omission pressure, prompt-cache opportunity,
+  plan-turn activity, and stuck runs. It does not activate dormant flags, change
+  runtime behavior, change schema, alter policy, or touch approval/final
+  approval/Git/PR behavior.
 - **§23 row 7b — plan-gate turns + plan-version lineage — COMPLETE & MERGED,
   default-off.** PR-A added
   the internal plan-turn engine scaffold; PR-B added
@@ -472,7 +481,10 @@ default-off; do not auto-start default-on Row 16 PR-C, row 23, or Phase 2F PR-5
   transient generated/skipped/blocked/floored/capped counts. Failed/`rejected`/
   `push_failed` hygiene and default-on PR-C activation are later decisions. Rejected
   same-content suggestions are suppressed by project/content hash so they do not
-  silently reappear from later runs.
+  silently reappear from later runs. Row 16b is docs-only observability guidance:
+  [`../metrics/ledger-metrics-queries.md`](../metrics/ledger-metrics-queries.md)
+  prepares evidence collection for future activation decisions without enabling
+  post-run hygiene by default or changing runtime behavior.
 - **Deferred (explicitly):** activating `MEMORY_RELEVANCE_OMISSION_ENABLED` (soak
   decision, not code); Row 16 PR-C activation; vector/embedding memory
   (row 23, D6); Phase 2F PR-5 (fine-grained event persistence — the rest of the

@@ -1,12 +1,23 @@
 # Pipewright Redesign — Workplan & Handoff (START HERE)
 
-**Last updated:** 2026-06-17
+**Last updated:** 2026-06-18
 **Purpose:** Orientation and resume-point for the redesign effort. If you have no other context, read this first — it explains *what* we're doing, *how* we decided to execute it, *where we stopped*, and *what's next*. It is an index over the other planning docs, not a replacement for them.
 
 ---
 
 ## TL;DR
 
+- **Latest update (2026-06-18): Row 16b ledger metrics / observability queries
+  doc is COMPLETE (docs-only).** Added
+  `docs/metrics/ledger-metrics-queries.md` with SELECT-only SQLite queries over
+  existing ledger metadata for maintainers to collect evidence before deciding
+  whether to activate dormant features. It covers stage-profile/scoped-
+  verification health, attempt outcomes, `INFRA_ERROR` recovery, approvals,
+  steer/retry/refinement usage, reviewer acknowledgement proxies, Row 16
+  suggestion yield, Row 12 omission pressure, prompt-cache opportunity, plan-turn
+  activity, and stuck runs. It activates no dormant flags, changes no runtime
+  behavior, schema, policy, memory retrieval, prompt builder, approval/final
+  approval/Git/PR behavior, event persistence, FTS/Row 19, or Row 23.
 - **Latest update (2026-06-17): Phase 2G Run Detail Product UI is COMPLETE &
   MERGED, frontend presentation/composition only.** The design spec is complete
   in `docs/design/phase-2g-run-detail-product-ui.md`. **PR-1** merged the
@@ -227,5 +238,7 @@ Plus §7 open questions (attempt-budget defaults; whether post-success refinemen
 28. **Phase 2F Thread UI / Run Timeline is COMPLETE & MERGED (2026-06-17), read-only.** Shipped through PR-0..PR-4 plus review fixes PR-A/PR-B/PR-C; design brief + closeout in `docs/design/phase-2f-thread-ui.md` (§13). **PR-0** added the backend read-only `GET /runs/{run_id}/timeline` derived from existing persisted tables; **PR-1** added the frontend `useRunTimeline` hook + additive `RunTimeline`; **PR-2** added the read-only `RunTimelineDetail` master-detail panel; **PR-3** promoted the timeline to the primary Run Detail layout and made the existing `OperatorAttentionPanel` sticky/prominent; **PR-4** added the Plain English / Developer view toggle. **PR-A** fixed backend timeline correctness/redaction tests; **PR-B** fixed persisted/live dedupe and timeline refresh; **PR-C** fixed redaction polish, sticky height, the `localStorage` guard, and a11y. **Invariants held:** no PR-5 / event persistence started, no schema or event table, no backend writes, no POST lifecycle handler changes, no approval/final-approval/Git/PR behavior change, no memory-retrieval change, no FTS/Row 19 activation, and no Row 23/vector work — the only backend surface added is the single read-only GET. **Deferred:** Phase 2F **PR-5** (fine-grained event persistence) is the only unshipped slice and needs its own one-page brief; Row 16 PR-C activation and Row 23 vector memory also remain deferred.
 
 29. **Phase 2G Run Detail Product UI is COMPLETE & MERGED (2026-06-17), frontend presentation/composition only.** Design spec + closeout: `docs/design/phase-2g-run-detail-product-ui.md`. **PR-1** merged the two-column cockpit/context shell; **PR-2** merged Running/Needs-review context rail trust facts; **PR-4** merged Done-state PR de-duplication and the authoritative PR rail; **PR-5** merged the Failed-state failure rail; **PR-3** merged decision evidence near the approval cockpit; **PR-6** merged visual/register polish and Plain/Developer mode cleanup. Final state: Run Detail is organized around the cockpit, safety overview, context rail, decision evidence, timeline, and collapsed audit/details. **Invariants held:** no backend behavior changes, no mutation handler changes, no approval/final approval/Git/PR behavior changes, no new actions, no event persistence / Phase 2F PR-5 work, no memory retrieval changes, no FTS/Row 19 changes, and no Row 23 work. **Validation recorded:** build/lint/diff checks passed per slice; PR-3 demo-smoke passed all 10 checks; PR-6 SSR smoke passed running/final-approval/done/failed across Plain and Developer modes; protected-path checks confirmed frontend/docs-only scope per slice.
+
+30. **Row 16b ledger metrics / observability queries doc is COMPLETE (2026-06-18), docs-only.** Added `docs/metrics/ledger-metrics-queries.md` as read-only maintainer guidance for SELECT-only SQLite evidence collection over existing ledger metadata before any dormant-feature activation decision. It does not activate Row 16 PR-C, Row 12 omission, prompt caching, plan turns, FTS/Row 19, Row 23, or event persistence; it changes no runtime behavior, schema, policy flags, memory retrieval, prompt builder, approval/final-approval/Git/PR behavior, or code.
 
 *Note: commit these planning docs only when asked.*

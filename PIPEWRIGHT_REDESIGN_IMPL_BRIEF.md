@@ -1,7 +1,15 @@
 # Pipewright Redesign — Rolling Implementation Brief
 
-**Date:** 2026-06-17
-**Status:** **Phase 2G Run Detail Product UI is COMPLETE & MERGED (frontend
+**Date:** 2026-06-18
+**Status:** **Row 16b ledger metrics / observability queries doc is COMPLETE
+(docs-only).** Added `docs/metrics/ledger-metrics-queries.md` with SELECT-only
+SQLite queries over existing ledger metadata so maintainers can collect evidence
+before deciding whether to activate dormant features. It does not activate flags,
+change runtime behavior, change schema, alter policy, touch memory retrieval or
+prompt builder behavior, change approval/final approval/Git/PR behavior, add event
+persistence, activate FTS/Row 19, or start Row 23.
+
+Previous status remains true: **Phase 2G Run Detail Product UI is COMPLETE & MERGED (frontend
 presentation/composition only).** The design spec is complete in
 `docs/design/phase-2g-run-detail-product-ui.md`. PR-1 merged the two-column
 cockpit/context shell; PR-2 merged Running and Needs-review context rail trust
@@ -56,6 +64,27 @@ read-only Run Timeline (2026-06-17), with only PR-5 event persistence deferred.
 **Next step: a maintainer / Claude roadmap review before opening any new row or
 activating a default.** Full records live in `PIPEWRIGHT_REDESIGN_WORKPLAN.md`
 and the proposal's §24 + Appendix E.1/E.2.
+
+## Row 16b ledger metrics / observability queries (docs-only, 2026-06-18)
+
+Added `docs/metrics/ledger-metrics-queries.md`, a read-only maintainer guide for
+measuring existing Pipewright ledger data before future activation decisions.
+
+- **Scope:** SELECT-only SQLite queries grouped by decision area: stage-profile /
+  scoped-verification health, attempt outcomes, `INFRA_ERROR` recovery, approval
+  timing, steer/retry/refinement usage, reviewer acknowledgement proxies, Row 16
+  suggestion yield, Row 12 omission pressure, prompt-cache opportunity, plan-turn
+  activity, and stuck-run overview.
+- **Safety:** metadata only - ids, statuses, timestamps, counts, stages,
+  verdicts, provider/model names, booleans, and enum-like values. The doc avoids
+  raw prompts, raw diffs, raw provider/Git errors, secrets, tokens, file contents,
+  and free-form user text.
+- **Non-goals held:** no backend/frontend/schema/database change; no dormant flag
+  activation; no runtime behavior change; no policy, memory retrieval, prompt
+  builder, approval/final approval/Git/PR, event persistence, FTS/Row 19, or Row
+  23 work.
+- **Caveat:** metrics are advisory evidence only and do not automatically justify
+  activating any dormant feature.
 
 ## Phase 2G Run Detail Product UI closeout (frontend presentation, 2026-06-17)
 
@@ -375,8 +404,8 @@ confirmation activates nothing by default.
     exceeds the requested token budget" and update its API test (the route string
     is intentionally left unchanged in PR-C to preserve flag-off parity).
 - **Row 16** — PR-A dormant default-off post-run hygiene trigger, PR-B
-  read-only digest, and default-false env-gated soak complete; default-on PR-C
-  activation remains later (D7/B2).
+  read-only digest, default-false env-gated soak, and Row 16b docs-only ledger
+  metrics guidance are complete; default-on PR-C activation remains later (D7/B2).
 - **Row 23** — vector / embedding rung 2 (D6/B4).
 - **§21 thread UI / Phase 2F** — the read-only Run Timeline shipped 2026-06-17
   (PR-0..PR-4 + review fixes PR-A/PR-B/PR-C; closeout above). Only **PR-5**
