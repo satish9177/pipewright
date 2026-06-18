@@ -1,13 +1,17 @@
 # Pipewright Redesign — Rolling Implementation Brief
 
 **Date:** 2026-06-18
-**Status:** **Row 16b ledger metrics / observability queries doc is COMPLETE
-(docs-only).** Added `docs/metrics/ledger-metrics-queries.md` with SELECT-only
-SQLite queries over existing ledger metadata so maintainers can collect evidence
-before deciding whether to activate dormant features. It does not activate flags,
-change runtime behavior, change schema, alter policy, touch memory retrieval or
-prompt builder behavior, change approval/final approval/Git/PR behavior, add event
-persistence, activate FTS/Row 19, or start Row 23.
+**Status:** **Row 16b soak evidence run is COMPLETE (docs-only).** The
+ledger-metrics queries were run `SELECT`-only against a throwaway read-only copy
+of `backend/db/pipewright.db`; no SQL errors and no code/flag/schema/runtime
+change. **Recommendation: keep all dormant flags OFF** — the dev DB is too
+synthetic and sparse to justify activating any dormant feature. The
+`docs/metrics/ledger-metrics-queries.md` doc (with SELECT-only SQLite queries
+over existing ledger metadata) remains the source for collecting this evidence;
+it does not activate flags, change runtime behavior, change schema, alter policy,
+touch memory retrieval or prompt builder behavior, change approval/final
+approval/Git/PR behavior, add event persistence, activate FTS/Row 19, or start
+Row 23.
 
 Previous status remains true: **Phase 2G Run Detail Product UI is COMPLETE & MERGED (frontend
 presentation/composition only).** The design spec is complete in
@@ -85,6 +89,32 @@ measuring existing Pipewright ledger data before future activation decisions.
   23 work.
 - **Caveat:** metrics are advisory evidence only and do not automatically justify
   activating any dormant feature.
+
+### Soak evidence run (2026-06-18, read-only)
+
+First execution of the queries, run `SELECT`-only against a throwaway read-only
+copy of `backend/db/pipewright.db`. No SQL errors; JSON1 available; no
+code/flag/schema/runtime change. Aggregate findings only (no run ids,
+timestamps, prompts, diffs, provider/Git errors, secrets, tokens, or PII).
+Detailed results live in `docs/metrics/ledger-metrics-queries.md` §12.
+
+- **Dataset caveat:** ~255 runs over ~3 weeks, but the data reads as
+  **seeded/synthetic** — sub-minute approval latency, frequent gate `timeout`
+  states, and small `run_turns` (5) / `chunk_attempts` (25) samples. Numbers are
+  *shape*, not representative rates.
+- **INFRA_ERROR** retry/recovery path: **zero evidence**.
+- **Prompt-cache** activation: **no evidence** — `llm_call_provenance` coverage
+  is incomplete and effectively DeepSeek/coder-only, with no Anthropic/Gemini
+  provenance present.
+- **Row 12 omission:** still **no meaningful coder/planner pressure** (only
+  existing triage category-policy exclusions); consistent with the prior proven
+  no-op.
+- **Row 16 hygiene:** auto path has no evidence (flag dormant, expected); manual
+  `run_outcome` suggestion **rejection rate is a quality yellow flag**.
+- **Reviewer acknowledgement** path exists but has **low recorded ack volume**.
+- **Recommendation:** keep all dormant flags OFF; gather real-traffic soak data
+  (and broader provenance coverage) before revisiting activation. The metrics
+  are advisory and do not by themselves justify a flag flip.
 
 ## Phase 2G Run Detail Product UI closeout (frontend presentation, 2026-06-17)
 

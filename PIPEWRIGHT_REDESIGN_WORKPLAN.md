@@ -7,6 +7,21 @@
 
 ## TL;DR
 
+- **Latest update (2026-06-18): Row 16b soak evidence run is COMPLETE
+  (docs-only).** The ledger-metrics queries were run `SELECT`-only against a
+  throwaway read-only copy of `backend/db/pipewright.db` (no SQL errors; no
+  code/flag/schema/runtime change). **Outcome: keep all dormant flags OFF.** The
+  dev DB (~255 runs over ~3 weeks) reads as **seeded/synthetic** — sub-minute
+  approval latency, frequent gate timeouts, small `run_turns`/`chunk_attempts`
+  samples. `INFRA_ERROR` retry/recovery has **zero evidence**; prompt-cache
+  activation has **no evidence** (`llm_call_provenance` is incomplete and
+  effectively DeepSeek/coder-only, with no Anthropic/Gemini provenance); Row 12
+  omission shows **no meaningful coder/planner pressure**; the Row 16 auto
+  hygiene path has no evidence and the manual `run_outcome` rejection rate is a
+  quality yellow flag; the reviewer acknowledgement path exists but has low
+  recorded ack volume. Results recorded in
+  `docs/metrics/ledger-metrics-queries.md` §12. Real-traffic soak data (and
+  broader provenance coverage) is needed before revisiting any activation.
 - **Latest update (2026-06-18): Row 16b ledger metrics / observability queries
   doc is COMPLETE (docs-only).** Added
   `docs/metrics/ledger-metrics-queries.md` with SELECT-only SQLite queries over

@@ -132,6 +132,22 @@ Current truth:
   plan-turn activity, and stuck runs. It does not activate dormant flags, change
   runtime behavior, change schema, alter policy, or touch approval/final
   approval/Git/PR behavior.
+- **Row 16b soak evidence run — COMPLETE (docs-only, 2026-06-18).** The §11
+  queries were run `SELECT`-only against a throwaway read-only copy of
+  `backend/db/pipewright.db` (no SQL errors; no code/flag/schema/runtime change).
+  **Recommendation: keep all dormant flags OFF.** The dev DB has ~255 runs over
+  ~3 weeks but reads as **seeded/synthetic** (sub-minute approval latency,
+  frequent gate timeouts, small `run_turns`/`chunk_attempts` samples). Key
+  findings: `INFRA_ERROR` retry/recovery has **zero evidence**; prompt-cache
+  activation has **no evidence** because `llm_call_provenance` is incomplete and
+  effectively DeepSeek/coder-only (no Anthropic/Gemini provenance); Row 12
+  omission still shows **no meaningful coder/planner pressure**; the Row 16 auto
+  hygiene path has no evidence and the manual `run_outcome` suggestion rejection
+  rate is a quality yellow flag; the reviewer acknowledgement path exists but has
+  low recorded ack volume. Results recorded in
+  [`../metrics/ledger-metrics-queries.md`](../metrics/ledger-metrics-queries.md)
+  §12. Gather real-traffic soak data (and broader provenance coverage) before
+  revisiting any activation.
 - **§23 row 7b — plan-gate turns + plan-version lineage — COMPLETE & MERGED,
   default-off.** PR-A added
   the internal plan-turn engine scaffold; PR-B added

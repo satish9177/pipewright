@@ -636,3 +636,44 @@ GROUP BY
     COALESCE(pr.current_step, 'not_recorded')
 ORDER BY max_pending_hours DESC;
 ```
+
+## 12. Soak run results (2026-06-18, read-only)
+
+First execution of the queries above, run `SELECT`-only against a throwaway
+read-only copy of `backend/db/pipewright.db`. No SQL errors; JSON1 available. No
+code, flag, schema, or runtime changes. This section records aggregate findings
+only — no run ids, timestamps, raw prompts, diffs, provider/Git errors, secrets,
+tokens, or PII.
+
+**Dataset caveat:** ~255 runs over ~3 weeks, but the data reads as seeded /
+synthetic rather than live human operation — approval decisions average
+sub-minute latency, gate `timeout` states are common, and `run_turns` (5) and
+`chunk_attempts` (25) samples are small. Treat the numbers as *shape*, not
+representative rates.
+
+- **Run health / stuck states:** failures concentrate at the `plan` and
+  first-chunk steps; most `failed`/`awaiting_*_approval` rows are gates that
+  timed out, not runtime crashes. No pending gates were stuck at query time.
+- **INFRA_ERROR:** zero occurrences in attempts or stage-outcome JSON — the
+  retry/recovery path has **no evidence** either way in this dataset.
+- **Approvals:** plenty of approve/reject/timeout gate rows, but ~0.01h decision
+  latency confirms scripted decisions; not representative of real human timing.
+- **Steer / retry / post-success refinement:** near-anecdotal volume (a handful
+  of `human_retry` / `steered` attempts; a few plan/chunk turns).
+- **Reviewer acknowledgement:** reviews occur (`approve_with_notes`,
+  `needs_human_attention`, `risky`), but recorded **active acknowledgement rows
+  are very low**.
+- **Row 12 omission pressure:** `coder`/`planner` show **0 exclusions** at their
+  budget; only `triage` shows existing category-policy exclusions — consistent
+  with the prior "proven no-op," no new relevance pressure.
+- **Prompt-cache opportunity:** `llm_call_provenance` coverage is incomplete and
+  effectively single-provider (DeepSeek/coder); **no Anthropic or Gemini
+  provenance** is present, so cache activation has **no observable evidence**.
+- **Row 16 hygiene yield:** the auto path has produced nothing (flag dormant, as
+  expected); manual `run_outcome` suggestions show a **high rejection rate**,
+  which is a quality yellow flag to investigate before any auto activation.
+
+**Conclusion:** the dataset is too synthetic and too sparse to justify activating
+any dormant feature. **Keep all dormant flags OFF** and gather real-traffic soak
+data (plus broader `llm_call_provenance` coverage) before revisiting activation.
+These metrics remain advisory and do not by themselves justify a flag flip.
