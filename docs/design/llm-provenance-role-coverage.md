@@ -1,21 +1,51 @@
 # Design Brief — LLM Provenance Role-Coverage Patch
 
-Status: **design-only / proposed**. No code written. Scope is a thin, additive,
-metadata-only extension of the existing `llm_call_provenance` write path
-(#33B; see `docs/design/multi-provider-modes.md`) so that every *active* LLM role
-records provenance — not just the coder.
+Status: **COMPLETE as of 2026-06-18 (PR-A + PR-B implemented).** Scope was a
+thin, additive, metadata-only extension of the existing `llm_call_provenance`
+write path (#33B; see `docs/design/multi-provider-modes.md`) so that every
+*active invoked* pipeline LLM role records provenance, not just the coder.
 
 Related: verification audit (Row 16b soak follow-up) confirmed the coverage gap is
 **structural**, not sparse dev data: provenance is written from exactly one place.
 
 ---
 
+## Implementation closeout (2026-06-18)
+
+LLM provenance role coverage is complete for active invoked pipeline roles:
+
+- `coder` already wrote metadata-only provenance before this patch family.
+- `reviewer` was added in PR-A.
+- `triage`, `planner`, and `summary` / `report_analyzer` were added in PR-B.
+
+All new writes reuse the existing `try_record_llm_call_provenance` wrapper
+unchanged. Writes remain best-effort and non-blocking: a store failure must never
+fail triage, planner, reviewer, summary/report analysis, or coder execution.
+Rows remain metadata-only (`run_id`, optional `chunk_number`, role,
+provider/model, finish reason, token counts, timestamps, ids). They do not store
+prompts, responses, diffs, raw provider errors, secrets, tokens, PII, memory
+entries, or file contents. `selection_source` intentionally remains `None`.
+
+PR-B records one row per real provider call, including correction/retry provider
+calls. Coder semantics are intentionally unchanged: coder continues to record the
+final effective output row rather than one row per parse-retry call.
+
+Deliberate exclusions remain:
+
+- Intent-suggestion LLM fallback is deferred because it has no `run_id`, while
+  `llm_call_provenance.run_id` is `NOT NULL`.
+- `architect` is excluded because it is enum-only / not actively invoked.
+- Cache hit/miss fields remain out of scope; no `LLMResponse` or provider-adapter
+  cache-token fields were added, and prompt cache was not activated.
+
+---
+
 ## Verdict
 
-**PROCEED.** The patch is small, additive, isolated, and reuses
-`try_record_llm_call_provenance` — a write path already proven safe and
+**COMPLETE.** The patch was small, additive, isolated, and reused
+`try_record_llm_call_provenance` - a write path already proven safe and
 non-blocking by the coder. It changes no role behavior, no provider selection, no
-prompt content, no cache behavior, and no runtime decision. The schema already has
+prompt content, no cache behavior, and no runtime decision. The schema already had
 every column needed.
 
 Two clarifications change the premise and must be reflected (details below):
@@ -27,15 +57,14 @@ Two clarifications change the premise and must be reflected (details below):
    `pipeline_runs` row. `llm_call_provenance.run_id` is `NOT NULL` with an FK to
    `pipeline_runs`. That path is **deferred on safety/schema grounds**, not effort.
 
-One substantive open decision remains (row semantics — see "Open decisions"). It
-is not blocking; it affects how the Section 9 ledger queries are *read*, and the
-recommended default is documented.
+The row-semantics decision is closed as the minimal safe path: PR-B roles use
+per-call rows, while coder semantics remain unchanged.
 
 ---
 
 ## 1. Exact current write path
 
-Single production writer: `backend/pipeline/coder.py:543`, calling
+Initial production writer: `backend/pipeline/coder.py:543`, calling
 `try_record_llm_call_provenance(...)` **after** the coder's retry loop, recording
 the **effective** (final successful) `coder_response`. Best-effort: the `try_*`
 variant swallows and logs all failures and can never change the coder outcome.
@@ -44,7 +73,8 @@ The store (`backend/pipeline/llm_call_provenance_store.py`) is correct,
 metadata-only CRUD. The table (`backend/db/schema.sql:383-396`) has columns:
 `id, run_id, chunk_number, role, provider, model, selection_source, finish_reason,
 input_tokens, output_tokens, created_at`. All other references to the table are
-read-only or tests. No other role writes today.
+read-only or tests. PR-A/PR-B extended writers to reviewer, triage, planner, and
+summary/report_analyzer without changing the store or schema.
 
 ---
 
@@ -53,10 +83,10 @@ read-only or tests. No other role writes today.
 | Role | Call site | Retains `LLMResponse`? | Scope | Decision |
 |------|-----------|------------------------|-------|----------|
 | **coder** | `coder.py:378` | yes | run+chunk | already covered (no change) |
-| **reviewer** | `reviewer.py:353` | **yes** (`response`) | run+chunk in scope | **INCLUDE — PR-A** |
-| **triage** | `triage.py:162` (via `_call_llm`) | no — returns `.text` | run-level (`chunk_number=None`) | **INCLUDE — PR-B** |
-| **planner** | `planner.py:131` (via `_call_llm`) | no — returns `.text` | run+chunk (chunk_number lives on `run_planner`, not `_call_llm`) | **INCLUDE — PR-B** |
-| **summary** | `report_analyzer.py:551` (via `_call_llm`) | no — returns `.text` | run-level (`chunk_number=None`) | **INCLUDE — PR-B** |
+| **reviewer** | `reviewer.py:353` | **yes** (`response`) | run+chunk in scope | **covered by PR-A** |
+| **triage** | `triage.py:162` (via `_call_llm`) | no — returns `.text` | run-level (`chunk_number=None`) | **covered by PR-B** |
+| **planner** | `planner.py:131` (via `_call_llm`) | no — returns `.text` | run+chunk (chunk_number lives on `run_planner`, not `_call_llm`) | **covered by PR-B** |
+| **summary** | `report_analyzer.py:551` (via `_call_llm`) | no — returns `.text` | run-level (`chunk_number=None`) | **covered by PR-B** |
 | **architect** | — none — | n/a | n/a | **EXCLUDE** (enum-only, never invoked) |
 | intent-suggestion (triage role) | `intent.py:722` | yes locally | **no `run_id`** | **DEFER** (FK `NOT NULL`) |
 
@@ -70,11 +100,11 @@ role). Deferred: intent-suggestion path.
 - **PR-A — reviewer.** Reviewer already holds `response` and has `run_id` +
   `chunk_number` in scope. One additive best-effort call after
   `log_token_usage` (`reviewer.py:354`). No signature changes anywhere. Lowest
-  blast radius; ship first.
+  blast radius; shipped first.
 - **PR-B — triage + planner + summary.** All three discard the response inside
   their own `_call_llm` (returning `response.text`). The provenance write goes
   **inside `_call_llm`**, where the response object is still in hand (see Q6).
-  Planner additionally needs `chunk_number` threaded into its `_call_llm`.
+  Planner additionally needed `chunk_number` threaded into its `_call_llm`.
 
 The user's framing put summary in PR-A "because it retains LLMResponse." It does
 not — `report_analyzer._call_llm:549` returns `.text`. Summary is mechanically
@@ -110,10 +140,10 @@ billed* provider call. For the token/cost/cache-opportunity accounting that
 motivates this work, counting the real failed-parse call is the correct behavior,
 not a bug.
 
-**Caveat (this is the open decision):** the coder today records only its
+**Accepted caveat:** the coder today records only its
 **effective** output (one row, post-loop), so coder does *not* emit a row for its
 own parse-retry calls. PR-B's new roles will use **per-call** semantics. That is a
-deliberate divergence; see "Open decisions."
+deliberate divergence; see "Closed decisions / reading notes."
 
 ---
 
@@ -194,7 +224,7 @@ No change to: `coder.py`, the store, the schema, any provider adapter,
 - Checkpoints / resume substrate; `scope_guard`; approval & final-approval gates;
   Git / PR behavior; `patch_applier`.
 - Memory retrieval / injection / FTS (Row 19) / Row 23.
-- The coder write (left as-is — see Open decisions).
+- The coder write (left as-is — see Closed decisions / reading notes).
 - The intent path (deferred — must remain provenance-free this slice).
 - No new event persistence beyond the existing table; writes stay best-effort and
   never raise into a role.
@@ -219,29 +249,21 @@ No change to: `coder.py`, the store, the schema, any provider adapter,
 
 ---
 
-## 14. Open decisions
+## 14. Closed decisions / reading notes
 
 1. **Row semantics: per-call (new roles) vs. effective-output (coder today).**
    PR-B records one row per real provider call (including parse-retry calls);
    coder records only its final effective output. Section 9 queries use
    `COUNT(*)` and `SUM(input_tokens)`, so mixed semantics slightly skew per-role
-   call counts and token totals (coder undercounts its own retries; new roles
-   count theirs). Options:
-   - **(a) Accept the divergence + document it** (recommended). Add a one-line
-     row-semantics note to `docs/metrics/ledger-metrics-queries.md` §9. No coder
-     change; minimal blast radius. Retries are rare (parse-failure only), so the
-     skew is small.
-   - (b) Normalize everything to per-call by moving coder's write into its
-     `_call_llm`. Larger; touches the already-shipped coder path.
-   - (c) Normalize new roles to effective-output. Requires threading the response
-     out of three `_call_llm`s — defeats the minimal approach in Q6.
+   call counts and token totals (coder undercounts its own parse retries; new
+   roles count theirs). **Accepted closeout:** keep coder semantics unchanged and
+   document the mixed row semantics in metrics/read-model guidance. No coder path
+   change is part of this closeout.
 
-   This is a decision for the user because it changes how the ledger is read, not
-   what the code does. **Recommendation: (a).**
+2. **Planner `chunk_number` source.** `run_planner`'s `chunk_number` parameter is
+   the value recorded on planner provenance rows (the chunk being planned; default
+   `0`).
 
-2. **Planner `chunk_number` source.** Confirm `run_planner`'s `chunk_number`
-   parameter is the value we want on the row (it is the chunk being planned;
-   default `0`). No alternative identified — flagged only for explicit sign-off.
-
-(Neither open decision blocks PR-A, which is reviewer-only and semantically
-unambiguous — a single call per review, run+chunk in scope.)
+3. **Cache effectiveness fields.** Cache hit/miss or cache-read/cache-creation
+   token fields remain out of scope because they require `LLMResponse` and
+   provider-adapter changes. `selection_source` remains `None`.

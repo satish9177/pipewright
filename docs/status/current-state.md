@@ -159,15 +159,27 @@ Current truth:
   ~3 weeks but reads as **seeded/synthetic** (sub-minute approval latency,
   frequent gate timeouts, small `run_turns`/`chunk_attempts` samples). Key
   findings: `INFRA_ERROR` retry/recovery has **zero evidence**; prompt-cache
-  activation has **no evidence** because `llm_call_provenance` is incomplete and
-  effectively DeepSeek/coder-only (no Anthropic/Gemini provenance); Row 12
-  omission still shows **no meaningful coder/planner pressure**; the Row 16 auto
-  hygiene path has no evidence and the manual `run_outcome` suggestion rejection
-  rate is a quality yellow flag; the reviewer acknowledgement path exists but has
-  low recorded ack volume. Results recorded in
+  activation has **no evidence** because the read-only sample predates the
+  active-role provenance closeout and contained only effectively
+  DeepSeek/coder rows (no Anthropic/Gemini provenance); Row 12 omission still
+  shows **no meaningful coder/planner pressure**; the Row 16 auto hygiene path
+  has no evidence and the manual `run_outcome` suggestion rejection rate is a
+  quality yellow flag; the reviewer acknowledgement path exists but has low
+  recorded ack volume. Results recorded in
   [`../metrics/ledger-metrics-queries.md`](../metrics/ledger-metrics-queries.md)
-  §12. Gather real-traffic soak data (and broader provenance coverage) before
-  revisiting any activation.
+  §12. Gather post-closeout real-traffic soak data before revisiting any
+  activation; cache hit/miss fields still do not exist.
+- **LLM provenance active-role coverage — COMPLETE (2026-06-18).** Active
+  invoked pipeline roles now write metadata-only `llm_call_provenance` rows:
+  `coder` already existed; `reviewer` was added in PR-A; and `triage`,
+  `planner`, and `summary` / `report_analyzer` were added in PR-B. All writes
+  reuse the existing `try_record_llm_call_provenance` wrapper, remain
+  best-effort/non-blocking, and keep `selection_source=None`. PR-B records one
+  row per real provider call, including correction/retry calls; coder semantics
+  intentionally remain effective-output-only. Intent-suggestion remains deferred
+  because it has no `run_id`; `architect` is excluded because it is not an active
+  invoked role. Cache hit/miss fields remain out of scope, no prompt cache was
+  activated, and no schema/provider/runtime behavior changed.
 - **§23 row 7b — plan-gate turns + plan-version lineage — COMPLETE & MERGED,
   default-off.** PR-A added
   the internal plan-turn engine scaffold; PR-B added

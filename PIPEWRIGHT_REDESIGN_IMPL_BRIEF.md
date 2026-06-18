@@ -1,7 +1,19 @@
 # Pipewright Redesign — Rolling Implementation Brief
 
 **Date:** 2026-06-18
-**Status:** **Row 6b (chunk-sizing advisory, §18.7) and Row 6c (chunk-isolation
+**Status:** **LLM provenance active-role coverage is COMPLETE (docs/status
+closeout).** `coder` provenance already existed; `reviewer` was added in PR-A;
+`triage`, `planner`, and `summary` / `report_analyzer` were added in PR-B. All
+writes are metadata-only, reuse the existing `try_record_llm_call_provenance`
+wrapper, remain best-effort/non-blocking, and keep `selection_source=None`. PR-B
+records one row per real provider call, including correction/retry calls; coder
+semantics are intentionally unchanged. Intent-suggestion is deferred because it
+has no `run_id`; `architect` is excluded because it is not an active invoked role;
+cache hit/miss fields remain out of scope. No schema, provider adapter,
+`LLMResponse`, prompt-cache activation, approval/final approval/Git/PR, memory
+retrieval, FTS/Row 19, Row 23, or event-persistence behavior changed.
+
+Previous status remains true: **Row 6b (chunk-sizing advisory, §18.7) and Row 6c (chunk-isolation
 advisory, §18.8) are CONFIRMED COMPLETE (docs-only closeout).** A verification
 audit found both already fully implemented, wired, and tested; this closeout only
 records that fact and changed no code. Both are deterministic advisory-only
@@ -167,18 +179,20 @@ Detailed results live in `docs/metrics/ledger-metrics-queries.md` §12.
   states, and small `run_turns` (5) / `chunk_attempts` (25) samples. Numbers are
   *shape*, not representative rates.
 - **INFRA_ERROR** retry/recovery path: **zero evidence**.
-- **Prompt-cache** activation: **no evidence** — `llm_call_provenance` coverage
-  is incomplete and effectively DeepSeek/coder-only, with no Anthropic/Gemini
-  provenance present.
+- **Prompt-cache** activation: **no evidence** — this read-only sample predates
+  the active-role provenance closeout and contained only effectively
+  DeepSeek/coder rows, with no Anthropic/Gemini provenance present. Active-role
+  instrumentation is now complete, but there is no post-closeout real-traffic
+  sample and no cache hit/miss fields.
 - **Row 12 omission:** still **no meaningful coder/planner pressure** (only
   existing triage category-policy exclusions); consistent with the prior proven
   no-op.
 - **Row 16 hygiene:** auto path has no evidence (flag dormant, expected); manual
   `run_outcome` suggestion **rejection rate is a quality yellow flag**.
 - **Reviewer acknowledgement** path exists but has **low recorded ack volume**.
-- **Recommendation:** keep all dormant flags OFF; gather real-traffic soak data
-  (and broader provenance coverage) before revisiting activation. The metrics
-  are advisory and do not by themselves justify a flag flip.
+- **Recommendation:** keep all dormant flags OFF; gather post-closeout
+  real-traffic soak data before revisiting activation. The metrics are advisory
+  and do not by themselves justify a flag flip.
 
 ## Phase 2G Run Detail Product UI closeout (frontend presentation, 2026-06-17)
 

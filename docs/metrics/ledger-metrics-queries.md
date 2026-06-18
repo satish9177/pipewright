@@ -501,6 +501,15 @@ ORDER BY injection_event_count DESC;
 
 The ledger records provider/model metadata and token counts. It does not persist
 whether a provider accepted a cache marker, so these are opportunity estimates.
+Role coverage is now complete for active invoked pipeline roles (`coder`,
+`reviewer`, `triage`, `planner`, and `summary` / `report_analyzer`), but there
+are still no cache hit/miss or cache-read/cache-creation fields.
+
+Row-semantics caveat: PR-B roles (`triage`, `planner`, `summary`) record one row
+per real provider call, including correction/retry calls. `reviewer` records one
+row per successful reviewer provider call. `coder` intentionally keeps its
+existing effective-output semantics and records the final successful coder output
+rather than one row per parse-retry call.
 
 ```sql
 -- Decision: Rank provider/role pairs by input-token volume to decide where
@@ -666,14 +675,19 @@ representative rates.
 - **Row 12 omission pressure:** `coder`/`planner` show **0 exclusions** at their
   budget; only `triage` shows existing category-policy exclusions — consistent
   with the prior "proven no-op," no new relevance pressure.
-- **Prompt-cache opportunity:** `llm_call_provenance` coverage is incomplete and
-  effectively single-provider (DeepSeek/coder); **no Anthropic or Gemini
-  provenance** is present, so cache activation has **no observable evidence**.
+- **Prompt-cache opportunity:** this soak run happened before LLM provenance role
+  coverage was closed out, so the observed `llm_call_provenance` rows were
+  effectively single-provider (DeepSeek/coder) with **no Anthropic or Gemini
+  provenance** present. Instrumentation coverage is now complete for active
+  invoked pipeline roles, but there is still no post-closeout real-traffic sample
+  and no cache hit/miss fields. Cache activation therefore still has **no
+  observable evidence**.
 - **Row 16 hygiene yield:** the auto path has produced nothing (flag dormant, as
   expected); manual `run_outcome` suggestions show a **high rejection rate**,
   which is a quality yellow flag to investigate before any auto activation.
 
 **Conclusion:** the dataset is too synthetic and too sparse to justify activating
-any dormant feature. **Keep all dormant flags OFF** and gather real-traffic soak
-data (plus broader `llm_call_provenance` coverage) before revisiting activation.
-These metrics remain advisory and do not by themselves justify a flag flip.
+any dormant feature. **Keep all dormant flags OFF** and gather post-closeout
+real-traffic soak data using the now-complete active-role provenance coverage
+before revisiting activation. These metrics remain advisory and do not by
+themselves justify a flag flip.

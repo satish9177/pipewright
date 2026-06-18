@@ -7,6 +7,19 @@
 
 ## TL;DR
 
+- **Latest update (2026-06-18): LLM provenance role coverage is COMPLETE for
+  active invoked pipeline roles.** `coder` already had metadata-only
+  `llm_call_provenance` writes; `reviewer` was added in PR-A; `triage`,
+  `planner`, and `summary` / `report_analyzer` were added in PR-B. All writes
+  reuse the existing `try_record_llm_call_provenance` wrapper unchanged, remain
+  best-effort/non-blocking, and keep `selection_source=None`. PR-B records one
+  row per real provider call, including correction/retry calls; coder semantics
+  are intentionally unchanged (effective-output row only). Intent-suggestion is
+  deferred because it has no `run_id`; `architect` is excluded because it is not
+  an active invoked role. Cache hit/miss fields remain out of scope; no schema,
+  provider adapter, `LLMResponse`, prompt-cache activation, approval/final
+  approval/Git/PR, memory retrieval, FTS/Row 19, Row 23, or event-persistence
+  behavior changed.
 - **Latest update (2026-06-18): Row 6b (chunk-sizing advisory, §18.7) and Row 6c
   (chunk-isolation advisory, §18.8) are CONFIRMED COMPLETE (docs-only closeout).**
   A verification audit found both already fully implemented and wired — backend,
@@ -36,14 +49,16 @@
   dev DB (~255 runs over ~3 weeks) reads as **seeded/synthetic** — sub-minute
   approval latency, frequent gate timeouts, small `run_turns`/`chunk_attempts`
   samples. `INFRA_ERROR` retry/recovery has **zero evidence**; prompt-cache
-  activation has **no evidence** (`llm_call_provenance` is incomplete and
-  effectively DeepSeek/coder-only, with no Anthropic/Gemini provenance); Row 12
+  activation has **no evidence** because this sample predates the active-role
+  provenance closeout and contained only effectively DeepSeek/coder rows (no
+  Anthropic/Gemini provenance); Row 12
   omission shows **no meaningful coder/planner pressure**; the Row 16 auto
   hygiene path has no evidence and the manual `run_outcome` rejection rate is a
   quality yellow flag; the reviewer acknowledgement path exists but has low
   recorded ack volume. Results recorded in
-  `docs/metrics/ledger-metrics-queries.md` §12. Real-traffic soak data (and
-  broader provenance coverage) is needed before revisiting any activation.
+  `docs/metrics/ledger-metrics-queries.md` §12. Post-closeout real-traffic soak
+  data is needed before revisiting any activation; cache hit/miss fields still do
+  not exist.
 - **Latest update (2026-06-18): Row 16b ledger metrics / observability queries
   doc is COMPLETE (docs-only).** Added
   `docs/metrics/ledger-metrics-queries.md` with SELECT-only SQLite queries over
@@ -277,5 +292,7 @@ Plus §7 open questions (attempt-budget defaults; whether post-success refinemen
 29. **Phase 2G Run Detail Product UI is COMPLETE & MERGED (2026-06-17), frontend presentation/composition only.** Design spec + closeout: `docs/design/phase-2g-run-detail-product-ui.md`. **PR-1** merged the two-column cockpit/context shell; **PR-2** merged Running/Needs-review context rail trust facts; **PR-4** merged Done-state PR de-duplication and the authoritative PR rail; **PR-5** merged the Failed-state failure rail; **PR-3** merged decision evidence near the approval cockpit; **PR-6** merged visual/register polish and Plain/Developer mode cleanup. Final state: Run Detail is organized around the cockpit, safety overview, context rail, decision evidence, timeline, and collapsed audit/details. **Invariants held:** no backend behavior changes, no mutation handler changes, no approval/final approval/Git/PR behavior changes, no new actions, no event persistence / Phase 2F PR-5 work, no memory retrieval changes, no FTS/Row 19 changes, and no Row 23 work. **Validation recorded:** build/lint/diff checks passed per slice; PR-3 demo-smoke passed all 10 checks; PR-6 SSR smoke passed running/final-approval/done/failed across Plain and Developer modes; protected-path checks confirmed frontend/docs-only scope per slice.
 
 30. **Row 16b ledger metrics / observability queries doc is COMPLETE (2026-06-18), docs-only.** Added `docs/metrics/ledger-metrics-queries.md` as read-only maintainer guidance for SELECT-only SQLite evidence collection over existing ledger metadata before any dormant-feature activation decision. It does not activate Row 16 PR-C, Row 12 omission, prompt caching, plan turns, FTS/Row 19, Row 23, or event persistence; it changes no runtime behavior, schema, policy flags, memory retrieval, prompt builder, approval/final-approval/Git/PR behavior, or code.
+
+31. **LLM provenance active-role coverage is COMPLETE (2026-06-18).** `coder` provenance existed already; `reviewer` landed in PR-A; `triage`, `planner`, and `summary` / `report_analyzer` landed in PR-B. Writes are metadata-only, reuse `try_record_llm_call_provenance`, remain best-effort/non-blocking, and keep `selection_source=None`. PR-B records one row per real provider call, including correction/retry calls. Coder semantics are intentionally unchanged. Intent-suggestion remains deferred because it has no `run_id`; `architect` remains excluded because it is not an active invoked role; cache hit/miss fields remain out of scope. No schema/provider adapter/`LLMResponse`/prompt-cache activation/runtime approval/Git/PR/memory retrieval/FTS/Row 19/Row 23/event-persistence change.
 
 *Note: commit these planning docs only when asked.*
