@@ -23,6 +23,26 @@ Current truth:
   refinement, the **reviewer informed-approval soft gate (now LIVE)**, the
   phase/narrative read-model, the trivial-task stage profile, and provider prompt
   caching.
+- **Area A backfill — Row 6b (chunk-sizing advisory, §18.7) and Row 6c
+  (chunk-isolation advisory, §18.8) are COMPLETE (dormant, default-off,
+  advisory-only).** Both are deterministic post-triage backstops in
+  `backend/pipeline/chunk_sizing.py` and `backend/pipeline/chunk_isolation.py`,
+  wired through `backend/pipeline/plan_postprocess.py` and run on both the initial
+  plan path (`routes/chunks.py`) and the plan-turn revision path
+  (`pipeline/plan_turn_engine.py`). Row 6b appends `[SIZE]` notes (token budget,
+  many-files, tiny-chunk-in-multi-chunk-plan) using `file_index` token estimates;
+  Row 6c appends `[ISOLATION]` notes (cross-chunk shared files, migration mixing).
+  Notes are written into chunk `rationale` **before** the plan is persisted; the
+  UI (`ChunkPlanPanel`) parses persisted rationale and renders the non-blocking
+  `ChunkSizeAdvisory` / `ChunkIsolationAdvisory` banners. Both ship behind
+  default-off flags (`PIPEWRIGHT_CHUNK_SIZING_ADVISORY_ENABLED` /
+  `PIPEWRIGHT_CHUNK_ISOLATION_ADVISORY_ENABLED`); flag-off is byte-identical
+  passthrough. Row 6c implements **D14 option (a)** — advisory-only, no
+  `requires_human_review` escalation, no hard gate. No approval/execution/final
+  approval/Git/PR behavior change; no auto re-chunking, no auto-execution, no
+  memory/FTS/vector work. Tests: `test_chunk_sizing_advisory.py`,
+  `test_chunk_isolation_advisory.py`, and the policy-flag tests in `test_policy.py`
+  (all green).
 - **Area B (Pass 2 — Memory) has begun.** §23 **order-row 7 — the M5
   suggestion-quality gate — is COMPLETE** (PR #292): a deterministic scorer, an
   objective-junk floor, per-run caps, the structured coder handoff channel, and an

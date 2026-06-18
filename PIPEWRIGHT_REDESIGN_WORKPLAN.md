@@ -7,6 +7,28 @@
 
 ## TL;DR
 
+- **Latest update (2026-06-18): Row 6b (chunk-sizing advisory, §18.7) and Row 6c
+  (chunk-isolation advisory, §18.8) are CONFIRMED COMPLETE (docs-only closeout).**
+  A verification audit found both already fully implemented and wired — backend,
+  UI, persistence, and tests — though the proposal's backfill list (§ "skipped by
+  the engine-first pass") still listed them as open. Both are **deterministic,
+  advisory-only post-triage backstops**: `backend/pipeline/chunk_sizing.py` and
+  `backend/pipeline/chunk_isolation.py`, wired through
+  `backend/pipeline/plan_postprocess.py`, running on both the initial plan path
+  (`routes/chunks.py`) and the plan-turn revision path
+  (`pipeline/plan_turn_engine.py`). They append `[SIZE]` / `[ISOLATION]` notes to
+  chunk `rationale` **before** the plan is persisted; `ChunkPlanPanel` parses the
+  persisted rationale and renders the non-blocking `ChunkSizeAdvisory` /
+  `ChunkIsolationAdvisory` banners. Both ship **dormant behind default-off flags**
+  (`PIPEWRIGHT_CHUNK_SIZING_ADVISORY_ENABLED` /
+  `PIPEWRIGHT_CHUNK_ISOLATION_ADVISORY_ENABLED`); flag-off is byte-identical
+  passthrough. Row 6c implements **D14 option (a)** — advisory-only, no
+  `requires_human_review` escalation, **no hard gate**. No approval/execution/final
+  approval/Git/PR behavior change; no auto re-chunking; no auto-execution; no
+  memory retrieval / FTS / Row 19 / Row 23 / event-persistence / Row 9b work.
+  Tests: `test_chunk_sizing_advisory.py`, `test_chunk_isolation_advisory.py`, and
+  the policy-flag tests in `test_policy.py` (all green). This closeout changed only
+  docs/planning files.
 - **Latest update (2026-06-18): Row 16b soak evidence run is COMPLETE
   (docs-only).** The ledger-metrics queries were run `SELECT`-only against a
   throwaway read-only copy of `backend/db/pipewright.db` (no SQL errors; no

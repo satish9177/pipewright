@@ -1,7 +1,16 @@
 # Pipewright Redesign — Rolling Implementation Brief
 
 **Date:** 2026-06-18
-**Status:** **Row 16b soak evidence run is COMPLETE (docs-only).** The
+**Status:** **Row 6b (chunk-sizing advisory, §18.7) and Row 6c (chunk-isolation
+advisory, §18.8) are CONFIRMED COMPLETE (docs-only closeout).** A verification
+audit found both already fully implemented, wired, and tested; this closeout only
+records that fact and changed no code. Both are deterministic advisory-only
+post-triage backstops, ship dormant behind default-off flags, append `[SIZE]` /
+`[ISOLATION]` notes to chunk rationale before persistence, and render as
+non-blocking UI banners. Row 6c is D14 option (a): advisory-only, no
+`requires_human_review` escalation, no hard gate. See the closeout section below.
+
+Previous status remains true: **Row 16b soak evidence run is COMPLETE (docs-only).** The
 ledger-metrics queries were run `SELECT`-only against a throwaway read-only copy
 of `backend/db/pipewright.db`; no SQL errors and no code/flag/schema/runtime
 change. **Recommendation: keep all dormant flags OFF** — the dev DB is too
@@ -68,6 +77,61 @@ read-only Run Timeline (2026-06-17), with only PR-5 event persistence deferred.
 **Next step: a maintainer / Claude roadmap review before opening any new row or
 activating a default.** Full records live in `PIPEWRIGHT_REDESIGN_WORKPLAN.md`
 and the proposal's §24 + Appendix E.1/E.2.
+
+## Row 6b / Row 6c chunk-sizing + chunk-isolation advisories (docs-only closeout, 2026-06-18)
+
+A verification-only audit confirmed both backfill rows are **implementation-complete
+and test-green**, already wired into the live plan-postprocess chain. They had not
+been recorded as complete (the proposal still listed them in the engine-first
+"skipped / backfill" set). This is a docs-only closeout — no code, schema, flag, or
+behavior change.
+
+**Row 6b — chunk-sizing advisory (§18.7):**
+- `backend/pipeline/chunk_sizing.py` (`annotate_triage_result_sizing`), a pure
+  deterministic function. Reads `file_index` token estimates; unindexed files use a
+  policy default.
+- Three advisory signals over `files_expected`: token total above the adaptive chunk
+  budget (`coder context window × CHUNK_CONTEXT_BUDGET_SHARE`), file count above
+  `CHUNK_SIZING_MANY_FILES_THRESHOLD`, and a tiny chunk in a multi-chunk plan below
+  `CHUNK_SIZING_TINY_TOKEN_FLOOR`.
+- Flag `PIPEWRIGHT_CHUNK_SIZING_ADVISORY_ENABLED` (`policy.CHUNK_SIZING_ADVISORY_ENABLED`),
+  **default false**. Flag-off is byte-identical passthrough.
+
+**Row 6c — chunk-isolation advisory (§18.8):**
+- `backend/pipeline/chunk_isolation.py` (`annotate_triage_result_isolation`), a pure
+  deterministic function over `files_expected` only (never title/description prose).
+- Two advisory signals: cross-chunk shared files (coupling), and migration files mixed
+  with non-migration files in one chunk.
+- Flag `PIPEWRIGHT_CHUNK_ISOLATION_ADVISORY_ENABLED`
+  (`policy.CHUNK_ISOLATION_ADVISORY_ENABLED`), **default false**. Flag-off is
+  byte-identical passthrough.
+- Implements **D14 option (a)** — advisory-only `[ISOLATION]` notes; **no**
+  `requires_human_review` escalation (option (b) not implemented), **no** hard gate
+  (option (c) rejected).
+
+**Shared wiring, persistence, and UI:**
+- Both run in `backend/pipeline/plan_postprocess.py` (`apply_plan_postprocess`), after
+  `ground → scan → reconcile`, on both the initial plan path (`routes/chunks.py`) and
+  the plan-turn revision path (`pipeline/plan_turn_engine.py`).
+- The only field they ever change is chunk `rationale`: they append `[SIZE]` /
+  `[ISOLATION]` notes **before** the plan is persisted (notes live in the stored
+  read-model, not recomputed at display time).
+- The frontend `ChunkPlanPanel` parses persisted rationale via
+  `extractSizeWarnings` / `extractIsolationWarnings` and renders the non-blocking
+  `ChunkSizeAdvisory` / `ChunkIsolationAdvisory` banners.
+
+**Invariants held:** no approval / chunk-execution / final-approval / Git / PR
+behavior change; no scope grant; no risk-level, dependency, or review-requirement
+mutation; no auto re-chunking; no auto-execution; no memory retrieval / FTS / Row 19 /
+Row 23 / event-persistence / Row 9b work.
+
+**Tests (pre-existing, all green):** `backend/tests/test_chunk_sizing_advisory.py`,
+`backend/tests/test_chunk_isolation_advisory.py`, and the chunk-sizing /
+chunk-isolation flag tests in `backend/tests/test_policy.py`.
+
+**Remaining:** operational only — activation is flipping the default-off flags, with
+no code change, identical to the other dormant rows. No design follow-up needed
+(D14 is decided).
 
 ## Row 16b ledger metrics / observability queries (docs-only, 2026-06-18)
 
